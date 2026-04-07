@@ -113,7 +113,7 @@ dev = [
 
 # ── Entry points ─────────────────────────────────────────────────────────────
 [project.scripts]
-aihydro-mcp = "mcp_server:main"
+aihydro-mcp = "ai_hydro.mcp:main"
 
 # Community plugin tool entry point namespace.
 # Third-party packages add tools in their own pyproject.toml:
