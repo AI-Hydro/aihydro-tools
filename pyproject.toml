@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aihydro-tools"
-version = "1.0.1"
+version = "1.0.2"
 description = "AI-Hydro: 17 hydrological research tools as an MCP server for AI agents"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
@@ -27,6 +27,7 @@ classifiers = [
 ]
 
 # ── Core dependencies (minimal — always installed) ──────────────────────────
+# fastmcp is required because the console script (aihydro-mcp) needs it.
 dependencies = [
     "numpy>=1.24.0",
     "pandas>=2.0.0",
@@ -35,6 +36,7 @@ dependencies = [
     "python-dateutil>=2.8.2",
     "pyyaml>=6.0.0",
     "hydrofunctions>=0.2.0",
+    "fastmcp>=0.1.0",
 ]
 
 # ── Optional extras (semantic layers) ────────────────────────────────────────
@@ -78,10 +80,8 @@ camels = [
     "camels-attrs>=0.1.0",
 ]
 
-# MCP server: expose all tools as MCP endpoints
-mcp = [
-    "fastmcp>=0.1.0",
-]
+# MCP server extras (fastmcp is already a core dep; this group is a no-op placeholder)
+mcp = []
 
 # RAG concept search (optional intelligence layer)
 rag = [
@@ -108,7 +108,6 @@ dev = [
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
-    "fastmcp>=0.1.0",
 ]
 
 # ── Entry points ─────────────────────────────────────────────────────────────
