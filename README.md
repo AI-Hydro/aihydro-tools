@@ -7,17 +7,35 @@
 ## Install
 
 ```bash
-pip install aihydro-tools[all]
+pip install aihydro-tools
 ```
 
-Or install only what you need:
+Or install with optional geo/analysis dependencies:
 
 ```bash
 pip install aihydro-tools[data]       # streamflow, forcing, land cover
 pip install aihydro-tools[analysis]   # watershed, signatures, TWI, CN
 pip install aihydro-tools[modelling]  # differentiable HBV-light, LSTM
-pip install aihydro-tools[mcp]        # MCP server only (minimal)
+pip install aihydro-tools[all]        # everything above
 ```
+
+### Verify installation
+
+```bash
+aihydro-mcp --help
+```
+
+If `aihydro-mcp` is not found, pip installed it outside your PATH. Check these locations:
+
+| OS | Typical location |
+|----|-----------------|
+| **Windows (user)** | `%APPDATA%\Python\Python3XX\Scripts\aihydro-mcp.exe` |
+| **Windows (system)** | `C:\Python3XX\Scripts\aihydro-mcp.exe` |
+| **macOS/Linux (user)** | `~/.local/bin/aihydro-mcp` |
+| **macOS/Linux (system)** | `/usr/local/bin/aihydro-mcp` |
+| **Conda** | `~/miniconda3/bin/aihydro-mcp` or `~/anaconda3/bin/aihydro-mcp` |
+
+> **Tip:** On Windows, replace `3XX` with your Python version (e.g., `310` for Python 3.10).
 
 ## Run the MCP Server
 
@@ -27,13 +45,42 @@ aihydro-mcp
 
 This starts the MCP server on stdio, ready for any MCP client (AI-Hydro extension, Claude Code, Cursor, etc.).
 
-## Register with an IDE
+## Configure with AI-Hydro Extension
 
-```bash
-python setup_mcp.py --ide vscode       # AI-Hydro VS Code extension
-python setup_mcp.py --ide claude-code  # Claude Code CLI
-python setup_mcp.py --check            # verify 17 tools registered
+The AI-Hydro VS Code extension **auto-detects** `aihydro-mcp` on startup — both PATH and common pip install locations. If auto-detection succeeds, no manual setup is needed.
+
+### Manual configuration
+
+If auto-detection fails, add the server manually to `aihydro_mcp_settings.json`:
+
+**Windows:**
+```json
+{
+  "mcpServers": {
+    "ai-hydro": {
+      "command": "C:\\Users\\<USERNAME>\\AppData\\Roaming\\Python\\Python310\\Scripts\\aihydro-mcp.exe",
+      "args": []
+    }
+  }
+}
 ```
+
+**macOS/Linux:**
+```json
+{
+  "mcpServers": {
+    "ai-hydro": {
+      "command": "/Users/<USERNAME>/.local/bin/aihydro-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Settings file locations:
+- **Windows:** `%APPDATA%\Code\User\globalStorage\aihydro.ai-hydro\settings\aihydro_mcp_settings.json`
+- **macOS:** `~/Library/Application Support/Code/User/globalStorage/aihydro.ai-hydro/settings/aihydro_mcp_settings.json`
+- **Linux:** `~/.config/Code/User/globalStorage/aihydro.ai-hydro/settings/aihydro_mcp_settings.json`
 
 ## Tools (17)
 
@@ -74,6 +121,28 @@ AI-Hydro: [calls delineate_watershed → fetch_forcing_data]
 
 Every tool result is cached in a **HydroSession** (JSON file per gauge at `~/.aihydro/sessions/`). Expensive computations are done once and reused across conversations.
 
+## Troubleshooting
+
+### "aihydro-mcp not found"
+
+pip installed the executable outside your PATH. Either:
+1. **Add the Scripts directory to PATH** (see the table above for locations)
+2. **Use the full path** directly in your MCP configuration
+3. **Re-install with `--user` flag removed**: `pip install aihydro-tools` (may need admin/sudo)
+
+### "Connection closed" error
+
+- Use the `aihydro-mcp` executable, not `python -m ai_hydro.mcp.app`
+- Verify the path in your MCP settings matches the actual installed location
+- Check: `pip show aihydro-tools` to confirm it's installed
+
+### Re-install from scratch
+
+```bash
+pip uninstall -y aihydro-tools
+pip install aihydro-tools
+```
+
 ## License
 
 [Apache 2.0](./LICENSE)
@@ -81,5 +150,6 @@ Every tool result is cached in a **HydroSession** (JSON file per gauge at `~/.ai
 ## Links
 
 - **AI-Hydro Extension**: [github.com/AI-Hydro/AI-Hydro](https://github.com/AI-Hydro/AI-Hydro)
+- **PyPI**: [pypi.org/project/aihydro-tools](https://pypi.org/project/aihydro-tools/)
 - **Issues**: [github.com/AI-Hydro/aihydro-tools/issues](https://github.com/AI-Hydro/aihydro-tools/issues)
 - **Author**: Mohammad Galib (mgalib@purdue.edu)
