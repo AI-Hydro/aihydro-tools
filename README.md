@@ -1,31 +1,153 @@
 # aihydro-tools
 
-**17 hydrological research tools as an MCP server for AI agents.**
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/AI-Hydro/AI-Hydro/main/assets/docs/aihydro-hero-static.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/AI-Hydro/AI-Hydro/main/assets/docs/aihydro-hero-static.svg" />
+    <img src="https://raw.githubusercontent.com/AI-Hydro/AI-Hydro/main/assets/docs/aihydro-hero-static.png" alt="AI-Hydro — Intelligent Hydrological Computing" width="100%" />
+  </picture>
+</p>
 
-`aihydro-tools` is the Python backend for [AI-Hydro](https://github.com/AI-Hydro/AI-Hydro), a VS Code extension that gives AI assistants direct access to hydrological analysis tools via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+<p align="center">
+  <em>17 hydrological research tools as an MCP server for AI agents.</em>
+</p>
 
-## Install
+<p align="center">
+  <a href="https://pypi.org/project/aihydro-tools/"><img src="https://img.shields.io/pypi/v/aihydro-tools?color=3775a9" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/aihydro-tools/"><img src="https://img.shields.io/pypi/pyversions/aihydro-tools" alt="Python" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" /></a>
+  <a href="https://github.com/AI-Hydro/aihydro-tools"><img src="https://img.shields.io/github/stars/AI-Hydro/aihydro-tools?style=flat" alt="Stars" /></a>
+</p>
+
+---
+
+## What is aihydro-tools?
+
+`aihydro-tools` is the Python backend for the [AI-Hydro](https://github.com/AI-Hydro/AI-Hydro) platform — a collection of hydrological and geospatial analysis tools exposed via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). It powers all 17 built-in tools that AI agents use for watershed delineation, streamflow analysis, terrain analysis, differentiable modelling, and more.
+
+---
+
+## Quick Start
 
 ```bash
-pip install aihydro-tools
+# Install
+pip install aihydro-tools[all]
+
+# Verify
+aihydro-mcp --diagnose
+
+# Run the server
+aihydro-mcp
 ```
 
-Or install with optional geo/analysis dependencies:
+The [AI-Hydro VS Code extension](https://github.com/AI-Hydro/AI-Hydro) auto-detects `aihydro-mcp` on startup — no manual configuration needed.
 
-```bash
-pip install aihydro-tools[data]       # streamflow, forcing, land cover
-pip install aihydro-tools[analysis]   # watershed, signatures, TWI, CN
-pip install aihydro-tools[modelling]  # differentiable HBV-light, LSTM
-pip install aihydro-tools[all]        # everything above
+---
+
+## 17 Built-in Tools
+
+| Category | Tool | Description |
+|----------|------|-------------|
+| **Watershed** | `delineate_watershed` | NHDPlus watershed delineation from USGS NLDI given a gauge ID |
+| **Streamflow** | `fetch_streamflow_data` | Daily discharge time series from USGS NWIS |
+| **Signatures** | `extract_hydrological_signatures` | 15+ flow statistics: BFI, runoff ratio, FDC percentiles, recession constants |
+| **Geomorphic** | `extract_geomorphic_parameters` | 28 basin morphometry metrics (area, slope, elevation, shape factors) |
+| **Terrain** | `compute_twi` | Topographic Wetness Index from 3DEP 10m DEM |
+| **Curve Number** | `create_cn_grid` | NRCS Curve Number grid from NLCD land cover + Polaris soils |
+| **Forcing** | `fetch_forcing_data` | Basin-averaged GridMET climate data (prcp, tmax, tmin, PET, srad, wind) |
+| **CAMELS** | `extract_camels_attributes` | Full CAMELS-US attribute set (671 gauges) via pygeohydro |
+| **Knowledge** | `query_hydro_concepts` | RAG search over embedded hydrological literature |
+| **Modelling** | `train_hydro_model` | Differentiable HBV-light (PyTorch) or NeuralHydrology LSTM |
+| **Modelling** | `get_model_results` | Retrieve cached model performance (NSE, KGE, RMSE) |
+| **Session** | `start_session` | Initialize or resume a research session for a gauge |
+| **Session** | `get_session_summary` | Overview of computed and pending analysis slots |
+| **Session** | `clear_session` | Reset cached results to force re-computation |
+| **Session** | `add_note` | Attach research notes to the session |
+| **Session** | `export_session` | Export a methods paragraph for manuscripts |
+| **Session** | `sync_research_context` | Synchronize session state with the AI context |
+
+---
+
+## Data Sources
+
+All data is fetched from authoritative federal sources:
+
+- **[USGS NWIS](https://waterdata.usgs.gov/nwis)** — daily streamflow via hydrofunctions
+- **[NHDPlus / NLDI](https://waterdata.usgs.gov/blog/nldi-intro/)** — watershed delineation via pynhd
+- **[GridMET](https://www.climatologylab.org/gridmet.html)** — climate forcing via pygridmet
+- **[3DEP](https://www.usgs.gov/3d-elevation-program)** — DEM and terrain analysis via py3dep
+- **[NLCD](https://www.mrlc.gov/)** — land cover classification
+- **[POLARIS](https://www.usgs.gov/publications/polaris-properties-30-meter-probabilistic-maps-soil-properties-over-contiguous-united)** — soil properties
+- **[CAMELS-US](https://ral.ucar.edu/solutions/products/camels)** — catchment attributes via pygeohydro
+
+---
+
+## Session Persistence
+
+Every tool result is cached in a **HydroSession** (JSON file per gauge at `~/.aihydro/sessions/`). Expensive computations — watershed delineation (~10s), multi-year streamflow downloads (~5s) — are done once and reused across conversations, days, or weeks. The session tracks provenance for reproducibility.
+
+---
+
+## Extending with Plugins
+
+Community packages can register additional tools via Python entry points:
+
+```toml
+# In your package's pyproject.toml
+[project.entry-points."aihydro.tools"]
+my_tool = "my_package.tools:my_tool_function"
 ```
 
-### Verify installation
+Install the package, restart the server, and the new tool is automatically available. Plugins get full access to HydroSession and cached data from other tools.
 
-```bash
-aihydro-mcp --help
+See the [Plugin Guide](https://github.com/AI-Hydro/AI-Hydro/blob/main/PLUGIN_GUIDE.md) for complete walkthroughs of both plugin paths (entry points and standalone MCP servers).
+
+---
+
+## Use as a Python Library
+
+You can use `aihydro-tools` directly in Python scripts without the MCP server:
+
+```python
+from ai_hydro.analysis.watershed import delineate_watershed
+from ai_hydro.data.streamflow import fetch_streamflow_data
+from ai_hydro.analysis.signatures import extract_hydrological_signatures
+
+# Delineate a watershed
+ws = delineate_watershed("01031500")
+print(f"Watershed area: {ws.data['area_km2']} km2")
+
+# Fetch streamflow
+sf = fetch_streamflow_data("01031500", start_date="2015-01-01", end_date="2024-12-31")
+print(f"Records: {len(sf.data['dates'])} days")
+
+# Extract signatures
+sigs = extract_hydrological_signatures("01031500")
+print(f"Baseflow index: {sigs.data['baseflow_index']}")
 ```
 
-If `aihydro-mcp` is not found, pip installed it outside your PATH. Check these locations:
+All functions return `HydroResult` objects with `.data` (dict) and `.meta` (provenance metadata).
+
+---
+
+## Installation Details
+
+### Extras
+
+Install only what you need:
+
+| Extra | What it adds | Install command |
+|-------|-------------|-----------------|
+| `[data]` | Streamflow, forcing, land cover, soil, CAMELS retrieval | `pip install aihydro-tools[data]` |
+| `[analysis]` | Watershed, signatures, TWI, geomorphic, curve number | `pip install aihydro-tools[analysis]` |
+| `[modelling]` | PyTorch differentiable HBV-light, NeuralHydrology LSTM | `pip install aihydro-tools[modelling]` |
+| `[rag]` | RAG concept search over hydrology literature | `pip install aihydro-tools[rag]` |
+| `[viz]` | Matplotlib, Plotly, Folium visualisations | `pip install aihydro-tools[viz]` |
+| `[all]` | Everything above | `pip install aihydro-tools[all]` |
+
+### PATH Troubleshooting
+
+If `aihydro-mcp` is not found after install, pip placed it outside your PATH:
 
 | OS | Typical location |
 |----|-----------------|
@@ -35,121 +157,27 @@ If `aihydro-mcp` is not found, pip installed it outside your PATH. Check these l
 | **macOS/Linux (system)** | `/usr/local/bin/aihydro-mcp` |
 | **Conda** | `~/miniconda3/bin/aihydro-mcp` or `~/anaconda3/bin/aihydro-mcp` |
 
-> **Tip:** On Windows, replace `3XX` with your Python version (e.g., `310` for Python 3.10).
+**Universal fallback**: `python -m ai_hydro.mcp` works regardless of PATH. The AI-Hydro extension auto-detects both the console script and the module fallback.
 
-## Run the MCP Server
+---
 
-```bash
-aihydro-mcp
-```
+## Contributing
 
-This starts the MCP server on stdio, ready for any MCP client (AI-Hydro extension, Claude Code, Cursor, etc.).
+We welcome contributions from the hydrology and geospatial sciences community. See:
 
-## Configure with AI-Hydro Extension
+- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Development setup, code style, testing
+- **[Plugin Guide](https://github.com/AI-Hydro/AI-Hydro/blob/main/PLUGIN_GUIDE.md)** — Two paths for contributing tools (entry points and standalone servers)
 
-The AI-Hydro VS Code extension **auto-detects** `aihydro-mcp` on startup — both PATH and common pip install locations. If auto-detection succeeds, no manual setup is needed.
-
-### Manual configuration
-
-If auto-detection fails, add the server manually to `aihydro_mcp_settings.json`:
-
-**Windows:**
-```json
-{
-  "mcpServers": {
-    "ai-hydro": {
-      "command": "C:\\Users\\<USERNAME>\\AppData\\Roaming\\Python\\Python310\\Scripts\\aihydro-mcp.exe",
-      "args": []
-    }
-  }
-}
-```
-
-**macOS/Linux:**
-```json
-{
-  "mcpServers": {
-    "ai-hydro": {
-      "command": "/Users/<USERNAME>/.local/bin/aihydro-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-Settings file locations:
-- **Windows:** `%APPDATA%\Code\User\globalStorage\aihydro.ai-hydro\settings\aihydro_mcp_settings.json`
-- **macOS:** `~/Library/Application Support/Code/User/globalStorage/aihydro.ai-hydro/settings/aihydro_mcp_settings.json`
-- **Linux:** `~/.config/Code/User/globalStorage/aihydro.ai-hydro/settings/aihydro_mcp_settings.json`
-
-## Tools (17)
-
-| Category | Tools |
-|----------|-------|
-| **Watershed** | `delineate_watershed` |
-| **Streamflow** | `fetch_streamflow_data` |
-| **Signatures** | `extract_hydrological_signatures` |
-| **Geomorphic** | `extract_geomorphic_parameters` |
-| **Terrain** | `compute_twi` |
-| **Curve Number** | `create_cn_grid` |
-| **Forcing** | `fetch_forcing_data` |
-| **CAMELS** | `extract_camels_attributes` |
-| **Knowledge** | `query_hydro_concepts` |
-| **Modelling** | `train_hydro_model`, `get_model_results` |
-| **Session** | `start_session`, `get_session_summary`, `clear_session`, `add_note`, `export_session`, `sync_research_context` |
-
-## Example
-
-```
-You: "Delineate the watershed for USGS gauge 01031500 and fetch 10 years of forcing data."
-
-AI-Hydro: [calls delineate_watershed → fetch_forcing_data]
-          Watershed: 769 km², Piscataquis River ME
-          Forcing: 3,652 days of GridMET data (prcp, tmax, tmin, PET, srad, wind)
-```
-
-## Data Sources
-
-- **USGS NWIS** — daily streamflow via hydrofunctions
-- **NHDPlus / NLDI** — watershed delineation via pynhd
-- **GridMET** — climate forcing via pygridmet
-- **3DEP** — DEM and terrain analysis via py3dep
-- **NLCD / POLARIS** — land cover and soils
-- **CAMELS-US** — catchment attributes via pygeohydro
-
-## Session Persistence
-
-Every tool result is cached in a **HydroSession** (JSON file per gauge at `~/.aihydro/sessions/`). Expensive computations are done once and reused across conversations.
-
-## Troubleshooting
-
-### "aihydro-mcp not found"
-
-pip installed the executable outside your PATH. Either:
-1. **Add the Scripts directory to PATH** (see the table above for locations)
-2. **Use the full path** directly in your MCP configuration
-3. **Re-install with `--user` flag removed**: `pip install aihydro-tools` (may need admin/sudo)
-
-### "Connection closed" error
-
-- Use the `aihydro-mcp` executable, not `python -m ai_hydro.mcp.app`
-- Verify the path in your MCP settings matches the actual installed location
-- Check: `pip show aihydro-tools` to confirm it's installed
-
-### Re-install from scratch
-
-```bash
-pip uninstall -y aihydro-tools
-pip install aihydro-tools
-```
-
-## License
-
-[Apache 2.0](./LICENSE)
+---
 
 ## Links
 
 - **AI-Hydro Extension**: [github.com/AI-Hydro/AI-Hydro](https://github.com/AI-Hydro/AI-Hydro)
 - **PyPI**: [pypi.org/project/aihydro-tools](https://pypi.org/project/aihydro-tools/)
 - **Issues**: [github.com/AI-Hydro/aihydro-tools/issues](https://github.com/AI-Hydro/aihydro-tools/issues)
-- **Author**: Mohammad Galib (mgalib@purdue.edu)
+
+---
+
+## License
+
+[Apache 2.0](./LICENSE) &copy; 2026 Mohammad Galib, Venkatesh Merwade
