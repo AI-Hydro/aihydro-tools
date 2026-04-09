@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <em>17 hydrological research tools as an MCP server for AI agents.</em>
+  <em>Hydrological research tools as an MCP server for AI agents.</em>
 </p>
 
 <p align="center">
@@ -23,7 +23,7 @@
 
 ## What is aihydro-tools?
 
-`aihydro-tools` is the Python backend for the [AI-Hydro](https://github.com/AI-Hydro/AI-Hydro) platform — a collection of hydrological and geospatial analysis tools exposed via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). It powers all 17 built-in tools that AI agents use for watershed delineation, streamflow analysis, terrain analysis, differentiable modelling, and more.
+`aihydro-tools` is the Python backend for the [AI-Hydro](https://github.com/AI-Hydro/AI-Hydro) platform — a collection of hydrological and geospatial analysis tools exposed via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/). It powers the built-in tools that AI agents use for watershed delineation, streamflow analysis, terrain analysis, differentiable modelling, and more.
 
 ---
 
@@ -44,7 +44,7 @@ The [AI-Hydro VS Code extension](https://github.com/AI-Hydro/AI-Hydro) auto-dete
 
 ---
 
-## 17 Built-in Tools
+## Built-in Tools
 
 | Category | Tool | Description |
 |----------|------|-------------|
@@ -56,7 +56,6 @@ The [AI-Hydro VS Code extension](https://github.com/AI-Hydro/AI-Hydro) auto-dete
 | **Curve Number** | `create_cn_grid` | NRCS Curve Number grid from NLCD land cover + Polaris soils |
 | **Forcing** | `fetch_forcing_data` | Basin-averaged GridMET climate data (prcp, tmax, tmin, PET, srad, wind) |
 | **CAMELS** | `extract_camels_attributes` | Full CAMELS-US attribute set (671 gauges) via pygeohydro |
-| **Knowledge** | `query_hydro_concepts` | RAG search over embedded hydrological literature |
 | **Modelling** | `train_hydro_model` | Differentiable HBV-light (PyTorch) or NeuralHydrology LSTM |
 | **Modelling** | `get_model_results` | Retrieve cached model performance (NSE, KGE, RMSE) |
 | **Session** | `start_session` | Initialize or resume a research session for a gauge |
@@ -65,6 +64,8 @@ The [AI-Hydro VS Code extension](https://github.com/AI-Hydro/AI-Hydro) auto-dete
 | **Session** | `add_note` | Attach research notes to the session |
 | **Session** | `export_session` | Export a methods paragraph for manuscripts |
 | **Session** | `sync_research_context` | Synchronize session state with the AI context |
+
+Additional tools can be added by the community via the plugin system (see below).
 
 ---
 
@@ -141,7 +142,6 @@ Install only what you need:
 | `[data]` | Streamflow, forcing, land cover, soil, CAMELS retrieval | `pip install aihydro-tools[data]` |
 | `[analysis]` | Watershed, signatures, TWI, geomorphic, curve number | `pip install aihydro-tools[analysis]` |
 | `[modelling]` | PyTorch differentiable HBV-light, NeuralHydrology LSTM | `pip install aihydro-tools[modelling]` |
-| `[rag]` | RAG concept search over hydrology literature | `pip install aihydro-tools[rag]` |
 | `[viz]` | Matplotlib, Plotly, Folium visualisations | `pip install aihydro-tools[viz]` |
 | `[all]` | Everything above | `pip install aihydro-tools[all]` |
 

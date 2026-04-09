@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aihydro-tools"
-version = "1.0.5"
-description = "AI-Hydro: 17 hydrological research tools as an MCP server for AI agents"
+version = "1.1.0"
+description = "AI-Hydro: hydrological research tools as an MCP server for AI agents"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
 authors = [
@@ -83,13 +83,6 @@ camels = [
 # MCP server extras (fastmcp is already a core dep; this group is a no-op placeholder)
 mcp = []
 
-# RAG concept search (optional intelligence layer)
-rag = [
-    "sentence-transformers>=2.3.0",
-    "chromadb>=0.4.0",
-    "pyyaml>=6.0.0",
-]
-
 # Visualization helpers
 viz = [
     "matplotlib>=3.7.0",
@@ -133,11 +126,7 @@ where = ["."]
 include = ["ai_hydro*"]
 
 [tool.setuptools.package-data]
-ai_hydro = [
-    "knowledge/**/*.json",
-    "knowledge/**/*.yaml",
-    "knowledge/**/*.yml",
-]
+ai_hydro = []
 
 # ── Pytest ────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
