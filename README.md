@@ -214,4 +214,4 @@ You don't need to fork the core. Write a Python package, register an entry point
 
 ## License
 
-[Apache 2.0](./LICENSE) &copy; 2026 Mohammad Galib, Venkatesh Merwade
+[Apache 2.0](./LICENSE) &copy; 2026 Mohammad Galib
