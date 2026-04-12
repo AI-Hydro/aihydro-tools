@@ -93,7 +93,7 @@ Community plugins can add further tools via the entry-point system (see below).
 
 All data is fetched from authoritative federal sources:
 
-- **[USGS NWIS](https://waterdata.usgs.gov/nwis)** — daily streamflow via hydrofunctions
+- **[USGS NWIS](https://waterdata.usgs.gov/nwis)** — daily streamflow via dataretrieval (official USGS Python client)
 - **[NHDPlus / NLDI](https://waterdata.usgs.gov/blog/nldi-intro/)** — watershed delineation via pynhd
 - **[GridMET](https://www.climatologylab.org/gridmet.html)** — climate forcing via pygridmet
 - **[3DEP](https://www.usgs.gov/3d-elevation-program)** — DEM and terrain analysis via py3dep
@@ -131,7 +131,7 @@ Install the package, restart the server, and the tool is automatically discovere
 
 **Standalone MCP servers** let you build fully independent toolkits with their own dependencies, registered alongside the core `ai-hydro` server.
 
-See the [Plugin Guide](https://github.com/AI-Hydro/AI-Hydro/blob/main/PLUGIN_GUIDE.md) for complete walkthroughs of both paths, the data contract, and session integration.
+See the [Plugin Guide](https://ai-hydro.github.io/AI-Hydro/plugins/overview/) for complete walkthroughs of both paths, the data contract, and session integration.
 
 ---
 
@@ -197,8 +197,8 @@ The most impactful contributions to AI-Hydro are new domain tools — knowledge 
 
 You don't need to fork the core. Write a Python package, register an entry point, publish to PyPI. That's it.
 
-- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — Development setup, code style, testing
-- **[Plugin Guide](https://github.com/AI-Hydro/AI-Hydro/blob/main/PLUGIN_GUIDE.md)** — Step-by-step walkthroughs for both contribution paths
+- **[Contributing Guide](https://ai-hydro.github.io/AI-Hydro/contributing/)** — Development setup, code style, testing
+- **[Plugin Guide](https://ai-hydro.github.io/AI-Hydro/plugins/overview/)** — Step-by-step walkthroughs for both contribution paths
 
 ---
 
