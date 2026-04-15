@@ -18,6 +18,7 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License" /></a>
   <a href="https://github.com/AI-Hydro/aihydro-tools"><img src="https://img.shields.io/github/stars/AI-Hydro/aihydro-tools?style=flat" alt="Stars" /></a>
   <a href="https://ai-hydro.github.io/AI-Hydro/"><img src="https://img.shields.io/badge/docs-ai--hydro.github.io-00A3FF" alt="Docs" /></a>
+  <a href="https://doi.org/10.5281/zenodo.19597589"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19597589-blue" alt="DOI" /></a>
 </p>
 
 ---
@@ -199,6 +200,38 @@ You don't need to fork the core. Write a Python package, register an entry point
 
 - **[Contributing Guide](https://ai-hydro.github.io/AI-Hydro/contributing/)** — Development setup, code style, testing
 - **[Plugin Guide](https://ai-hydro.github.io/AI-Hydro/plugins/overview/)** — Step-by-step walkthroughs for both contribution paths
+
+---
+
+## Citation
+
+If you use `aihydro-tools` in your research, please cite:
+
+```bibtex
+@software{aihydro_tools_2026,
+  title   = {aihydro-tools: Python MCP Server for AI-Automated
+             Hydrological Research},
+  author  = {Galib, Mohammad and Merwade, Venkatesh},
+  year    = {2026},
+  version = {1.2.1},
+  doi     = {10.5281/zenodo.19597589},
+  url     = {https://doi.org/10.5281/zenodo.19597589}
+}
+```
+
+For the VS Code extension, cite:
+
+```bibtex
+@software{aihydro_extension_2026,
+  title   = {AI-Hydro: An Open Platform for End-to-End AI-Automated
+             Hydrological Research (VS Code Extension)},
+  author  = {Galib, Mohammad and Merwade, Venkatesh},
+  year    = {2026},
+  version = {0.1.3},
+  doi     = {10.5281/zenodo.19597664},
+  url     = {https://doi.org/10.5281/zenodo.19597664}
+}
+```
 
 ---
 
