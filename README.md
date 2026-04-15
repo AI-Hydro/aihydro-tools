@@ -241,6 +241,7 @@ For the VS Code extension, cite:
 - **AI-Hydro Extension**: [github.com/AI-Hydro/AI-Hydro](https://github.com/AI-Hydro/AI-Hydro)
 - **PyPI**: [pypi.org/project/aihydro-tools](https://pypi.org/project/aihydro-tools/)
 - **YouTube**: [AI-Hydro Channel](https://www.youtube.com/channel/UC8RWDhJm61i2tlV9mt982cw)
+- **X / Twitter**: [@aihydro](https://x.com/aihydro)
 - **Issues**: [github.com/AI-Hydro/aihydro-tools/issues](https://github.com/AI-Hydro/aihydro-tools/issues)
 
 ---
