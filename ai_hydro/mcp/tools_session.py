@@ -1,12 +1,14 @@
 """
-Session management MCP tools (6 tools).
+Session management MCP tools (8 tools).
 
-Start, query, clear, annotate, sync, and export research sessions.
+Start, query, clear, annotate, sync, export, and discover research sessions and tools.
 """
 from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 from ai_hydro.mcp.app import mcp
@@ -55,6 +57,22 @@ def start_session(gauge_id: str, workspace_dir: str | None = None) -> dict:
         session.save()
         summary = session.summary()
         summary["workspace_dir"] = session.workspace_dir
+
+        # Expose the MCP server's Python environment so agents can write
+        # scripts that use the same interpreter and installed packages.
+        summary["mcp_python"] = sys.executable
+        pip_path = Path(sys.executable).parent / "pip"
+        summary["mcp_pip"] = str(pip_path) if pip_path.exists() else f"{sys.executable} -m pip"
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "list", "--format=json"],
+                capture_output=True, text=True, timeout=10
+            )
+            pkgs = json.loads(result.stdout) if result.returncode == 0 else []
+            summary["available_packages"] = {p["name"]: p["version"] for p in pkgs}
+        except Exception:
+            summary["available_packages"] = {}
+
         return summary
     except Exception as e:
         log.error("start_session failed: %s", e)
@@ -101,8 +119,9 @@ def clear_session(gauge_id: str, slots: list[str] | None = None) -> dict:
         8-digit USGS gauge ID
     slots : list[str], optional
         Specific slots to clear. Valid values:
-        watershed, streamflow, signatures, geomorphic, camels, forcing, twi.
-        Default: clears ALL slots (keeps workspace_dir and notes).
+        watershed, streamflow, signatures, geomorphic, camels, forcing, twi, cn, model.
+        Notes and workspace_dir cannot be cleared via this tool — they are always preserved.
+        Default: clears ALL data slots (keeps workspace_dir and notes).
 
     Returns
     -------
@@ -126,10 +145,17 @@ def clear_session(gauge_id: str, slots: list[str] | None = None) -> dict:
         # Validate slot names
         invalid = [s for s in to_clear if s not in _RESULT_SLOTS]
         if invalid:
+            note_hint = (
+                " (notes are always preserved and cannot be cleared via slots)"
+                if "notes" in invalid else ""
+            )
             return {
                 "error": True,
                 "code": "INVALID_SLOTS",
-                "message": f"Unknown slots: {invalid}. Valid: {list(_RESULT_SLOTS)}",
+                "message": (
+                    f"Unknown slots: {invalid}. "
+                    f"Valid: {list(_RESULT_SLOTS)}{note_hint}"
+                ),
             }
         cleared = []
         for slot in to_clear:
@@ -147,7 +173,7 @@ def clear_session(gauge_id: str, slots: list[str] | None = None) -> dict:
 
 
 @mcp.tool()
-def add_note(gauge_id: str, text: str) -> dict:
+def add_note(gauge_id: str, note: str) -> dict:
     """
     Add a researcher annotation to the session.
 
@@ -155,7 +181,7 @@ def add_note(gauge_id: str, text: str) -> dict:
     ----------
     gauge_id : str
         8-digit USGS gauge ID
-    text : str
+    note : str
         Annotation text to attach
 
     Returns
@@ -165,7 +191,7 @@ def add_note(gauge_id: str, text: str) -> dict:
     try:
         from ai_hydro.session import HydroSession
         session = HydroSession.load(gauge_id)
-        session.notes.append(text)
+        session.notes.append(note)
         session.save()
         return session.summary()
     except Exception as e:
@@ -176,7 +202,7 @@ def add_note(gauge_id: str, text: str) -> dict:
 @mcp.tool()
 def sync_research_context(gauge_id: str) -> dict:
     """
-    Refresh .clinerules/research.md and .clinerules/tools.md.
+    Refresh .aihydrorules/research.md and .aihydrorules/tools.md.
 
     research.md  — current session state (what is computed / pending).
     tools.md     — auto-generated list of ALL registered MCP tools with
@@ -196,19 +222,75 @@ def sync_research_context(gauge_id: str) -> dict:
     dict with paths written and tool count
     """
     try:
+        from pathlib import Path
         from ai_hydro.session import HydroSession
-        from ai_hydro.session.store import _RESEARCH_MD
+        from ai_hydro.session.store import _REPO_ROOT, _RULES_DIR_NAME
         from ai_hydro.mcp.tools_docs import _write_tools_md, _list_tools_sync
         session = HydroSession.load(gauge_id)
         session.write_research_context()
         tools_path = _write_tools_md()
+        base = Path(session.workspace_dir) if session.workspace_dir else _REPO_ROOT
+        research_md_path = base / _RULES_DIR_NAME / "research.md"
         return {
-            "research_md": str(_RESEARCH_MD),
+            "research_md": str(research_md_path),
             "tools_md": str(tools_path),
             "n_tools": len(_list_tools_sync()),
         }
     except Exception as e:
         log.error("sync_research_context failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def list_available_tools() -> dict:
+    """
+    List all MCP tools currently registered on this AI-Hydro server.
+
+    Returns every registered tool with its name, description, and parameter
+    schema. Includes both built-in tools and any community plugin tools
+    discovered via the aihydro.tools entry point.
+
+    Call this at the start of a session to discover what capabilities are
+    available — especially useful when community plugins have been installed.
+
+    Returns
+    -------
+    dict with keys:
+        tools      : list of {name, description, parameters} dicts
+        n_tools    : total count of registered tools
+        mcp_python : Python interpreter running the MCP server
+        note       : guidance on installing additional plugins
+    """
+    try:
+        from ai_hydro.mcp.tools_docs import _list_tools_sync
+        tools_raw = _list_tools_sync()
+        tools_out = []
+        for t in tools_raw:
+            entry: dict = {"name": t.name, "description": (t.description or "").strip()}
+            if hasattr(t, "parameters") and t.parameters:
+                params = {}
+                props = getattr(t.parameters, "properties", None) or {}
+                for pname, pschema in props.items():
+                    params[pname] = {
+                        "type": pschema.get("type", "any"),
+                        "description": pschema.get("description", ""),
+                        "required": pname in (getattr(t.parameters, "required", None) or []),
+                    }
+                    if "default" in pschema:
+                        params[pname]["default"] = pschema["default"]
+                entry["parameters"] = params
+            tools_out.append(entry)
+        return {
+            "tools": tools_out,
+            "n_tools": len(tools_out),
+            "mcp_python": sys.executable,
+            "note": (
+                "Install community plugins with: pip install <plugin-package>. "
+                "Restart the MCP server to discover newly installed plugins."
+            ),
+        }
+    except Exception as e:
+        log.error("list_available_tools failed: %s", e)
         return _tool_error_to_dict(e)
 
 

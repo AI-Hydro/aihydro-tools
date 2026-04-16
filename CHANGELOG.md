@@ -10,6 +10,47 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.0] — 2026-04-15
+
+### Added
+- **Python env context in `start_session`** — response now includes:
+  - `mcp_python`: path to the interpreter running the MCP server
+  - `mcp_pip`: corresponding pip path
+  - `available_packages`: `{name: version}` dict for all installed packages
+  Agents use this to write correct Python scripts without guessing interpreter paths
+  or assuming what is installed.
+- **`list_available_tools` tool** — returns all registered MCP tools at runtime
+  with names, descriptions, and parameter schemas. Includes community plugin tools.
+  Call this instead of relying on documentation for an accurate picture of capabilities.
+- **`get_library_reference` tool** — per-library reference cards for 8 core hydro
+  libraries covering field-name gotchas, unit assumptions, CRS requirements, and
+  copy-paste code patterns. Prevents hallucination in generated scripts.
+  - `pynhd` — NLDI watershed polygons and NHD data
+  - `pygeohydro` — USGS NWIS streamflow and NLCD land cover
+  - `pygridmet` — GridMET daily climate (precipitation, temperature)
+  - `py3dep` — 3DEP elevation (DEM) access
+  - `hydrofunctions` — simple NWIS streamflow client
+  - `pysheds` — DEM-based flow direction, accumulation, TWI
+  - `rasterio` — raster I/O, masking, reprojection
+  - `xarray` — N-dimensional labeled arrays for gridded data
+- **`ai_hydro.knowledge` module** — hosts built-in library reference cards as
+  structured JSON. Located at `ai_hydro/knowledge/library_refs/*.json`.
+- **`aihydro.knowledge` entry point** — community plugins can contribute additional
+  library reference cards by registering a `get_refs_dir` callable:
+  ```toml
+  [project.entry-points."aihydro.knowledge"]
+  my_lib = "my_package.knowledge:get_refs_dir"
+  ```
+  where `get_refs_dir()` returns a `pathlib.Path` to a directory of `*.json` files.
+- **Agent instructions** updated with explicit Python scripting decision tree:
+  call `start_session` → call `get_library_reference` → use `mcp_python`.
+  Also fixed `.clinerules/` → `.aihydrorules/` path reference.
+
+### Changed
+- Tool count: 26 → 28 (added `list_available_tools`, `get_library_reference`)
+
+---
+
 ## [1.2.0] — 2026-04-10
 
 ### Added

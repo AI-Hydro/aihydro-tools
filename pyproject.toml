@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aihydro-tools"
-version = "1.2.1"
+version = "1.3.0"
 description = "AI-Hydro: hydrological research tools as an MCP server for AI agents"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
@@ -113,6 +113,13 @@ aihydro-mcp = "ai_hydro.mcp:main"
 #   flood_frequency = "my_package.tools:flood_freq_tool"
 [project.entry-points."aihydro.tools"]
 
+# Community plugin knowledge entry point namespace.
+# Third-party packages contribute library reference cards:
+#   [project.entry-points."aihydro.knowledge"]
+#   my_lib = "my_package.knowledge:get_refs_dir"
+# where get_refs_dir() returns a pathlib.Path to a dir of *.json files.
+[project.entry-points."aihydro.knowledge"]
+
 # ── URLs ──────────────────────────────────────────────────────────────────────
 [project.urls]
 Homepage = "https://github.com/AI-Hydro/aihydro-tools"
@@ -127,6 +134,7 @@ include = ["ai_hydro*"]
 
 [tool.setuptools.package-data]
 ai_hydro = []
+"ai_hydro.knowledge" = ["library_refs/*.json"]
 
 # ── Pytest ────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
