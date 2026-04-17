@@ -10,6 +10,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.4.0] — 2026-04-17
+
+### Removed
+- **`extract_camels_attributes` tool** — the incomplete per-site CAMELS-like attribute
+  extractor has been removed from the public tool set. A dedicated `camels-attrs` MCP
+  server will be released as a community plugin via the `aihydro.tools` entry point.
+- **`[camels]` extra** (`camels-attrs>=0.1.0`) removed from `pyproject.toml`.
+- **`_get_camels_attrs_version()`** removed from `tools_docs.py`.
+
+### Changed
+- **Tool count: 28 → 27.** `list_available_tools` now returns exactly 27 built-in tools.
+- **CAMELS-US benchmark data is unaffected.** The 671-gauge CAMELS-US dataset continues
+  to be fetched internally by `train_hydro_model` via `fetch_camels_streamflow()` for
+  HBV and LSTM training — this is a data source, not a user-facing tool.
+
+### Note for upgraders
+If you were calling `extract_camels_attributes` directly, remove those calls.
+Static catchment attributes for any USGS gauge are available from `delineate_watershed`
+(morphometric) and `extract_geomorphic_parameters` (DEM-derived). A full CAMELS-attribute
+extractor will be available as a separate plugin package.
+
+---
+
 ## [1.3.0] — 2026-04-16
 
 ### Added
@@ -48,9 +71,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - **`session_id` / `gauge_id` separation** — `session_id` is now a free-form research
-  identity (any string); USGS gauge IDs are a separate `gauge_id` parameter on the three
-  USGS-specific data tools only (`delineate_watershed`, `fetch_streamflow_data`,
-  `extract_camels_attributes`). All analysis tools (`extract_hydrological_signatures`,
+  identity (any string); USGS gauge IDs are a separate `gauge_id` parameter on the two
+  USGS-specific data tools only (`delineate_watershed`, `fetch_streamflow_data`). All
+  analysis tools (`extract_hydrological_signatures`,
   `compute_twi`, etc.) take `session_id` only and operate on whatever data is cached.
   - Backward-compatible: sessions where `session_id` looks like an 8-digit USGS gauge
     still resolve correctly via the `_resolve_usgs_gauge()` helper.
