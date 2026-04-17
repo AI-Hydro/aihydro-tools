@@ -75,11 +75,6 @@ modelling = [
     "torch>=2.0.0",
 ]
 
-# CAMELS attribute extraction
-camels = [
-    "camels-attrs>=0.1.0",
-]
-
 # MCP server extras (fastmcp is already a core dep; this group is a no-op placeholder)
 mcp = []
 
@@ -92,7 +87,7 @@ viz = [
 
 # Full install: all tools + MCP server (no RAG)
 all = [
-    "aihydro-tools[data,analysis,modelling,camels,mcp,viz]",
+    "aihydro-tools[data,analysis,modelling,mcp,viz]",
 ]
 
 # Development
