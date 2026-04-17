@@ -1,5 +1,5 @@
 """
-Session management MCP tools (8 tools).
+Session management MCP tools.
 
 Start, query, clear, annotate, sync, export, and discover research sessions.
 """

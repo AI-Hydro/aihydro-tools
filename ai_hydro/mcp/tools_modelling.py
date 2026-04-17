@@ -1,5 +1,5 @@
 """
-AI Modelling MCP tools (2 tools).
+AI Modelling MCP tools.
 
 Train differentiable HBV-light or NeuralHydrology LSTM models
 and retrieve cached model performance metrics.

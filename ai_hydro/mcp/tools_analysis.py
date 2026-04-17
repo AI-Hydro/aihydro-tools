@@ -1,8 +1,8 @@
 """
-Analysis MCP tools (9 tools).
+Analysis MCP tools.
 
-Watershed delineation, streamflow, signatures, geomorphic parameters,
-TWI, curve number grid, forcing data, CAMELS-US attributes, and library reference.
+Watershed delineation, streamflow, CAMELS-US attributes, signatures,
+geomorphic parameters, TWI, curve number grid, forcing data, and library reference.
 
 Tool parameter conventions
 --------------------------
