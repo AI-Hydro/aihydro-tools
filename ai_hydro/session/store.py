@@ -2,10 +2,17 @@
 AI-Hydro Research Session (HydroSession)
 ==========================================
 
-Persistent research state across MCP tool calls in a single session.
-Eliminates redundant API calls by caching results per gauge.
+Persistent research state across MCP tool calls.
 
-Storage: ~/.aihydro/sessions/<gauge_id>.json
+The primary key is ``session_id`` — any string the researcher or LLM chooses.
+It can be a slug ("piscataquis-snowmelt-2020"), a UUID, a USGS gauge number
+used as a shorthand ("01031500"), or anything else meaningful to the study.
+
+``site_id`` and ``site_type`` are optional metadata describing the data source
+(e.g., a USGS gauge number, GRDC station, DEM tile). They are NOT the session
+identity — the session identity is ``session_id``.
+
+Storage: ~/.aihydro/sessions/<session_id>.json
 
 Dynamic slots
 -------------
@@ -22,12 +29,10 @@ from pathlib import Path
 from typing import Any
 
 _SESSIONS_DIR = Path.home() / ".aihydro" / "sessions"
-# Project root: python/ai_hydro/session/store.py → up 4 levels
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_RESEARCH_MD = _PROJECT_ROOT / ".clinerules" / "research.md"
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_RULES_DIR_NAME = ".aihydrorules"
 
 # Common slot names corresponding to built-in MCP tools.
-# Plugins may add more — these are just the well-known ones.
 _COMMON_SLOTS = (
     "watershed",
     "streamflow",
@@ -42,30 +47,48 @@ _COMMON_SLOTS = (
 
 
 class HydroSession:
-    """Persistent research state for a single USGS gauge across tool calls."""
+    """Persistent research state for a single study across tool calls."""
 
-    def __init__(self, gauge_id: str) -> None:
-        self.gauge_id: str = gauge_id
-        self.workspace_dir: str | None = None   # VS Code workspace path
+    def __init__(self, session_id: str) -> None:
+        self.session_id: str = session_id
+        # Display name — LLM-generated slug describing the research
+        # e.g. "piscataquis-snowmelt-signatures-2000-2020"
+        self.site_name: str = ""
+        # Data source identifier — e.g. USGS gauge "01031500", GRDC "6335060"
+        # Optional: may be empty for remote sensing, CSV, or ungauged studies
+        self.site_id: str = ""
+        # Data source type — "usgs_gauge" | "grdc_station" | "ungauged" | "csv" | ...
+        self.site_type: str = ""
+        self.workspace_dir: str | None = None
         self._slots: dict[str, dict | None] = {}
         self.notes: list[str] = []
+        # LLM-authored scientific interpretation — written via sync_research_context
+        self.interpretation: str = ""
         self.created_at: str = datetime.now(timezone.utc).isoformat()
         self.updated_at: str = self.created_at
+
+    # ------------------------------------------------------------------
+    # Backward-compat property: gauge_id → site_id (or session_id)
+    # Kept so legacy callers that read session.gauge_id still work.
+    # ------------------------------------------------------------------
+
+    @property
+    def gauge_id(self) -> str:
+        """Backward-compat alias — returns site_id if set, else session_id."""
+        return self.site_id or self.session_id
 
     # ------------------------------------------------------------------
     # Dynamic slot access
     # ------------------------------------------------------------------
 
     def set(self, slot: str, value: dict | None) -> None:
-        """Store a result under the given slot name."""
         self._slots[slot] = value
 
     def get(self, slot: str) -> dict | None:
-        """Retrieve a stored result by slot name."""
         return self._slots.get(slot)
 
     # ------------------------------------------------------------------
-    # Backward-compat property accessors (used by mcp_server.py)
+    # Backward-compat property accessors for the 9 common slots
     # ------------------------------------------------------------------
 
     @property
@@ -145,47 +168,58 @@ class HydroSession:
     # ------------------------------------------------------------------
 
     @classmethod
-    def _path(cls, gauge_id: str) -> Path:
-        return _SESSIONS_DIR / f"{gauge_id}.json"
+    def _path(cls, session_id: str) -> Path:
+        return _SESSIONS_DIR / f"{session_id}.json"
 
     @classmethod
-    def load(cls, gauge_id: str) -> HydroSession:
+    def load(cls, session_id: str) -> HydroSession:
         """Load an existing session, or return a new empty one."""
-        path = cls._path(gauge_id)
+        path = cls._path(session_id)
         if not path.exists():
-            return cls(gauge_id)
+            return cls(session_id)
         with open(path) as f:
             raw = json.load(f)
-        session = cls(gauge_id)
-        # Load all known + any extra keys stored on disk
+        session = cls(session_id)
+        _META_KEYS = {
+            "session_id", "site_name", "site_id", "site_type",
+            "workspace_dir", "notes", "created_at", "updated_at", "interpretation",
+            # legacy keys — kept for loading old session files
+            "gauge_id",
+        }
         for key, val in raw.items():
-            if key in ("gauge_id", "workspace_dir", "notes",
-                       "created_at", "updated_at"):
+            if key in _META_KEYS:
                 continue
-            # Any dict-valued key is treated as a slot
             if isinstance(val, dict) or val is None:
                 session.set(key, val)
+        session.site_name = raw.get("site_name", "")
+        # Support legacy "gauge_id" key in old session files
+        session.site_id = raw.get("site_id", "") or raw.get("gauge_id", "")
+        session.site_type = raw.get("site_type", "")
         session.workspace_dir = raw.get("workspace_dir")
         session.notes = raw.get("notes", [])
+        session.interpretation = raw.get("interpretation", "")
         session.created_at = raw.get("created_at", session.created_at)
         session.updated_at = raw.get("updated_at", session.updated_at)
         return session
 
     def save(self) -> None:
-        """Persist session to disk and refresh .clinerules/research.md."""
         self.updated_at = datetime.now(timezone.utc).isoformat()
         _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        with open(self._path(self.gauge_id), "w") as f:
+        with open(self._path(self.session_id), "w") as f:
             json.dump(self._to_raw(), f, indent=2)
         self.write_research_context()
 
     def _to_raw(self) -> dict:
         raw: dict[str, Any] = {
-            "gauge_id": self.gauge_id,
+            "session_id": self.session_id,
+            "site_name": self.site_name,
+            "site_id": self.site_id,
+            "site_type": self.site_type,
             "workspace_dir": self.workspace_dir,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "notes": self.notes,
+            "interpretation": self.interpretation,
         }
         for slot, val in self._slots.items():
             raw[slot] = val
@@ -196,11 +230,6 @@ class HydroSession:
     # ------------------------------------------------------------------
 
     def write_workspace_file(self, filename: str, content: Any) -> str | None:
-        """
-        Write content as JSON to workspace_dir/<filename>.
-
-        Returns the absolute path written, or None if workspace_dir is not set.
-        """
         if not self.workspace_dir:
             return None
         out_path = Path(self.workspace_dir) / filename
@@ -217,64 +246,78 @@ class HydroSession:
     # ------------------------------------------------------------------
 
     def computed(self) -> list[str]:
-        """List of slot names that have been computed."""
         return [k for k, v in self._slots.items() if v is not None]
 
     def pending(self) -> list[str]:
-        """List of common slot names not yet computed."""
         return [s for s in _COMMON_SLOTS if self.get(s) is None]
 
     def summary(self) -> dict:
-        """Return a compact summary suitable for agent reasoning."""
         return {
-            "gauge_id": self.gauge_id,
+            "session_id": self.session_id,
+            "site_name": self.site_name,
+            "site_id": self.site_id,
+            "site_type": self.site_type,
             "computed": self.computed(),
             "pending": self.pending(),
             "notes": self.notes,
+            "has_interpretation": bool(self.interpretation),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
 
     def to_json(self) -> str:
-        """Serialize the full session for agent reasoning."""
         return json.dumps(self._to_raw(), indent=2)
 
     def cite_all(self) -> str:
-        """Combined BibTeX for every computed result that carries citations."""
         entries: list[str] = []
         for slot in self.computed():
             result = self.get(slot)
             if not result:
                 continue
-            meta = result.get("meta", {})
-            for src in meta.get("sources", []):
+            for src in result.get("meta", {}).get("sources", []):
                 citation = src.get("citation")
                 if citation and citation not in entries:
                     entries.append(citation)
         if not entries:
-            return f"% No citations available for gauge {self.gauge_id}"
+            return f"% No citations available for session {self.session_id}"
         return "\n\n".join(entries)
 
+    def raw_session_data(self) -> dict:
+        """All computed slot data as a flat dict — for LLM reasoning."""
+        data: dict = {}
+        for slot in self.computed():
+            result = self.get(slot)
+            if result:
+                data[slot] = result.get("data", {})
+        return data
+
     # ------------------------------------------------------------------
-    # .clinerules/research.md sync
+    # research.md sync
     # ------------------------------------------------------------------
 
     def write_research_context(self) -> None:
         """
-        Write a human-readable session digest to .clinerules/research.md.
+        Write research.md to .aihydrorules/ for VS Code context injection.
 
-        This file is auto-loaded into every AI-Hydro conversation, giving
-        the agent immediate awareness of research state without any tool call.
+        Section 1 — Python skeleton (always current on every save):
+            site identity, computed/pending slots, researcher notes.
+        Section 2 — LLM interpretation (written via sync_research_context):
+            scientific summary authored by the foundation model.
         """
-        lines: list[str] = [
-            "# Current Research Session",
-            f"**Gauge**: {self.gauge_id}{self._gauge_name_str()}",
-            f"**Updated**: {self.updated_at[:10]}",
-            "",
-        ]
-
+        display = self.site_name or self.site_id or self.session_id
+        name_str = self._display_name_str()
         computed = self.computed()
-        pending = self.pending()
+        pending  = self.pending()
+
+        lines: list[str] = [
+            "# Research Session",
+            f"**Session**: {display}{name_str}",
+            f"**ID**: {self.session_id}",
+        ]
+        if self.site_id:
+            lines.append(f"**Site**: {self.site_id}" +
+                         (f" ({self.site_type})" if self.site_type else ""))
+        lines += [f"**Updated**: {self.updated_at[:10]}", ""]
 
         if computed:
             lines.append(f"**Computed** ({len(computed)}): " + ", ".join(computed))
@@ -282,125 +325,46 @@ class HydroSession:
             lines.append(f"**Pending** ({len(pending)}): " + ", ".join(pending))
         lines.append("")
 
-        # Key findings from each computed slot
-        findings = self._key_findings()
-        if findings:
-            lines.append("## Key findings")
-            lines.extend(findings)
-            lines.append("")
-
-        # Researcher notes
         if self.notes:
-            lines.append("## Notes")
+            lines.append("## Researcher Notes")
             for note in self.notes:
                 lines.append(f"- {note}")
             lines.append("")
 
-        if pending:
-            lines.append("## Suggested next step")
-            lines.append(f"Run `{pending[0]}` — call the corresponding MCP tool.")
-            lines.append("")
-
-        # Append researcher profile context if available
         try:
             from ai_hydro.session.persona import ResearcherProfile
             profile = ResearcherProfile.load()
             if not profile.is_blank():
-                lines.append("")
                 lines.append(profile.to_context_string())
+                lines.append("")
         except Exception:
             pass
 
-        lines.append("")
+        if self.interpretation:
+            lines.append("## Scientific Context")
+            lines.append(self.interpretation)
+            lines.append("")
+        else:
+            lines.append(
+                "_No scientific interpretation yet — call `sync_research_context` "
+                "to generate one._"
+            )
+            lines.append("")
+
         lines.append(
-            "> *Auto-generated by HydroSession — do not edit manually.*"
+            "> *Skeleton auto-generated by HydroSession. "
+            "Scientific context authored by Claude via `sync_research_context`.*"
         )
 
-        _RESEARCH_MD.parent.mkdir(parents=True, exist_ok=True)
-        _RESEARCH_MD.write_text("\n".join(lines))
+        base = Path(self.workspace_dir) if self.workspace_dir else _REPO_ROOT
+        research_md = base / _RULES_DIR_NAME / "research.md"
+        research_md.parent.mkdir(parents=True, exist_ok=True)
+        research_md.write_text("\n".join(lines))
 
-    def _gauge_name_str(self) -> str:
-        """Pull gauge name from cached watershed result if available."""
+    def _display_name_str(self) -> str:
+        """Parenthetical station name from watershed metadata if available."""
         if self.watershed:
-            name = self.watershed.get("data", {}).get("gauge_name")
-            if name:
+            name = self.watershed.get("data", {}).get("gauge_name", "")
+            if name and name not in (self.site_name, self.site_id, self.session_id):
                 return f" ({name})"
         return ""
-
-    def _key_findings(self) -> list[str]:
-        """Extract a few key metrics from each computed slot."""
-        findings: list[str] = []
-
-        def _get(slot: str, *keys: str) -> Any:
-            result = self.get(slot)
-            if not result:
-                return None
-            data = result.get("data", {})
-            for k in keys:
-                if k in data:
-                    return data[k]
-            return None
-
-        if self.watershed:
-            area = _get("watershed", "area_km2")
-            huc = _get("watershed", "huc_02")
-            if area is not None:
-                findings.append(f"- **Watershed area**: {area:.1f} km²" +
-                                 (f"  (HUC-02: {huc})" if huc else ""))
-
-        if self.streamflow:
-            n = _get("streamflow", "n_days")
-            if n:
-                findings.append(f"- **Streamflow record**: {n:,} days")
-
-        if self.signatures:
-            bfi = _get("signatures", "baseflow_index")
-            rr = _get("signatures", "runoff_ratio")
-            qm = _get("signatures", "q_mean")
-            if bfi is not None:
-                findings.append(f"- **Baseflow index**: {bfi:.2f}")
-            if rr is not None:
-                findings.append(f"- **Runoff ratio**: {rr:.2f}")
-            if qm is not None:
-                findings.append(f"- **Mean discharge**: {qm:.3f} mm/d")
-
-        if self.camels:
-            p = _get("camels", "p_mean")
-            ar = _get("camels", "aridity")
-            el = _get("camels", "elev_mean")
-            if p is not None:
-                findings.append(f"- **Mean precip**: {p:.1f} mm/d")
-            if ar is not None:
-                findings.append(f"- **Aridity index**: {ar:.2f}")
-            if el is not None:
-                findings.append(f"- **Mean elevation**: {el:.0f} m")
-
-        if self.twi:
-            twi_m = _get("twi", "twi_mean")
-            if twi_m is not None:
-                findings.append(f"- **Mean TWI**: {twi_m:.2f}")
-
-        if self.cn:
-            cn_mean = _get("cn", "cn_mean")
-            high_pct = _get("cn", "percent_high_cn")
-            if cn_mean is not None:
-                findings.append(f"- **Mean CN**: {cn_mean:.1f}")
-            if high_pct is not None:
-                findings.append(f"- **High CN area**: {high_pct:.1f}%")
-
-        if self.model:
-            result = self.model
-            data = result.get("data", result)  # model slot stores the dict directly
-            fw  = data.get("framework", "")
-            mt  = data.get("model_type", "")
-            nse = data.get("nse")
-            kge = data.get("kge")
-            label = f"{fw} {mt}".strip() or "model"
-            parts = []
-            if nse is not None:
-                parts.append(f"NSE={nse:.3f}")
-            if kge is not None:
-                parts.append(f"KGE={kge:.3f}")
-            findings.append(f"- **{label}**: " + (", ".join(parts) if parts else "trained"))
-
-        return findings
