@@ -25,7 +25,7 @@ class TestToolRegistration:
     """Verify that importing ai_hydro.mcp registers all expected tools."""
 
     EXPECTED_TOOLS = {
-        # Analysis (8)
+        # Analysis (9)
         "delineate_watershed",
         "fetch_streamflow_data",
         "extract_hydrological_signatures",
@@ -34,16 +34,31 @@ class TestToolRegistration:
         "create_cn_grid",
         "fetch_forcing_data",
         "extract_camels_attributes",
-        # Session (6)
+        "get_library_reference",
+        # Session (8)
         "start_session",
         "get_session_summary",
         "clear_session",
         "add_note",
         "export_session",
         "sync_research_context",
+        "list_available_tools",
         # Modelling (2)
         "train_hydro_model",
         "get_model_results",
+        # Project management (5)
+        "start_project",
+        "add_session_to_project",
+        "get_project_summary",
+        "add_journal_entry",
+        "search_experiments",
+        # Literature (2)
+        "index_literature",
+        "search_literature",
+        # Researcher profile (3)
+        "get_researcher_profile",
+        "update_researcher_profile",
+        "log_researcher_observation",
     }
 
     def test_import_mcp_singleton(self):
@@ -95,22 +110,33 @@ class TestToolRegistration:
 class TestHelpers:
     """Test shared MCP helper functions."""
 
-    def test_validate_gauge_id_pads_short(self):
-        from ai_hydro.mcp.helpers import _validate_gauge_id
-        assert _validate_gauge_id("1031500") == "01031500"
+    def test_validate_usgs_gauge_id_pads_short(self):
+        from ai_hydro.mcp.helpers import _validate_usgs_gauge_id
+        assert _validate_usgs_gauge_id("1031500") == "01031500"
 
-    def test_validate_gauge_id_accepts_8_digit(self):
-        from ai_hydro.mcp.helpers import _validate_gauge_id
-        assert _validate_gauge_id("01031500") == "01031500"
+    def test_validate_usgs_gauge_id_accepts_8_digit(self):
+        from ai_hydro.mcp.helpers import _validate_usgs_gauge_id
+        assert _validate_usgs_gauge_id("01031500") == "01031500"
 
-    def test_validate_gauge_id_rejects_alpha(self):
-        from ai_hydro.mcp.helpers import _validate_gauge_id
-        with pytest.raises(ValueError, match="Invalid gauge_id"):
-            _validate_gauge_id("abc12345")
+    def test_validate_usgs_gauge_id_rejects_alpha(self):
+        from ai_hydro.mcp.helpers import _validate_usgs_gauge_id
+        with pytest.raises(ValueError, match="Invalid USGS gauge_id"):
+            _validate_usgs_gauge_id("abc12345")
 
-    def test_validate_gauge_id_strips_whitespace(self):
-        from ai_hydro.mcp.helpers import _validate_gauge_id
-        assert _validate_gauge_id("  01031500  ") == "01031500"
+    def test_validate_usgs_gauge_id_strips_whitespace(self):
+        from ai_hydro.mcp.helpers import _validate_usgs_gauge_id
+        assert _validate_usgs_gauge_id("  01031500  ") == "01031500"
+
+    def test_normalize_session_id_accepts_any_string(self):
+        from ai_hydro.mcp.helpers import _normalize_session_id
+        assert _normalize_session_id("piscataquis-2020") == "piscataquis-2020"
+        assert _normalize_session_id("01031500") == "01031500"
+
+    def test_normalize_session_id_auto_generates(self):
+        from ai_hydro.mcp.helpers import _normalize_session_id
+        result = _normalize_session_id(None)
+        assert result.startswith("hydro-")
+        assert len(result) == len("hydro-") + 8
 
     def test_result_to_dict_passthrough(self):
         from ai_hydro.mcp.helpers import _result_to_dict
@@ -167,18 +193,18 @@ class TestSessionWiring:
     """Test that session load/store/ensure helpers work correctly."""
 
     def test_ensure_session_creates_new(self, tmp_path):
-        """_ensure_session should create a new session for unknown gauge."""
+        """_ensure_session should create a new session for an unknown session_id."""
         from ai_hydro.mcp.helpers import _ensure_session
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path):
-            session = _ensure_session("99999999")
-            assert session.gauge_id == "99999999"
+            session = _ensure_session("my-research-session")
+            assert session.session_id == "my-research-session"
 
     def test_ensure_session_sets_workspace(self, tmp_path):
         """_ensure_session should store workspace_dir on first call."""
         from ai_hydro.mcp.helpers import _ensure_session
         ws = str(tmp_path / "workspace")
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path):
-            session = _ensure_session("99999999", workspace_dir=ws)
+            session = _ensure_session("my-research-session", workspace_dir=ws)
             assert session.workspace_dir == ws
 
     def test_session_store_caches_result(self, tmp_path):
@@ -186,7 +212,7 @@ class TestSessionWiring:
         from ai_hydro.mcp.helpers import _session_store
         from ai_hydro.session import HydroSession
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._RESEARCH_MD", tmp_path / "research.md"):
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             _session_store("99999999", "watershed", {"data": {"area_km2": 100}})
             # Verify it was saved
             reloaded = HydroSession.load("99999999")
@@ -197,7 +223,7 @@ class TestSessionWiring:
         """Full save/load cycle with multiple slots."""
         from ai_hydro.session import HydroSession
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._RESEARCH_MD", tmp_path / "research.md"):
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             s = HydroSession("99999999")
             s.watershed = {"data": {"area_km2": 50}}
             s.streamflow = {"data": {"n_days": 365}}
@@ -218,12 +244,12 @@ class TestToolSmoke:
     """Smoke-test individual tools with mocked backends."""
 
     def test_start_session_creates_session(self, tmp_path):
-        """start_session should return a summary dict."""
+        """start_session should return a summary dict with session_id."""
         from ai_hydro.mcp.tools_session import start_session
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._RESEARCH_MD", tmp_path / "research.md"):
-            result = start_session("01031500")
-            assert result["gauge_id"] == "01031500"
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            result = start_session("piscataquis-2020")
+            assert result["session_id"] == "piscataquis-2020"
             assert "computed" in result
             assert "pending" in result
 
@@ -231,7 +257,7 @@ class TestToolSmoke:
         """get_session_summary should return computed/pending lists."""
         from ai_hydro.mcp.tools_session import get_session_summary
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._RESEARCH_MD", tmp_path / "research.md"):
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             result = get_session_summary("01031500")
             assert isinstance(result["computed"], list)
             assert isinstance(result["pending"], list)
@@ -240,7 +266,7 @@ class TestToolSmoke:
         """add_note should append text to session notes."""
         from ai_hydro.mcp.tools_session import add_note
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._RESEARCH_MD", tmp_path / "research.md"):
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             result = add_note("01031500", "my research note")
             assert "my research note" in result["notes"]
 
@@ -249,7 +275,7 @@ class TestToolSmoke:
         from ai_hydro.session import HydroSession
         from ai_hydro.mcp.tools_session import clear_session
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._RESEARCH_MD", tmp_path / "research.md"):
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             # Pre-populate
             s = HydroSession("01031500")
             s.watershed = {"data": {"area_km2": 100}}
@@ -264,7 +290,7 @@ class TestToolSmoke:
         """clear_session with invalid slot name should return error."""
         from ai_hydro.mcp.tools_session import clear_session
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._RESEARCH_MD", tmp_path / "research.md"):
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             result = clear_session("01031500", ["nonexistent_slot"])
             assert result["error"] is True
             assert result["code"] == "INVALID_SLOTS"
@@ -274,7 +300,7 @@ class TestToolSmoke:
         from ai_hydro.mcp.tools_session import export_session
         from ai_hydro.session import HydroSession
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._RESEARCH_MD", tmp_path / "research.md"):
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             s = HydroSession("01031500")
             s.workspace_dir = str(tmp_path)
             s.save()
@@ -286,16 +312,61 @@ class TestToolSmoke:
         """get_model_results should report no model trained."""
         from ai_hydro.mcp.tools_modelling import get_model_results
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._RESEARCH_MD", tmp_path / "research.md"):
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             result = get_model_results("01031500")
             assert result["model_trained"] is False
 
-    def test_delineate_watershed_invalid_gauge(self):
-        """delineate_watershed with invalid gauge should return error."""
+    def test_delineate_watershed_invalid_gauge(self, tmp_path):
+        """delineate_watershed with invalid USGS gauge_id should return error."""
         from ai_hydro.mcp.tools_analysis import delineate_watershed
-        result = delineate_watershed("not_a_gauge")
-        assert result["error"] is True
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            # Pass an invalid USGS gauge_id — session_id is fine, gauge_id is not
+            result = delineate_watershed("my-test-session", gauge_id="not_a_gauge")
+            assert result["error"] is True
 
+    def test_start_session_exposes_mcp_python(self, tmp_path):
+        """start_session should return mcp_python, mcp_pip, available_packages."""
+        from ai_hydro.mcp.tools_session import start_session
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            result = start_session("piscataquis-2020")
+            assert "mcp_python" in result
+            assert result["mcp_python"].endswith("python") or "python" in result["mcp_python"]
+            assert "mcp_pip" in result
+            assert "available_packages" in result
+            assert isinstance(result["available_packages"], dict)
+
+    def test_list_available_tools_returns_tool_list(self):
+        """list_available_tools should return all registered tools.
+        Uses mcp.list_tools() directly to avoid the sync-wrapper guard."""
+        import asyncio
+        from ai_hydro.mcp.app import mcp
+        tools = asyncio.run(mcp.list_tools())
+        names = {t.name for t in tools}
+        assert len(tools) >= 28
+        assert "delineate_watershed" in names
+        assert "start_session" in names
+        assert "get_library_reference" in names
+        assert "list_available_tools" in names
+
+    def test_get_library_reference_pynhd(self):
+        """get_library_reference should return pynhd gotchas."""
+        from ai_hydro.mcp.tools_analysis import get_library_reference
+        result = get_library_reference("pynhd")
+        assert "gotchas" in result
+        assert isinstance(result["gotchas"], list)
+        assert len(result["gotchas"]) > 0
+        assert result["library"] == "pynhd"
+
+    def test_get_library_reference_not_found(self):
+        """get_library_reference with unknown library should return error + available_refs."""
+        from ai_hydro.mcp.tools_analysis import get_library_reference
+        result = get_library_reference("nonexistent_lib")
+        assert result["error"] is True
+        assert result["code"] == "NOT_FOUND"
+        assert "available_refs" in result
+        assert "pynhd" in result["available_refs"]
 
 
 # ── Version helpers ──────────────────────────────────────────────────────────

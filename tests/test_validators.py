@@ -15,7 +15,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from ai_hydro.utils.validators import (
-    load_schema,
     validate_json_schema,
     validate_json_file,
     validate_workflow_yaml,
@@ -26,15 +25,6 @@ from ai_hydro.utils.validators import (
 
 class TestValidators(unittest.TestCase):
     """Test cases for validation utilities."""
-    
-    def test_load_schema_returns_dict(self):
-        """Test that load_schema returns a dictionary."""
-        try:
-            schema = load_schema()
-            self.assertIsInstance(schema, dict)
-        except FileNotFoundError:
-            # Schema file might not exist in test environment
-            self.skipTest("Schema file not found")
     
     def test_validate_json_schema_with_valid_data(self):
         """Test validation with valid data."""

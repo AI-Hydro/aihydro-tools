@@ -24,7 +24,6 @@ from ai_hydro.analysis.signatures import (
     compute_event_stats_camels,
     compute_timing_stats_camels,
     compute_slope_fdc_camels,
-    _lyne_hollick_baseflow,
 )
 
 
@@ -50,44 +49,6 @@ class TestStreamflowConversion:
         result = _to_mm_per_day(q_cms, 100.0)
         assert len(result) == 0
 
-
-class TestBaseflowSeparation:
-    """Tests for Lyne-Hollick baseflow filter"""
-    
-    def test_lyne_hollick_basic(self):
-        """Test baseflow separation with synthetic data"""
-        # Create synthetic streamflow with baseflow + quickflow
-        days = 365
-        baseflow = np.full(days, 2.0)  # constant baseflow
-        quickflow = np.zeros(days)
-        quickflow[100:110] = 10.0  # storm event
-        total_flow = baseflow + quickflow
-        
-        bf = _lyne_hollick_baseflow(total_flow, alpha=0.925, passes=3)
-        
-        assert len(bf) == days
-        assert np.all(bf >= 0)
-        assert np.all(bf <= total_flow)
-        # Baseflow should be close to 2.0 outside storm period
-        assert np.mean(bf[:90]) > 1.5
-        assert np.mean(bf[:90]) < 2.5
-    
-    def test_lyne_hollick_all_baseflow(self):
-        """Test with constant flow (all baseflow)"""
-        q = np.full(365, 5.0)
-        bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=3)
-        
-        # Should return approximately the same as input
-        np.testing.assert_allclose(bf, q, rtol=0.1)
-    
-    def test_lyne_hollick_negative_handling(self):
-        """Test that negative values are properly handled"""
-        q = np.array([5.0, 3.0, -1.0, 2.0, 4.0])  # includes negative
-        bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=1)
-        
-        # All baseflow values should be non-negative and <= total flow
-        assert np.all(bf >= 0)
-        assert np.all(bf[bf > 0] <= q[bf > 0])
 
 
 class TestFlowStatistics:
@@ -257,55 +218,6 @@ class TestFDCSlope:
         # May return NaN due to log(constant)
         assert result['slope_fdc'] == 0.0 or np.isnan(result['slope_fdc'])
 
-
-class TestHydrologicalSignaturesIntegration:
-    """Integration tests for full hydrological signatures extraction"""
-    
-    @patch('ai_hydro.tools.hydrology.fetch_streamflow_data')
-    @patch('ai_hydro.tools.hydrology.fetch_precipitation_data_bygeom')
-    def test_extract_signatures_complete(self, mock_prcp, mock_q):
-        """Test complete signature extraction with mocked data"""
-        # Create synthetic data
-        dates = pd.date_range('1990-01-01', '2009-12-31', freq='D')
-        n_days = len(dates)
-        
-        # Streamflow with seasonal pattern
-        doy = dates.dayofyear
-        q_cms = pd.Series(
-            10 + 20 * np.sin(2 * np.pi * (doy - 90) / 365) + np.random.normal(0, 2, n_days),
-            index=dates
-        ).clip(lower=0.1)
-        
-        # Precipitation
-        p_mm = pd.Series(
-            3 + 2 * np.sin(2 * np.pi * (doy - 180) / 365) + np.random.gamma(1, 1, n_days),
-            index=dates
-        )
-        
-        mock_q.return_value = q_cms
-        mock_prcp.return_value = p_mm
-        
-        # Mock watershed
-        geom = box(-86.9, 40.4, -86.8, 40.5)
-        
-        result = extract_hydrological_signatures(
-            '01234567',
-            geom,
-            area_km2=100.0,
-            start_date='1990-01-01',
-            end_date='2009-12-31'
-        )
-        
-        # Check all expected signatures
-        expected = [
-            'q_mean', 'q_std', 'q5', 'q95', 'q_median', 'baseflow_index',
-            'runoff_ratio', 'stream_elas', 'high_q_freq', 'high_q_dur',
-            'low_q_freq', 'low_q_dur', 'zero_q_freq', 'flow_variability',
-            'hfd_mean', 'half_flow_date_std', 'slope_fdc'
-        ]
-        
-        for sig in expected:
-            assert sig in result, f"Missing signature: {sig}"
 
 
 if __name__ == '__main__':

@@ -10,7 +10,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [1.3.0] — 2026-04-15
+## [1.3.0] — 2026-04-16
 
 ### Added
 - **Python env context in `start_session`** — response now includes:
@@ -47,6 +47,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   Also fixed `.clinerules/` → `.aihydrorules/` path reference.
 
 ### Changed
+- **`session_id` / `gauge_id` separation** — `session_id` is now a free-form research
+  identity (any string); USGS gauge IDs are a separate `gauge_id` parameter on the three
+  USGS-specific data tools only (`delineate_watershed`, `fetch_streamflow_data`,
+  `extract_camels_attributes`). All analysis tools (`extract_hydrological_signatures`,
+  `compute_twi`, etc.) take `session_id` only and operate on whatever data is cached.
+  - Backward-compatible: sessions where `session_id` looks like an 8-digit USGS gauge
+    still resolve correctly via the `_resolve_usgs_gauge()` helper.
+  - Stored sessions now track `site_id` (e.g. `"01031500"`) and `site_type` (`"usgs_gauge"`)
+    separately from the session identifier.
+- **`add_gauge_to_project` renamed to `add_session_to_project`** — parameter renamed from
+  `gauge_id` to `session_id`; old name remains as a backward-compat alias.
+- **`ProjectSession.session_ids`** — replaces `gauge_ids`; backward-compat `gauge_ids`
+  property kept for existing project JSON files.
+- **`fetch_streamflow_data` now uses `dataretrieval`** instead of `hydrofunctions`.
+  Fixes a `pd.Timedelta(Day)` incompatibility with pandas ≥ 2.2 on Python 3.13.
 - Tool count: 26 → 28 (added `list_available_tools`, `get_library_reference`)
 
 ---
