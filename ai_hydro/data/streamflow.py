@@ -106,18 +106,18 @@ def fetch_streamflow_data(
         service = "dv" if interval == "daily" else "iv"
         log.info(f"Fetching USGS streamflow data for {gauge_id} ({service})")
 
-        if interval == "daily":
-            df, _ = dr_nwis.get_dv(sites=gauge_id, start=start_date, end=end_date,
-                                    parameterCd="00060")
-            # Daily values column: '00060_Mean'
-            q_col = next((c for c in df.columns if c.startswith("00060")), None)
+        if service == "dv":
+            df, _ = dr_nwis.get_dv(
+                sites=gauge_id, parameterCd="00060",
+                start=start_date, end=end_date,
+            )
         else:
-            df, _ = dr_nwis.get_iv(sites=gauge_id, start=start_date, end=end_date,
-                                    parameterCd="00060")
-            # Instantaneous values column: '00060'
-            q_col = next((c for c in df.columns if c.startswith("00060") and "_cd" not in c), None)
+            df, _ = dr_nwis.get_iv(
+                sites=gauge_id, parameterCd="00060",
+                startDT=start_date, endDT=end_date,
+            )
 
-        if df.empty or q_col is None:
+        if df is None or df.empty:
             raise ToolError(
                 code="NO_DATA",
                 message=f"No streamflow data returned for gauge {gauge_id} ({start_date} to {end_date}).",
@@ -125,9 +125,14 @@ def fetch_streamflow_data(
                 recovery="Check date range and verify gauge is active at waterdata.usgs.gov",
             )
 
-        # Discharge column is in CFS; convert to m³/s
+        # Discharge column from dataretrieval
+        q_col = next((c for c in df.columns if "00060" in c and "Mean" in c), None)
+        if q_col is None:
+            # fallback: first numeric column
+            q_col = df.select_dtypes(include="number").columns[0]
+
         q_cfs = pd.to_numeric(df[q_col], errors="coerce")
-        q_cms = q_cfs * 0.0283168
+        q_cms = q_cfs * 0.0283168  # Convert ft³/s → m³/s
         q_cms.index = pd.to_datetime(q_cms.index).tz_localize(None)
         q_cms = q_cms.dropna()
 
@@ -141,10 +146,10 @@ def fetch_streamflow_data(
 
         # Fetch site metadata
         try:
-            info, _ = dr_nwis.get_info(sites=gauge_id)
-            info["site_no"] = info["site_no"].astype(str)
-            if gauge_id in info["site_no"].values:
-                row = info.loc[info["site_no"] == str(gauge_id)].iloc[0]
+            site_df, _ = dr_nwis.get_info(sites=gauge_id)
+            site_df["site_no"] = site_df["site_no"].astype(str)
+            if gauge_id in site_df["site_no"].values:
+                row = site_df.loc[site_df["site_no"] == gauge_id].iloc[0]
                 row_meta = {
                     "gauge_name": str(row.get("station_nm", "")),
                     "latitude": float(row.get("dec_lat_va", np.nan)),
@@ -219,17 +224,24 @@ def _fetch_streamflow_internal(
     try:
         from dataretrieval import nwis as dr_nwis
 
-        if interval == "daily":
-            df, _ = dr_nwis.get_dv(sites=gauge_id, start=start_date, end=end_date,
-                                    parameterCd="00060")
-            q_col = next((c for c in df.columns if c.startswith("00060") and "_cd" not in c), None)
+        service = "dv" if interval == "daily" else "iv"
+        if service == "dv":
+            df, _ = dr_nwis.get_dv(
+                sites=gauge_id, parameterCd="00060",
+                start=start_date, end=end_date,
+            )
         else:
-            df, _ = dr_nwis.get_iv(sites=gauge_id, start=start_date, end=end_date,
-                                    parameterCd="00060")
-            q_col = next((c for c in df.columns if c.startswith("00060") and "_cd" not in c), None)
+            df, _ = dr_nwis.get_iv(
+                sites=gauge_id, parameterCd="00060",
+                startDT=start_date, endDT=end_date,
+            )
 
-        if df.empty or q_col is None:
+        if df is None or df.empty:
             return None
+
+        q_col = next((c for c in df.columns if "00060" in c and "Mean" in c), None)
+        if q_col is None:
+            q_col = df.select_dtypes(include="number").columns[0]
 
         q_cfs = pd.to_numeric(df[q_col], errors="coerce")
         q_cms = q_cfs * 0.0283168
@@ -240,10 +252,10 @@ def _fetch_streamflow_internal(
 
         row_meta: dict = {}
         try:
-            info, _ = dr_nwis.get_info(sites=gauge_id)
-            info["site_no"] = info["site_no"].astype(str)
-            if gauge_id in info["site_no"].values:
-                row = info.loc[info["site_no"] == gauge_id].iloc[0]
+            site_df, _ = dr_nwis.get_info(sites=gauge_id)
+            site_df["site_no"] = site_df["site_no"].astype(str)
+            if gauge_id in site_df["site_no"].values:
+                row = site_df.loc[site_df["site_no"] == gauge_id].iloc[0]
                 row_meta = {
                     "gauge_name": str(row.get("station_nm", "")),
                     "latitude": float(row.get("dec_lat_va", float("nan"))),
