@@ -10,6 +10,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.5.0] — 2026-04-18
+
+### Added
+- **`ai_hydro/citations.py`** — three-tier BibTeX citation registry. Tier 1: per-tool data source citations (USGS NWIS, NHDPlus, 3DEP, GridMET, NLCD, POLARIS, CAMELS-US, HBV). Tier 2: platform citations (AI-Hydro + aihydro-tools Zenodo DOIs) always included. Tier 3: plugin citations via `register_plugin_citation(key, bibtex, tool_names)`.
+- **`HydroSession.add_citations(keys)`** — accumulates citation keys per tool call (no extra save).
+- **`HydroSession.export_bibtex()`** — builds a ready-to-use `.bib` string from accumulated keys; `cite_all()` is a backward-compat alias.
+- **`_citations` field** persisted in session JSON and restored on `load()`.
+- **`sync_research_context`** Phase 2 now writes `citations.bib` to the workspace alongside `research.md`.
+- **`export_session`** includes BibTeX in all export formats.
+
+### Fixed
+- **Shadow `ai_hydro/session.py` deleted** — was unreachable (Python prefers `session/` package) but wrote to `.clinerules/research.md` if ever imported directly; removed the confusion.
+- **`session/persona.py`** path corrected: `.clinerules/research.md` → `.aihydrorules/research.md`.
+- **`mcp/helpers.py`** `_session_store()` now accepts `tool_name=` kwarg; auto-adds citations in the same `session.save()` call as slot data (zero extra I/O).
+- **`mcp/tools_analysis.py`** — all 10 `_session_store()` calls updated with `tool_name=` for citation tracking.
+- **`mcp/tools_modelling.py`** — HBV citation (`seibert2012hbv`) added after model training.
+- **`mcp/tools_docs.py`** docstring: `.clinerules/tools.md` → `.aihydrorules/tools.md`.
+- **`workflows/camels_extraction.py`** — `extract_camels_attributes` renamed to `fetch_camels_attributes` (stale name removed from codebase).
+
+---
+
 ## [1.4.0] — 2026-04-17
 
 ### Removed
