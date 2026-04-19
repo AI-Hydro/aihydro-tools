@@ -10,6 +10,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.5.1] — 2026-04-19
+
+### Added — Raster map support
+- **`plot_raster_tile(array, bounds_wgs84, output_dir, name, colormap)`** in `analysis/plots.py` — clean, decoration-free PNG export (transparent NoData, P2–P98 colour clipping) for use as a deck.gl `BitmapLayer` image.
+- **`push_raster_layer()`** in `map_events.py` — raster variant of the map event writer; stores PNG path + WGS84 bounds so the TypeScript watcher can base64-encode the image at pick-up time.
+- **`_bounds_to_wgs84(bounds, crs_str)`** in `tools_analysis.py` — reprojects raster bounds to EPSG:4326 via pyproj; silent fallback for geographic CRS or missing pyproj.
+- **`compute_twi` raster push** — after TWI computation, a `viridis_r` tile is pushed as layer `twi_<session_id>`.
+- **`create_cn_grid` raster push** — `YlOrRd` CN tile pushed as `cn_<session_id>`.
+- **5 new raster tests** in `TestRasterMapEvents`.
+
+### Added — Vector map support
+- **`ai_hydro/mcp/map_events.py`** — Python → VS Code map bridge. `push_layer()` writes a JSON event file to `~/.aihydro/map_events/` which the extension's `MapEventWatcher` picks up and renders. `push_gauge_point()` helper for single-station markers. Four style presets: `watershed`, `flowlines`, `gauge`, `default`.
+- **`show_on_map` MCP tool** — new tool (10th analysis tool, 29th total) to push any GeoJSON string to the AI-Hydro map panel directly from an agent session. Validates GeoJSON, applies style presets, returns `ok`/`layer_id`/`message`.
+- **`delineate_watershed` auto-push** — after every successful watershed delineation the boundary polygon and gauge point are pushed automatically; map panel opens side-by-side.
+- **7 new tests** in `tests/test_mcp_integration.py` covering `push_layer`, style presets, overrides, dict input, error handling, and `show_on_map` smoke + invalid-JSON rejection.
+
+---
+
 ## [1.5.0] — 2026-04-18
 
 ### Added
