@@ -10,6 +10,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.5.2] — 2026-04-23
+
+### Removed
+- Deleted dead `ai_hydro/workflows/` stubs (`__init__.py`, `compute_signatures.py`, `fetch_data.py`, `modeling.py`) that referenced the pre-refactor module layout.
+
+### Changed
+- Removed remaining legacy `Tier 2` / `Tier 3` wording in live package and test surfaces.
+- Removed stale `ai_hydro.tools.hydrology` and `ai_hydro.tools.watershed` references in live package and test code.
+
+---
+
 ## [1.5.1] — 2026-04-19
 
 ### Added — Raster map support

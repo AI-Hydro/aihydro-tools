@@ -106,8 +106,8 @@ class HydroSession:
         self.interpretation: str = ""
         self.created_at: str = datetime.now(timezone.utc).isoformat()
         self.updated_at: str = self.created_at
-        # Citation keys accumulated as tools run (Tier 1 data sources + Tier 3 plugins).
-        # Tier 2 platform citations are injected at export time, not stored here.
+        # Citation keys accumulated as tools run (Tier 1 data sources + Plugin plugins).
+        # Platform platform citations are injected at export time, not stored here.
         self._citations: set[str] = set()
 
     # ------------------------------------------------------------------
@@ -327,7 +327,7 @@ class HydroSession:
         return set(self._citations)
 
     def export_bibtex(self) -> str:
-        """Build a ready-to-use .bib string (Tier 1 collected + Tier 2 platform)."""
+        """Build a ready-to-use .bib string (Tier 1 collected + Platform platform)."""
         from ai_hydro.citations import build_bibtex
         return build_bibtex(self._citations)
 

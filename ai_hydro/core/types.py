@@ -54,7 +54,7 @@ class HydroMeta(BaseModel):
     Contains everything needed to reproduce the computation and cite
     the data sources in a manuscript methods section.
     """
-    tool: str = Field(..., description="Full tool identifier, e.g. 'ai_hydro.tools.watershed.delineate_watershed'")
+    tool: str = Field(..., description="Full tool identifier, e.g. 'ai_hydro.analysis.watershed.delineate_watershed'")
     version: str = Field(..., description="Package version, e.g. '1.0.0'")
     gauge_id: str | None = Field(None, description="USGS gauge ID if applicable")
     sources: list[DataSource] = Field(default_factory=list)

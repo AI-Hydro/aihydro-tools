@@ -13,7 +13,7 @@ delineate_watershed(gauge_id, save_geojson, output_dir) -> HydroResult
 
 Examples
 --------
->>> from ai_hydro.tools.watershed import delineate_watershed
+>>> from ai_hydro.analysis.watershed import delineate_watershed
 >>> result = delineate_watershed('01031500')
 >>> print(result.data['area_km2'])      # float
 >>> print(result.data['gauge_name'])    # str
@@ -64,7 +64,7 @@ _SOURCES = [
     ),
 ]
 
-_TOOL_PATH = "ai_hydro.tools.watershed.delineate_watershed"
+_TOOL_PATH = "ai_hydro.analysis.watershed.delineate_watershed"
 
 try:
     from pynhd import NLDI

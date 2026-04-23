@@ -10,7 +10,7 @@ AI-Hydro MCP server, eliminating code generation for standard hydrology tasks.
 
 Quick Start
 -----------
->>> from ai_hydro.tools.watershed import delineate_watershed
+>>> from ai_hydro.analysis.watershed import delineate_watershed
 >>> result = delineate_watershed('01031500')
 >>> result.data['area_km2']
 >>> result.meta.cite()  # BibTeX

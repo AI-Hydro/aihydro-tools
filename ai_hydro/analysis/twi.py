@@ -805,6 +805,6 @@ if __name__ == "__main__":
     print("  gdf = gpd.read_file('watershed.geojson')")
     print("  result = compute_twi(gdf.geometry[0])")
     print("\nOr use the delineate_watershed tool:")
-    print("  from ai_hydro.tools.watershed import delineate_watershed")
+    print("  from ai_hydro.analysis.watershed import delineate_watershed")
     print("  ws = delineate_watershed('01031500')")
     print("  result = compute_twi(ws['geometry'])")
