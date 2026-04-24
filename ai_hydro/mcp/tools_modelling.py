@@ -1,16 +1,25 @@
 """
-AI Modelling MCP tools (2 tools).
+AI Modelling MCP tools (3 tools — 1.7.0).
 
-Train differentiable HBV-light or NeuralHydrology LSTM models
-and retrieve cached model performance metrics.
+train_hydro_model  — kickoff-only; returns {job_id} immediately (R2 compliant).
+get_training_status — poll a running/finished training job.
+get_model_results  — read cached model results from session.
+
+Backward-compat alias: the old synchronous train_hydro_model signature is
+preserved via a DeprecationWarning wrapper (removed in 2.0).
 """
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
+import subprocess
+import sys
+import uuid
+import warnings
+from datetime import datetime, timezone
 from pathlib import Path
 
-from ai_hydro.mcp.app import mcp, Context
+from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
     _normalize_session_id,
     _tool_error_to_dict,
@@ -19,8 +28,313 @@ from ai_hydro.mcp.helpers import (
 log = logging.getLogger("ai_hydro.mcp")
 
 
+def _now() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _pending_status(job_id: str, artifact_dir: Path) -> dict:
+    log_path = artifact_dir / "train.log"
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "progress": {"restarts_done": 0, "restarts_total": 0, "current_nse": None},
+        "partial_results": None,
+        "error": None,
+        "log_path": str(log_path),
+        "updated_at": _now(),
+    }
+
+
 @mcp.tool()
-async def train_hydro_model(
+def train_hydro_model(
+    session_id: str,
+    workspace_dir: str | None = None,
+    framework: str = "hbv",
+    model: str = "cudalstm",
+    train_start: str = "2000-10-01",
+    train_end: str = "2007-09-30",
+    val_start: str = "2000-10-01",
+    val_end: str = "2005-09-30",
+    test_start: str = "2007-10-01",
+    test_end: str = "2010-09-30",
+    epochs: int = 500,
+    n_restarts: int = 3,
+    hidden_size: int = 64,
+    learning_rate: float = 0.05,
+) -> dict:
+    """
+    Kick off a hydrological model training job and return immediately.
+
+    Training runs as a detached subprocess writing checkpoints and status
+    to the artifact directory. Poll progress with get_training_status(job_id).
+
+    The job typically takes several minutes to hours depending on framework,
+    epochs, and hardware. Do NOT poll more than once per minute.
+
+    Parameters
+    ----------
+    session_id : str
+        Research session identifier. Must have watershed and forcing cached.
+    workspace_dir : str, optional
+        Workspace directory for artifact storage. Uses session.workspace_dir
+        or ~/.aihydro/models if not provided.
+    framework : str
+        'hbv' (differentiable HBV-light, recommended) or
+        'neuralhydrology' (LSTM, requires pip install neuralhydrology).
+    model : str
+        neuralhydrology only: 'cudalstm' (default), 'ealstm', 'transformer'.
+    epochs : int
+        Training epochs per restart (default 500).
+    n_restarts : int
+        HBV only: number of random restarts (default 3).
+    learning_rate : float
+        Optimizer learning rate (default 0.05 for HBV).
+
+    Returns
+    -------
+    dict:
+        job_id      : Unique job identifier for polling.
+        status      : "pending"
+        artifact_dir: Path where checkpoints and results are written.
+        log_path    : Path to training log (stream with 'tail -f').
+        started_at  : ISO-8601 timestamp.
+    """
+    try:
+        session_id = _normalize_session_id(session_id)
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+
+        fw = (framework or "hbv").lower().replace("-", "").replace("_", "")
+        if fw in ("neuralhydrology", "nh", "lstm"):
+            required = ("watershed", "streamflow", "forcing")
+        else:
+            required = ("watershed", "forcing")
+
+        missing = [s for s in required if getattr(session, s) is None]
+        if missing:
+            return {
+                "error": True,
+                "code": "MISSING_PREREQUISITES",
+                "message": (
+                    f"Cannot train — missing: {missing}. "
+                    "Run: "
+                    + ", ".join({
+                        "watershed":  "delineate_watershed",
+                        "streamflow": "fetch_streamflow_data",
+                        "forcing":    "fetch_forcing_data",
+                    }[s] for s in missing)
+                ),
+            }
+
+        job_id = uuid.uuid4().hex[:12]
+
+        # Resolve artifact dir
+        ws = workspace_dir or session.workspace_dir
+        base = Path(ws) if ws else Path.home() / ".aihydro" / "models"
+        artifact_dir = base / "runs" / job_id
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write job config for the subprocess runner
+        config = {
+            "job_id": job_id,
+            "session_id": session_id,
+            "framework": framework,
+            "model": model,
+            "train_start": train_start,
+            "train_end": train_end,
+            "val_start": val_start,
+            "val_end": val_end,
+            "test_start": test_start,
+            "test_end": test_end,
+            "epochs": epochs,
+            "n_restarts": n_restarts,
+            "hidden_size": hidden_size,
+            "learning_rate": learning_rate,
+        }
+        (artifact_dir / "job_config.json").write_text(json.dumps(config, indent=2))
+
+        # Write initial status
+        status = _pending_status(job_id, artifact_dir)
+        (artifact_dir / "status.json").write_text(json.dumps(status, indent=2))
+
+        # Spawn detached subprocess
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "ai_hydro.modelling.runner", str(artifact_dir)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        log.info("Training job %s spawned (pid=%d)", job_id, proc.pid)
+
+        return {
+            "job_id": job_id,
+            "status": "pending",
+            "artifact_dir": str(artifact_dir),
+            "log_path": str(artifact_dir / "train.log"),
+            "started_at": _now(),
+            "_note": (
+                f"Training started. Poll with get_training_status('{job_id}'). "
+                "Check log_path with 'tail -f' for live progress. "
+                "Typical runtime: 2-15 min (HBV), 15-60 min (LSTM)."
+            ),
+        }
+
+    except Exception as e:
+        log.error("train_hydro_model kickoff failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def get_training_status(job_id: str) -> dict:
+    """
+    Poll the status of a training job started by train_hydro_model.
+
+    Reads the status.json checkpoint written by the training subprocess.
+    Call at most once per minute — the subprocess writes updates at each
+    epoch checkpoint, not continuously.
+
+    Parameters
+    ----------
+    job_id : str
+        The job_id returned by train_hydro_model.
+
+    Returns
+    -------
+    dict:
+        job_id         : str
+        status         : "pending" | "running" | "complete" | "failed"
+        progress       : {restarts_done, restarts_total, current_nse}
+        partial_results: final metrics dict when status="complete", else null
+        error          : {code, message} when status="failed", else null
+        log_path       : Path to training log
+        updated_at     : ISO-8601 of last checkpoint write
+    """
+    try:
+        # Search common artifact locations for this job_id
+        candidates = [
+            Path.home() / ".aihydro" / "models" / "runs" / job_id / "status.json",
+        ]
+        # Also check any workspace that sessions reference
+        from ai_hydro.session.store import _SESSIONS_DIR
+        sessions_dir = _SESSIONS_DIR
+        if sessions_dir.exists():
+            for sf in sessions_dir.glob("*.json"):
+                try:
+                    data = json.loads(sf.read_text())
+                    ws = data.get("workspace_dir")
+                    if ws:
+                        candidates.append(
+                            Path(ws) / "runs" / job_id / "status.json"
+                        )
+                except Exception:
+                    pass
+
+        for status_path in candidates:
+            if status_path.exists():
+                try:
+                    return json.loads(status_path.read_text())
+                except json.JSONDecodeError:
+                    pass
+
+        return {
+            "error": True,
+            "code": "JOB_NOT_FOUND",
+            "message": (
+                f"No status.json found for job_id='{job_id}'. "
+                "The job may not have started yet or the artifact directory was moved."
+            ),
+        }
+
+    except Exception as e:
+        log.error("get_training_status failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def get_model_results(session_id: str, job_id: str | None = None) -> dict:
+    """
+    Return the cached model training results for a session.
+
+    If job_id is provided and the job is complete, returns results from the
+    artifact directory. Otherwise returns from the session model slot.
+
+    Parameters
+    ----------
+    session_id : str
+        Research session identifier.
+    job_id : str, optional
+        If provided, reads results from the job artifact directory directly.
+
+    Returns
+    -------
+    dict with framework, model_type, nse, kge, rmse, model_dir, and metadata.
+    """
+    try:
+        session_id = _normalize_session_id(session_id)
+
+        # If job_id provided, try to read from artifact dir first
+        if job_id:
+            status = get_training_status(job_id)
+            if not status.get("error") and status.get("status") == "complete":
+                partial = status.get("partial_results")
+                if partial:
+                    nse = partial.get("nse")
+                    return {
+                        "model_trained": True,
+                        "source": "job_artifact",
+                        **partial,
+                        "performance_rating": (
+                            "excellent" if nse is not None and nse >= 0.75 else
+                            "satisfactory" if nse is not None and nse >= 0.50 else
+                            "poor" if nse is not None else "unknown"
+                        ),
+                    }
+            elif not status.get("error"):
+                return {
+                    "model_trained": False,
+                    "job_status": status.get("status"),
+                    "progress": status.get("progress"),
+                    "message": f"Job {job_id} is still {status.get('status', 'running')}.",
+                }
+
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+
+        if session.model is None:
+            return {
+                "error": False,
+                "model_trained": False,
+                "message": (
+                    f"No model trained yet for session '{session_id}'. "
+                    "Call train_hydro_model to start training."
+                ),
+                "prerequisite_status": {
+                    s: (getattr(session, s) is not None) for s in
+                    ("watershed", "streamflow", "forcing", "camels")
+                },
+            }
+
+        result = session.model
+        nse = result.get("nse")
+        return {
+            "model_trained": True,
+            "source": "session_cache",
+            **result,
+            "performance_rating": (
+                "excellent" if nse is not None and nse >= 0.75 else
+                "satisfactory" if nse is not None and nse >= 0.50 else
+                "poor" if nse is not None else "unknown"
+            ),
+        }
+
+    except Exception as e:
+        log.error("get_model_results failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+# ── Backward-compat alias (removed in 2.0) ───────────────────────────────────
+
+def _train_hydro_model_sync_alias(
     session_id: str,
     framework: str = "hbv",
     model: str = "cudalstm",
@@ -34,217 +348,66 @@ async def train_hydro_model(
     n_restarts: int = 3,
     hidden_size: int = 64,
     learning_rate: float = 0.05,
-    ctx: Context | None = None,
+    workspace_dir: str | None = None,
 ) -> dict:
     """
-    Train an AI hydrological model for streamflow prediction.
+    [DEPRECATED] Synchronous call of train_hydro_model.
 
-    Requires the session to have cached: watershed, forcing.
-    Streamflow is fetched automatically from CAMELS (35-year record) for
-    the 671 CONUS CAMELS gauges (requires session.site_id to be set),
-    or from the session streamflow cache otherwise.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier. Must have watershed and forcing cached.
-    framework : str
-        'hbv'             — differentiable HBV-light (built-in, recommended).
-                            Pure PyTorch, no extra install. 12 calibrated
-                            parameters. Uses CAMELS streamflow when available.
-                            Typical NSE: 0.5-0.8.
-        'neuralhydrology' — LSTM/EA-LSTM (pip install neuralhydrology).
-                            State-of-the-art data-driven. Needs more data.
-    model : str
-        neuralhydrology only: 'cudalstm' (default), 'ealstm', 'transformer'.
-        Ignored for 'hbv' framework.
-    epochs : int
-        Training epochs per restart (default 500 for HBV, 30 for LSTM).
-    n_restarts : int
-        HBV only: number of random restarts; best result is kept (default 3).
-    learning_rate : float
-        Optimizer learning rate (default 0.05 for HBV, 0.001 for LSTM).
-
-    Returns
-    -------
-    dict with nse, kge, rmse, model_dir, calibrated_params, and metadata.
-    NSE > 0.75 = excellent  |  0.5-0.75 = satisfactory  |  < 0.5 = poor
+    Kicks off the job and polls until complete. Removed in 2.0 — use
+    train_hydro_model (kickoff) + get_training_status (poll) directly.
     """
-    try:
-        session_id = _normalize_session_id(session_id)
-        from ai_hydro.session import HydroSession
-        session = HydroSession.load(session_id)
+    import time
 
-        # For HBV, only watershed + forcing are strictly required
-        # (streamflow is pulled from CAMELS automatically)
-        fw = (framework or "hbv").lower().replace("-", "").replace("_", "")
-        if fw in ("neuralhydrology", "nh", "lstm"):
-            required = ("watershed", "streamflow", "forcing")
-        else:
-            required = ("watershed", "forcing")
+    warnings.warn(
+        "Calling train_hydro_model synchronously will be removed in 2.0. "
+        "Use train_hydro_model (kickoff) + get_training_status (poll) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
-        missing = [s for s in required if getattr(session, s) is None]
-        if missing:
+    kickoff = train_hydro_model(
+        session_id=session_id,
+        workspace_dir=workspace_dir,
+        framework=framework,
+        model=model,
+        train_start=train_start,
+        train_end=train_end,
+        val_start=val_start,
+        val_end=val_end,
+        test_start=test_start,
+        test_end=test_end,
+        epochs=epochs,
+        n_restarts=n_restarts,
+        hidden_size=hidden_size,
+        learning_rate=learning_rate,
+    )
+
+    if kickoff.get("error"):
+        return kickoff
+
+    job_id = kickoff["job_id"]
+    timeout = 3600  # 1 hour hard ceiling for sync alias
+    poll_interval = 10
+    elapsed = 0
+
+    while elapsed < timeout:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        status = get_training_status(job_id)
+        s = status.get("status", "pending")
+        if s == "complete":
+            return status.get("partial_results") or status
+        if s == "failed":
             return {
                 "error": True,
-                "code": "MISSING_PREREQUISITES",
-                "message": (
-                    f"Cannot train model — missing cached data: {missing}. "
-                    "Run these tools first: "
-                    + ", ".join({
-                        "watershed":  "delineate_watershed",
-                        "streamflow": "fetch_streamflow_data",
-                        "forcing":    "fetch_forcing_data",
-                    }[s] for s in missing)
-                ),
+                "code": "TRAINING_FAILED",
+                "message": (status.get("error") or {}).get("message", "Training failed"),
+                "log_path": status.get("log_path"),
             }
 
-        if session.workspace_dir:
-            output_dir = Path(session.workspace_dir) / "models"
-        else:
-            output_dir = Path.home() / ".aihydro" / "models"
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        if ctx:
-            await ctx.report_progress(progress=0, total=2)
-
-        # Resolve the USGS gauge ID for CAMELS streamflow fetching —
-        # use session.site_id if set (e.g. USGS gauge), fall back to session_id
-        # (the underlying functions use this for CAMELS lookup).
-        usgs_gauge_id = session.site_id or session_id
-
-        if fw in ("hbv", "hbvlight", "differentiable", "hydrodl2"):
-            from ai_hydro.modelling.conceptual.hbv import train_hbv_light
-            result = await asyncio.to_thread(
-                train_hbv_light,
-                gauge_id=usgs_gauge_id,
-                session=session,
-                output_dir=output_dir,
-                train_start=train_start,
-                train_end=train_end,
-                test_start=test_start,
-                test_end=test_end,
-                epochs=epochs,
-                n_restarts=n_restarts,
-                learning_rate=learning_rate,
-            )
-        elif fw in ("neuralhydrology", "nh", "lstm"):
-            from ai_hydro.modelling.neural.lstm import train_neural_hydrology
-            result = await asyncio.to_thread(
-                train_neural_hydrology,
-                gauge_id=usgs_gauge_id,
-                session=session,
-                output_dir=output_dir,
-                model=model,
-                train_start=train_start,
-                train_end=train_end,
-                val_start=val_start,
-                val_end=val_end,
-                test_start=test_start,
-                test_end=test_end,
-                epochs=epochs,
-                hidden_size=hidden_size,
-                learning_rate=learning_rate,
-            )
-        else:
-            return {
-                "error": True,
-                "code": "UNKNOWN_FRAMEWORK",
-                "message": (
-                    f"Unknown framework: {framework!r}. "
-                    "Use 'hbv' (differentiable HBV-light, recommended) or "
-                    "'neuralhydrology' (LSTM, requires pip install neuralhydrology)."
-                ),
-            }
-
-        if ctx:
-            await ctx.report_progress(progress=2, total=2)
-
-        # Cache result in session + add HBV citation
-        session.model = result
-        from ai_hydro.citations import citation_keys_for_tool
-        session.add_citations(citation_keys_for_tool("train_hydro_model"))
-        session.save()
-
-        # Add performance summary to response
-        nse = result.get("nse")
-        rating = (
-            "excellent" if nse is not None and nse >= 0.75 else
-            "satisfactory" if nse is not None and nse >= 0.50 else
-            "poor" if nse is not None else "unknown"
-        )
-        result["performance_rating"] = rating
-        result["_note"] = (
-            f"Model trained and saved. NSE={nse:.3f} ({rating}). "
-            "Result cached in session slot 'model'. "
-            "Re-run with clear_session to try different hyperparameters."
-        ) if nse is not None else "Model trained and saved."
-
-        return result
-
-    except ImportError as e:
-        return {
-            "error": True,
-            "code": "MISSING_DEPENDENCY",
-            "message": str(e),
-            "install_hint": (
-                "pip install neuralhydrology" if "neural" in str(e).lower()
-                else "pip install hydrodl2 torch numpy"
-            ),
-        }
-    except Exception as e:
-        log.error("train_hydro_model failed: %s", e, exc_info=True)
-        return _tool_error_to_dict(e)
-
-
-@mcp.tool()
-def get_model_results(session_id: str) -> dict:
-    """
-    Return the cached model training results for a session.
-
-    If no model has been trained, returns a clear message with instructions.
-    Use train_hydro_model to train a model first.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-
-    Returns
-    -------
-    dict with framework, model_type, nse, kge, rmse, model_dir, and metadata.
-    """
-    try:
-        session_id = _normalize_session_id(session_id)
-        from ai_hydro.session import HydroSession
-        session = HydroSession.load(session_id)
-
-        if session.model is None:
-            return {
-                "error": False,
-                "model_trained": False,
-                "message": (
-                    f"No model trained yet for session '{session_id}'. "
-                    "Call train_hydro_model to train one."
-                ),
-                "prerequisite_status": {
-                    s: (getattr(session, s) is not None) for s in
-                    ("watershed", "streamflow", "forcing", "camels")
-                },
-            }
-
-        result = session.model
-        nse = result.get("nse")
-        return {
-            "model_trained": True,
-            **result,
-            "performance_rating": (
-                "excellent" if nse is not None and nse >= 0.75 else
-                "satisfactory" if nse is not None and nse >= 0.50 else
-                "poor" if nse is not None else "unknown"
-            ),
-        }
-
-    except Exception as e:
-        log.error("get_model_results failed: %s", e)
-        return _tool_error_to_dict(e)
+    return {
+        "error": True,
+        "code": "TIMEOUT",
+        "message": f"Synchronous alias timed out after {timeout}s. "
+                   f"Use get_training_status('{job_id}') to poll manually.",
+    }
