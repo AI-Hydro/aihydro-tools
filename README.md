@@ -192,6 +192,69 @@ If `aihydro-mcp` is not found after install, pip placed it outside your PATH:
 
 ---
 
+## Extending with Plugins
+
+AI-Hydro uses Python entry points for a clean plugin system. Community packages can contribute any of four capability layers without modifying the core:
+
+| Entry-point group | Contributes | Served by |
+|---|---|---|
+| `aihydro.tools` | MCP tool functions | `list_available_tools()` |
+| `aihydro.knowledge` | Library reference cards (JSON) | `get_library_reference()` |
+| `aihydro.skills` | Workflow playbooks (SKILL.md) | `list_skills()` / `load_skill()` |
+| `aihydro.clis` | CLI descriptor (binary + help) | `list_relevant_clis()` |
+
+### Example: add a custom tool
+
+```python
+# my_hydro_pkg/tools.py
+from ai_hydro.core.types import HydroResult, HydroMeta, DataSource
+
+def compute_soil_moisture(session_id: str, workspace_dir: str = None) -> dict:
+    """Estimate soil moisture from session forcing data."""
+    # ... your computation ...
+    result = HydroResult(data={...}, meta=HydroMeta(tool="compute_soil_moisture", ...))
+    return result.to_dict()
+```
+
+```toml
+# pyproject.toml
+[project.entry-points."aihydro.tools"]
+compute_soil_moisture = "my_hydro_pkg.tools:compute_soil_moisture"
+```
+
+After `pip install my-hydro-pkg`, the tool appears automatically in `list_available_tools()` on the next MCP server restart — no changes to `aihydro-tools` required.
+
+### Example: add a knowledge card
+
+```toml
+[project.entry-points."aihydro.knowledge"]
+my_lib = "my_hydro_pkg.knowledge:get_refs_dir"
+```
+
+where `get_refs_dir()` returns a `Path` to a directory of `*.json` cards (same schema as the built-in cards in `ai_hydro/knowledge/library_refs/`).
+
+### Example: add a workflow skill
+
+```toml
+[project.entry-points."aihydro.skills"]
+my_skills = "my_hydro_pkg.skills:get_skills_dir"
+```
+
+where `get_skills_dir()` returns a `Path` to a directory of `*.md` skill files (YAML frontmatter + markdown body). Skills appear in `list_skills()` and are loadable via `load_skill(name)`.
+
+### Example: advertise a CLI
+
+```toml
+[project.entry-points."aihydro.clis"]
+my_tool = "my_hydro_pkg.aihydro.cli_descriptor:descriptor"
+```
+
+where `descriptor()` returns `{name, binary, description, help_subcommand}`. The CLI appears in `list_relevant_clis()`.
+
+See the [Plugin Guide](https://ai-hydro.github.io/AI-Hydro/plugins/overview/) for full walkthroughs.
+
+---
+
 ## Contributing
 
 The most impactful contributions to AI-Hydro are new domain tools — knowledge that currently lives in papers and custom scripts, packaged so any AI agent can use it. High-priority areas include flood frequency analysis, sediment transport, groundwater modelling, remote sensing workflows (MODIS, Landsat, SAR), snow hydrology, and water quality.

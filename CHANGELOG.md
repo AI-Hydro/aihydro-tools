@@ -10,6 +10,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.0] — 2026-04-23
+
+### Added
+- **`get_session_raw_state(session_id)`** — Phase 1 of the two-phase interpretation workflow (G1 compliance). Returns raw computed slot data for the LLM to read before authoring scientific prose.
+- **`write_research_interpretation(session_id, site_name, interpretation)`** — Phase 2 of the two-phase workflow. Writes LLM-authored interpretation into `research.md` and session. Replaces the write path of `sync_research_context`.
+- **`run_python(script, workspace_dir, timeout_seconds, allow_network)`** — first-party workspace-scoped Python execution tool. Replaces the out-of-tree `mcp_python` reference. Workspace-scoped CWD, no network by default, stdin-only (no shell interpolation), 120s default timeout.
+- **`list_relevant_clis()`** — enumerate AI-Hydro-aware CLI tools installed in the environment. Discovers tools via `aihydro.clis` entry-point group; falls back to best-effort detection of `swat` and `camels-extract` binaries.
+- **`list_skills(domain, workspace_dir)`** — enumerate workflow skills across built-in / plugin / workspace tiers. Returns empty list in 1.6.0 (no built-in skills yet); plugin and workspace tiers polled.
+- **`load_skill(name, workspace_dir)`** — load the full content of a named workflow skill (frontmatter + body).
+- **`separate_baseflow(session_id, method, alpha, n_passes)`** — baseflow separation via Lyne-Hollick (1979) recursive filter or UKIH five-day interval method (Gustard et al. 1992). Writes full daily series + BFI to `session.baseflow`. Existing BFI scalar in `extract_hydrological_signatures` unchanged.
+- **`ai_hydro/mcp/resources.py`** — native MCP resource layer for knowledge cards. URI scheme: `aihydro://knowledge/library/{name}` and `aihydro://knowledge/list`. Runtime drift detection compares installed library version against card `version_compatible` range; injects `stale: true` + `stale_reason` when outside range.
+- **`ai_hydro/skills/`** package — three-tier skill registry (built-in / `aihydro.skills` entry-point / workspace `.aihydrorules/skills/`). YAML frontmatter parsed; workspace tier overrides plugin overrides built-in.
+- `aihydro.skills` and `aihydro.clis` entry-point groups in `pyproject.toml`.
+
+### Changed
+- **Persona rewrite (T2.1):** Replaced 126-line nominal persona with ~55-line categorical persona. Zero named tools, libraries, or CONUS assumptions. Six capability layers enumerated abstractly. Discoverable via enumeration calls.
+- **`sync_research_context` deprecated** in favour of `get_session_raw_state` + `write_research_interpretation` (G1: LLM authors interpretation, Python returns raw state). Old tool aliased with `DeprecationWarning`; removal planned for 2.0.
+- **`get_library_reference`** — added no-arg branch (returns catalog of all available references, fixing R6 discoverability gap). Single-arg callers unaffected. Now delegates to `resources._load_card` for consistent drift-warning behaviour.
+- All 8 built-in library reference cards gain `version_compatible` semver range field.
+
+### Deprecated
+- `sync_research_context`: use `get_session_raw_state` + `write_research_interpretation`. Will be removed in 2.0.
+
+---
+
 ## [1.5.2] — 2026-04-23
 
 ### Removed
