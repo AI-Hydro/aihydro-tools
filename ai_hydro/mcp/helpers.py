@@ -166,7 +166,7 @@ def _ensure_session(session_id: str, workspace_dir: str | None = None):
 
 def _sync_reminder(session_id: str) -> str | None:
     """
-    Return a mandatory reminder to call sync_research_context when ≥2 slots
+    Return a mandatory reminder to call write_research_interpretation when ≥2 slots
     are computed and no interpretation has been written yet.
 
     Injected into every analysis tool response so the LLM cannot miss it.
@@ -179,9 +179,10 @@ def _sync_reminder(session_id: str) -> str | None:
         if n >= 2 and not session.interpretation:
             return (
                 f"[{n} analyses complete, no interpretation yet] "
-                f"When ALL planned steps are done, your FINAL action MUST be "
-                f"sync_research_context('{session_id}'). "
-                "Skip this and the science disappears between conversations."
+                f"When ALL planned steps are done, call "
+                f"get_session_raw_state('{session_id}') then "
+                f"write_research_interpretation('{session_id}', ...) to persist "
+                "the scientific context across conversations."
             )
     except Exception:
         pass

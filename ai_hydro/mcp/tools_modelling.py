@@ -1,12 +1,9 @@
 """
-AI Modelling MCP tools (3 tools — 1.7.0).
+AI Modelling MCP tools (3 tools — 2.0.0).
 
-train_hydro_model  — kickoff-only; returns {job_id} immediately (R2 compliant).
+train_hydro_model   — kickoff-only; returns {job_id} immediately (R2 compliant).
 get_training_status — poll a running/finished training job.
-get_model_results  — read cached model results from session.
-
-Backward-compat alias: the old synchronous train_hydro_model signature is
-preserved via a DeprecationWarning wrapper (removed in 2.0).
+get_model_results   — read cached model results from session.
 """
 from __future__ import annotations
 
@@ -15,7 +12,6 @@ import logging
 import subprocess
 import sys
 import uuid
-import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -331,83 +327,3 @@ def get_model_results(session_id: str, job_id: str | None = None) -> dict:
         log.error("get_model_results failed: %s", e)
         return _tool_error_to_dict(e)
 
-
-# ── Backward-compat alias (removed in 2.0) ───────────────────────────────────
-
-def _train_hydro_model_sync_alias(
-    session_id: str,
-    framework: str = "hbv",
-    model: str = "cudalstm",
-    train_start: str = "2000-10-01",
-    train_end: str = "2007-09-30",
-    val_start: str = "2000-10-01",
-    val_end: str = "2005-09-30",
-    test_start: str = "2007-10-01",
-    test_end: str = "2010-09-30",
-    epochs: int = 500,
-    n_restarts: int = 3,
-    hidden_size: int = 64,
-    learning_rate: float = 0.05,
-    workspace_dir: str | None = None,
-) -> dict:
-    """
-    [DEPRECATED] Synchronous call of train_hydro_model.
-
-    Kicks off the job and polls until complete. Removed in 2.0 — use
-    train_hydro_model (kickoff) + get_training_status (poll) directly.
-    """
-    import time
-
-    warnings.warn(
-        "Calling train_hydro_model synchronously will be removed in 2.0. "
-        "Use train_hydro_model (kickoff) + get_training_status (poll) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    kickoff = train_hydro_model(
-        session_id=session_id,
-        workspace_dir=workspace_dir,
-        framework=framework,
-        model=model,
-        train_start=train_start,
-        train_end=train_end,
-        val_start=val_start,
-        val_end=val_end,
-        test_start=test_start,
-        test_end=test_end,
-        epochs=epochs,
-        n_restarts=n_restarts,
-        hidden_size=hidden_size,
-        learning_rate=learning_rate,
-    )
-
-    if kickoff.get("error"):
-        return kickoff
-
-    job_id = kickoff["job_id"]
-    timeout = 3600  # 1 hour hard ceiling for sync alias
-    poll_interval = 10
-    elapsed = 0
-
-    while elapsed < timeout:
-        time.sleep(poll_interval)
-        elapsed += poll_interval
-        status = get_training_status(job_id)
-        s = status.get("status", "pending")
-        if s == "complete":
-            return status.get("partial_results") or status
-        if s == "failed":
-            return {
-                "error": True,
-                "code": "TRAINING_FAILED",
-                "message": (status.get("error") or {}).get("message", "Training failed"),
-                "log_path": status.get("log_path"),
-            }
-
-    return {
-        "error": True,
-        "code": "TIMEOUT",
-        "message": f"Synchronous alias timed out after {timeout}s. "
-                   f"Use get_training_status('{job_id}') to poll manually.",
-    }

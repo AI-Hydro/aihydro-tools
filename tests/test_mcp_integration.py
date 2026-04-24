@@ -37,13 +37,12 @@ class TestToolRegistration:
         "get_library_reference",
         "show_on_map",
         "separate_baseflow",          # T2.8 — 1.6.0
-        # Session (9 — two-phase split in 1.6.0)
+        # Session (8 — sync_research_context alias removed in 2.0)
         "start_session",
         "get_session_summary",
         "clear_session",
         "add_note",
         "export_session",
-        "sync_research_context",
         "list_available_tools",
         "get_session_raw_state",       # T2.2 — 1.6.0
         "write_research_interpretation",  # T2.2 — 1.6.0
@@ -529,7 +528,7 @@ class TestLeanSession:
             s2.save()
             reminder = _sync_reminder("test-remind")
             assert reminder is not None
-            assert "sync_research_context" in reminder
+            assert "write_research_interpretation" in reminder
 
     def test_sync_reminder_silent_after_interpretation(self, tmp_path):
         """_sync_reminder should return None once interpretation is written."""
@@ -961,24 +960,12 @@ class TestPhase2TwoPhase:
             assert result["char_count"] > 0
             assert "written_path" in result
 
-    def test_sync_research_context_emits_deprecation_warning(self, tmp_path):
-        """sync_research_context must emit DeprecationWarning (alias for 2-phase split)."""
-        import warnings
-        from ai_hydro.mcp.tools_session import sync_research_context
-        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
-             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                sync_research_context(
-                    session_id="deprecation-test",
-                    interpretation="Basin is flashy.",
-                    site_name="test",
-                )
-            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-            assert len(dep_warnings) >= 1, (
-                "sync_research_context must emit DeprecationWarning (alias for 2.0 removal)"
-            )
-            assert "2.0" in str(dep_warnings[0].message)
+    def test_sync_research_context_removed_in_2_0(self):
+        """sync_research_context must not exist in 2.0 (removed alias)."""
+        import ai_hydro.mcp.tools_session as ts
+        assert not hasattr(ts, "sync_research_context"), (
+            "sync_research_context was a 1.x deprecated alias and must not exist in 2.0"
+        )
 
     def test_get_session_summary_no_findings_field(self, tmp_path):
         """get_session_summary must not return a 'findings' interpretation field (G1)."""

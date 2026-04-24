@@ -12,7 +12,7 @@ Usage
 -----
 Citations accumulate in HydroSession._citations as tool calls succeed.
 ``export_bibtex()`` builds a ready-to-use .bib file from the collected keys.
-``sync_research_context`` and ``export_session`` write citations.bib automatically.
+``write_research_interpretation`` and ``export_session`` write citations.bib automatically.
 
 Adding a new data source
 ------------------------
