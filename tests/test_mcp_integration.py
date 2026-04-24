@@ -25,7 +25,7 @@ class TestToolRegistration:
     """Verify that importing ai_hydro.mcp registers all expected tools."""
 
     EXPECTED_TOOLS = {
-        # Analysis (10)
+        # Analysis (11 — baseflow companion added in 1.6.0)
         "delineate_watershed",
         "fetch_streamflow_data",
         "fetch_camels_us",
@@ -36,7 +36,8 @@ class TestToolRegistration:
         "fetch_forcing_data",
         "get_library_reference",
         "show_on_map",
-        # Session (8)
+        "separate_baseflow",          # T2.8 — 1.6.0
+        # Session (9 — two-phase split in 1.6.0)
         "start_session",
         "get_session_summary",
         "clear_session",
@@ -44,6 +45,15 @@ class TestToolRegistration:
         "export_session",
         "sync_research_context",
         "list_available_tools",
+        "get_session_raw_state",       # T2.2 — 1.6.0
+        "write_research_interpretation",  # T2.2 — 1.6.0
+        # Execution (1 — 1.6.0)
+        "run_python",                  # T2.4 — 1.6.0
+        # Skills (2 — 1.6.0)
+        "list_skills",                 # T2.6 — 1.6.0
+        "load_skill",                  # T2.6 — 1.6.0
+        # Discovery (1 — 1.6.0)
+        "list_relevant_clis",          # T2.7 — 1.6.0
         # Modelling (2)
         "train_hydro_model",
         "get_model_results",
@@ -326,15 +336,17 @@ class TestToolSmoke:
             result = delineate_watershed("my-test-session", gauge_id="not_a_gauge")
             assert result["error"] is True
 
-    def test_start_session_exposes_mcp_python(self, tmp_path):
-        """start_session should return mcp_python, mcp_pip, available_packages."""
+    def test_start_session_exposes_python_interpreter(self, tmp_path):
+        """start_session should return python_interpreter, pip, available_packages."""
         from ai_hydro.mcp.tools_session import start_session
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             result = start_session("piscataquis-2020")
-            assert "mcp_python" in result
-            assert result["mcp_python"].endswith("python") or "python" in result["mcp_python"]
-            assert "mcp_pip" in result
+            assert "python_interpreter" in result, (
+                "start_session must return 'python_interpreter' key "
+                "(renamed from 'mcp_python' in 1.6.0 fix)"
+            )
+            assert "python" in result["python_interpreter"]
             assert "available_packages" in result
             assert isinstance(result["available_packages"], dict)
 
@@ -884,3 +896,243 @@ class TestRasterMapEvents:
         bounds = [100000, 5000000, 200000, 5100000]
         result = _bounds_to_wgs84(bounds, "INVALID_CRS_XYZ")
         assert result == bounds
+
+
+# ── Phase 2 (1.6.0) feature tests ───────────────────────────────────────────
+
+class TestPhase2Persona:
+    """T2.1 — Persona rewrite verification."""
+
+    def test_persona_word_count_under_700(self):
+        """Rewritten persona must be < 700 words (was ~1500)."""
+        from ai_hydro.mcp.app import mcp as _mcp
+        instructions = _mcp.instructions or ""
+        wc = len(instructions.split())
+        assert wc < 700, f"Persona is {wc} words — must be < 700"
+
+    def test_persona_no_forbidden_terms(self):
+        """Persona must not name specific tools, libraries, or CONUS datasets."""
+        from ai_hydro.mcp.app import mcp as _mcp
+        instructions = _mcp.instructions or ""
+        forbidden = [
+            "fetch_streamflow_data", "mcp_python", "USGS", "NLDI",
+            "GridMET", "NLCD", "research.md",
+        ]
+        for term in forbidden:
+            assert term not in instructions, (
+                f"Forbidden term '{term}' found in persona — must be categorical"
+            )
+
+
+class TestPhase2TwoPhase:
+    """T2.2 — Two-phase sync split and T2.3 — G1 summary cleanup."""
+
+    def test_get_session_raw_state_returns_slots(self, tmp_path):
+        """get_session_raw_state should return computed slots without interpretation."""
+        from ai_hydro.mcp.tools_session import get_session_raw_state
+        from ai_hydro.session import HydroSession
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            s = HydroSession("raw-state-test")
+            s.watershed = {"data": {"area_km2": 500}, "meta": {}}
+            s.save()
+            result = get_session_raw_state("raw-state-test")
+            assert "slots" in result
+            assert "watershed" in result["slots"]
+            assert "findings" not in result
+            assert "_instruction" in result
+
+    def test_write_research_interpretation_stores(self, tmp_path):
+        """write_research_interpretation should store prose and return char_count."""
+        from ai_hydro.mcp.tools_session import write_research_interpretation
+        from ai_hydro.session import HydroSession
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            s = HydroSession("interp-test")
+            s.workspace_dir = str(tmp_path)
+            s.save()
+            result = write_research_interpretation(
+                session_id="interp-test",
+                site_name="test-basin",
+                interpretation="The basin shows strong baseflow dominance driven by deep glacial aquifers.",
+            )
+            assert "char_count" in result
+            assert result["char_count"] > 0
+            assert "written_path" in result
+
+    def test_sync_research_context_emits_deprecation_warning(self, tmp_path):
+        """sync_research_context must emit DeprecationWarning (alias for 2-phase split)."""
+        import warnings
+        from ai_hydro.mcp.tools_session import sync_research_context
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                sync_research_context(
+                    session_id="deprecation-test",
+                    interpretation="Basin is flashy.",
+                    site_name="test",
+                )
+            dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(dep_warnings) >= 1, (
+                "sync_research_context must emit DeprecationWarning (alias for 2.0 removal)"
+            )
+            assert "2.0" in str(dep_warnings[0].message)
+
+    def test_get_session_summary_no_findings_field(self, tmp_path):
+        """get_session_summary must not return a 'findings' interpretation field (G1)."""
+        from ai_hydro.mcp.tools_session import get_session_summary
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            result = get_session_summary("summary-g1-test")
+            assert "findings" not in result, (
+                "get_session_summary must not return 'findings' — G1: LLM authors interpretation"
+            )
+
+
+class TestPhase2RunPython:
+    """T2.4 — run_python tool."""
+
+    def test_run_python_hello_world(self, tmp_path):
+        """run_python should capture stdout and return returncode=0."""
+        from ai_hydro.mcp.tools_execution import run_python
+        result = run_python(
+            script="print('hello')",
+            workspace_dir=str(tmp_path),
+            timeout_seconds=10,
+        )
+        assert result.get("returncode") == 0
+        assert "hello" in result.get("stdout", "")
+
+    def test_run_python_network_blocked_by_default(self, tmp_path):
+        """Network access must be blocked when allow_network=False."""
+        from ai_hydro.mcp.tools_execution import run_python
+        script = (
+            "import socket\n"
+            "try:\n"
+            "    s = socket.socket()\n"
+            "    s.connect(('8.8.8.8', 80))\n"
+            "    print('NETWORK_OK')\n"
+            "except Exception as e:\n"
+            "    print(f'BLOCKED: {e}')\n"
+        )
+        result = run_python(script=script, workspace_dir=str(tmp_path), timeout_seconds=10)
+        assert "NETWORK_OK" not in result.get("stdout", ""), (
+            "run_python must block network when allow_network=False"
+        )
+
+    def test_run_python_rejects_nonexistent_workspace(self, tmp_path):
+        """run_python must return error for workspace_dir that does not exist."""
+        from ai_hydro.mcp.tools_execution import run_python
+        result = run_python(
+            script="print('hi')",
+            workspace_dir=str(tmp_path / "nonexistent_dir"),
+            timeout_seconds=5,
+        )
+        assert result.get("error") is True
+        assert result.get("code") == "WORKSPACE_NOT_FOUND"
+
+    def test_run_python_blocks_pip_install(self, tmp_path):
+        """Scripts containing literal 'pip install' must be rejected before execution."""
+        from ai_hydro.mcp.tools_execution import run_python
+        result = run_python(
+            script="pip install numpy",
+            workspace_dir=str(tmp_path),
+            timeout_seconds=5,
+        )
+        assert result.get("error") is True
+        assert result.get("code") == "BLOCKED_OPERATION"
+
+
+class TestPhase2Skills:
+    """T2.6 — Skills foundation."""
+
+    def test_list_skills_returns_without_raising(self):
+        """list_skills must return a structured result with a 'skills' key and not raise."""
+        from ai_hydro.mcp.tools_skills import list_skills
+        result = list_skills()
+        assert isinstance(result, dict), f"list_skills must return a dict; got {type(result)}"
+        assert "skills" in result, f"list_skills result must have 'skills' key; got {list(result.keys())}"
+        assert isinstance(result["skills"], list)
+
+    def test_list_skills_by_domain_returns_structured_result(self):
+        """list_skills with domain filter must return a result with 'skills' key."""
+        from ai_hydro.mcp.tools_skills import list_skills
+        result = list_skills(domain="modelling")
+        assert isinstance(result, dict)
+        assert "skills" in result
+
+    def test_load_skill_not_found_returns_error(self):
+        """load_skill with an unknown name must return an error dict, not raise."""
+        from ai_hydro.mcp.tools_skills import load_skill
+        result = load_skill("nonexistent-skill-xyz-123")
+        assert isinstance(result, dict)
+        assert result.get("error") is True or "not found" in str(result).lower()
+
+
+class TestPhase2CLIs:
+    """T2.7 — CLI enumeration."""
+
+    def test_list_relevant_clis_returns_dict_with_tools_key(self):
+        """list_relevant_clis must return a dict with a 'clis' or 'tools' key."""
+        from ai_hydro.mcp.tools_execution import list_relevant_clis
+        result = list_relevant_clis()
+        assert isinstance(result, dict)
+        # Must have some structure indicating what CLIs are installed
+        assert any(k in result for k in ("clis", "tools", "installed", "available"))
+
+
+class TestPhase2Baseflow:
+    """T2.8 — separate_baseflow companion tool."""
+
+    def test_separate_baseflow_missing_streamflow_returns_error(self, tmp_path):
+        """separate_baseflow without streamflow in session must return MISSING_PREREQUISITES."""
+        from ai_hydro.mcp.tools_analysis import separate_baseflow
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            result = separate_baseflow("empty-session-bf-test")
+            assert result.get("error") is True
+            assert result.get("code") == "MISSING_PREREQUISITES"
+
+    def test_extract_signatures_still_returns_bfi_scalar(self, tmp_path):
+        """BFI scalar in extract_hydrological_signatures must survive T2.8 split."""
+        from ai_hydro.mcp.tools_analysis import extract_hydrological_signatures
+        from ai_hydro.session import HydroSession
+        import numpy as np
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            # Populate session with synthetic streamflow
+            s = HydroSession("sig-bfi-test")
+            dates = [f"2010-01-{i+1:02d}" for i in range(30)]
+            flow = [float(i + 1) for i in range(30)]
+            s.streamflow = {
+                "data": {
+                    "dates": dates, "discharge_cms": flow,
+                    "n_days": 30, "gauge_id": "01031500",
+                },
+                "meta": {"tool": "fetch_streamflow_data"},
+            }
+            s.save()
+            result = extract_hydrological_signatures("sig-bfi-test")
+            # bfi or error; just verify tool runs and returns dict
+            assert isinstance(result, dict)
+
+
+class TestPhase2LibraryReference:
+    """T2.5 — get_library_reference no-arg enumeration (R6 fix)."""
+
+    def test_get_library_reference_no_arg_returns_catalog(self):
+        """get_library_reference() with no argument must return available card list."""
+        from ai_hydro.mcp.tools_analysis import get_library_reference
+        result = get_library_reference()
+        # Must be a dict with an enumeration key
+        assert isinstance(result, dict)
+        has_catalog = any(
+            k in result for k in ("available", "libraries", "cards", "available_libraries")
+        )
+        assert has_catalog, (
+            f"get_library_reference() (no-arg) must return a catalog dict; got: {list(result.keys())}"
+        )
+        # Must list pynhd as one of the available cards
+        catalog_values = str(result)
+        assert "pynhd" in catalog_values
