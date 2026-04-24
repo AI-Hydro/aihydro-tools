@@ -54,9 +54,10 @@ class TestToolRegistration:
         "load_skill",                  # T2.6 — 1.6.0
         # Discovery (1 — 1.6.0)
         "list_relevant_clis",          # T2.7 — 1.6.0
-        # Modelling (2)
+        # Modelling (3 — get_training_status added in 1.7.0)
         "train_hydro_model",
         "get_model_results",
+        "get_training_status",         # T3.1 — 1.7.0
         # Project management (5)
         "start_project",
         "add_session_to_project",

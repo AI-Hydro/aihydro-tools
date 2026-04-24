@@ -10,6 +10,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.7.0] — 2026-04-24
+
+### Added
+
+- **`get_training_status(job_id)`** — poll a training job started by `train_hydro_model`. Reads `status.json` from the job artifact directory. Returns `{job_id, status, progress, partial_results, error, log_path, updated_at}`.
+- **`ai_hydro/modelling/runner.py`** — detached subprocess runner for training jobs. Reads `job_config.json`, runs training, writes checkpoints + `status.json` at completion or failure.
+- **Six built-in v1 skills** (loaded by `list_skills()`, stored under `ai_hydro/skills/`):
+  - `flood-frequency-analysis` — extreme-value FFA, USGS Bulletin 17C workflow, distribution selection.
+  - `baseflow-separation` — Lyne-Hollick vs UKIH method selection, BFI interpretation by climate/geology.
+  - `model-selection` — HBV-light vs LSTM vs regionalization decision guide (Nearing 2021, Beck 2020).
+  - `calibration-diagnostics` — NSE/KGE decomposition, common pathologies, next-step recommendations (Gupta 2009, Clark 2021).
+  - `signature-interpretation` — FDC shape, BFI, runoff ratio, Q95/Q05 → basin-storyline paragraph (Addor 2018).
+  - `watershed-analysis-workflow` — end-to-end pipeline orchestrating all core analysis tools.
+- **P1 library cards:** `torch.json` and `geopandas.json` under `ai_hydro/knowledge/library_refs/`. Both include `version_compatible` range and hydrology-specific gotchas.
+- **`.github/workflows/knowledge-compat.yml`** — weekly + release-triggered CI workflow that smoke-tests each library card against its `version_compatible` lower-bound and validates required JSON fields (B2 Tier 3 enforcement).
+
+### Changed
+
+- **`train_hydro_model` rewritten as kickoff tool (R2 compliance):** Now returns `{job_id, status: "pending", artifact_dir, log_path, started_at}` immediately after spawning a detached subprocess. Heavy work (HBV restarts, LSTM training) runs in the background.
+- **`get_model_results`** extended to accept an optional `job_id` argument — reads results directly from the artifact directory when a complete job is available, without requiring session cache.
+
+### Deprecated
+
+- **`train_hydro_model` synchronous call** (`_train_hydro_model_sync_alias`): calling with session_id only kicks off then polls (backward-compat wrapper). Emits `DeprecationWarning("Calling train_hydro_model synchronously will be removed in 2.0...")`; removal in 2.0.
+
+---
+
 ## [1.6.0] — 2026-04-23
 
 ### Added
