@@ -50,7 +50,7 @@ def start_session(
     Returns
     -------
     dict with session_id, site_name, site_id, computed, pending, workspace_dir,
-    mcp_python (the correct interpreter for scripts), and available_packages.
+    python_interpreter (path to the Python interpreter used by run_python), and available_packages.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -61,7 +61,7 @@ def start_session(
         session.save()
         summary = session.summary()
         summary["workspace_dir"] = session.workspace_dir
-        summary["mcp_python"] = sys.executable
+        summary["python_interpreter"] = sys.executable
         pip_path = Path(sys.executable).parent / "pip"
         summary["mcp_pip"] = str(pip_path) if pip_path.exists() else f"{sys.executable} -m pip"
         try:
@@ -375,7 +375,7 @@ def list_available_tools() -> dict:
         return {
             "tools": tools_out,
             "n_tools": len(tools_out),
-            "mcp_python": sys.executable,
+            "python_interpreter": sys.executable,
             "note": (
                 "Install community plugins with: pip install <plugin-package>. "
                 "Restart the MCP server to discover newly installed plugins."
