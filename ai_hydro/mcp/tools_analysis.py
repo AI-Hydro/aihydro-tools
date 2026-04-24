@@ -1150,52 +1150,48 @@ def fetch_camels_us(
 # ============================================================================
 
 @mcp.tool()
-def get_library_reference(library: str) -> dict:
+def get_library_reference(library: str | None = None) -> dict:
     """
     Look up field-name gotchas, API quirks, and copy-paste patterns for a
-    core hydrological Python library.
+    Python library used in hydrological workflows.
 
-    Use this before writing Python scripts that use one of the supported
-    libraries — it prevents the most common hallucination mistakes (wrong
-    field names, wrong CRS, wrong unit assumptions).
+    Delegates to the MCP resource layer (aihydro://knowledge/library/{name})
+    so responses include version drift warnings when the installed library
+    version is outside the card's tested range.
 
-    Supported libraries
-    -------------------
-    pynhd       — NLDI watershed polygons and NHD data
-    pygeohydro  — USGS NWIS streamflow and NLCD land cover
-    pygridmet   — GridMET daily climate (precipitation, temperature)
-    py3dep      — 3DEP elevation (DEM) access
-    hydrofunctions — simple NWIS streamflow client
-    pysheds     — DEM-based flow direction, accumulation, TWI
-    rasterio    — raster I/O, masking, reprojection
-    xarray      — N-dimensional labeled arrays for gridded data
+    With no argument, returns a catalog of all available library references.
 
     Parameters
     ----------
-    library : str
-        Library name (case-insensitive). One of the supported libraries above.
+    library : str, optional
+        Library name (case-insensitive). Omit to list all available references.
 
     Returns
     -------
-    dict with keys:
-        library         : canonical library name
-        purpose         : one-line description
-        field_mappings  : dict of function → field name notes
-        gotchas         : list of common mistakes to avoid
-        common_patterns : dict of task → copy-paste code snippet
-        available_refs  : list of all libraries with references (if not found)
+    dict with library card data (gotchas, field_mappings, common_patterns,
+    version_compatible, and stale/stale_reason if drift detected),
+    or a catalog dict when called with no argument.
     """
     try:
-        from ai_hydro.knowledge import get_library_ref, list_library_refs
-        ref = get_library_ref(library)
-        if ref is None:
+        from ai_hydro.mcp.resources import _load_card, _list_all_library_names
+        if library is None:
+            names = _list_all_library_names()
+            return {
+                "available_libraries": names,
+                "n_available": len(names),
+                "usage": "Call get_library_reference(library='pynhd') to load a specific card.",
+                "resource_uri_pattern": "aihydro://knowledge/library/{name}",
+            }
+        card = _load_card(library.lower())
+        if card is None:
             return {
                 "error": True,
                 "code": "NOT_FOUND",
                 "message": f"No reference available for '{library}'.",
-                "available_refs": list_library_refs(),
+                "available_refs": _list_all_library_names(),
             }
-        return ref
+        return card
     except Exception as e:
         log.error("get_library_reference failed: %s", e)
         return _tool_error_to_dict(e)
+

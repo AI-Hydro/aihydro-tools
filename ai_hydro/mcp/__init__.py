@@ -13,6 +13,7 @@ from ai_hydro.mcp import tools_session    # noqa: F401
 from ai_hydro.mcp import tools_modelling  # noqa: F401
 from ai_hydro.mcp import tools_project    # noqa: F401  — v1.2: project, literature, persona
 from ai_hydro.mcp import tools_execution  # noqa: F401  — v1.6.0: run_python, list_relevant_clis
+from ai_hydro.mcp import resources          # noqa: F401  — v1.6.0: M8 knowledge resource layer
 
 # Discover and register community plugin tools via entry points.
 # Third-party packages register tools in their pyproject.toml:
