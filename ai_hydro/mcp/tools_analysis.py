@@ -1149,6 +1149,130 @@ def fetch_camels_us(
 # Tool: Library Reference (gotchas, field mappings, code patterns)
 # ============================================================================
 
+
+@mcp.tool()
+def separate_baseflow(
+    session_id: str,
+    method: str = "lyne_hollick",
+    alpha: float = 0.925,
+    n_passes: int = 3,
+) -> dict:
+    """
+    Separate baseflow from total streamflow using a digital filter method.
+
+    Writes the full daily baseflow series and a BFI scalar to the session
+    baseflow slot. The existing BFI scalar in extract_hydrological_signatures
+    is preserved for backward compatibility.
+
+    Methods
+    -------
+    lyne_hollick : Recursive digital filter (Lyne & Hollick, 1979).
+        Standard choice — fast, single parameter (alpha).
+        Recommended for most purposes.
+    ukih : UK Institute of Hydrology five-day interval method
+        (Gustard et al., 1992). Non-parametric, robust for perennial streams.
+        Use when you want an alpha-free estimate.
+
+    Parameters
+    ----------
+    session_id : str
+        Research session identifier. Streamflow must be in session.streamflow.
+    method : str
+        Separation method: 'lyne_hollick' (default) or 'ukih'.
+    alpha : float
+        Lyne-Hollick filter parameter (0.9-0.95). Ignored for UKIH.
+    n_passes : int
+        Number of forward/backward passes (1 or 3). Ignored for UKIH.
+
+    Returns
+    -------
+    dict with bfi, baseflow_mean_cms, total_flow_mean_cms, method, n_days,
+    and session slot written.
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        from ai_hydro.analysis.baseflow import lyne_hollick, ukih, compute_bfi
+        import numpy as np
+
+        session = HydroSession.load(session_id)
+        if not session.streamflow:
+            return {
+                "error": True,
+                "code": "MISSING_PREREQUISITES",
+                "message": "No streamflow data in session. Run fetch_streamflow_data first.",
+                "recovery": "fetch_streamflow_data(session_id, gauge_id)",
+            }
+
+        # Extract streamflow array from session
+        sf = session.streamflow
+        data = sf.get("data", sf) if isinstance(sf, dict) else sf
+        # Try common keys for flow array
+        q = None
+        for key in ("discharge_cms", "flow_cms", "streamflow", "q"):
+            if key in data and data[key] is not None:
+                q = np.asarray(data[key], dtype=float)
+                break
+        if q is None:
+            # Fallback: take first numeric array value
+            for v in data.values():
+                if hasattr(v, "__len__") and len(v) > 1:
+                    q = np.asarray(v, dtype=float)
+                    break
+        if q is None or len(q) < 10:
+            return {
+                "error": True,
+                "code": "INVALID_STREAMFLOW",
+                "message": "Could not extract a flow array from session.streamflow.",
+                "recovery": "Ensure fetch_streamflow_data ran successfully and returned a daily series.",
+            }
+
+        method = method.lower()
+        if method == "lyne_hollick":
+            bf = lyne_hollick(q, alpha=alpha, n_passes=n_passes)
+        elif method == "ukih":
+            bf = ukih(q)
+        else:
+            return {
+                "error": True,
+                "code": "UNKNOWN_METHOD",
+                "message": f"Unknown method '{method}'. Choose 'lyne_hollick' or 'ukih'.",
+            }
+
+        bfi = compute_bfi(q, bf)
+        result = {
+            "method": method,
+            "alpha": alpha if method == "lyne_hollick" else None,
+            "n_passes": n_passes if method == "lyne_hollick" else None,
+            "n_days": int(len(q)),
+            "bfi": round(float(bfi), 4),
+            "baseflow_mean_cms": round(float(np.nanmean(bf)), 4),
+            "total_flow_mean_cms": round(float(np.nanmean(q)), 4),
+            "baseflow_series_length": len(bf),
+            "_note": "Full baseflow series stored in session.baseflow.baseflow_series (not returned inline — context-window protection).",
+        }
+        session.set("baseflow", {
+            "data": {
+                "bfi": bfi,
+                "method": method,
+                "baseflow_series": bf.tolist(),
+                "total_flow_series": q.tolist(),
+                "n_days": len(q),
+            },
+            "meta": {
+                "tool": "separate_baseflow",
+                "method": method,
+                "alpha": alpha,
+                "n_passes": n_passes,
+            },
+        })
+        session.save()
+
+        return result
+    except Exception as e:
+        log.error("separate_baseflow failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
 @mcp.tool()
 def get_library_reference(library: str | None = None) -> dict:
     """

@@ -111,6 +111,18 @@ aihydro-mcp = "ai_hydro.mcp:main"
 # Community plugin knowledge entry point namespace.
 # Third-party packages contribute library reference cards:
 #   [project.entry-points."aihydro.knowledge"]
+[project.entry-points."aihydro.skills"]
+# Community packages contribute workflow skills (SKILL.md files):
+#   [project.entry-points."aihydro.skills"]
+#   flood_skills = "my_pkg.skills:get_skills_dir"
+# where get_skills_dir() returns a Path to a dir of *.md skill files.
+
+[project.entry-points."aihydro.clis"]
+# Community packages advertise their CLIs to list_relevant_clis():
+#   [project.entry-points."aihydro.clis"]
+#   swat = "swatplus_builder.aihydro.cli_descriptor:descriptor"
+# where descriptor() returns {name, binary, description, help_subcommand}.
+
 #   my_lib = "my_package.knowledge:get_refs_dir"
 # where get_refs_dir() returns a pathlib.Path to a dir of *.json files.
 [project.entry-points."aihydro.knowledge"]
