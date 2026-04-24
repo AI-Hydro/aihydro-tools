@@ -1,0 +1,32 @@
+{
+  "library": "geopandas",
+  "version_tested": "0.14.x",
+  "purpose": "Geospatial vector data — watershed polygons, gauge locations, masking, area calculations",
+  "install": "pip install geopandas",
+  "field_mappings": {
+    "GeoDataFrame.to_crs": {
+      "note": "Always reproject before area/length calculations. EPSG:4326 areas are meaningless (degrees, not metres).",
+      "example": "area_km2 = gdf.to_crs('EPSG:5070').geometry.area.iloc[0] / 1e6"
+    },
+    "GeoDataFrame.clip": {
+      "note": "Both geometries must be in the same CRS. Reproject the mask or the GeoDataFrame before clipping."
+    }
+  },
+  "gotchas": [
+    "EPSG:4326 is degrees — never compute .area or .length in this CRS. Reproject to an equal-area CRS first (EPSG:5070 for CONUS, EPSG:3857 is NOT equal-area).",
+    "gdf.geometry.iloc[0] vs gdf.geometry — single-row GeoDataFrames need .iloc[0] to get the shapely geometry object.",
+    "read_file() raises DriverError if fiona is missing. Install with: pip install geopandas[all] or pip install fiona.",
+    "Mixing CRS silently: GeoDataFrame.overlay() and .sjoin() do NOT auto-reproject — both must be in the same CRS.",
+    "Empty geometry: check gdf.is_empty.any() before operations. NLDI sometimes returns empty polygons for ungauged sites.",
+    "CRS comparison: use gdf.crs == other.crs not str(gdf.crs) == str(other.crs) — string representations differ across versions.",
+    "Writing to GeoJSON always writes in EPSG:4326 — reproject before writing if you need a different CRS.",
+    "shapely 2.x changed geometry creation: use shapely.from_wkt() not shapely.wkt.loads()."
+  ],
+  "common_patterns": {
+    "area_km2": "area_km2 = gdf.to_crs('EPSG:5070').geometry.area.iloc[0] / 1e6",
+    "mask_raster": "import rasterio.mask\nwith rasterio.open(raster_path) as src:\n    geom = [gdf.to_crs(src.crs).geometry.iloc[0].__geo_interface__]\n    out_image, out_transform = rasterio.mask.mask(src, geom, crop=True)\n    out_meta = src.meta.copy()",
+    "reproject_and_clip": "gdf_proj = gdf.to_crs('EPSG:5070')\nclipped = gdf_proj.clip(mask_gdf.to_crs('EPSG:5070'))",
+    "point_from_coords": "import geopandas as gpd\nfrom shapely.geometry import Point\ngdf = gpd.GeoDataFrame({'id': ['g1']}, geometry=[Point(lon, lat)], crs='EPSG:4326')"
+  },
+  "version_compatible": ">=0.12.0,<2.0.0"
+}
