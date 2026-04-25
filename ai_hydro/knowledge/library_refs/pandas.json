@@ -1,0 +1,33 @@
+{
+  "library": "pandas",
+  "version_tested": "2.x",
+  "purpose": "Tabular data — streamflow timeseries, signatures, model outputs, CSV I/O",
+  "install": "pip install pandas",
+  "field_mappings": {
+    "DataFrame.resample": {
+      "note": "Requires DatetimeIndex. Always parse dates when reading: pd.read_csv(..., parse_dates=['date'], index_col='date').",
+      "example": "annual_q = df['discharge'].resample('YE').mean()"
+    },
+    "DataFrame.rolling": {
+      "note": "min_periods=1 avoids NaN at the start of a window. Default drops incomplete windows.",
+      "example": "df['q_7day'] = df['q'].rolling(7, min_periods=1).mean()"
+    }
+  },
+  "gotchas": [
+    "Setting values on a copy: df[df['q'] > 0]['flag'] = 1 silently does nothing. Use df.loc[df['q'] > 0, 'flag'] = 1.",
+    "Integer dtype with NaN: int columns become float64 when NaN is present. Use pd.Int64Dtype() for nullable integers.",
+    "Chained indexing: df['a']['b'] can raise SettingWithCopyWarning — use df.loc[:, ('a', 'b')] or df[['a']]['b'].",
+    "Date parsing timezone: pd.to_datetime() without utc=True drops timezone info. For NWIS data, use pd.to_datetime(..., utc=True).dt.tz_convert(None) to strip tz.",
+    "resample vs groupby: resample('ME') (month-end) vs groupby(df.index.month) give different alignment for irregular timeseries.",
+    "Pandas 2.0 removed append(): use pd.concat([df1, df2], ignore_index=True) instead.",
+    "Copy-on-Write (pandas 2.0+): modifying a slice modifies a copy — use .copy() explicitly if you need an independent frame.",
+    "merge vs join: merge() on columns, join() on index. Use suffixes=('_x', '_y') when column names collide."
+  ],
+  "common_patterns": {
+    "read_streamflow_csv": "import pandas as pd\ndf = pd.read_csv('streamflow.csv', parse_dates=['date'], index_col='date')\ndf = df.sort_index()\ndf = df[~df.index.duplicated(keep='first')]",
+    "annual_stats": "stats = df['q'].resample('YE').agg(['mean', 'max', 'min'])\nstats.index = stats.index.year",
+    "fdc": "fdc = df['q'].sort_values(ascending=False).reset_index(drop=True)\nexceedance = (fdc.index + 1) / len(fdc) * 100",
+    "concat_sessions": "all_data = pd.concat([df1, df2], axis=0, ignore_index=False)\nall_data = all_data.sort_index()"
+  },
+  "version_compatible": ">=1.5.0,<3.0.0"
+}

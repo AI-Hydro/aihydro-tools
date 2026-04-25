@@ -1,0 +1,33 @@
+{
+  "library": "matplotlib",
+  "version_tested": "3.8.x",
+  "purpose": "Publication-quality figures — hydrographs, FDCs, scatter plots, maps",
+  "install": "pip install matplotlib",
+  "field_mappings": {
+    "plt.savefig": {
+      "note": "Always call plt.close(fig) after saving to release memory. Use dpi=300 for publication.",
+      "example": "fig.savefig('output.png', dpi=300, bbox_inches='tight')\nplt.close(fig)"
+    },
+    "ax.set_yscale": {
+      "note": "For FDCs and hydrographs, log scale exposes low-flow behaviour. Use 'log' not 'symlog'.",
+      "example": "ax.set_yscale('log')\nax.set_ylim(bottom=1e-2)  # avoid log(0)"
+    }
+  },
+  "gotchas": [
+    "plt vs fig/ax: plt.plot() operates on the current axes — safe for quick scripts. In functions, always use fig, ax = plt.subplots() to avoid state leakage between tests.",
+    "Memory leak: not calling plt.close(fig) after saving leaves the figure open. In loops, use plt.close('all') at the end.",
+    "log scale with zeros: ax.set_yscale('log') will fail silently or raise if the data contains 0 or negative values. Clip: q = np.clip(q, 1e-6, None).",
+    "Twin axes alignment: ax2 = ax.twinx() shares the x-axis. Tick labels on ax2 don't align with ax1 by default — use ax2.set_yticks(...).",
+    "Colour-blind palettes: default matplotlib tab10 is not colour-blind friendly. Use seaborn's 'colorblind' palette or matplotlib's 'tab10' with explicit colours.",
+    "Tight layout: fig.tight_layout() can fail with colorbars. Use constrained_layout=True in plt.subplots(constrained_layout=True) instead.",
+    "Date axis: matplotlib stores dates as floats internally. Use mdates.DateFormatter and mdates.AutoDateLocator for clean tick labels on time axes.",
+    "DPI and figure size: default figsize=(6.4, 4.8) at dpi=100. For publication (column width ~3.5 inches): figsize=(3.5, 2.5), dpi=300."
+  ],
+  "common_patterns": {
+    "hydrograph": "fig, ax = plt.subplots(figsize=(10, 4))\nax.plot(dates, obs, label='Observed', color='steelblue')\nax.plot(dates, sim, label='Simulated', color='tomato', linestyle='--')\nax.set_ylabel('Discharge (m³/s)')\nax.legend()\nfig.savefig('hydrograph.png', dpi=300, bbox_inches='tight')\nplt.close(fig)",
+    "fdc": "fig, ax = plt.subplots(figsize=(6, 5))\nexceedance = np.linspace(0, 100, len(q_sorted))\nax.semilogy(exceedance, q_sorted)\nax.set_xlabel('Exceedance probability (%)')\nax.set_ylabel('Discharge (m³/s)')",
+    "dual_axis": "fig, ax1 = plt.subplots()\nax2 = ax1.twinx()\nax1.bar(dates, precip, color='steelblue', alpha=0.4, label='P')\nax2.plot(dates, q, color='tomato', label='Q')",
+    "save_close": "fig.savefig(output_path, dpi=300, bbox_inches='tight')\nplt.close(fig)"
+  },
+  "version_compatible": ">=3.5.0,<4.0.0"
+}

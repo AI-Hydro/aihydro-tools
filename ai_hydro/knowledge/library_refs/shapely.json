@@ -1,0 +1,33 @@
+{
+  "library": "shapely",
+  "version_tested": "2.0.x",
+  "purpose": "Geometric operations — watershed boundary manipulation, point-in-polygon, bbox, buffer",
+  "install": "pip install shapely",
+  "field_mappings": {
+    "Polygon.area": {
+      "note": "Area is in the units of the CRS. For EPSG:4326 (degrees) this is meaningless — reproject first.",
+      "example": "from pyproj import Transformer\n# Reproject geometry before computing area"
+    },
+    "unary_union": {
+      "note": "shapely 2.0: use shapely.unary_union(geom_list) (module-level function), not geometry.union_all().",
+      "example": "import shapely\nmerged = shapely.unary_union(geom_list)"
+    }
+  },
+  "gotchas": [
+    "shapely 1.x vs 2.x: from shapely.geometry import Point still works, but shapely.wkt.loads is removed — use shapely.from_wkt().",
+    "Area in EPSG:4326: polygon.area returns square degrees — always use an equal-area projection (EPSG:5070, EPSG:3857 is NOT equal-area).",
+    "Validity: complex polygons from NLDI may be invalid (.is_valid == False). Fix with shapely.make_valid(geom).",
+    "Coordinate order: shapely uses (x, y) = (lon, lat) everywhere. GeoJSON uses [lon, lat]. pyproj uses (lat, lon) in EPSG:4326 by default — pass always_xy=True.",
+    "Null geometry: GeometryCollection with 0 parts is falsy (bool(GeometryCollection()) is False) but is not None.",
+    "Bounds: geom.bounds returns (minx, miny, maxx, maxy). For rasterio, mask expects a dict via geom.__geo_interface__.",
+    "shapely 2.0 performance: vectorised functions (shapely.contains, shapely.intersects) are 10-100x faster than calling methods in a loop.",
+    "Precision: shapely.set_precision(geom, 1e-6) fixes floating-point topology errors before overlay operations."
+  ],
+  "common_patterns": {
+    "from_geojson": "import shapely\nimport json\ngeom = shapely.from_geojson(json.dumps(geojson_dict))",
+    "centroid_lonlat": "lon, lat = geom.centroid.x, geom.centroid.y",
+    "bbox_to_polygon": "from shapely.geometry import box\nbbox_poly = box(minx, miny, maxx, maxy)",
+    "make_valid": "import shapely\ngeom = shapely.make_valid(geom) if not geom.is_valid else geom"
+  },
+  "version_compatible": ">=1.8.0,<3.0.0"
+}

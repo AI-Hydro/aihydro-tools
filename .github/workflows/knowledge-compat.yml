@@ -74,6 +74,51 @@ jobs:
               gdf = gpd.GeoDataFrame({"id": [1]}, geometry=[Point(0, 0)], crs="EPSG:4326")
               area = gdf.to_crs("EPSG:5070").geometry.area.iloc[0]
               print("geopandas area (m2):", area)
+          # P2 cards added in 2.0.0
+          - card: pandas
+            install: "pandas>=1.5.0"
+            smoke: |
+              import pandas as pd
+              import numpy as np
+              dates = pd.date_range("2000-01-01", periods=365, freq="D")
+              q = pd.Series(np.random.rand(365), index=dates, name="q")
+              fdc = q.sort_values(ascending=False).reset_index(drop=True)
+              print("pandas FDC Q50:", round(fdc.quantile(0.5), 4))
+          - card: numpy
+            install: "numpy>=1.24.0"
+            smoke: |
+              import numpy as np
+              q = np.random.rand(365)
+              nse_val = 1 - np.sum((q - q.mean()) ** 2) / np.sum((q - q.mean()) ** 2)
+              print("numpy NSE (trivial):", round(float(nse_val), 4))
+          - card: shapely
+            install: "shapely>=1.8.0"
+            smoke: |
+              import shapely
+              from shapely.geometry import box, Point
+              bbox = box(-70, 44, -69, 45)
+              pt = Point(-69.5, 44.5)
+              print("shapely contains:", shapely.contains(bbox, pt))
+          - card: matplotlib
+            install: "matplotlib>=3.5.0"
+            smoke: |
+              import matplotlib
+              matplotlib.use("Agg")
+              import matplotlib.pyplot as plt
+              import numpy as np
+              fig, ax = plt.subplots()
+              ax.plot(np.arange(10), np.random.rand(10))
+              fig.savefig("/tmp/mpl_smoke.png", dpi=72)
+              plt.close(fig)
+              print("matplotlib save: OK")
+          - card: folium
+            install: "folium>=0.14.0"
+            smoke: |
+              import folium
+              m = folium.Map(location=[44.5, -69.5], zoom_start=9)
+              folium.CircleMarker([44.5, -69.5], radius=6).add_to(m)
+              html = m._repr_html_()
+              print("folium map HTML length:", len(html))
 
     steps:
       - uses: actions/checkout@v4
