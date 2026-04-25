@@ -1403,6 +1403,12 @@ def get_library_reference(library: str | None = None) -> dict:
 
     With no argument, returns a catalog of all available library references.
 
+    M3 façade decision (2.0, §7.6): this tool is retained because MCP client
+    resource support (list_resources / read_resource) has not uniformly
+    matured across target clients (Claude Code, Cline, Claude Desktop).
+    The façade will be re-evaluated in a future minor release once resource
+    support is stable.
+
     Parameters
     ----------
     library : str, optional

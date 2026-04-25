@@ -1124,3 +1124,108 @@ class TestPhase2LibraryReference:
         # Must list pynhd as one of the available cards
         catalog_values = str(result)
         assert "pynhd" in catalog_values
+
+
+# ── Phase 4 tests ────────────────────────────────────────────────────────────
+
+class TestPhase4AliasRemoval:
+    """T4.1 + T4.2 — verify deprecated aliases are gone in 2.0."""
+
+    def test_no_deprecation_warnings_on_import(self):
+        """Clean import of ai_hydro.mcp must emit zero DeprecationWarnings."""
+        import warnings
+        import importlib
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            import ai_hydro.mcp
+        dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(dep_warnings) == 0, (
+            f"ai_hydro.mcp import emitted {len(dep_warnings)} DeprecationWarning(s) — "
+            "all deprecated aliases must be removed for 2.0"
+        )
+
+    def test_sync_research_context_not_an_mcp_tool(self):
+        """sync_research_context must not appear in the registered MCP tool list."""
+        import asyncio
+        from ai_hydro.mcp import mcp
+        tools = asyncio.run(mcp.list_tools())
+        names = {t.name for t in tools}
+        assert "sync_research_context" not in names
+
+    def test_train_sync_alias_removed(self):
+        """_train_hydro_model_sync_alias must not exist in tools_modelling."""
+        import ai_hydro.mcp.tools_modelling as tm
+        assert not hasattr(tm, "_train_hydro_model_sync_alias"), (
+            "_train_hydro_model_sync_alias was a deprecated 1.x alias and must not exist in 2.0"
+        )
+
+
+class TestPhase4LibraryCards:
+    """T4.4 — P2 library cards (pandas, numpy, shapely, matplotlib, folium)."""
+
+    P2_CARDS = ["pandas", "numpy", "shapely", "matplotlib", "folium"]
+
+    @pytest.mark.parametrize("card_name", P2_CARDS)
+    def test_p2_card_loadable(self, card_name):
+        """Each P2 card must be returned by get_library_reference."""
+        from ai_hydro.mcp.tools_analysis import get_library_reference
+        result = get_library_reference(card_name)
+        assert isinstance(result, dict), f"Expected dict for {card_name}"
+        assert not result.get("error"), f"Error loading {card_name}: {result}"
+        assert result.get("library") == card_name
+        assert len(result.get("gotchas", [])) >= 6
+        assert len(result.get("common_patterns", {})) >= 3
+        assert "version_compatible" in result
+
+    def test_p2_cards_in_catalog(self):
+        """All 5 P2 cards must appear in the no-arg catalog."""
+        from ai_hydro.mcp.tools_analysis import get_library_reference
+        catalog = get_library_reference()
+        available = catalog.get("available_libraries", [])
+        for card in self.P2_CARDS:
+            assert card in available, f"P2 card '{card}' missing from catalog"
+
+
+class TestPhase4ExportCapsule:
+    """T4.6 — export_session capsule_path parameter and model/ directory."""
+
+    def test_export_session_accepts_capsule_path(self, tmp_path):
+        """export_session must write to capsule_path when provided."""
+        from ai_hydro.mcp.tools_session import export_session
+        from ai_hydro.session import HydroSession
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            s = HydroSession("capsule-path-test")
+            s.site_name = "test-basin"
+            s.interpretation = "The basin is groundwater-dominated."
+            s.workspace_dir = str(tmp_path)
+            s.save()
+            custom_path = tmp_path / "my-capsule-dir"
+            result = export_session("capsule-path-test", capsule_path=str(custom_path))
+            assert not result.get("error"), f"export_session failed: {result}"
+            assert result["capsule_dir"] == str(custom_path)
+            cap = custom_path
+            assert (cap / "README.md").exists()
+            assert (cap / "methods.md").exists()
+            assert (cap / "citations.bib").exists()
+            assert (cap / "session.json").exists()
+            assert (cap / "environment.yml").exists()
+            assert (cap / "model").is_dir()
+            assert (cap / "data").is_dir()
+            assert (cap / "figures").is_dir()
+
+    def test_export_capsule_includes_interpretation_in_readme(self, tmp_path):
+        """README.md must contain the stored scientific interpretation."""
+        from ai_hydro.mcp.tools_session import export_session
+        from ai_hydro.session import HydroSession
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            s = HydroSession("readme-interp-test")
+            s.site_name = "my-basin"
+            s.interpretation = "Unique interpretation text for testing."
+            s.workspace_dir = str(tmp_path)
+            s.save()
+            result = export_session("readme-interp-test")
+            cap = Path(result["capsule_dir"])
+            readme_text = (cap / "README.md").read_text()
+            assert "Unique interpretation text for testing." in readme_text

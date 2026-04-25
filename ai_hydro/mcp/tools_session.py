@@ -1,7 +1,7 @@
 """
-Session management MCP tools (8 tools).
+Session management MCP tools (8 tools — 2.0.0).
 
-Start, query, clear, annotate, sync, export, and discover research sessions.
+Start, query, clear, annotate, export, and discover research sessions.
 """
 from __future__ import annotations
 
@@ -345,6 +345,7 @@ def list_available_tools() -> dict:
 @mcp.tool()
 def export_session(
     session_id: str,
+    capsule_path: str | None = None,
     format: str = "capsule",
 ) -> dict:
     """
@@ -352,21 +353,27 @@ def export_session(
 
     All output is SAVED TO DISK — never returned inline.
 
+    The capsule layout (PLATFORM_VISION §3):
+        README.md       — LLM-authored overview + scientific interpretation
+        methods.md      — provenance table for every computed analysis
+        citations.bib   — BibTeX for all data sources
+        environment.yml — exact conda/pip environment for reproduction
+        session.json    — complete provenance record
+        data/           — JSON/GeoJSON/TIF files from workspace
+        figures/        — PNG/HTML figures from workspace
+        model/          — trained model artifacts (HBV params, simulated_q.csv)
+
     Parameters
     ----------
     session_id : str
         Research session identifier.
+    capsule_path : str, optional
+        Absolute path to write the capsule folder. Defaults to
+        <workspace_dir>/capsule_<slug>_<date>/ or ~/.aihydro/exports/.
     format : str
-        'capsule' (default) — full reproducible research package (folder):
-            README.md       — overview + LLM interpretation (if available)
-            methods.md      — provenance table for every computed analysis
-            citations.bib   — BibTeX for all data sources
-            session.json    — complete provenance record
-            data/           — JSON/GeoJSON/TIF files from workspace
-            figures/        — PNG/HTML figures from workspace
-            environment.yml — Python environment specification
-        'bibtex' — BibTeX references only
-        'json'   — raw session JSON only
+        'capsule' (default) — full reproducible research package (folder).
+        'bibtex' — BibTeX references only.
+        'json'   — raw session JSON only.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -393,10 +400,14 @@ def export_session(
                     "computed": session.computed()}
 
         # Capsule
-        base = Path(session.workspace_dir) if session.workspace_dir else Path.home() / ".aihydro" / "exports"
-        capsule_dir = base / f"capsule_{slug}_{today}"
+        if capsule_path:
+            capsule_dir = Path(capsule_path)
+        else:
+            base = Path(session.workspace_dir) if session.workspace_dir else Path.home() / ".aihydro" / "exports"
+            capsule_dir = base / f"capsule_{slug}_{today}"
         (capsule_dir / "data").mkdir(parents=True, exist_ok=True)
         (capsule_dir / "figures").mkdir(parents=True, exist_ok=True)
+        (capsule_dir / "model").mkdir(parents=True, exist_ok=True)
 
         # README.md
         display = session.site_name or session.site_id or session_id
@@ -479,6 +490,28 @@ def export_session(
                     dest = capsule_dir / "figures" / f.name
                     shutil.copy2(f, dest)
                     files_written.append(str(dest))
+
+        # model/ — copy trained model artifacts from session model slot
+        if session.model:
+            model_data = session.model.get("data", {})
+            model_dir_str = model_data.get("model_dir")
+            if model_dir_str:
+                model_src = Path(model_dir_str)
+                if model_src.is_dir():
+                    for f in model_src.iterdir():
+                        if f.is_file() and f.suffix in (".json", ".csv", ".pt", ".pth", ".txt"):
+                            dest = capsule_dir / "model" / f.name
+                            shutil.copy2(f, dest)
+                            files_written.append(str(dest))
+            # Write model metrics summary
+            metrics = {k: v for k, v in model_data.items()
+                       if k in ("nse", "kge", "rmse", "framework", "model_type",
+                                "train_start", "train_end", "test_start", "test_end")}
+            if metrics:
+                (capsule_dir / "model" / "metrics.json").write_text(
+                    json.dumps(metrics, indent=2)
+                )
+                files_written.append(str(capsule_dir / "model" / "metrics.json"))
 
         # environment.yml
         (capsule_dir / "environment.yml").write_text(_build_environment_yml(slug))
