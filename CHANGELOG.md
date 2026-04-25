@@ -10,6 +10,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.0.0] — 2026-04-24
+
+### Removed (breaking changes)
+
+- **`sync_research_context`** MCP tool removed. Deprecated in 1.6.0. Replace with `get_session_raw_state` (Phase 1) + `write_research_interpretation` (Phase 2). See [MIGRATION.md](MIGRATION.md).
+- **`_train_hydro_model_sync_alias`** private function removed. Deprecated in 1.7.0. Use `train_hydro_model` (kickoff) + `get_training_status` (poll) directly.
+- **`findings` field** on `get_session_summary` and `get_project_summary` responses. Deprecated in 1.6.0. Use `get_session_raw_state` to read computed data.
+- All `DeprecationWarning` emissions on normal usage are eliminated. Clean import emits zero warnings.
+
+### Added
+
+- **P2 library cards** under `ai_hydro/knowledge/library_refs/`: `pandas`, `numpy`, `shapely`, `matplotlib`, `folium`. Each contains ≥8 gotchas, ≥4 common patterns, and `version_compatible` range. Discoverable via `get_library_reference()`.
+- **`export_session` `capsule_path` parameter** — explicit output path for the capsule folder. Signature: `export_session(session_id, capsule_path=None, format="capsule")`.
+- **`model/` directory in research capsule** — copies trained model artifacts (HBV params, simulated discharge CSV, metrics summary) alongside `data/`, `figures/`, `environment.yml`, `citations.bib`.
+- **`MIGRATION.md`** — migration guide covering every removed 1.x signature with before/after examples.
+- **knowledge-compat.yml CI extended** with P2 card smoke tests (pandas, numpy, shapely, matplotlib, folium).
+
+### Changed
+
+- `get_library_reference` façade retained (M3 façade decision: MCP resource support not yet uniform across Cline/Claude Code/Claude Desktop; see §7.6). Decision documented in function docstring.
+- `_sync_reminder` in `helpers.py` updated to reference `write_research_interpretation` instead of removed `sync_research_context`.
+- All internal documentation and `research.md` templates updated to reference the two-phase split tools.
+
+---
+
 ## [1.7.0] — 2026-04-24
 
 ### Added
