@@ -68,8 +68,9 @@ The [AI-Hydro VS Code extension](https://github.com/AI-Hydro/AI-Hydro) auto-dete
 | **Session** | `get_session_summary` | Overview of computed and pending analysis slots |
 | **Session** | `clear_session` | Reset cached results to force re-computation |
 | **Session** | `add_note` | Attach research notes to the session |
-| **Session** | `export_session` | Export a citable methods paragraph for manuscripts |
-| **Session** | `sync_research_context` | Refresh AI context with current session state |
+| **Session** | `export_session` | Export a reproducible research capsule with data, figures, methods, and environment |
+| **Session** | `get_session_raw_state` | Retrieve raw computed results for LLM interpretation (Phase 1 of two-phase split) |
+| **Session** | `write_research_interpretation` | Store LLM-authored scientific interpretation (Phase 2 of two-phase split) |
 
 ### Project, Literature & Researcher Memory
 
