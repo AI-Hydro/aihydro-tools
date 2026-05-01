@@ -1,0 +1,31 @@
+{
+  "library": "torch",
+  "version_tested": "2.2.x",
+  "purpose": "PyTorch deep learning — differentiable HBV-light and LSTM hydrology models",
+  "install": "pip install torch",
+  "field_mappings": {
+    "Tensor.detach().numpy()": {
+      "note": "Call .detach() before .numpy() on tensors that require gradients. Omitting detach() raises RuntimeError.",
+      "example": "loss_val = loss.detach().item()"
+    },
+    "DataLoader": {
+      "note": "Set num_workers=0 on macOS/Windows when running inside MCP subprocess to avoid multiprocessing issues."
+    }
+  },
+  "gotchas": [
+    "Always call optimizer.zero_grad() before loss.backward() — omitting this accumulates gradients across batches.",
+    "NaN in loss usually means exploding gradients. Add gradient clipping: torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0).",
+    "model.eval() + torch.no_grad() are both required for inference — eval() alone does not stop gradient computation.",
+    "torch.save(model.state_dict()) not model itself — loading the full model object breaks across Python versions.",
+    "CUDA out-of-memory: reduce batch size or call torch.cuda.empty_cache() then retry. Check torch.cuda.is_available().",
+    "Hydrology-specific: streamflow targets often span orders of magnitude — log-transform before training or use NSE loss.",
+    "train_hbv_light uses CPU only. Do not move tensors to GPU — HBV-light is small enough that CPU is optimal.",
+    "For HBV restarts, re-initialise model parameters (nn.init.uniform_) before each restart, not just the optimizer."
+  ],
+  "common_patterns": {
+    "nse_loss": "def nse_loss(pred, obs):\n    obs_mean = obs.mean()\n    return 1 - ((pred - obs)**2).sum() / ((obs - obs_mean)**2).sum()",
+    "training_loop": "optimizer = torch.optim.Adam(model.parameters(), lr=lr)\nfor epoch in range(epochs):\n    optimizer.zero_grad()\n    pred = model(x)\n    loss = nse_loss(pred, y)\n    loss.backward()\n    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)\n    optimizer.step()",
+    "save_load": "torch.save(model.state_dict(), 'model.pt')\nmodel.load_state_dict(torch.load('model.pt', map_location='cpu'))"
+  },
+  "version_compatible": ">=1.13.0,<3.0.0"
+}

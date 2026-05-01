@@ -16,7 +16,7 @@ ai_hydro/
 ├── __init__.py                 # Package entry point
 ├── README.md                   # This file
 │
-├── tools/                      # Tier 2: Individual analysis tools
+├── tools/                      # Platform: Individual analysis tools
 │   ├── watershed.py           # Watershed delineation
 │   ├── hydrology.py           # Hydrological signatures
 │   ├── climate.py             # Climate indices
@@ -27,7 +27,7 @@ ai_hydro/
 │   ├── geomorphic.py          # Geomorphic parameters
 │   └── forcing.py             # Climate forcing data
 │
-├── workflows/                  # Tier 3: Complete analysis pipelines
+├── workflows/                  # Plugin: Complete analysis pipelines
 │   ├── camels_extraction.py   # Complete CAMELS attribute extraction
 │   ├── fetch_data.py          # Data retrieval workflows
 │   ├── compute_signatures.py  # Signature computation
@@ -219,7 +219,7 @@ if __name__ == "__main__":
 
 ---
 
-## Creating New Tools (Tier 2)
+## Creating New Tools (Platform)
 
 ### Step 1: Create Module File
 
@@ -236,7 +236,7 @@ Follow the module template above with:
 
 ### Step 3: Add to Knowledge Base
 
-Update `knowledge/tools/tier2_wrappers.json`:
+Update `knowledge/tools/tool_wrappers.json`:
 
 ```json
 {
@@ -277,7 +277,7 @@ Include a working example in the `if __name__ == "__main__"` block.
 
 ---
 
-## Creating New Workflows (Tier 3)
+## Creating New Workflows (Plugin)
 
 ### Step 1: Create Workflow File
 
@@ -330,7 +330,7 @@ def my_complete_workflow(
     """
     
     # Import tools as needed (lazy)
-    from ai_hydro.tools.watershed import delineate_watershed
+    from ai_hydro.analysis.watershed import delineate_watershed
     from ai_hydro.tools.topography import extract_topographic_attributes
     
     log.info(f"Starting workflow for {gauge_id}")
@@ -364,7 +364,7 @@ def my_complete_workflow(
 
 ### Step 3: Add to Knowledge Base
 
-Update `knowledge/tools/tier3_workflows.json` with workflow metadata.
+Update `knowledge/tools/workflow_pipelines.json` with workflow metadata.
 
 ### Step 4: Test Workflow
 
@@ -475,7 +475,7 @@ else:
 python test_isolated_imports.py
 
 # Test individual module
-python -m python.ai_hydro.tools.hydrology
+python -m python.ai_hydro.analysis.signatures
 
 # Test with pytest (if available)
 pytest python/tests/
@@ -523,7 +523,7 @@ If you have old code using the previous patterns:
 
 ### Old Pattern (Before Refactoring)
 ```python
-from ai_hydro.tools.hydrology import extract_hydrological_signatures
+from ai_hydro.analysis.signatures import extract_hydrological_signatures
 
 # This would fail if dependencies missing
 result = extract_hydrological_signatures(...)
@@ -531,7 +531,7 @@ result = extract_hydrological_signatures(...)
 
 ### New Pattern (After Refactoring)
 ```python
-from ai_hydro.tools.hydrology import extract_hydrological_signatures
+from ai_hydro.analysis.signatures import extract_hydrological_signatures
 
 try:
     result = extract_hydrological_signatures(...)
@@ -578,4 +578,4 @@ For questions or issues:
 
 **Maintained by**: AI-Hydro Development Team  
 **Last Updated**: October 2025  
-**Status**: Production-Ready (Tier 2 tools), In Progress (remaining modules)
+**Status**: Production-Ready (Platform tools), In Progress (remaining modules)

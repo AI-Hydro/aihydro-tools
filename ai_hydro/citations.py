@@ -5,21 +5,21 @@ AI-Hydro Citation Registry
 Three-tier citation system:
 
   Tier 1 — Data source citations: hardcoded per tool, auto-collected when tools run.
-  Tier 2 — Platform citations: AI-Hydro + aihydro-tools, always included.
-  Tier 3 — Plugin citations: declared in plugin package metadata (future; see CONTRIBUTING.md).
+  Platform — Platform citations: AI-Hydro + aihydro-tools, always included.
+  Plugin — Plugin citations: declared in plugin package metadata (future; see CONTRIBUTING.md).
 
 Usage
 -----
 Citations accumulate in HydroSession._citations as tool calls succeed.
 ``export_bibtex()`` builds a ready-to-use .bib file from the collected keys.
-``sync_research_context`` and ``export_session`` write citations.bib automatically.
+``write_research_interpretation`` and ``export_session`` write citations.bib automatically.
 
 Adding a new data source
 ------------------------
 1. Add its BibTeX entry to ``BIBTEX_ENTRIES`` with a stable snake_case key.
 2. Map it in ``TOOL_CITATIONS`` for every tool that uses that source.
 
-Plugin citation support (Tier 3)
+Plugin citation support (Plugin)
 ---------------------------------
 Plugin packages can declare citation metadata in pyproject.toml:
 
@@ -134,7 +134,7 @@ BIBTEX_ENTRIES: dict[str, str] = {
   doi     = {10.5194/hess-16-3315-2012}
 }""",
 
-    # ── Platform (Tier 2) ────────────────────────────────────────────────────
+    # ── Platform (Platform) ────────────────────────────────────────────────────
 
     "aihydro": """\
 @software{aihydro2026,
@@ -159,7 +159,7 @@ BIBTEX_ENTRIES: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
-# Tier 2 — always included
+# Platform — always included
 # ---------------------------------------------------------------------------
 
 PLATFORM_CITATIONS: list[str] = ["aihydro", "aihydro_tools"]
@@ -185,7 +185,7 @@ TOOL_CITATIONS: dict[str, list[str]] = {
 
 
 # ---------------------------------------------------------------------------
-# Tier 3 — plugin citations (registered at discovery time)
+# Plugin — plugin citations (registered at discovery time)
 # ---------------------------------------------------------------------------
 
 _PLUGIN_ENTRIES: dict[str, str] = {}
@@ -212,7 +212,7 @@ def register_plugin_citation(key: str, bibtex: str, tool_names: list[str]) -> No
 # ---------------------------------------------------------------------------
 
 def citation_keys_for_tool(tool_name: str) -> list[str]:
-    """Return all citation keys (Tier 1 + any Tier 3) for a given tool."""
+    """Return all citation keys (Tier 1 + any Plugin) for a given tool."""
     keys = list(TOOL_CITATIONS.get(tool_name, []))
     keys.extend(_PLUGIN_TOOL_MAP.get(tool_name, []))
     return keys
@@ -222,8 +222,8 @@ def build_bibtex(keys: set[str] | list[str], *, header: bool = True) -> str:
     """
     Build a .bib file string from a collection of citation keys.
 
-    Platform citations (Tier 2) are always prepended.
-    Plugin entries (Tier 3) are included if their keys appear in ``keys``.
+    Platform citations (Platform) are always prepended.
+    Plugin entries (Plugin) are included if their keys appear in ``keys``.
     Unknown keys are silently skipped.
     """
     all_entries = {**BIBTEX_ENTRIES, **_PLUGIN_ENTRIES}

@@ -1,0 +1,170 @@
+name: Knowledge Card Compatibility
+
+on:
+  schedule:
+    # Weekly on Monday 06:00 UTC
+    - cron: "0 6 * * 1"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  card-compat:
+    name: "Card compat — ${{ matrix.card }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Core library cards shipped with aihydro-tools
+          - card: pynhd
+            install: "pynhd>=0.16.0"
+            smoke: |
+              from pynhd import NLDI
+              nldi = NLDI()
+              print("pynhd NLDI instantiation: OK")
+          - card: py3dep
+            install: "py3dep"
+            smoke: |
+              import py3dep
+              print("py3dep import: OK")
+          - card: pygeohydro
+            install: "pygeohydro"
+            smoke: |
+              import pygeohydro
+              print("pygeohydro import: OK")
+          - card: pygridmet
+            install: "pygridmet"
+            smoke: |
+              import pygridmet
+              print("pygridmet import: OK")
+          - card: hydrofunctions
+            install: "hydrofunctions"
+            smoke: |
+              import hydrofunctions as hf
+              print("hydrofunctions import: OK")
+          - card: pysheds
+            install: "pysheds"
+            smoke: |
+              from pysheds.grid import Grid
+              print("pysheds Grid import: OK")
+          - card: rasterio
+            install: "rasterio"
+            smoke: |
+              import rasterio
+              print("rasterio version:", rasterio.__version__)
+          - card: xarray
+            install: "xarray"
+            smoke: |
+              import xarray as xr
+              ds = xr.Dataset()
+              print("xarray Dataset: OK")
+          # P1 cards added in 1.7.0
+          - card: torch
+            install: "torch>=1.13.0"
+            smoke: |
+              import torch
+              x = torch.tensor([1.0, 2.0, 3.0])
+              print("torch tensor:", x.mean().item())
+          - card: geopandas
+            install: "geopandas>=0.12.0"
+            smoke: |
+              import geopandas as gpd
+              from shapely.geometry import Point
+              gdf = gpd.GeoDataFrame({"id": [1]}, geometry=[Point(0, 0)], crs="EPSG:4326")
+              area = gdf.to_crs("EPSG:5070").geometry.area.iloc[0]
+              print("geopandas area (m2):", area)
+          # P2 cards added in 2.0.0
+          - card: pandas
+            install: "pandas>=1.5.0"
+            smoke: |
+              import pandas as pd
+              import numpy as np
+              dates = pd.date_range("2000-01-01", periods=365, freq="D")
+              q = pd.Series(np.random.rand(365), index=dates, name="q")
+              fdc = q.sort_values(ascending=False).reset_index(drop=True)
+              print("pandas FDC Q50:", round(fdc.quantile(0.5), 4))
+          - card: numpy
+            install: "numpy>=1.24.0"
+            smoke: |
+              import numpy as np
+              q = np.random.rand(365)
+              nse_val = 1 - np.sum((q - q.mean()) ** 2) / np.sum((q - q.mean()) ** 2)
+              print("numpy NSE (trivial):", round(float(nse_val), 4))
+          - card: shapely
+            install: "shapely>=1.8.0"
+            smoke: |
+              import shapely
+              from shapely.geometry import box, Point
+              bbox = box(-70, 44, -69, 45)
+              pt = Point(-69.5, 44.5)
+              print("shapely contains:", shapely.contains(bbox, pt))
+          - card: matplotlib
+            install: "matplotlib>=3.5.0"
+            smoke: |
+              import matplotlib
+              matplotlib.use("Agg")
+              import matplotlib.pyplot as plt
+              import numpy as np
+              fig, ax = plt.subplots()
+              ax.plot(np.arange(10), np.random.rand(10))
+              fig.savefig("/tmp/mpl_smoke.png", dpi=72)
+              plt.close(fig)
+              print("matplotlib save: OK")
+          - card: folium
+            install: "folium>=0.14.0"
+            smoke: |
+              import folium
+              m = folium.Map(location=[44.5, -69.5], zoom_start=9)
+              folium.CircleMarker([44.5, -69.5], radius=6).add_to(m)
+              html = m._repr_html_()
+              print("folium map HTML length:", len(html))
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install aihydro-tools (no extras) + card library
+        run: |
+          pip install -e ".[dev]" --no-deps
+          pip install ${{ matrix.install }}
+
+      - name: Run card smoke test
+        run: |
+          python - <<'PYEOF'
+          ${{ matrix.smoke }}
+          PYEOF
+
+      - name: Verify card JSON is loadable
+        run: |
+          python - <<'PYEOF'
+          import json
+          from pathlib import Path
+
+          card_name = "${{ matrix.card }}"
+          cards_dir = Path("ai_hydro/knowledge/library_refs")
+          card_path = cards_dir / f"{card_name}.json"
+          if not card_path.exists():
+              # Check plugin dirs via entry points
+              from importlib.metadata import entry_points
+              found = False
+              for ep in entry_points(group="aihydro.knowledge"):
+                  plugin_dir = ep.load()()
+                  plugin_path = Path(plugin_dir) / "library_refs" / f"{card_name}.json"
+                  if plugin_path.exists():
+                      card_path = plugin_path
+                      found = True
+                      break
+              if not found:
+                  raise FileNotFoundError(f"Card not found: {card_name}.json")
+
+          card = json.loads(card_path.read_text())
+          assert "library" in card, "Card missing 'library' field"
+          assert "gotchas" in card, "Card missing 'gotchas' field"
+          assert "common_patterns" in card, "Card missing 'common_patterns' field"
+          assert "version_compatible" in card, "Card missing 'version_compatible' field (B2 Tier 1)"
+          print(f"Card {card_name!r}: {len(card['gotchas'])} gotchas, version_compatible={card['version_compatible']!r}")
+          PYEOF

@@ -40,7 +40,7 @@ def _write_tools_md() -> Path:
 
     This is the single source of truth for tool documentation.
     Community-added tools appear here automatically on next server start
-    or sync_research_context call — no manual edits needed.
+    or write_research_interpretation call — no manual edits needed.
     """
     # Repo root: ai_hydro/mcp/tools_docs.py → up 4 levels
     repo_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -56,7 +56,7 @@ def _write_tools_md() -> Path:
         "# AI-Hydro MCP Tools",
         "",
         "> Auto-generated from the live MCP server — do not edit manually.",
-        "> Run `sync_research_context` or restart the server to refresh.",
+        "> Run `write_research_interpretation` or restart the server to refresh.",
         "",
         f"**{len(tools)} tools registered**",
         "",

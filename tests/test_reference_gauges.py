@@ -122,7 +122,7 @@ class TestHydroResultContract:
         from ai_hydro.core import HydroMeta, DataSource
 
         m = HydroMeta(
-            tool="ai_hydro.tools.watershed.delineate_watershed",
+            tool="ai_hydro.analysis.watershed.delineate_watershed",
             version="1.0.0",
             sources=[
                 DataSource(
@@ -140,7 +140,7 @@ class TestHydroResultContract:
         from ai_hydro.core import HydroMeta, DataSource
 
         m = HydroMeta(
-            tool="ai_hydro.tools.watershed.delineate_watershed",
+            tool="ai_hydro.analysis.watershed.delineate_watershed",
             version="1.0.0",
             sources=[DataSource(name="NLDI", url=None, citation=None)],
             params={},
@@ -155,7 +155,7 @@ class TestHydroResultContract:
         err = ToolError(
             code="GAUGE_NOT_FOUND",
             message="Gauge 99999999 not in NWIS",
-            tool="ai_hydro.tools.watershed.delineate_watershed",
+            tool="ai_hydro.analysis.watershed.delineate_watershed",
             recovery="Verify the gauge ID at https://waterdata.usgs.gov",
             alternatives=["01031500", "02361000"],
         )

@@ -1,0 +1,33 @@
+{
+  "library": "numpy",
+  "version_tested": "1.26.x",
+  "purpose": "Numerical arrays — hydrograph computation, signature statistics, matrix operations",
+  "install": "pip install numpy",
+  "field_mappings": {
+    "np.nanpercentile": {
+      "note": "Use instead of np.percentile when the array may contain NaN (common in streamflow gaps).",
+      "example": "q05 = np.nanpercentile(q, 5)  # flow exceeded 95% of the time"
+    },
+    "np.log": {
+      "note": "log(0) = -inf; log(-x) = nan. Always guard with np.where(q > 0, np.log(q), np.nan) for streamflow.",
+      "example": "log_q = np.where(q > 0, np.log(q), np.nan)"
+    }
+  },
+  "gotchas": [
+    "Integer overflow: np.array([1, 2, 3]) defaults to int64 on 64-bit. Mixing with float produces float — but np.zeros(n, dtype=int) + 0.1 silently truncates.",
+    "In-place operations on views: a = b[:5]; a += 1 modifies b. Use a = b[:5].copy() for independent array.",
+    "np.sum vs Python sum: np.sum(arr) is vectorised and handles NaN-less arrays; Python sum() is slow on numpy arrays.",
+    "Axis convention: axis=0 reduces along rows (over time), axis=1 reduces along columns. Easy to confuse for 2-D model output.",
+    "Boolean indexing: q[q > 0] returns a copy, not a view. Assigning to q[q > 0] = 0 modifies the original.",
+    "NaN propagation: np.mean with a NaN returns NaN. Use np.nanmean, np.nanstd, np.nanpercentile for streamflow arrays.",
+    "numpy 2.0 changed: np.string_ is removed — use np.bytes_; np.bool is removed — use np.bool_.",
+    "Floating-point equality: never use == for floats. Use np.isclose(a, b, rtol=1e-5) or np.allclose."
+  ],
+  "common_patterns": {
+    "runoff_ratio": "mean_q = np.nanmean(q_mm)\nmean_p = np.nanmean(p_mm)\nrunoff_ratio = mean_q / mean_p if mean_p > 0 else np.nan",
+    "fdc_slope": "q_sorted = np.sort(q)[::-1]\nq10 = np.nanpercentile(q_sorted, 90)\nq90 = np.nanpercentile(q_sorted, 10)\nfdc_slope = (np.log10(q10 + 1e-9) - np.log10(q90 + 1e-9)) / (0.9 - 0.1)",
+    "nan_safe_log": "log_q = np.where(q > 0, np.log(q), np.nan)",
+    "nse": "def nse(obs, sim):\n    mask = ~np.isnan(obs) & ~np.isnan(sim)\n    num = np.sum((obs[mask] - sim[mask]) ** 2)\n    den = np.sum((obs[mask] - np.mean(obs[mask])) ** 2)\n    return 1 - num / den if den > 0 else np.nan"
+  },
+  "version_compatible": ">=1.24.0,<3.0.0"
+}

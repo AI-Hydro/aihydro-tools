@@ -1,7 +1,7 @@
 """
-Session management MCP tools (8 tools).
+Session management MCP tools (8 tools — 2.0.0).
 
-Start, query, clear, annotate, sync, export, and discover research sessions.
+Start, query, clear, annotate, export, and discover research sessions.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def start_session(
     Returns
     -------
     dict with session_id, site_name, site_id, computed, pending, workspace_dir,
-    mcp_python (the correct interpreter for scripts), and available_packages.
+    python_interpreter (path to the Python interpreter used by run_python), and available_packages.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -61,7 +61,7 @@ def start_session(
         session.save()
         summary = session.summary()
         summary["workspace_dir"] = session.workspace_dir
-        summary["mcp_python"] = sys.executable
+        summary["python_interpreter"] = sys.executable
         pip_path = Path(sys.executable).parent / "pip"
         summary["mcp_pip"] = str(pip_path) if pip_path.exists() else f"{sys.executable} -m pip"
         try:
@@ -181,48 +181,84 @@ def add_note(session_id: str, note: str) -> dict:
         return _tool_error_to_dict(e)
 
 
+
 @mcp.tool()
-def sync_research_context(
-    session_id: str,
-    interpretation: str | None = None,
-    site_name: str | None = None,
-) -> dict:
+def get_session_raw_state(session_id: str) -> dict:
     """
-    Two-phase tool for LLM-authored scientific interpretation.
+    Return raw computed state from the session for LLM interpretation.
 
-    research.md has two sections:
-    - Skeleton (Python-generated, always current): computed/pending/notes.
-    - Scientific context (LLM-authored): your interpretation, stored here.
+    This is Phase 1 of the two-phase interpretation workflow (G1 compliance):
+    Python returns the raw computed data; the LLM reads it and authors the
+    scientific interpretation via write_research_interpretation.
 
-    Phase 1 — call with only session_id:
-        Returns full raw session data across all computed slots. Read every
-        value, look for cross-slot patterns, contradictions with researcher
-        notes, and what the science is telling you. Then call Phase 2.
-
-    Phase 2 — call with interpretation + site_name:
-        Stores your scientific prose in the session. Embedded in research.md
-        immediately. Pre-loaded into every future conversation.
+    Large time-series arrays are represented as summary statistics + head/tail
+    rows rather than the full array (context-window protection).
 
     Parameters
     ----------
     session_id : str
         Research session identifier.
-    interpretation : str, optional
-        3-6 sentences of scientific prose (Phase 2). Cover: what the data
-        shows, cross-slot patterns, contradictions with notes, priorities.
-        Write flowing prose — no bullet points.
-    site_name : str, optional
-        Short descriptive slug: 'piscataquis-snowmelt-signatures-2000-2020'.
-        Used as the session display name in research.md and export filenames.
 
-    Examples
-    --------
-    >>> sync_research_context('01031500')   # Phase 1: get raw data
-    >>> sync_research_context(              # Phase 2: store interpretation
-    ...     '01031500',
-    ...     site_name='piscataquis-surface-flow-2000-2020',
-    ...     interpretation='The Piscataquis shows surface-flow dominance...'
-    ... )
+    Returns
+    -------
+    dict with session_id, slots (one entry per computed slot), notes,
+    pending (list of not-yet-computed slots), and a reminder to call
+    write_research_interpretation after reading.
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+        slots = {}
+        for slot in session.computed():
+            slots[slot] = session.get(slot)
+        return {
+            "session_id": session_id,
+            "site_name": session.site_name or None,
+            "computed": session.computed(),
+            "pending": session.pending(),
+            "slots": slots,
+            "notes": session.notes,
+            "_instruction": (
+                "You have received the raw computed session state. "
+                "Read every slot carefully, look for cross-slot patterns and "
+                "contradictions with the researcher notes, then call "
+                "write_research_interpretation with your 3-6 sentence scientific "
+                "synthesis. Write flowing prose — no bullet points."
+            ),
+        }
+    except Exception as e:
+        log.error("get_session_raw_state failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def write_research_interpretation(
+    session_id: str,
+    site_name: str,
+    interpretation: str,
+) -> dict:
+    """
+    Write LLM-authored scientific interpretation into research.md and session.
+
+    This is Phase 2 of the two-phase interpretation workflow (G1 compliance):
+    The LLM authors the prose after reading get_session_raw_state; this tool
+    stores it durably so it is auto-injected into every future conversation.
+
+    Parameters
+    ----------
+    session_id : str
+        Research session identifier.
+    site_name : str
+        Short descriptive slug for the session display name and export filenames.
+        Example: 'piscataquis-snowmelt-signatures-2000-2020'.
+    interpretation : str
+        3-6 sentences of scientific prose covering: what the data shows,
+        cross-slot patterns, contradictions with researcher notes, and what to
+        do next. Write flowing prose — no bullet points.
+
+    Returns
+    -------
+    dict with written_path, char_count, session_id, site_name.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -230,74 +266,39 @@ def sync_research_context(
         from ai_hydro.mcp.tools_docs import _write_tools_md, _list_tools_sync
 
         session = HydroSession.load(session_id)
+        session.interpretation = interpretation.strip()
+        session.site_name = site_name.strip()
+        session.save()
 
-        if interpretation is not None or site_name is not None:
-            if interpretation is not None:
-                session.interpretation = interpretation.strip()
-            if site_name is not None:
-                session.site_name = site_name.strip()
-            session.save()
-            tools_path = _write_tools_md()
-            base = Path(session.workspace_dir) if session.workspace_dir else _REPO_ROOT
-            research_md_path = base / _RULES_DIR_NAME / "research.md"
-
-            # Write citations.bib to workspace
-            citations_path: str | None = None
-            bib = session.export_bibtex()
-            if bib:
-                saved = _workspace_write(session_id, "citations.bib", bib)
-                citations_path = saved
-
-            n_citations = len(session.get_citations())
-            return {
-                "stored": True,
-                "session_id": session_id,
-                "site_name": session.site_name,
-                "interpretation_length": len(session.interpretation),
-                "research_md": str(research_md_path),
-                "tools_md": str(tools_path),
-                "n_tools": len(_list_tools_sync()),
-                "citations_bib": citations_path,
-                "n_data_source_citations": n_citations,
-                "_note": (
-                    "Interpretation stored. research.md updated — your scientific "
-                    "context will be pre-loaded into every future conversation. "
-                    f"citations.bib written with {n_citations} data-source entries "
-                    "+ 2 platform citations (AI-Hydro + aihydro-tools)."
-                ),
-            }
-
-        synopsis = session.synopsis_for_llm()
         tools_path = _write_tools_md()
+        base = Path(session.workspace_dir) if session.workspace_dir else _REPO_ROOT
+        research_md_path = base / _RULES_DIR_NAME / "research.md"
+
+        citations_path: str | None = None
+        bib = session.export_bibtex()
+        if bib:
+            saved = _workspace_write(session_id, "citations.bib", bib)
+            citations_path = saved
+
+        n_citations = len(session.get_citations())
         return {
+            "written_path": str(research_md_path),
+            "char_count": len(session.interpretation),
             "session_id": session_id,
-            "site_name": session.site_name or None,
-            "site_id": session.site_id or None,
-            "computed": session.computed(),
-            "pending": session.pending(),
-            "notes": session.notes,
-            "has_interpretation": bool(session.interpretation),
-            "session_synopsis": synopsis,
+            "site_name": session.site_name,
+            "tools_md": str(tools_path),
             "n_tools": len(_list_tools_sync()),
+            "citations_bib": citations_path,
+            "n_data_source_citations": n_citations,
             "_note": (
-                "Raw time-series arrays are stored on disk (see _data_file in each slot). "
-                "This response contains scientific summaries only — no array data."
-            ),
-            "_instruction": (
-                "You have received a scientific synopsis of all computed session data. "
-                "Read every slot carefully — look for cross-slot patterns, "
-                "contradictions between computed values and researcher notes, "
-                "what the science is telling you, and what the logical next step is. "
-                "Then call sync_research_context again with: "
-                "(1) interpretation=<your 3-6 sentence scientific prose> "
-                "(2) site_name=<short-descriptive-slug>. "
-                "Write flowing prose — no bullet points."
+                "Interpretation stored. research.md updated — your scientific "
+                "context will be pre-loaded into every future conversation. "
+                f"citations.bib written with {n_citations} data-source entries."
             ),
         }
     except Exception as e:
-        log.error("sync_research_context failed: %s", e)
+        log.error("write_research_interpretation failed: %s", e)
         return _tool_error_to_dict(e)
-
 
 @mcp.tool()
 def list_available_tools() -> dict:
@@ -330,7 +331,7 @@ def list_available_tools() -> dict:
         return {
             "tools": tools_out,
             "n_tools": len(tools_out),
-            "mcp_python": sys.executable,
+            "python_interpreter": sys.executable,
             "note": (
                 "Install community plugins with: pip install <plugin-package>. "
                 "Restart the MCP server to discover newly installed plugins."
@@ -344,6 +345,7 @@ def list_available_tools() -> dict:
 @mcp.tool()
 def export_session(
     session_id: str,
+    capsule_path: str | None = None,
     format: str = "capsule",
 ) -> dict:
     """
@@ -351,21 +353,27 @@ def export_session(
 
     All output is SAVED TO DISK — never returned inline.
 
+    The capsule layout (PLATFORM_VISION §3):
+        README.md       — LLM-authored overview + scientific interpretation
+        methods.md      — provenance table for every computed analysis
+        citations.bib   — BibTeX for all data sources
+        environment.yml — exact conda/pip environment for reproduction
+        session.json    — complete provenance record
+        data/           — JSON/GeoJSON/TIF files from workspace
+        figures/        — PNG/HTML figures from workspace
+        model/          — trained model artifacts (HBV params, simulated_q.csv)
+
     Parameters
     ----------
     session_id : str
         Research session identifier.
+    capsule_path : str, optional
+        Absolute path to write the capsule folder. Defaults to
+        <workspace_dir>/capsule_<slug>_<date>/ or ~/.aihydro/exports/.
     format : str
-        'capsule' (default) — full reproducible research package (folder):
-            README.md       — overview + LLM interpretation (if available)
-            methods.md      — provenance table for every computed analysis
-            citations.bib   — BibTeX for all data sources
-            session.json    — complete provenance record
-            data/           — JSON/GeoJSON/TIF files from workspace
-            figures/        — PNG/HTML figures from workspace
-            environment.yml — Python environment specification
-        'bibtex' — BibTeX references only
-        'json'   — raw session JSON only
+        'capsule' (default) — full reproducible research package (folder).
+        'bibtex' — BibTeX references only.
+        'json'   — raw session JSON only.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -392,10 +400,14 @@ def export_session(
                     "computed": session.computed()}
 
         # Capsule
-        base = Path(session.workspace_dir) if session.workspace_dir else Path.home() / ".aihydro" / "exports"
-        capsule_dir = base / f"capsule_{slug}_{today}"
+        if capsule_path:
+            capsule_dir = Path(capsule_path)
+        else:
+            base = Path(session.workspace_dir) if session.workspace_dir else Path.home() / ".aihydro" / "exports"
+            capsule_dir = base / f"capsule_{slug}_{today}"
         (capsule_dir / "data").mkdir(parents=True, exist_ok=True)
         (capsule_dir / "figures").mkdir(parents=True, exist_ok=True)
+        (capsule_dir / "model").mkdir(parents=True, exist_ok=True)
 
         # README.md
         display = session.site_name or session.site_id or session_id
@@ -426,7 +438,7 @@ def export_session(
             readme += ["", "## Scientific Summary", session.interpretation]
         else:
             readme += ["", "## Scientific Summary",
-                       "_Not yet authored. Call `sync_research_context` to generate._"]
+                       "_Not yet authored. Call `get_session_raw_state` then `write_research_interpretation` to generate._"]
         readme += ["", f"> Generated by AI-Hydro on {today}."]
         (capsule_dir / "README.md").write_text("\n".join(readme))
         files_written.append(str(capsule_dir / "README.md"))
@@ -450,8 +462,8 @@ def export_session(
             methods.append(f"| {slot} | `{tool}` | {params} | {sources} | {date} |")
         methods += ["", "## Methods Prose", "",
                     "_Provenance table above contains all computational metadata. "
-                    "Call `sync_research_context` to generate publication-quality "
-                    "methods prose, then paste it here._",
+                    "Call `get_session_raw_state` then `write_research_interpretation` to generate "
+                    "publication-quality methods prose, then paste it here._",
                     "", "<!-- Paste LLM-authored methods prose below -->"]
         (capsule_dir / "methods.md").write_text("\n".join(methods))
         files_written.append(str(capsule_dir / "methods.md"))
@@ -479,6 +491,28 @@ def export_session(
                     shutil.copy2(f, dest)
                     files_written.append(str(dest))
 
+        # model/ — copy trained model artifacts from session model slot
+        if session.model:
+            model_data = session.model.get("data", {})
+            model_dir_str = model_data.get("model_dir")
+            if model_dir_str:
+                model_src = Path(model_dir_str)
+                if model_src.is_dir():
+                    for f in model_src.iterdir():
+                        if f.is_file() and f.suffix in (".json", ".csv", ".pt", ".pth", ".txt"):
+                            dest = capsule_dir / "model" / f.name
+                            shutil.copy2(f, dest)
+                            files_written.append(str(dest))
+            # Write model metrics summary
+            metrics = {k: v for k, v in model_data.items()
+                       if k in ("nse", "kge", "rmse", "framework", "model_type",
+                                "train_start", "train_end", "test_start", "test_end")}
+            if metrics:
+                (capsule_dir / "model" / "metrics.json").write_text(
+                    json.dumps(metrics, indent=2)
+                )
+                files_written.append(str(capsule_dir / "model" / "metrics.json"))
+
         # environment.yml
         (capsule_dir / "environment.yml").write_text(_build_environment_yml(slug))
         files_written.append(str(capsule_dir / "environment.yml"))
@@ -492,8 +526,8 @@ def export_session(
             "n_files": len(files_written),
             "computed": session.computed(),
             "_note": (
-                "NEXT: call sync_research_context to author the scientific "
-                "interpretation, then export again to embed it in README.md."
+                "NEXT: call get_session_raw_state then write_research_interpretation "
+                "to author the scientific interpretation, then export again to embed it in README.md."
                 if needs_interp else
                 "Scientific interpretation included. Add prose to methods.md."
             ),

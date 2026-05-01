@@ -1,0 +1,33 @@
+{
+  "library": "folium",
+  "version_tested": "0.16.x",
+  "purpose": "Interactive HTML maps — watershed boundaries, gauge locations, stream networks",
+  "install": "pip install folium",
+  "field_mappings": {
+    "folium.Map": {
+      "note": "tiles='CartoDB positron' gives a clean, publication-neutral basemap. Default is OpenStreetMap.",
+      "example": "m = folium.Map(location=[lat, lon], zoom_start=9, tiles='CartoDB positron')"
+    },
+    "folium.GeoJson": {
+      "note": "Pass the GeoJSON as a dict or file path. Geometries must be in EPSG:4326.",
+      "example": "folium.GeoJson(geojson_dict, name='Watershed').add_to(m)"
+    }
+  },
+  "gotchas": [
+    "CRS requirement: folium always expects EPSG:4326 (lon, lat) — reproject GeoDataFrames with gdf.to_crs('EPSG:4326') before passing.",
+    "GeoJSON coordinate order: GeoJSON uses [longitude, latitude] — the opposite of many Python libraries that use (lat, lon).",
+    "Saving: m.save('map.html') writes a standalone HTML file (~1 MB). m._repr_html_() works in Jupyter but not as a file.",
+    "Marker popups: folium.Popup(html_str, max_width=300) — always set max_width to prevent truncation.",
+    "Layer control: folium.LayerControl().add_to(m) must be added AFTER all layers to show all layers in the control.",
+    "Large GeoJSON: passing a GeoDataFrame with thousands of rows will produce a very large HTML file. Simplify geometry first: gdf.geometry.simplify(tolerance=0.001).",
+    "Choropleth: requires a pandas Series for the data argument and a GeoJSON with matching keys. Use key_on='feature.properties.id' to match.",
+    "Tiles alternatives: 'OpenStreetMap', 'CartoDB positron', 'CartoDB dark_matter', 'Stamen Terrain' (may require API key in newer versions)."
+  ],
+  "common_patterns": {
+    "watershed_map": "import folium\nm = folium.Map(location=[lat, lon], zoom_start=9, tiles='CartoDB positron')\nfolium.GeoJson(watershed_geojson, name='Watershed', style_function=lambda x: {'color': 'steelblue', 'fillOpacity': 0.1}).add_to(m)\nfolium.CircleMarker(location=[lat, lon], radius=8, color='red', fill=True, popup=f'Gauge {gauge_id}').add_to(m)\nfolium.LayerControl().add_to(m)\nm.save('watershed_map.html')",
+    "multi_gauge_map": "m = folium.Map(location=[mean_lat, mean_lon], zoom_start=7)\nfor _, row in gauges_gdf.to_crs('EPSG:4326').iterrows():\n    folium.CircleMarker([row.geometry.y, row.geometry.x], radius=6, popup=row['gauge_id']).add_to(m)",
+    "choropleth": "folium.Choropleth(geo_data=geojson, data=series, columns=['id', 'value'], key_on='feature.properties.id', fill_color='YlOrRd').add_to(m)",
+    "save_return_path": "map_path = output_dir / 'map.html'\nm.save(str(map_path))\nreturn str(map_path)"
+  },
+  "version_compatible": ">=0.14.0,<1.0.0"
+}

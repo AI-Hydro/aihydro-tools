@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test suite for ai_hydro.tools.hydrology module
+Test suite for ai_hydro.analysis.signatures module
 
 Tests hydrological signatures computation following CAMELS methodology.
 """
