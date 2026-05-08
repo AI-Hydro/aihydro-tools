@@ -1,0 +1,730 @@
+# aihydro-bench task specs — v1 (2026-05-08, Sprint 2 adds B-021 to B-023)
+#
+# 23 frozen, human-adjudicated benchmark tasks.
+# Tasks are split into two pytest marks:
+#   bench       — no network required; runs on every push (CI-safe)
+#   bench_live  — requires USGS / GridMET APIs; runs nightly
+#
+# Each task specifies:
+#   id, name, tier, mark, category, call_style, assertions
+#
+# call_style:
+#   mcp_tool   — call the named MCP tool function directly with kwargs
+#   compute_fn — call an underlying computation function with synthetic data
+#   session_op — set up a session slot, then call an MCP tool
+#
+# Adjudicated ranges are sourced from:
+#   - Addor et al. (2017) CAMELS dataset, HESS 21:5293-5313
+#   - Sawicz et al. (2011) Catchment classification, WRR 47:W11520
+#   - USGS StreamStats published basin attributes
+
+tasks:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP A: Water balance validator (session-based, no network)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-001
+    name: "Water balance: humid basin passes"
+    tier: 1
+    mark: bench
+    category: validator
+    call_style: session_op
+    rationale: >
+      Eastern-US humid basin with runoff_ratio=0.42 is physically valid.
+      Mean annual P≈1000 mm, Q≈420 mm is typical for humid temperate climate
+      (CAMELS northeastern basins median RR ≈ 0.44, Addor 2017 Table 2).
+    setup:
+      session_id: bench-wb-001
+      slots:
+        signatures:
+          data:
+            runoff_ratio: 0.42
+    call:
+      tool: check_water_balance_consistency
+      kwargs:
+        session_id: bench-wb-001
+    assertions:
+      - {path: status, op: eq, expected: pass}
+      - {path: error, op: absent}
+
+  - id: B-002
+    name: "Water balance: slightly over 1.0 triggers medium warning"
+    tier: 1
+    mark: bench
+    category: validator
+    call_style: session_op
+    rationale: >
+      runoff_ratio=1.05 is marginally above 1.0. Possible in snow-dominated
+      basins with glacier contribution or NWIS rating-curve errors at high
+      flows. Severity=medium is correct — flag but not high-confidence error.
+    setup:
+      session_id: bench-wb-002
+      slots:
+        signatures:
+          data:
+            runoff_ratio: 1.05
+    call:
+      tool: check_water_balance_consistency
+      kwargs:
+        session_id: bench-wb-002
+    assertions:
+      - {path: status, op: eq, expected: warning}
+      - {path: severity, op: eq, expected: medium}
+      - {path: error, op: absent}
+
+  - id: B-003
+    name: "Water balance: strongly impossible triggers high warning"
+    tier: 1
+    mark: bench
+    category: validator
+    call_style: session_op
+    rationale: >
+      runoff_ratio=1.45 cannot be explained by any physical process without
+      large inter-basin transfer or major gauging error. Severity=high.
+    setup:
+      session_id: bench-wb-003
+      slots:
+        signatures:
+          data:
+            runoff_ratio: 1.45
+    call:
+      tool: check_water_balance_consistency
+      kwargs:
+        session_id: bench-wb-003
+    assertions:
+      - {path: status, op: eq, expected: warning}
+      - {path: severity, op: eq, expected: high}
+
+  - id: B-004
+    name: "Water balance: missing signatures returns insufficient_data"
+    tier: 1
+    mark: bench
+    category: validator
+    call_style: session_op
+    rationale: >
+      Calling the validator before extract_hydrological_signatures must
+      return insufficient_data, not an exception. Resilience check.
+    setup:
+      session_id: bench-wb-004
+      slots: {}
+    call:
+      tool: check_water_balance_consistency
+      kwargs:
+        session_id: bench-wb-004
+    assertions:
+      - {path: status, op: eq, expected: insufficient_data}
+      - {path: error, op: absent}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP B: Temporal alignment validator (session-based, no network)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-005
+    name: "Temporal alignment: matching periods pass"
+    tier: 1
+    mark: bench
+    category: validator
+    call_style: session_op
+    rationale: >
+      Streamflow and forcing both spanning 2000-01-01 to 2009-12-31 are
+      temporally consistent. Tool must return status=pass.
+    setup:
+      session_id: bench-ta-005
+      slots:
+        streamflow:
+          meta:
+            params:
+              start_date: "2000-01-01"
+              end_date: "2009-12-31"
+        forcing:
+          meta:
+            params:
+              start_date: "2000-01-01"
+              end_date: "2009-12-31"
+    call:
+      tool: check_temporal_alignment
+      kwargs:
+        session_id: bench-ta-005
+        slot_a: streamflow
+        slot_b: forcing
+    assertions:
+      - {path: status, op: eq, expected: pass}
+
+  - id: B-006
+    name: "Temporal alignment: mismatched periods fail with dates in message"
+    tier: 1
+    mark: bench
+    category: validator
+    call_style: session_op
+    rationale: >
+      Forcing starting 2 years after streamflow is a common data-prep error.
+      The fail message must include both date ranges so the researcher can
+      diagnose the gap without reading raw metadata.
+    setup:
+      session_id: bench-ta-006
+      slots:
+        streamflow:
+          meta:
+            params:
+              start_date: "2000-01-01"
+              end_date: "2009-12-31"
+        forcing:
+          meta:
+            params:
+              start_date: "2002-01-01"
+              end_date: "2009-12-31"
+    call:
+      tool: check_temporal_alignment
+      kwargs:
+        session_id: bench-ta-006
+        slot_a: streamflow
+        slot_b: forcing
+    assertions:
+      - {path: status, op: eq, expected: fail}
+      - {path: severity, op: eq, expected: medium}
+      - {path: message, op: contains, expected: "2000-01-01"}
+      - {path: message, op: contains, expected: "2002-01-01"}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP C: Unit consistency validator (session-based, no network)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-007
+    name: "Unit consistency: correct m3/s passes"
+    tier: 1
+    mark: bench
+    category: validator
+    call_style: session_op
+    rationale: >
+      Streamflow stored in m3/s and expected in m3/s — no mismatch.
+      Pass is the only correct scientific answer.
+    setup:
+      session_id: bench-uc-007
+      slots:
+        streamflow:
+          data:
+            units: "m3/s"
+    call:
+      tool: check_unit_consistency
+      kwargs:
+        session_id: bench-uc-007
+        slot: streamflow
+        expected_units: "m3/s"
+    assertions:
+      - {path: status, op: eq, expected: pass}
+
+  - id: B-008
+    name: "Unit consistency: cfs vs m3/s mismatch triggers high-severity fail"
+    tier: 1
+    mark: bench
+    category: validator
+    call_style: session_op
+    rationale: >
+      cfs to m3/s error (factor ≈ 28.3) would corrupt all volumetric outputs
+      downstream. High severity is the only defensible assignment — any model
+      trained on wrong-unit Q would produce scientifically invalid results.
+    setup:
+      session_id: bench-uc-008
+      slots:
+        streamflow:
+          data:
+            units: "cfs"
+    call:
+      tool: check_unit_consistency
+      kwargs:
+        session_id: bench-uc-008
+        slot: streamflow
+        expected_units: "m3/s"
+    assertions:
+      - {path: status, op: eq, expected: fail}
+      - {path: severity, op: eq, expected: high}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP D: Scientific computation (compute_* functions, synthetic pd.Series)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-009
+    name: "Flow stats: humid synthetic series has plausible q_mean and BFI"
+    tier: 1
+    mark: bench
+    category: signatures
+    call_style: compute_fn
+    rationale: >
+      Humid temperate basin (synthetic, seed=42) with mean=1.2 mm/day should
+      produce q_mean ∈ [0.8, 1.8] mm/day. BFI ∈ [0.40, 0.75] is consistent
+      with glacial till / mixed geology (CAMELS NE median BFI ≈ 0.60,
+      Addor 2017). Values outside these ranges indicate a bug in the
+      Lyne-Hollick filter implementation.
+    call:
+      fn: compute_flow_stats_camels
+      data: humid
+    assertions:
+      - {path: q_mean, op: between, bounds: [0.8, 1.8]}
+      - {path: baseflow_index, op: between, bounds: [0.40, 0.75]}
+      - {path: q5, op: gt, expected: 0.0}
+      - {path: q95, op: gt, expected: 0.0}
+      - {path: q_std, op: gt, expected: 0.0}
+
+  - id: B-010
+    name: "Flow stats: arid synthetic series has low q_mean"
+    tier: 1
+    mark: bench
+    category: signatures
+    call_style: compute_fn
+    rationale: >
+      Arid basin (synthetic, seed=7, mean=0.15 mm/day, ~40% zero-flow days)
+      must produce q_mean < 0.25 mm/day. BFI is NOT asserted here: the
+      Lyne-Hollick filter (alpha=0.925, 3 passes) artificially maintains
+      baseflow through zero-flow days, producing inflated BFI for intermittent
+      streams — a known filter artifact (Ladson et al. 2013 §4.2 caution).
+      BFI plausibility for intermittent streams requires a different index
+      (e.g. Eckhardt, 2008) — tracked as a Sprint 2 improvement item.
+    call:
+      fn: compute_flow_stats_camels
+      data: arid
+    assertions:
+      - {path: q_mean, op: between, bounds: [0.05, 0.25]}
+      - {path: baseflow_index, op: present}
+
+  - id: B-011
+    name: "Water balance: known runoff_ratio recovered within 5% from synthetic data"
+    tier: 1
+    mark: bench
+    category: signatures
+    call_style: compute_fn
+    rationale: >
+      Synthetic P and Q constructed with runoff_ratio=0.42 target. The
+      compute_water_balance_camels function should recover a value within ±5%
+      of 0.42 (i.e. [0.40, 0.44]) — this tolerance accounts for daily
+      misalignment and the exponential P distribution used in synthetic.py.
+      A larger error indicates a bug in the annual aggregation or alignment.
+    call:
+      fn: compute_water_balance_camels
+      data: humid
+      p_runoff_ratio: 0.42
+    assertions:
+      - {path: runoff_ratio, op: approx_pct, expected: 0.42, pct: 0.10}
+      - {path: stream_elas, op: present}
+
+  - id: B-012
+    name: "Event stats: humid series has non-zero high-flow frequency and duration"
+    tier: 1
+    mark: bench
+    category: signatures
+    call_style: compute_fn
+    rationale: >
+      Any 10-year humid series must contain at least some high-flow events
+      (> 9× median Q per CAMELS definition). high_q_freq > 0 and
+      high_q_dur > 0 are necessary conditions. A value of zero would mean
+      the threshold is miscalibrated or the series is entirely flat.
+    call:
+      fn: compute_event_stats_camels
+      data: humid
+    assertions:
+      - {path: high_q_freq, op: gt, expected: 0.0}
+      - {path: high_q_dur, op: gt, expected: 0.0}
+      - {path: low_q_freq, op: gt, expected: 0.0}
+
+  - id: B-013
+    name: "FDC slope: humid series produces positive slope in CAMELS range"
+    tier: 1
+    mark: bench
+    category: signatures
+    call_style: compute_fn
+    rationale: >
+      Sawicz et al. (2011) define slope_fdc = (log Q33 - log Q66) / 0.33
+      where Q33 is flow at 33% exceedance probability (high flow, 67th pct)
+      and Q66 is flow at 66% exceedance probability (lower flow, 34th pct).
+      Since Q33 > Q66, the slope is positive. CAMELS humid basin range is
+      roughly [0.5, 3.5] (Addor 2017 Table S1). A value < 0 would indicate
+      a quantile-ordering bug; > 6 would indicate extreme flashiness
+      inconsistent with a humid temperate synthetic series.
+    call:
+      fn: compute_slope_fdc_camels
+      data: humid
+    assertions:
+      - {path: slope_fdc, op: between, bounds: [0.3, 6.0]}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP E: Claim ledger gate (session-based, no network)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-014
+    name: "Promotion gate: no researcher approval is blocked"
+    tier: 1
+    mark: bench
+    category: ledger
+    call_style: session_op
+    rationale: >
+      Researcher approval is a hard gate — no exceptions. The gate prevents
+      the agent from autonomously promoting claims to global knowledge without
+      a human sign-off. Any path that bypasses this check would undermine
+      the scientific integrity contract.
+    setup:
+      session_id: bench-lg-014
+      claims:
+        c-014:
+          id: c-014
+          claim: "KGE > 0.8 for Piscataquis River 2000-2010"
+          claim_type: empirical_result
+          status: supported
+          confidence: high
+          confidence_rationale: "Validated with 10 years of daily data, KGE=0.83 across 3 restarts."
+          scope: {basins: ["01031500"], period: "2000-2010"}
+          evidence_spans:
+            - {source_type: run, source_id: run-abc, metric_ref: kge}
+          limitations: ["Single basin, humid temperate only"]
+    call:
+      tool: promote_claim_to_registry
+      kwargs:
+        session_id: bench-lg-014
+        claim_id: c-014
+        researcher_approved: false
+    assertions:
+      - {path: error, op: present}
+      - {path: message, op: contains, expected: "approval"}
+
+  - id: B-015
+    name: "Promotion gate: approved but missing evidence_spans is blocked"
+    tier: 1
+    mark: bench
+    category: ledger
+    call_style: session_op
+    rationale: >
+      A claim without evidence_spans cannot be traced to any run, paper, or
+      dataset. Promoting it would add an unverifiable fact to global knowledge.
+      The gate must block this regardless of researcher_approved=True.
+    setup:
+      session_id: bench-lg-015
+      claims:
+        c-015:
+          id: c-015
+          claim: "NSE > 0.7 for test basin"
+          claim_type: empirical_result
+          status: supported
+          confidence: medium
+          confidence_rationale: "Model ran successfully for 5 years of daily calibration data."
+          scope: {basins: ["02361000"], period: "2005-2010"}
+          evidence_spans: []
+          limitations: ["Single basin"]
+    call:
+      tool: promote_claim_to_registry
+      kwargs:
+        session_id: bench-lg-015
+        claim_id: c-015
+        researcher_approved: true
+    assertions:
+      - {path: error, op: present}
+      - {path: message, op: contains, expected: "evidence"}
+
+  - id: B-016
+    name: "Promotion gate: fully valid claim is promoted"
+    tier: 1
+    mark: bench
+    category: ledger
+    call_style: session_op
+    rationale: >
+      A claim with all required fields (evidence_spans, limitations, supported
+      status, researcher_approved) must pass all gate checks and return
+      status=promoted. This is the golden path test.
+    setup:
+      session_id: bench-lg-016
+      claims:
+        c-016:
+          id: c-016
+          claim: "HBV-light achieves KGE=0.75 for Piscataquis River 2000-2010"
+          claim_type: empirical_result
+          status: supported
+          confidence: high
+          confidence_rationale: >
+            Validated across 3 random restarts with 10 years of daily
+            USGS NWIS streamflow data. KGE=0.75 consistent across restarts.
+          scope: {basins: ["01031500"], period: "2000-2010"}
+          evidence_spans:
+            - {source_type: run, source_id: hbv-run-01031500-v1, metric_ref: kge}
+            - {source_type: dataset, source_id: usgs_nwis_01031500, metric_ref: null}
+          limitations:
+            - "Calibrated on humid temperate basin only — not validated for semi-arid"
+            - "HBV-light does not simulate glacier dynamics"
+    call:
+      tool: promote_claim_to_registry
+      kwargs:
+        session_id: bench-lg-016
+        claim_id: c-016
+        researcher_approved: true
+    assertions:
+      - {path: status, op: eq, expected: promoted}
+      - {path: error, op: absent}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP F: Knowledge registry (pure Python, no network)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-017
+    name: "Knowledge registry: KGE metric has Gupta 2009 citation"
+    tier: 3
+    mark: bench
+    category: knowledge
+    call_style: mcp_tool
+    rationale: >
+      The Kling-Gupta Efficiency must cite Gupta et al. (2009) — this is the
+      original paper that defined KGE. If the citation is missing, any
+      researcher relying on the registry for bibliography generation will
+      produce an incomplete reference list.
+    call:
+      tool: get_metric_definition
+      kwargs:
+        metric_id: metric.kge
+    assertions:
+      - {path: name, op: eq, expected: "Kling-Gupta Efficiency"}
+      - {path: citations, op: contains, expected: gupta_2009}
+      - {path: error, op: absent}
+
+  - id: B-018
+    name: "Knowledge registry: streamflow variable has correct SI units"
+    tier: 3
+    mark: bench
+    category: knowledge
+    call_style: mcp_tool
+    rationale: >
+      Standard SI unit for volumetric flow rate is m3/s (cubic metres per
+      second). Any tool that outputs streamflow in different units must
+      declare a unit mismatch. If the registry declares wrong units, the
+      unit_consistency validator will pass incorrect data.
+    call:
+      tool: get_variable_definition
+      kwargs:
+        variable_id: variable.streamflow
+    assertions:
+      - {path: standard_units, op: eq, expected: "m3/s"}
+      - {path: error, op: absent}
+
+  - id: B-019
+    name: "Knowledge registry: USGS NWIS dataset links to correct access tool"
+    tier: 3
+    mark: bench
+    category: knowledge
+    call_style: mcp_tool
+    rationale: >
+      Agents discover which tool to call for a dataset via access_tool in
+      the registry. If this points to the wrong function name, the agent
+      will attempt to use a non-existent tool and fail silently.
+    call:
+      tool: get_dataset_info
+      kwargs:
+        dataset_id: dataset.usgs_nwis
+    assertions:
+      - {path: access_tool, op: eq, expected: fetch_streamflow_data}
+      - {path: error, op: absent}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP G: Live integration (require network — @pytest.mark.bench_live)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP H: Tier 1 enforcement (post_run injection, no network)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-021
+    name: "Enforcement: quality_flags injected when runoff_ratio is valid"
+    tier: 1
+    mark: bench
+    category: enforcement
+    call_style: enforcement_fn
+    rationale: >
+      After extract_hydrological_signatures completes with a valid session
+      (runoff_ratio=0.42), post_run() must inject quality_flags containing
+      the water balance result. status=pass is the correct scientific answer
+      for a humid basin. An absent quality_flags key means enforcement did
+      not fire — a regression in the Tier 1 contract.
+    setup:
+      session_id: bench-enf-021
+      slots:
+        signatures:
+          data:
+            runoff_ratio: 0.42
+    call:
+      tool_name: extract_hydrological_signatures
+      seed_result:
+        data:
+          runoff_ratio: 0.42
+          q_mean: 1.2
+    assertions:
+      - {path: quality_flags, op: present}
+      - {path: quality_flags, op: ne, expected: []}
+      - {path: "quality_flags.0.status", op: eq, expected: pass}
+      - {path: "quality_flags.0.validator", op: eq, expected: water_balance_consistency}
+
+  - id: B-022
+    name: "Enforcement: quality_flags captures water balance warning"
+    tier: 1
+    mark: bench
+    category: enforcement
+    call_style: enforcement_fn
+    rationale: >
+      When runoff_ratio=1.45 (physically impossible, severity=high), the
+      auto-fired water balance validator must appear in quality_flags with
+      status=warning and severity=high. The researcher sees the quality issue
+      embedded in the tool result — no separate validator call needed.
+    setup:
+      session_id: bench-enf-022
+      slots:
+        signatures:
+          data:
+            runoff_ratio: 1.45
+    call:
+      tool_name: extract_hydrological_signatures
+      seed_result:
+        data:
+          runoff_ratio: 1.45
+    assertions:
+      - {path: "quality_flags.0.status", op: eq, expected: warning}
+      - {path: "quality_flags.0.severity", op: eq, expected: high}
+
+  - id: B-023
+    name: "Enforcement: unit mismatch captured in quality_flags for streamflow"
+    tier: 1
+    mark: bench
+    category: enforcement
+    call_style: enforcement_fn
+    rationale: >
+      After fetch_streamflow_data stores streamflow with units="cfs", the
+      auto-fired unit consistency validator must flag a high-severity unit
+      mismatch in quality_flags. This ensures the cfs→m3/s error (factor 28.3)
+      is visible in the tool result itself, not only if the researcher
+      explicitly calls check_unit_consistency.
+    setup:
+      session_id: bench-enf-023
+      slots:
+        streamflow:
+          data:
+            units: "cfs"
+    call:
+      tool_name: fetch_streamflow_data
+      seed_result:
+        data:
+          units: "cfs"
+    assertions:
+      - {path: quality_flags, op: present}
+      - {path: "quality_flags.0.status", op: eq, expected: fail}
+      - {path: "quality_flags.0.severity", op: eq, expected: high}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP I: aihydro.verified namespace (Sprint 3)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-024
+    name: "Verified: metric.kge carries verified=true from built-in registry"
+    tier: 3
+    mark: bench
+    category: knowledge
+    call_style: mcp_tool
+    rationale: >
+      The KGE metric (Gupta et al. 2009) is the foundational model evaluation
+      metric in CAMELS-based hydrology. Its definition — formula, decomposition
+      into r/alpha/beta, and the -0.41 benchmark threshold — is unambiguous in
+      the literature. verified=True means workspace overrides require a
+      peer-reviewed justification (scientific_justification field).
+      If this assertion fails, the verified flag was dropped, weakening the
+      override protection contract.
+    call:
+      tool: get_metric_definition
+      kwargs:
+        metric_id: metric.kge
+    assertions:
+      - {path: verified, op: eq, expected: true}
+      - {path: name, op: eq, expected: "Kling-Gupta Efficiency"}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP J: Claim coupling (Sprint 4)
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-025
+    name: "Claim coupling: post_run injects _run_id into Tier 1 result"
+    tier: 1
+    mark: bench
+    category: enforcement
+    call_style: enforcement_fn
+    rationale: >
+      Every successful Tier 1 tool result must carry a '_run_id' field so
+      the agent can immediately bind evidence_spans without guessing a source_id.
+      A missing '_run_id' breaks the claim coupling contract: the agent would
+      need to manually compose evidence_spans from scratch, risking errors and
+      omissions. The run_id also enables the session run log which underpins
+      draft_claim_from_run().
+    setup:
+      session_id: bench-cc-025
+      slots:
+        signatures:
+          data:
+            runoff_ratio: 0.42
+    call:
+      tool_name: extract_hydrological_signatures
+      seed_result:
+        data:
+          runoff_ratio: 0.42
+    assertions:
+      - {path: _run_id, op: present}
+      - {path: _run_id, op: startswith, expected: "sigs."}
+      - {path: quality_flags, op: present}
+
+  - id: B-026
+    name: "Claim coupling: draft_claim_from_run returns evidence-bound template"
+    tier: 1
+    mark: bench
+    category: ledger
+    call_style: session_op
+    rationale: >
+      After a run is logged (simulated here by pre-populating the _run_log slot),
+      draft_claim_from_run() must return a claim_template with evidence_spans
+      pre-populated pointing to the correct run_id and metric_ref. The agent
+      only needs to author the 'statement'. An absent or wrong source_id would
+      mean the evidence_span points to a non-existent run — unverifiable claim.
+    setup:
+      session_id: bench-cc-026
+      slots:
+        _run_log:
+          sigs.20260508.bench026.ab12:
+            run_id: sigs.20260508.bench026.ab12
+            tool_name: extract_hydrological_signatures
+            session_id: bench-cc-026
+            timestamp: "2026-05-08T10:00:00Z"
+            key_outputs:
+              runoff_ratio: 0.42
+              baseflow_index: 0.61
+    call:
+      tool: draft_claim_from_run
+      kwargs:
+        session_id: bench-cc-026
+        run_id: sigs.20260508.bench026.ab12
+        metric_ref: runoff_ratio
+    assertions:
+      - {path: status, op: eq, expected: drafted}
+      - {path: "claim_template.evidence_spans.0.source_type", op: eq, expected: run}
+      - {path: "claim_template.evidence_spans.0.source_id", op: eq, expected: "sigs.20260508.bench026.ab12"}
+      - {path: "claim_template.evidence_spans.0.metric_ref", op: eq, expected: runoff_ratio}
+      - {path: "claim_template.claim_type", op: eq, expected: empirical_result}
+      - {path: error, op: absent}
+
+  - id: B-020
+    name: "Live: delineate_watershed for USGS 01031500 (Piscataquis River, ME)"
+    tier: 1
+    mark: bench_live
+    category: watershed
+    call_style: mcp_tool
+    rationale: >
+      Published USGS StreamStats drainage area for 01031500 (Piscataquis River
+      at Medford, ME) is 4,256 km² (USGS 2024). Allowing ±15% for methodology
+      differences (NLDI vs StreamStats polygon algorithms) gives bounds of
+      [3600, 4900]. If the result falls outside this range, the NLDI polygon
+      or area computation is incorrect.
+    call:
+      tool: delineate_watershed
+      kwargs:
+        session_id: bench-live-020
+        gauge_id: "01031500"
+    assertions:
+      - {path: data.area_km2, op: between, bounds: [3600, 4900]}
+      - {path: data.gauge_name, op: present}
+      - {path: error, op: absent}

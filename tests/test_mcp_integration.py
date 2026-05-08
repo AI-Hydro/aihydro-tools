@@ -43,9 +43,11 @@ class TestToolRegistration:
         "clear_session",
         "add_note",
         "export_session",
+        "archive_session",             # T2.2 — 1.6.0
         "list_available_tools",
         "get_session_raw_state",       # T2.2 — 1.6.0
         "write_research_interpretation",  # T2.2 — 1.6.0
+        "merge_session_shards",           # T1.1 — 1.6.3
         # Execution (1 — 1.6.0)
         "run_python",                  # T2.4 — 1.6.0
         # Skills (2 — 1.6.0)
@@ -70,6 +72,29 @@ class TestToolRegistration:
         "get_researcher_profile",
         "update_researcher_profile",
         "log_researcher_observation",
+        # Knowledge Registry (6 — 1.6.4)
+        "list_known_variables",
+        "get_variable_definition",
+        "list_known_metrics",
+        "get_metric_definition",
+        "get_equation_definition",    # T1.1 — 1.6.4
+        "list_known_datasets",
+        "get_dataset_info",
+        # Physics Validators (3 — 1.6.6)
+        "check_water_balance_consistency",
+        "check_temporal_alignment",
+        "check_unit_consistency",
+        # Claims & Assumptions (6 — 1.6.7)
+        "add_claim",
+        "update_claim_status",
+        "add_assumption",
+        "list_claims",
+        "list_assumptions",
+        "promote_claim_to_registry",
+        "draft_claim_from_run",
+        # Workflow Manifests (2 — 1.6.8)
+        "list_available_workflows",
+        "get_workflow_manifest",
     }
 
     def test_import_mcp_singleton(self):

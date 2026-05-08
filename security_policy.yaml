@@ -1,0 +1,105 @@
+# AI-Hydro MCP Security Policy
+# Draft — implementation target: Sprint 3
+#
+# "write_requires_approval" semantics:
+#   There is no human in the MCP tool-call path at inference time.
+#   "Approval" means the tool checks a session-level boolean flag
+#   (researcher_approved: bool) set explicitly in the tool call by
+#   the researcher, NOT by the agent. The agent cannot self-approve.
+#   Pattern: promote_claim_to_registry(researcher_approved=True).
+#   Tools in this tier raise ValueError if researcher_approved=False.
+#
+# "read_only" semantics:
+#   Tool may fetch external data and read session state.
+#   Tool may NOT write to HydroSession slots, files, or the artifact manifest.
+#
+# "destructive_blocked" semantics:
+#   These operations are not exposed as MCP tools. If a researcher needs
+#   to delete a session, they do so via the CLI or filesystem directly.
+#   The agent never has delete capability.
+
+tool_execution:
+
+  # Tools that only read — no session writes, no filesystem writes
+  read_only:
+    - fetch_streamflow_data
+    - fetch_forcing_data
+    - fetch_camels_us
+    - search_literature
+    - get_session_summary
+    - get_session_raw_state
+    - list_claims
+    - list_assumptions
+    - get_model_results
+    - get_training_status
+    - list_available_tools
+    - list_skills
+    - get_library_reference
+    - get_researcher_profile
+    - get_project_summary
+    - search_experiments
+    - list_available_workflows
+    - get_workflow_manifest
+    - check_water_balance_consistency
+    - check_temporal_alignment
+    - check_unit_consistency
+
+  # Tools that write but require researcher_approved=True in the call
+  write_requires_approval:
+    - promote_claim_to_registry    # writes to global knowledge candidate list
+    - export_session               # writes capsule to filesystem outside ~/.aihydro/
+    - update_researcher_profile    # mutates persistent researcher identity
+
+  # Tools that write to session/workspace — agent may call freely
+  # (session writes are append-only or last-writer-wins per the sharding contract)
+  agent_writable:
+    - start_session
+    - add_note
+    - add_claim
+    - update_claim_status
+    - add_assumption
+    - write_research_interpretation
+    - record_result                # internal — called by analysis tools
+    - train_hydro_model            # kickoff only; writes job artifact path
+    - run_python                   # sandboxed: workspace-scoped, no network by default
+    - show_on_map                  # writes to ~/.aihydro/map_events/ (event bus)
+    - add_journal_entry
+    - index_literature             # writes BM25 index to project dir
+    - start_project
+    - add_session_to_project
+
+  # Operations not exposed as MCP tools — CLI or filesystem only
+  destructive_blocked:
+    - delete_session
+    - overwrite_artifact
+    - clear_session_slot           # clear_session tool resets all slots, not individual ones
+
+audit:
+  enabled: true
+  log_path: "~/.aihydro/audit.log"
+  log_events:
+    - tool_call_with_researcher_approved_true
+    - acknowledged_compromise_flag_set
+    - plugin_tool_loaded
+    - run_python_network_allowed   # any run_python call with allow_network=True
+
+sandbox:
+  filesystem_writes:
+    run_python:
+      scope: workspace_dir_only   # enforced in tools_execution.py
+      absolute_paths_outside: rejected
+    map_events:
+      scope: "~/.aihydro/map_events/"
+      max_file_size_kb: 512
+
+secrets:
+  no_secrets_in_session: true
+  # HydroSession is persisted to ~/.aihydro/sessions/<id>.json in plaintext.
+  # API keys, passwords, and tokens must never be written to session slots,
+  # notes, or interpretations. The run_python sandbox does not have access
+  # to environment variables containing secrets by default.
+  blocked_key_patterns:
+    - ".*_api_key"
+    - ".*_secret"
+    - ".*_password"
+    - ".*_token"

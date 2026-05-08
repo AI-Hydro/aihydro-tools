@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aihydro-tools"
-version = "2.0.0"
+version = "1.6.0"
 description = "AI-Hydro: hydrological research tools as an MCP server for AI agents"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
@@ -147,6 +147,8 @@ ai_hydro = []
 [tool.pytest.ini_options]
 markers = [
     "live: end-to-end tests requiring internet and full deps (deselect with -m 'not live')",
+    "bench: aihydro-bench fixture tasks — no network, runs on every push",
+    "bench_live: aihydro-bench live tasks — requires USGS/GridMET APIs, runs nightly",
 ]
 
 # ── Ruff linting ──────────────────────────────────────────────────────────────

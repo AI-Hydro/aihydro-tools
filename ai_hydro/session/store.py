@@ -28,7 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_SESSIONS_DIR = Path.home() / ".aihydro" / "sessions"
+SESSIONS_DIR = Path.home() / ".aihydro" / "sessions"
+_SESSIONS_DIR = SESSIONS_DIR # for backward compat within file
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _RULES_DIR_NAME = ".aihydrorules"
 
@@ -49,6 +50,13 @@ _COMMON_SLOTS = (
     "cn",
     "model",
 )
+
+# Days before a field is considered stale in the active context
+STALENESS_THRESHOLD = {
+    "computed": 365,
+    "notes": 30,
+    "interpretation": 14,
+}
 
 
 def _lean_slot(val: Any) -> Any:
@@ -89,8 +97,9 @@ def _lean_slot(val: Any) -> Any:
 class HydroSession:
     """Persistent research state for a single study across tool calls."""
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, shard_id: str | None = None) -> None:
         self.session_id: str = session_id
+        self.shard_id: str | None = shard_id
         # Display name — LLM-generated slug describing the research
         # e.g. "piscataquis-snowmelt-signatures-2000-2020"
         self.site_name: str = ""
@@ -104,11 +113,19 @@ class HydroSession:
         self.notes: list[str] = []
         # LLM-authored scientific interpretation — written via write_research_interpretation
         self.interpretation: str = ""
+        self.interpretation_at: str | None = None
         self.created_at: str = datetime.now(timezone.utc).isoformat()
         self.updated_at: str = self.created_at
+        self.archived: bool = False
         # Citation keys accumulated as tools run (Tier 1 data sources + Plugin plugins).
         # Platform platform citations are injected at export time, not stored here.
         self._citations: set[str] = set()
+        # Provenance: artifact_id -> {type, source, fetch_parameters, parameter_hash, content_hash, ...}
+        self.artifact_manifest: dict[str, dict] = {}
+        # Scientific Claims: claim_id -> ScientificClaim (dict)
+        self.claims: dict[str, dict] = {}
+        # Assumptions: assumption_id -> Assumption (dict)
+        self.assumptions: dict[str, dict] = {}
 
     # ------------------------------------------------------------------
     # Backward-compat property: gauge_id → site_id (or session_id)
@@ -129,6 +146,73 @@ class HydroSession:
 
     def get(self, slot: str) -> dict | None:
         return self._slots.get(slot)
+
+    def add_artifact(
+        self,
+        artifact_id: str,
+        data: Any,
+        fetch_parameters: dict,
+        source: str,
+        artifact_type: str = "timeseries",
+        units: str | None = None,
+        metadata: dict | None = None
+    ) -> str:
+        """
+        Record a data artifact in the session manifest with provenance hashes.
+        Returns the artifact_id.
+        """
+        param_hash = self._hash(fetch_parameters)
+        content_hash = self._hash(data)
+
+        self.artifact_manifest[artifact_id] = {
+            "artifact_id": artifact_id,
+            "type": artifact_type,
+            "source": source,
+            "fetch_parameters": fetch_parameters,
+            "parameter_hash": param_hash,
+            "content_hash": content_hash,
+            "units": units,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            **(metadata or {})
+        }
+        return artifact_id
+
+    def record_result(
+        self,
+        slot: str,
+        data: dict,
+        uncertainty: dict | None = None,
+        artifacts_used: list[str] | None = None,
+        metric_ref: str | None = None,
+        tool_name: str | None = None
+    ) -> None:
+        """
+        Record a scientifically defensible result in a session slot.
+        """
+        val: dict[str, Any] = {
+            "data": data,
+            "meta": {
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+                "tool": tool_name,
+                "metric_ref": metric_ref
+            }
+        }
+        if uncertainty:
+            # method must be from: [bootstrap, analytical, ensemble, none]
+            val["uncertainty"] = uncertainty
+        if artifacts_used:
+            val["artifacts_used"] = artifacts_used
+
+        self.set(slot, val)
+
+    def _hash(self, obj: Any) -> str:
+        """Compute a deterministic SHA-256 hash of a serialisable object."""
+        import hashlib
+        try:
+            s = json.dumps(obj, sort_keys=True)
+        except Exception:
+            s = str(obj)
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
     # ------------------------------------------------------------------
     # Backward-compat property accessors for the 9 common slots
@@ -211,22 +295,25 @@ class HydroSession:
     # ------------------------------------------------------------------
 
     @classmethod
-    def _path(cls, session_id: str) -> Path:
+    def _path(cls, session_id: str, shard_id: str | None = None) -> Path:
+        if shard_id:
+            return _SESSIONS_DIR / f"{session_id}.{shard_id}.shard.json"
         return _SESSIONS_DIR / f"{session_id}.json"
 
     @classmethod
-    def load(cls, session_id: str) -> HydroSession:
-        """Load an existing session, or return a new empty one."""
-        path = cls._path(session_id)
+    def load(cls, session_id: str, shard_id: str | None = None) -> HydroSession:
+        """Load an existing session or shard, or return a new empty one."""
+        path = cls._path(session_id, shard_id)
         if not path.exists():
-            return cls(session_id)
+            return cls(session_id, shard_id)
         with open(path) as f:
             raw = json.load(f)
-        session = cls(session_id)
+        session = cls(session_id, shard_id)
         _META_KEYS = {
             "session_id", "site_name", "site_id", "site_type",
             "workspace_dir", "notes", "created_at", "updated_at", "interpretation",
-            "_citations",
+            "interpretation_at", "archived",
+            "_citations", "artifact_manifest", "claims", "assumptions",
             # legacy keys — kept for loading old session files
             "gauge_id",
         }
@@ -242,17 +329,28 @@ class HydroSession:
         session.workspace_dir = raw.get("workspace_dir")
         session.notes = raw.get("notes", [])
         session.interpretation = raw.get("interpretation", "")
+        session.interpretation_at = raw.get("interpretation_at")
+        session.archived = raw.get("archived", False)
         session.created_at = raw.get("created_at", session.created_at)
         session.updated_at = raw.get("updated_at", session.updated_at)
         session._citations = set(raw.get("_citations", []))
+        session.artifact_manifest = raw.get("artifact_manifest", {})
+        session.claims = raw.get("claims", {})
+        session.assumptions = raw.get("assumptions", {})
         return session
 
     def save(self) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()
         _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        with open(self._path(self.session_id), "w") as f:
+        with open(self._path(self.session_id, self.shard_id), "w") as f:
             json.dump(self._to_raw(), f, indent=2)
-        self.write_research_context()
+        if not self.shard_id:
+            self.write_research_context()
+
+    def archive(self) -> None:
+        """Mark session as archived — all active context moves to Historical."""
+        self.archived = True
+        self.save()
 
     def _to_raw(self) -> dict:
         raw: dict[str, Any] = {
@@ -263,9 +361,14 @@ class HydroSession:
             "workspace_dir": self.workspace_dir,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "archived": self.archived,
             "notes": self.notes,
             "interpretation": self.interpretation,
+            "interpretation_at": self.interpretation_at,
             "_citations": sorted(self._citations),
+            "artifact_manifest": self.artifact_manifest,
+            "claims": self.claims,
+            "assumptions": self.assumptions,
         }
         for slot, val in self._slots.items():
             raw[slot] = _lean_slot(val)
@@ -297,12 +400,59 @@ class HydroSession:
     def pending(self) -> list[str]:
         return [s for s in _COMMON_SLOTS if self.get(s) is None]
 
+    def is_stale(self, field: str) -> bool:
+        """
+        Check if a field or slot is older than its configured threshold.
+        If the session is archived, all fields are considered stale for
+        active context purposes.
+        """
+        if self.archived:
+            return True
+
+        # 1. Computed slots
+        if field in self._slots:
+            result = self.get(field)
+            if not result:
+                return False
+            ts_str = result.get("meta", {}).get("computed_at")
+            if not ts_str:
+                return False
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                delta = datetime.now(timezone.utc) - ts
+                return delta.days > STALENESS_THRESHOLD["computed"]
+            except Exception:
+                return False
+
+        # 2. Interpretation
+        if field == "interpretation":
+            if not self.interpretation_at:
+                return False
+            try:
+                ts = datetime.fromisoformat(self.interpretation_at.replace("Z", "+00:00"))
+                delta = datetime.now(timezone.utc) - ts
+                return delta.days > STALENESS_THRESHOLD["interpretation"]
+            except Exception:
+                return False
+
+        # 3. Notes (currently use session updated_at as proxy for list staleness)
+        if field == "notes":
+            try:
+                ts = datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
+                delta = datetime.now(timezone.utc) - ts
+                return delta.days > STALENESS_THRESHOLD["notes"]
+            except Exception:
+                return False
+
+        return False
+
     def summary(self) -> dict:
         return {
             "session_id": self.session_id,
             "site_name": self.site_name,
             "site_id": self.site_id,
             "site_type": self.site_type,
+            "archived": self.archived,
             "computed": self.computed(),
             "pending": self.pending(),
             "notes": self.notes,
@@ -401,10 +551,7 @@ class HydroSession:
         """
         Write research.md to .aihydrorules/ for VS Code context injection.
 
-        Section 1 — Python skeleton (always current on every save):
-            site identity, computed/pending slots, researcher notes.
-        Section 2 — LLM interpretation (written via write_research_interpretation):
-            scientific summary authored by the foundation model.
+        Separates ACTIVE context from HISTORICAL (stale/archived) context.
         """
         display = self.site_name or self.site_id or self.session_id
         name_str = self._display_name_str()
@@ -416,23 +563,64 @@ class HydroSession:
             f"**Session**: {display}{name_str}",
             f"**ID**: {self.session_id}",
         ]
+        if self.archived:
+            lines.append("> [!IMPORTANT]")
+            lines.append("> **This session is ARCHIVED.** All hypotheses below are historical.")
+
         if self.site_id:
             lines.append(f"**Site**: {self.site_id}" +
                          (f" ({self.site_type})" if self.site_type else ""))
         lines += [f"**Updated**: {self.updated_at[:10]}", ""]
 
-        if computed:
-            lines.append(f"**Computed** ({len(computed)}): " + ", ".join(computed))
+        # --- Section: Active Computations ---
+        active_computed = [s for s in computed if not self.is_stale(s)]
+        stale_computed  = [s for s in computed if self.is_stale(s)]
+
+        if active_computed:
+            lines.append(f"**Computed (Active)**: " + ", ".join(active_computed))
         if pending:
-            lines.append(f"**Pending** ({len(pending)}): " + ", ".join(pending))
+            lines.append(f"**Pending**: " + ", ".join(pending))
         lines.append("")
 
-        if self.notes:
-            lines.append("## Researcher Notes")
+        # --- Section: Active Scientific Context ---
+        interp_stale = self.is_stale("interpretation")
+        if self.interpretation and not interp_stale:
+            lines.append("## Scientific Context (Active)")
+            lines.append(self.interpretation)
+            lines.append("")
+
+        # --- Section: Active Researcher Notes ---
+        notes_stale = self.is_stale("notes")
+        if self.notes and not notes_stale:
+            lines.append("## Researcher Notes (Active)")
             for note in self.notes:
                 lines.append(f"- {note}")
             lines.append("")
 
+        # --- Section: Historical / Stale Context ---
+        if self.archived or stale_computed or (self.interpretation and interp_stale) or (self.notes and notes_stale):
+            lines.append("---")
+            lines.append("## Historical / Stale Context")
+            lines.append("> The following context is older than the staleness threshold. "
+                         "Use with caution.")
+            lines.append("")
+            
+            if stale_computed:
+                lines.append(f"**Computed (Stale)**: " + ", ".join(stale_computed))
+            
+            if self.interpretation and interp_stale:
+                lines.append("### Historical Interpretation")
+                lines.append(f"*(Authored {self.interpretation_at[:10] if self.interpretation_at else 'unknown'})*")
+                lines.append(self.interpretation)
+                lines.append("")
+                
+            if self.notes and notes_stale:
+                lines.append("### Historical Notes")
+                for note in self.notes:
+                    lines.append(f"- {note}")
+                lines.append("")
+
+        # --- Section: Profile ---
         try:
             from ai_hydro.session.persona import ResearcherProfile
             profile = ResearcherProfile.load()
@@ -442,11 +630,7 @@ class HydroSession:
         except Exception:
             pass
 
-        if self.interpretation:
-            lines.append("## Scientific Context")
-            lines.append(self.interpretation)
-            lines.append("")
-        else:
+        if not self.interpretation:
             lines.append(
                 "_No scientific interpretation yet — call `get_session_raw_state` "
                 "then `write_research_interpretation` to generate one._"

@@ -1,0 +1,33 @@
+id: workflow.rainfall_runoff_benchmark
+skill_ref: rainfall-runoff-benchmark
+description: "End-to-end benchmark comparing LSTM and SWAT+ on a USGS basin"
+steps:
+  - id: fetch_basin
+    tool: delineate_watershed
+    description: "Define the watershed boundary and resolve gauge identity."
+  - id: fetch_forcing
+    tool: fetch_forcing_data
+    depends_on: [fetch_basin]
+    description: "Download meteorological drivers (gridMET/Daymet)."
+  - id: fetch_streamflow
+    tool: fetch_streamflow_data
+    description: "Download observed discharge from USGS NWIS."
+  - id: train_model
+    tool: train_lstm
+    depends_on: [fetch_forcing, fetch_streamflow]
+    description: "Train the rainfall-runoff model."
+  - id: evaluate
+    tool: evaluate_hydrologic_model_performance
+    depends_on: [train_model, fetch_streamflow]
+    description: "Compute KGE/NSE and other efficiency metrics."
+recommended_validators:
+  after_fetch:
+    - check_temporal_alignment
+    - check_unit_consistency
+  after_evaluation:
+    - check_water_balance_consistency
+    - check_metric_validity
+assumptions_to_declare:
+  - "Forcing dataset assumed spatially representative"
+  - "No upstream regulation assumed"
+  - "Stationarity assumed for the validation period"
