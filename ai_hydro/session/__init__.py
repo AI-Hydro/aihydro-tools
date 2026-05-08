@@ -10,5 +10,6 @@ v1.2 additions:
 from ai_hydro.session.store import HydroSession
 from ai_hydro.session.project import ProjectSession
 from ai_hydro.session.persona import ResearcherProfile
+from ai_hydro.session.sharding import merge_session_shards
 
-__all__ = ["HydroSession", "ProjectSession", "ResearcherProfile"]
+__all__ = ["HydroSession", "ProjectSession", "ResearcherProfile", "merge_session_shards"]

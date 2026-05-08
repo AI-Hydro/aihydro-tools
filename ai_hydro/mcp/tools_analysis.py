@@ -30,6 +30,7 @@ import logging
 from pathlib import Path
 
 from ai_hydro.mcp.app import mcp, Context
+from ai_hydro.mcp.enforcement import post_run as _post_run
 from ai_hydro.mcp.helpers import (
     _cached_response,
     _ensure_session,
@@ -428,6 +429,7 @@ def fetch_streamflow_data(
         reminder = _sync_reminder(session_id)
         if reminder:
             resp["_sync_required"] = reminder
+        resp = _post_run("fetch_streamflow_data", session_id, resp)
         return resp
     except Exception as e:
         log.error("fetch_streamflow_data failed: %s", e)
@@ -533,6 +535,7 @@ def extract_hydrological_signatures(
         reminder = _sync_reminder(session_id)
         if reminder:
             d["_sync_required"] = reminder
+        d = _post_run("extract_hydrological_signatures", session_id, d)
         return d
     except Exception as e:
         log.error("extract_hydrological_signatures failed: %s", e)

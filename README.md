@@ -71,6 +71,27 @@ The [AI-Hydro VS Code extension](https://github.com/AI-Hydro/AI-Hydro) auto-dete
 | **Session** | `export_session` | Export a reproducible research capsule with data, figures, methods, and environment |
 | **Session** | `get_session_raw_state` | Retrieve raw computed results for LLM interpretation (Phase 1 of two-phase split) |
 | **Session** | `write_research_interpretation` | Store LLM-authored scientific interpretation (Phase 2 of two-phase split) |
+| **Session** | `archive_session` | Archive completed session to a timestamped ZIP |
+| **Session** | `merge_session_shards` | Merge parallel sub-agent shards into the main session |
+| **Ledger** | `add_claim` | Add a scoped scientific claim to the session ledger |
+| **Ledger** | `update_claim_status` | Update the status/confidence of an existing claim |
+| **Ledger** | `list_claims` | List all claims in the session (filterable by status) |
+| **Ledger** | `add_assumption` | Record a scientific assumption or caveat |
+| **Ledger** | `list_assumptions` | List all assumptions in the session |
+| **Ledger** | `promote_claim_to_registry` | Promote a validated claim to the global knowledge registry |
+| **Ledger** | `draft_claim_from_run` | Auto-draft a claim pre-filled with evidence from a Tier 1 tool run |
+| **Validators** | `check_water_balance_consistency` | Flag mass-balance violations in signature + streamflow data |
+| **Validators** | `check_temporal_alignment` | Verify forcing and streamflow cover the same time window |
+| **Validators** | `check_unit_consistency` | Confirm a session slot carries the expected physical units |
+| **Visualization** | `show_on_map` | Push any GeoJSON geometry onto the AI-Hydro map panel |
+| **Discover** | `list_available_tools` | Enumerate all installed tools, including community plugins |
+| **Discover** | `list_skills` | List available workflow playbooks by domain |
+| **Discover** | `load_skill` | Load a workflow playbook for a multi-step analysis |
+| **Discover** | `get_library_reference` | Retrieve an API idiom card for a Python library |
+| **Discover** | `list_relevant_clis` | List relevant external CLI tools |
+| **Discover** | `get_variable_definition` | Look up a hydrology variable by ID (units, aliases, notes) |
+| **Discover** | `get_metric_definition` | Look up a performance metric by ID |
+| **Discover** | `get_dataset_definition` | Look up a dataset by ID (provider, resolution, variables) |
 
 ### Project, Literature & Researcher Memory
 
@@ -114,6 +135,76 @@ AI-Hydro maintains a three-tier memory hierarchy so research context survives be
 **ProjectSession** — project-scoped state at `~/.aihydro/projects/<name>/project.json`. Organises research across multiple gauges, topics, or datasets. Supports cross-session experiment search, a timestamped journal, and literature indexing.
 
 **ResearcherProfile** — a persistent persona at `~/.aihydro/researcher.json`. Built up from agent-researcher interactions over time: expertise areas, preferred models, active projects, and accumulated observations. Injected into every conversation automatically so the agent knows who it is working with.
+
+---
+
+## Scientific Trust
+
+AI-Hydro goes beyond computation — it records *why* results should be believed and *what remains uncertain*.
+
+### Tool Tier System
+
+Every tool is assigned to one of three evidence tiers (machine-readable via `get_tool_tier(name)`):
+
+| Tier | Label | Automatic enforcement |
+|------|-------|----------------------|
+| **1** | Scientific output | `quality_flags` injected into every result; `_run_id` minted for evidence binding |
+| **2** | Workflow / data | No automatic enforcement; best-effort provenance |
+| **3** | Infrastructure | No validation load; session plumbing only |
+
+Tier 1 tools (watershed delineation, signatures, TWI, CN, model training) fire registered post-run validators automatically. Every Tier 1 result carries:
+- `quality_flags` — list of validator outcomes (`pass`/`warning`/`fail` with severity)
+- `_run_id` — stable evidence-binding key for linking claims to specific runs
+
+### Scientific Ledger
+
+Results become actionable knowledge through the ledger:
+
+1. **`draft_claim_from_run(session_id, run_id, metric_ref)`** — reads the run log for any Tier 1 tool call and returns a claim template with `evidence_spans` pre-populated. The agent authors only the scientific interpretation.
+2. **`add_claim(..., evidence_spans=[...])`** — records the claim. `EvidenceSpan` ties the claim to a run, paper, or dataset with typed attribution (`source_type`, `source_id`, `metric_ref`).
+3. **`promote_claim_to_registry(..., researcher_approved=True)`** — passes a promotion gate: at least one `evidence_span`, at least one `limitation`, and status `supported` or `weakly_supported`. Researcher approval is required.
+
+### Verified Knowledge
+
+Built-in knowledge entries can be marked `verified: true` in the YAML registry (e.g., `metric.kge`, `variable.streamflow`, `dataset.usgs_nwis`). Verified entries require `scientific_justification` — not just `overrides` + `override_reason` — in workspace override files, ensuring overrides of peer-reviewed conventions are deliberate and documented.
+
+Retrieve all verified entries programmatically:
+```python
+from ai_hydro.knowledge.loader import get_verified_knowledge
+verified = get_verified_knowledge()  # {"variables": [...], "metrics": [...], "datasets": [...]}
+```
+
+---
+
+## Quality Assurance
+
+### Automatic Post-Run Validation
+
+Tier 1 tools fire registered validators automatically (no agent action needed). Currently active wiring:
+
+- `extract_hydrological_signatures` → `check_water_balance_consistency`
+- `fetch_streamflow_data` → `check_unit_consistency` (expected: m³/s)
+
+Validators never raise — failures appear in `quality_flags` without crashing the tool. Register additional validators via:
+
+```python
+from ai_hydro.mcp.enforcement import register_post_validator
+register_post_validator("my_tool", my_validator_fn, lambda sid: {"session_id": sid})
+```
+
+### aihydro-bench
+
+A deterministic fixture benchmark suite (`bench/tasks.yaml`, ~26 tasks) verifies every core computation path without live network calls. Tasks span all tiers:
+
+- **Group A–C**: validators, compute functions, and their edge cases
+- **Group D–G**: ledger gates, knowledge registry guards, conflict resolution
+- **Group H–J**: enforcement layer, verified namespace, claim coupling (draft → add)
+
+Run it:
+```bash
+pytest tests/test_bench.py -m bench -v       # fast fixture suite (no network)
+pytest tests/test_bench.py -m bench_live -v  # live USGS calls (nightly CI only)
+```
 
 ---
 
@@ -277,7 +368,7 @@ If you use `aihydro-tools` in your research, please cite:
              Hydrological Research},
   author  = {Galib, Mohammad and Merwade, Venkatesh},
   year    = {2026},
-  version = {1.2.1},
+  version = {1.6.0},
   doi     = {10.5281/zenodo.19597589},
   url     = {https://doi.org/10.5281/zenodo.19597589}
 }

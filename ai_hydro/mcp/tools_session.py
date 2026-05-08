@@ -9,6 +9,7 @@ import json
 import logging
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ai_hydro.mcp.app import mcp
@@ -24,6 +25,7 @@ log = logging.getLogger("ai_hydro.mcp")
 @mcp.tool()
 def start_session(
     session_id: str | None = None,
+    shard_id: str | None = None,
     workspace_dir: str | None = None,
 ) -> dict:
     """
@@ -42,6 +44,8 @@ def start_session(
     ----------
     session_id : str, optional
         Unique identifier for this research session. Auto-generated if omitted.
+    shard_id : str, optional
+        Temporary shard identifier for sub-agent parallelization.
     workspace_dir : str, optional
         Absolute path to the VS Code workspace folder. When provided, all MCP
         tools save output files there automatically. Pass once — remembered for
@@ -55,11 +59,12 @@ def start_session(
     try:
         from ai_hydro.session import HydroSession
         session_id = _normalize_session_id(session_id)
-        session = HydroSession.load(session_id)
+        session = HydroSession.load(session_id, shard_id=shard_id)
         if workspace_dir:
             session.workspace_dir = workspace_dir
         session.save()
         summary = session.summary()
+        summary["shard_id"] = session.shard_id
         summary["workspace_dir"] = session.workspace_dir
         summary["python_interpreter"] = sys.executable
         pip_path = Path(sys.executable).parent / "pip"
@@ -183,6 +188,35 @@ def add_note(session_id: str, note: str) -> dict:
 
 
 @mcp.tool()
+def archive_session(session_id: str) -> dict:
+    """
+    Archive a research session to freeze its current state.
+
+    All current interpretations and notes are moved to a 'Historical' section
+    in the research context (research.md). Use this when concluding a phase
+     of study or when the current hypotheses are no longer the primary focus.
+    Archived sessions can still be read and exported.
+
+    Parameters
+    ----------
+    session_id : str
+        Research session identifier.
+
+    Returns
+    -------
+    dict with session_id, archived status, and summary.
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+        session.archive()
+        return session.summary()
+    except Exception as e:
+        log.error("archive_session failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
 def get_session_raw_state(session_id: str) -> dict:
     """
     Return raw computed state from the session for LLM interpretation.
@@ -232,6 +266,36 @@ def get_session_raw_state(session_id: str) -> dict:
 
 
 @mcp.tool()
+def merge_session_shards(session_id: str, shard_ids: list[str] | None = None) -> dict:
+    """
+    Merge sub-agent session shards into the main research session.
+
+    When work is delegated to sub-agents, they write their results to temporary
+    shard files to avoid concurrent write conflicts. Call this tool after
+    sub-agents return to consolidate their notes, citations, and computed
+    slots into the main session state. Shard files are deleted after merge.
+
+    Parameters
+    ----------
+    session_id : str
+        The main research session identifier.
+    shard_ids : list[str], optional
+        Specific shard IDs to merge. If omitted, all available shards for
+        this session are merged.
+
+    Returns
+    -------
+    dict with shards_merged, slots_updated, conflicts, and session_id.
+    """
+    try:
+        from ai_hydro.session import merge_session_shards as _merge
+        result = _merge(session_id, shard_ids=shard_ids)
+        return result
+    except Exception as e:
+        log.error("merge_session_shards failed: %s", e)
+        return _tool_error_to_dict(e)
+
+@mcp.tool()
 def write_research_interpretation(
     session_id: str,
     site_name: str,
@@ -267,6 +331,7 @@ def write_research_interpretation(
 
         session = HydroSession.load(session_id)
         session.interpretation = interpretation.strip()
+        session.interpretation_at = datetime.now(timezone.utc).isoformat()
         session.site_name = site_name.strip()
         session.save()
 

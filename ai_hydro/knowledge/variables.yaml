@@ -1,0 +1,105 @@
+# AI-Hydro Hydrological Variables Registry
+# Foundational vocabulary — build this first, before metrics or datasets.
+# ≤10 entries per file (lean discipline rule).
+# Unit confusion is the #1 failure mode in hydrology AI workflows.
+
+- id: variable.streamflow
+  symbols: [Q]
+  names: [streamflow, discharge, river flow]
+  standard_units: m3/s
+  common_units: [ft3/s, mm/day, L/s]
+  unit_conversions:
+    - ft3/s_to_m3/s      # multiply by 0.0283168
+    - m3/s_to_mm_per_day # multiply by (86400 / basin_area_m2 * 1000)
+  temporal_support: [instantaneous, sub-daily, daily, monthly, annual]
+  spatial_support: [gauge, reach, basin_outlet]
+  description: >
+    Volumetric rate of water flow past a cross-section.
+    The primary observable in streamflow hydrology.
+  related_datasets: [dataset.usgs_nwis]
+  verified: true
+
+- id: variable.precipitation
+  symbols: [P, Pr]
+  names: [precipitation, rainfall, total precipitation]
+  standard_units: mm/day
+  common_units: [mm/hr, in/day, kg/m2/s]
+  unit_conversions:
+    - in_per_day_to_mm_per_day  # multiply by 25.4
+    - kg_m2_s_to_mm_per_day     # multiply by 86400
+  temporal_support: [sub-daily, daily, monthly, annual]
+  spatial_support: [point, gridded, basin-average]
+  description: >
+    Liquid or solid water falling from the atmosphere.
+    The primary driver in most rainfall-runoff models.
+  related_datasets: [dataset.gridmet, dataset.daymet, dataset.chirps]
+
+- id: variable.pet
+  symbols: [PET, ET0]
+  names: [potential evapotranspiration, reference ET]
+  standard_units: mm/day
+  common_units: [mm/month, in/day]
+  unit_conversions: []
+  temporal_support: [daily, monthly, annual]
+  spatial_support: [point, gridded, basin-average]
+  description: >
+    The rate of evapotranspiration that would occur if water were always
+    available. A function of energy and aerodynamic demand.
+    Not to be confused with AET (actual ET).
+  related_datasets: [dataset.gridmet]
+
+- id: variable.aet
+  symbols: [AET, ET, ETa]
+  names: [actual evapotranspiration, actual ET, evapotranspiration]
+  standard_units: mm/day
+  common_units: [mm/month, mm/year]
+  unit_conversions: []
+  temporal_support: [daily, monthly, annual]
+  spatial_support: [point, gridded, basin-average]
+  description: >
+    The actual rate of evapotranspiration, constrained by water availability.
+    Always ≤ PET. Critical for water balance closure.
+  related_datasets: []
+
+- id: variable.swe
+  symbols: [SWE]
+  names: [snow water equivalent, snowpack, SWE]
+  standard_units: mm
+  common_units: [in, m]
+  unit_conversions:
+    - in_to_mm  # multiply by 25.4
+  temporal_support: [daily, weekly, monthly]
+  spatial_support: [point, gridded, basin-average]
+  description: >
+    Depth of water that would result from melting the snowpack at a point.
+    Key variable for snow-dominated basin hydrology.
+  related_datasets: []
+
+- id: variable.baseflow
+  symbols: [Qb, BF]
+  names: [baseflow, groundwater contribution, slow flow]
+  standard_units: m3/s
+  common_units: [mm/day, ft3/s]
+  unit_conversions:
+    - ft3/s_to_m3/s
+    - m3/s_to_mm_per_day
+  temporal_support: [daily, monthly]
+  spatial_support: [gauge, basin_outlet]
+  description: >
+    The sustained portion of streamflow sourced from groundwater or
+    slow subsurface storage. Derived via separation algorithms (Lyne-Hollick, UKIH).
+    Not directly observable — always a model-dependent estimate.
+  related_datasets: [dataset.usgs_nwis]
+
+- id: variable.soil_moisture
+  symbols: [SM, theta, θ]
+  names: [soil moisture, volumetric water content, VWC]
+  standard_units: m3/m3
+  common_units: [mm/mm, percent, kg/kg]
+  unit_conversions: []
+  temporal_support: [sub-daily, daily, weekly]
+  spatial_support: [point, gridded, basin-average]
+  description: >
+    Volume of water per unit volume of soil. Controls infiltration,
+    runoff generation, and ET partitioning. Highly variable in space and time.
+  related_datasets: []

@@ -153,7 +153,7 @@ def delineate_watershed(
         # ── Step 2: Gauge metadata from NWIS ─────────────────────────────
         nwis = NWIS()
         site_info = nwis.get_info([{"site": gauge_id}])
-        site_info["site_no"] = site_info["site_no"].astype(str)
+        site_info["site_no"] = [str(x) for x in site_info["site_no"]]
 
         if gauge_id not in site_info["site_no"].values:
             raise ToolError(
@@ -171,6 +171,9 @@ def delineate_watershed(
         huc_02 = huc_full[:2] if len(huc_full) >= 2 else "NA"
 
         # ── Step 3: Geometry → GeoJSON dict (JSON-serializable) ──────────
+        # Reset index or convert to object to avoid "Unable to avoid copy" error in 
+        # geopandas.to_json() with NumPy 2.x + Arrow-backed indices.
+        watershed_gdf.index = watershed_gdf.index.astype(object)
         geometry_geojson = json.loads(watershed_gdf.to_json())["features"][0]["geometry"]
 
         # ── Step 4: Optional file export ──────────────────────────────────

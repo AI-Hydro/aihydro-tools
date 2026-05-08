@@ -32,16 +32,39 @@ def _parse_frontmatter(content: str) -> tuple[dict, str]:
     return meta, body
 
 
+def _lint_skill(meta: dict, path: Path) -> list[str]:
+    """Check skill metadata for quality bar. Returns list of error messages."""
+    errors = []
+    if not meta.get("name"):
+        errors.append("Missing 'name' in frontmatter")
+    if not meta.get("description") or not str(meta["description"]).strip():
+        errors.append("Empty or missing 'description'")
+    if not meta.get("when_to_use") or not str(meta["when_to_use"]).strip():
+        errors.append("Empty or missing 'when_to_use' (required for discovery)")
+    if not meta.get("domain"):
+        errors.append("Missing 'domain'")
+    return errors
+
+
 def _load_skill_files_from_dir(directory: Path) -> list[dict]:
-    """Load all SKILL.md files from a directory tree."""
+    """Load all SKILL.md files from a directory tree. Filters invalid skills."""
     skills = []
     for md_path in sorted(directory.rglob("*.md")):
+        if md_path.name == "README.md":
+            continue
         try:
             content = md_path.read_text(encoding="utf-8")
-            meta, body = _parse_frontmatter(content)
-            name = meta.get("name") or md_path.stem
+            meta, _ = _parse_frontmatter(content)
+
+            errors = _lint_skill(meta, md_path)
+            if errors:
+                log.warning("Skill at %s failed validation: %s. Skipping.",
+                            md_path.relative_to(directory.parent.parent),
+                            "; ".join(errors))
+                continue
+
             skills.append({
-                "name": name,
+                "name": meta["name"],
                 "description": meta.get("description", "").strip(),
                 "domain": meta.get("domain", "general"),
                 "when_to_use": meta.get("when_to_use", ""),

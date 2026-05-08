@@ -1,0 +1,109 @@
+# AI-Hydro Datasets Registry
+# Canonical definitions for hydrology datasets used by AI-Hydro tools.
+# ≤10 entries per file (lean discipline rule).
+
+- id: dataset.usgs_nwis
+  name: USGS National Water Information System
+  domain: hydrology
+  category: streamflow
+  spatial_coverage: USA (50 states + territories)
+  temporal_range:
+    start: "1900-01-01"
+    end: present
+  native_resolution: instantaneous (15-min) and daily
+  units: ft3/s (converted to m3/s by fetch_streamflow_data)
+  access_tool: fetch_streamflow_data
+  limitations:
+    - "Rating curve uncertainty not quantified in standard data delivery"
+    - "Some gauges discontinued — check record completeness"
+    - "Ice-affected periods may have estimated values (flagged in source)"
+    - "Human regulation (dams, diversions) not flagged at the data level"
+  citations: [usgs_nwis]
+  verified: true
+  description: >
+    Primary source of streamflow observations in the United States.
+    Over 8,000 active gauges. Data freely available via NWIS web services.
+
+- id: dataset.gridmet
+  name: gridMET — Gridded Surface Meteorological Dataset
+  domain: hydrology
+  category: meteorological_forcing
+  spatial_coverage: Contiguous United States (CONUS)
+  temporal_range:
+    start: "1979-01-01"
+    end: present
+  native_resolution: daily, ~4km (1/24 degree)
+  units: various (precipitation mm/day, temperature K, etc.)
+  access_tool: fetch_forcing_data
+  limitations:
+    - "May underestimate orographic precipitation in complex terrain"
+    - "Not recommended for basins < 50 km2 due to spatial resolution"
+    - "Historical data may be updated/corrected — track content_hash"
+  citations: [abatzoglou_2013]
+  description: >
+    High-resolution surface meteorological data for CONUS.
+    Blends PRISM climatology with NLDAS-2 reanalysis.
+    Primary forcing dataset for AI-Hydro hydrology workflows.
+
+- id: dataset.daymet
+  name: Daymet — Daily Surface Weather Data
+  domain: hydrology
+  category: meteorological_forcing
+  spatial_coverage: North America (CONUS, Alaska, Hawaii, Puerto Rico, Canada)
+  temporal_range:
+    start: "1980-01-01"
+    end: present
+  native_resolution: daily, 1km
+  units: various (precipitation mm/day, temperature °C)
+  access_tool: fetch_forcing_data
+  limitations:
+    - "1km resolution may be computationally heavy for large regions"
+    - "Precipitation is interpolated — low station density areas less reliable"
+    - "Version-dependent: check which Daymet version is being accessed"
+  citations: [thornton_2021]
+  description: >
+    High-resolution (1km) daily surface weather data.
+    Preferred over gridMET when fine spatial detail is needed
+    or for basins outside CONUS.
+
+- id: dataset.camels_us
+  name: CAMELS — Catchment Attributes and Meteorology for Large-Sample Studies (US)
+  domain: hydrology
+  category: benchmark_dataset
+  spatial_coverage: USA (671 minimally impacted basins)
+  temporal_range:
+    start: "1980-01-01"
+    end: "2014-12-31"
+  native_resolution: daily
+  units: streamflow in mm/day; attributes dimensionless or specified per-attribute
+  access_tool: extract_camels_attributes
+  limitations:
+    - "671 basins only — not representative of heavily regulated or urban basins"
+    - "Pre-2015 data only — no recent period"
+    - "Catchment boundaries may not match current NHDPlus delineations exactly"
+  citations: [addor_2017, newman_2015]
+  description: >
+    Gold-standard benchmark dataset for large-sample hydrology.
+    Provides streamflow, meteorological forcing, and 59 catchment attributes
+    across 671 near-natural US basins.
+
+- id: dataset.chirps
+  name: CHIRPS — Climate Hazards Group InfraRed Precipitation with Station data
+  domain: hydrology
+  category: precipitation
+  spatial_coverage: Global (50°S–50°N)
+  temporal_range:
+    start: "1981-01-01"
+    end: present
+  native_resolution: daily and monthly, 0.05 degree (~5km)
+  units: mm/day (daily), mm/month
+  access_tool: fetch_forcing_data
+  limitations:
+    - "Satellite-based — may miss convective precipitation events in arid regions"
+    - "Gauge density affects blending quality; sparse station coverage areas less reliable"
+    - "Not recommended for small urban catchments"
+  citations: [funk_2015]
+  description: >
+    Global quasi-daily gridded precipitation dataset.
+    Combines satellite imagery with station observations.
+    Primary precipitation source for international and tropical basins.

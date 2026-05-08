@@ -15,6 +15,35 @@ from ai_hydro.mcp import tools_project    # noqa: F401  — v1.2: project, liter
 from ai_hydro.mcp import tools_execution  # noqa: F401  — v1.6.0: run_python, list_relevant_clis
 from ai_hydro.mcp import resources          # noqa: F401  — v1.6.0: M8 knowledge resource layer
 from ai_hydro.mcp import tools_skills       # noqa: F401  — v1.6.0: list_skills, load_skill
+from ai_hydro.mcp import tools_knowledge    # noqa: F401  — v1.6.4: Knowledge Registry
+from ai_hydro.mcp import tools_validators   # noqa: F401  — v1.6.6: Physics Validators
+from ai_hydro.mcp import tools_ledger       # noqa: F401  — v1.6.7: Claims & Assumptions
+from ai_hydro.mcp import tools_workflows    # noqa: F401  — v1.6.8: Workflow Manifests
+
+# ── Tier 1 post-run validator registrations ───────────────────────────────
+# Registered after all tool modules are imported so validator callables exist.
+# Each registration maps a Tier 1 tool name → validator fn + kwargs builder.
+from ai_hydro.mcp.enforcement import register_post_validator as _rpv  # noqa: E402
+from ai_hydro.mcp.tools_validators import (  # noqa: E402
+    check_water_balance_consistency,
+    check_unit_consistency,
+)
+
+# extract_hydrological_signatures → water balance check
+# Fires after signatures are written to session; reads runoff_ratio from session.
+_rpv(
+    "extract_hydrological_signatures",
+    check_water_balance_consistency,
+    lambda sid: {"session_id": sid},
+)
+
+# fetch_streamflow_data → unit consistency check (expects m3/s)
+# Fires after streamflow is written to session; checks data.units field.
+_rpv(
+    "fetch_streamflow_data",
+    check_unit_consistency,
+    lambda sid: {"session_id": sid, "slot": "streamflow", "expected_units": "m3/s"},
+)
 
 # Discover and register community plugin tools via entry points.
 # Third-party packages register tools in their pyproject.toml:

@@ -1,0 +1,164 @@
+# AI-Hydro Metrics Registry
+# Model evaluation metrics — distinct from equations.
+# Metrics evaluate model performance against observations.
+# ≤10 entries per file (lean discipline rule).
+
+- id: metric.kge
+  name: Kling-Gupta Efficiency
+  domain: hydrology
+  category: model_evaluation
+  formula: "1 - sqrt((r-1)^2 + (alpha-1)^2 + (beta-1)^2)"
+  inputs:
+    observed:
+      units: m3/s
+      temporal_alignment_required: true
+      description: Observed streamflow time series
+    simulated:
+      units: m3/s
+      temporal_alignment_required: true
+      description: Simulated streamflow time series
+  outputs:
+    kge:
+      type: float
+      range: [-inf, 1.0]
+      perfect: 1.0
+      description: >
+        KGE = 1 is perfect. KGE < -0.41 indicates the model performs
+        worse than the mean-flow benchmark.
+    r:
+      type: float
+      range: [-1.0, 1.0]
+      perfect: 1.0
+      description: Pearson correlation coefficient
+    alpha:
+      type: float
+      perfect: 1.0
+      description: Variability ratio (std_sim / std_obs)
+    beta:
+      type: float
+      perfect: 1.0
+      description: Bias ratio (mean_sim / mean_obs)
+  validation:
+    - "Observed and simulated must share identical timestamps"
+    - "Warmup period (typically 1-2 years) must be excluded"
+    - "No NaN or infinite values in either series"
+    - "Series must have sufficient length (>= 365 days recommended)"
+  citations: [gupta_2009, kling_2012]
+  related_tools: [evaluate_hydrologic_model_performance]
+  verified: true
+  description: >
+    Decomposes model performance into correlation, variability, and bias components.
+    Preferred over NSE because it penalizes bias and variability errors equally.
+
+- id: metric.nse
+  name: Nash-Sutcliffe Efficiency
+  domain: hydrology
+  category: model_evaluation
+  formula: "1 - (sum((obs-sim)^2) / sum((obs-mean_obs)^2))"
+  inputs:
+    observed:
+      units: m3/s
+      temporal_alignment_required: true
+    simulated:
+      units: m3/s
+      temporal_alignment_required: true
+  outputs:
+    nse:
+      type: float
+      range: [-inf, 1.0]
+      perfect: 1.0
+      description: >
+        NSE = 1 is perfect. NSE = 0 means model performs as well as
+        the mean observed flow. NSE < 0 means mean is a better predictor.
+  validation:
+    - "Observed and simulated must share identical timestamps"
+    - "Warmup period must be excluded"
+    - "No NaN or infinite values"
+    - "Sensitive to high-flow events — consider log-NSE for low-flow assessment"
+  citations: [nash_sutcliffe_1970]
+  related_tools: [evaluate_hydrologic_model_performance]
+  description: >
+    Ratio of model error variance to observed variance.
+    Widely used but overweights peak flows. Use KGE or log-NSE alongside.
+
+- id: metric.pbias
+  name: Percent Bias
+  domain: hydrology
+  category: model_evaluation
+  formula: "100 * sum(obs-sim) / sum(obs)"
+  inputs:
+    observed:
+      units: m3/s
+      temporal_alignment_required: true
+    simulated:
+      units: m3/s
+      temporal_alignment_required: true
+  outputs:
+    pbias:
+      type: float
+      perfect: 0.0
+      description: >
+        Positive = model underestimates. Negative = model overestimates.
+        Acceptable range: ±25% (daily), ±10% (monthly/annual water balance).
+  validation:
+    - "Warmup period must be excluded"
+    - "Zero observed flows can cause numerical instability"
+  citations: [moriasi_2007]
+  related_tools: [evaluate_hydrologic_model_performance]
+  description: >
+    Measures the average tendency to over- or under-predict.
+    A pure bias metric — does not capture timing errors.
+
+- id: metric.bfi
+  name: Baseflow Index
+  domain: hydrology
+  category: hydrologic_signature
+  formula: "mean(baseflow) / mean(streamflow)"
+  inputs:
+    streamflow:
+      units: m3/s
+      temporal_alignment_required: false
+  outputs:
+    bfi:
+      type: float
+      range: [0.0, 1.0]
+      description: >
+        BFI = 0: all runoff, no baseflow. BFI = 1: entirely baseflow-dominated.
+        Typical range 0.2–0.8 for natural basins.
+  validation:
+    - "Baseflow must be separated prior to computation (e.g. Lyne-Hollick)"
+    - "At least 5 years of daily data recommended for stable estimate"
+    - "Regulated rivers: BFI may be artificially inflated by dam releases"
+  citations: [eckhardt2005baseflow, lyne1979baseflow]
+  related_tools: [separate_baseflow]
+  description: >
+    Long-term ratio of groundwater-derived flow to total streamflow.
+    Indicator of basin storage capacity, geology, and permeability.
+
+- id: metric.rmse
+  name: Root Mean Squared Error
+  domain: general
+  category: model_evaluation
+  formula: "sqrt(mean((obs - sim)^2))"
+  inputs:
+    observed:
+      units: m3/s
+      temporal_alignment_required: true
+    simulated:
+      units: m3/s
+      temporal_alignment_required: true
+  outputs:
+    rmse:
+      type: float
+      range: [0.0, inf]
+      perfect: 0.0
+      description: RMSE in the same units as the input series.
+  validation:
+    - "Units must be consistent between observed and simulated"
+    - "Warmup period must be excluded"
+    - "Sensitive to outliers and peak events"
+  citations: []
+  related_tools: [evaluate_hydrologic_model_performance]
+  description: >
+    Standard deviation of residuals. Has the same units as the variable.
+    Useful for absolute error quantification but not dimensionless.
