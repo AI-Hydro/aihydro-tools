@@ -27,10 +27,11 @@ def list_skills(
     Load a skill before multi-step analyses to get the recommended approach for
     the researcher's basin type, record length, and research goal.
 
-    Three tiers (later overrides earlier on name collision):
-      1. Built-in: ai_hydro/skills/ (ships with aihydro-tools)
-      2. Plugin:   aihydro.skills entry-point group (community packages)
-      3. Workspace: <workspace>/.aihydrorules/skills/ (researcher-local)
+    Four tiers (later overrides earlier on name collision):
+      1. Built-in:       ai_hydro/skills/ (ships with aihydro-tools)
+      2. Plugin:         aihydro.skills entry-point group (community packages)
+      3. User-installed: ~/.aihydro/skills/{marketplace,agent-created,manual}/
+      4. Workspace:      <workspace>/.aihydrorules/skills/ (researcher-local)
 
     Parameters
     ----------
@@ -54,7 +55,8 @@ def list_skills(
             "domain_filter": domain,
             "_note": (
                 "Load a skill with load_skill(name) before multi-step analyses. "
-                "Workspace skills in <workspace>/.aihydrorules/skills/ override plugins."
+                "User-installed skills in ~/.aihydro/skills/ override built-ins. "
+                "Workspace skills in <workspace>/.aihydrorules/skills/ override all."
             ),
         }
     except Exception as e:
