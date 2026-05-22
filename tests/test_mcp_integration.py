@@ -25,8 +25,10 @@ class TestToolRegistration:
     """Verify that importing ai_hydro.mcp registers all expected tools."""
 
     EXPECTED_TOOLS = {
-        # Analysis (11 — baseflow companion added in 1.6.0)
+        # Analysis
         "delineate_watershed",
+        "delineate_watershed_from_point",
+        "merit_ensure_basin",
         "fetch_streamflow_data",
         "fetch_camels_us",
         "extract_hydrological_signatures",
@@ -55,6 +57,10 @@ class TestToolRegistration:
         "load_skill",                  # T2.6 — 1.6.0
         # Discovery (1 — 1.6.0)
         "list_relevant_clis",          # T2.7 — 1.6.0
+        # Google Earth Engine / map-agent bridge
+        "gee.status",
+        "gee.preview_layer",
+        "gee.extract_timeseries",
         # Modelling (3 — get_training_status added in 1.7.0)
         "train_hydro_model",
         "get_model_results",

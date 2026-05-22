@@ -24,6 +24,10 @@ TOOL_TIERS: dict[str, int] = {
     # ── Tier 1: Scientific output ──────────────────────────────────────────
     # Validators fire automatically; uncertainty fields mandatory.
     "delineate_watershed":              1,
+    "delineate_watershed_from_point":   1,
+    "merit_ensure_basin":               2,
+    "merit_ensure_region":              2,
+    "merit_add_map_layers":             2,
     "extract_hydrological_signatures":  1,
     "extract_geomorphic_parameters":    1,
     "compute_twi":                      1,
@@ -44,6 +48,8 @@ TOOL_TIERS: dict[str, int] = {
     "fetch_forcing_data":               2,
     "fetch_camels_us":                  2,
     "run_python":                       2,
+    "gee.preview_layer":                2,
+    "gee.extract_timeseries":           2,
     "update_claim_status":              2,
     "add_note":                         2,
     "write_research_interpretation":    2,
@@ -79,6 +85,7 @@ TOOL_TIERS: dict[str, int] = {
     "load_skill":                       3,
     "list_available_workflows":         3,
     "get_workflow_manifest":            3,
+    "gee.status":                       3,
     "start_project":                    3,
     "get_project_summary":              3,
     "add_session_to_project":           3,

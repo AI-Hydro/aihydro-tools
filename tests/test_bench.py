@@ -179,6 +179,7 @@ def test_bench_fixture(task: dict, tmp_path, monkeypatch) -> None:
 # Parametrised live-mode tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.live
 @pytest.mark.bench_live
 @pytest.mark.parametrize("task", LIVE_TASKS, ids=[t["id"] for t in LIVE_TASKS])
 def test_bench_live(task: dict, tmp_path, monkeypatch) -> None:

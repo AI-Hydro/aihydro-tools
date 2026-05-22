@@ -81,7 +81,7 @@
 			"incorrect_patterns": [
 				"from ai_hydro.tools.watershed import delineate_watershed  # WRONG - use MCP tool",
 				"execute_command('python -c \"from ai_hydro...\"')  # WRONG",
-				"from hydrocatch import delineate_watershed  # WRONG - hydrocatch is deprecated"
+				"from hydrocatch import delineate_watershed  # WRONG - use delineate_watershed_from_point MCP tool"
 			],
 			"execution": "Call MCP tools directly — never write Python scripts for ai_hydro analysis"
 		},

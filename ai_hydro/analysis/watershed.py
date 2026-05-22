@@ -75,6 +75,36 @@ except ImportError:
     _DEPS_OK = False
 
 
+def _get_nldi_basin_for_gauge(nldi: NLDI, gauge_id: str) -> gpd.GeoDataFrame:
+    """Fetch NLDI basin by NWIS site id, with COMID fallback when API shape fails."""
+    from ai_hydro.analysis.delineation.nldi_point import _normalize_nldi_basins
+
+    try:
+        gdf = nldi.get_basins(gauge_id)
+        return _normalize_nldi_basins(gdf)
+    except Exception as e:
+        log.warning(
+            "NLDI get_basins(%s) failed (%s); trying COMID at gauge coordinates",
+            gauge_id,
+            e,
+        )
+
+    nwis = NWIS()
+    site_info = nwis.get_info([{"site": gauge_id}])
+    if site_info is None or site_info.empty:
+        raise ToolError(
+            code="GAUGE_NOT_FOUND",
+            message=f"Gauge {gauge_id} not found in NWIS.",
+            tool=_TOOL_PATH,
+        ) from e
+    row = site_info.iloc[0]
+    lat = float(row["dec_lat_va"])
+    lon = float(row["dec_long_va"])
+    comid = int(nldi.comid_byloc((lon, lat)).comid.iloc[0])
+    gdf = nldi.get_basins(comid, fsource="comid")
+    return _normalize_nldi_basins(gdf)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -139,9 +169,28 @@ def delineate_watershed(
     try:
         # ── Step 1: Watershed boundary from NLDI ─────────────────────────
         nldi = NLDI()
-        watershed_gdf = nldi.get_basins(gauge_id)
+        watershed_gdf = _get_nldi_basin_for_gauge(nldi, gauge_id)
 
-        if watershed_gdf.crs is None or watershed_gdf.crs.to_epsg() != 4326:
+        if watershed_gdf.empty:
+            raise ToolError(
+                code="GAUGE_NOT_FOUND",
+                message=f"NLDI returned no basin for gauge {gauge_id}.",
+                tool=_TOOL_PATH,
+                recovery="Verify gauge ID or use delineate_watershed_from_point at gauge coordinates.",
+            )
+
+        if watershed_gdf.geometry.name is None and "geometry" in watershed_gdf.columns:
+            watershed_gdf = watershed_gdf.set_geometry("geometry")
+        elif watershed_gdf._geometry_column_name not in watershed_gdf.columns:
+            geom_cols = [
+                c for c in watershed_gdf.columns if watershed_gdf[c].dtype.name == "geometry"
+            ]
+            if geom_cols:
+                watershed_gdf = watershed_gdf.set_geometry(geom_cols[0])
+
+        if watershed_gdf.crs is None:
+            watershed_gdf = watershed_gdf.set_crs("EPSG:4326")
+        elif watershed_gdf.crs.to_epsg() != 4326:
             watershed_gdf = watershed_gdf.to_crs("EPSG:4326")
 
         watershed_geom = watershed_gdf.geometry.iloc[0]

@@ -8,6 +8,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Pour-point delineation** (`ai_hydro/analysis/delineation/`): tiered `delineate_from_point` (`auto`, `fast`, `merit_basins`), cloud DEM + pysheds fast tier, NLDI COMID for CONUS.
+- **`delineate_watershed_from_point`** MCP tool and **`hydro_map_cli delineate-point`** for the VS Code map Quick delineate button.
+- **`resolve_comid_for_quick`** — walks `downstreamMain` when nearest COMID is a tiny tributary reach.
+- **`scripts/profile_delineation.py`** and **`tests/test_delineation.py`**.
+
+### Fixed
+
+- **CONUS map quick delineate** no longer returns tiny tributary basins (~6 km²) from nearest COMID alone.
+- **CONUS `auto` without `expected_area_km2`** uses fast NLDI (~1–5 s) when basin area is in range; falls back to cloud DEM only when NLDI is unavailable or out of range.
+- **`delineate_watershed(gauge_id)`** — NLDI `get_basins` fallback via COMID at gauge coordinates when site-id lookup fails.
+
+### Added
+
+- **Map orchestration MCP tools** (`tools_map.py`): `map_get_state`, `map_list_layers`, `map_update_layer`, `map_apply_symbology`, `map_remove_layer`, `map_set_basemap`, `map_fit_layer`, `map_set_working_geometry`, `map_save_roi` — agent-governed symbology and layer control via `~/.aihydro/map_commands/` + `map_layer_catalog.json`.
+- **`map_commands.py`** — host command bridge (`update_layer`, `set_basemap`, `fit_layer`, …).
+- **`map_layer_catalog.py`** — graduated symbology break computation; reads host layer catalog written by the VS Code extension.
+- **`_resolve_active_roi_geojson`** in `helpers.py`; **`working_geometry_path`** on `HydroSession`.
+
 ---
 
 ## [2.0.0] — 2026-04-24

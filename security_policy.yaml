@@ -63,6 +63,18 @@ tool_execution:
     - train_hydro_model            # kickoff only; writes job artifact path
     - run_python                   # sandboxed: workspace-scoped, no network by default
     - show_on_map                  # writes to ~/.aihydro/map_events/ (event bus)
+    - map_get_state
+    - map_list_layers
+    - map_set_roi
+    - map_show
+    - map_fit_extent
+    - map_fit_layer
+    - map_update_layer
+    - map_apply_symbology
+    - map_remove_layer
+    - map_set_basemap
+    - map_set_working_geometry
+    - map_save_roi
     - add_journal_entry
     - index_literature             # writes BM25 index to project dir
     - start_project
@@ -91,6 +103,12 @@ sandbox:
     map_events:
       scope: "~/.aihydro/map_events/"
       max_file_size_kb: 512
+    map_commands:
+      scope: "~/.aihydro/map_commands/"
+      max_file_size_kb: 64
+    map_layer_catalog:
+      scope: "~/.aihydro/"
+      paths: ["map_layer_catalog.json", "map_layer_geojson_cache/"]
 
 secrets:
   no_secrets_in_session: true
