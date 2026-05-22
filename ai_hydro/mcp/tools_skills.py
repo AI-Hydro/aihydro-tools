@@ -1,12 +1,17 @@
 """
-Skills MCP tools — list and load workflow playbooks.
+Skills MCP tools — list, load, and save workflow playbooks.
 
-list_skills: enumerate skills across all three tiers (built-in / plugin / workspace).
-load_skill:  load the full content of a named skill.
+All skills live at ~/.aihydro/skills/ in three sub-directories:
+  marketplace/    — installed from the GitHub Skills marketplace
+  agent-created/  — saved by the agent via save_skill()
+  manual/         — added by the user via the VS Code panel
+
+Optional workspace override: <workspace>/.aihydrorules/skills/
 """
 from __future__ import annotations
 
 import logging
+import re
 
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import _tool_error_to_dict
@@ -20,31 +25,26 @@ def list_skills(
     workspace_dir: str | None = None,
 ) -> dict:
     """
-    List all available workflow skills across built-in, plugin, and workspace tiers.
+    List all installed workflow skills.
 
-    Skills are workflow playbooks for judgment-heavy tasks — they compose MCP
-    tools with domain knowledge, decision logic, and methods-section templates.
-    Load a skill before multi-step analyses to get the recommended approach for
-    the researcher's basin type, record length, and research goal.
+    Skills are workflow playbooks that guide multi-step hydrological analyses.
+    They are installed from the AI-Hydro Skills marketplace, created by the
+    agent via save_skill(), or added manually by the user.
 
-    Four tiers (later overrides earlier on name collision):
-      1. Built-in:       ai_hydro/skills/ (ships with aihydro-tools)
-      2. Plugin:         aihydro.skills entry-point group (community packages)
-      3. User-installed: ~/.aihydro/skills/{marketplace,agent-created,manual}/
-      4. Workspace:      <workspace>/.aihydrorules/skills/ (researcher-local)
+    Use list_skills() at the start of a conversation to see what workflows
+    are available, then load_skill(name) to get the full instructions.
 
     Parameters
     ----------
     domain : str, optional
-        Filter by domain (e.g. 'frequency-analysis', 'modelling', 'baseflow',
-        'interpretation', 'composition'). Omit to list all domains.
+        Filter by domain: 'frequency-analysis', 'baseflow', 'modelling',
+        'interpretation', 'composition', or 'general'.
     workspace_dir : str, optional
-        Workspace directory for workspace-tier skills.
+        Workspace path for workspace-local skills.
 
     Returns
     -------
-    dict with skills list (name, description, domain, when_to_use, tools_used)
-    and n_skills.
+    dict with skills list and count.
     """
     try:
         from ai_hydro.skills.registry import list_skills as _list
@@ -54,9 +54,9 @@ def list_skills(
             "n_skills": len(skills),
             "domain_filter": domain,
             "_note": (
-                "Load a skill with load_skill(name) before multi-step analyses. "
-                "User-installed skills in ~/.aihydro/skills/ override built-ins. "
-                "Workspace skills in <workspace>/.aihydrorules/skills/ override all."
+                "Use load_skill(name) to get the full workflow instructions. "
+                "Skills are stored at ~/.aihydro/skills/. "
+                "Use save_skill() to create new skills from completed workflows."
             ),
         }
     except Exception as e:
@@ -72,21 +72,16 @@ def load_skill(
     """
     Load the full content of a workflow skill by name.
 
-    Returns the complete SKILL.md content (frontmatter metadata + body).
-    Read the skill fully before starting the workflow — it contains parameter
-    decision guides, failure modes, and methods-section templates.
+    Returns the complete SKILL.md content (frontmatter + body).
+    Read the skill fully before starting the workflow — it contains
+    parameter guides, interpretation thresholds, and code examples.
 
     Parameters
     ----------
     name : str
-        Skill name as returned by list_skills.
+        Skill name as returned by list_skills().
     workspace_dir : str, optional
-        Workspace directory for workspace-tier skills.
-
-    Returns
-    -------
-    dict with name, description, domain, when_to_use, tools_used, citations,
-    body (full markdown content), and path.
+        Workspace path for workspace-local skills.
     """
     try:
         from ai_hydro.skills.registry import load_skill as _load
@@ -103,4 +98,64 @@ def load_skill(
         return skill
     except Exception as e:
         log.error("load_skill failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def save_skill(
+    name: str,
+    description: str,
+    content: str,
+    domain: str = "general",
+    when_to_use: str = "",
+    tags: list[str] | None = None,
+    tools_used: list[str] | None = None,
+) -> dict:
+    """
+    Save a reusable workflow skill for future conversations.
+
+    Call this when you have completed a novel multi-step hydrological
+    analysis and want to capture the workflow as a reusable skill.
+    The skill will be saved to ~/.aihydro/skills/agent-created/ and
+    will appear in list_skills() and the VS Code Skills panel immediately.
+
+    The saved SKILL.md follows the Agent Skills open standard format
+    and can be shared via the AI-Hydro Skills marketplace.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable skill name (e.g. "Drought Index Analysis").
+        Will be slugified for the file path.
+    description : str
+        One-sentence description of what this skill does.
+    content : str
+        Full markdown body of the skill (everything after the frontmatter).
+        Should include numbered steps, code examples, interpretation guides.
+    domain : str
+        One of: frequency-analysis, baseflow, modelling, interpretation,
+        composition, general. Default 'general'.
+    when_to_use : str, optional
+        When should the agent apply this skill? Be specific about trigger
+        phrases and contexts.  Defaults to the description.
+    tags : list[str], optional
+        Keywords for discovery and filtering.
+    tools_used : list[str], optional
+        AI-Hydro MCP tools used in this workflow.
+    """
+    try:
+        from ai_hydro.skills.registry import save_skill as _save
+        skill_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        return _save(
+            skill_id=skill_id,
+            name=name,
+            description=description,
+            content=content,
+            domain=domain,
+            when_to_use=when_to_use,
+            tags=tags,
+            tools_used=tools_used,
+        )
+    except Exception as e:
+        log.error("save_skill failed: %s", e)
         return _tool_error_to_dict(e)
