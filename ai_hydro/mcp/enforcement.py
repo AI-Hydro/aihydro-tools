@@ -37,6 +37,7 @@ log = logging.getLogger("ai_hydro.enforcement")
 _TOOL_ABBREVS: dict[str, str] = {
     "extract_hydrological_signatures": "sigs",
     "delineate_watershed":             "wshed",
+    "delineate_watershed_from_point": "wshed",
     "extract_geomorphic_parameters":   "geom",
     "compute_twi":                     "twi",
     "create_cn_grid":                  "cn",

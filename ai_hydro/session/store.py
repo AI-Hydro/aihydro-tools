@@ -109,6 +109,8 @@ class HydroSession:
         # Data source type — "usgs_gauge" | "grdc_station" | "ungauged" | "csv" | ...
         self.site_type: str = ""
         self.workspace_dir: str | None = None
+        # Relative path under workspace_dir for map/GEE study geometry (map_set_working_geometry)
+        self.working_geometry_path: str | None = None
         self._slots: dict[str, dict | None] = {}
         self.notes: list[str] = []
         # LLM-authored scientific interpretation — written via write_research_interpretation
@@ -311,7 +313,7 @@ class HydroSession:
         session = cls(session_id, shard_id)
         _META_KEYS = {
             "session_id", "site_name", "site_id", "site_type",
-            "workspace_dir", "notes", "created_at", "updated_at", "interpretation",
+            "workspace_dir", "working_geometry_path", "notes", "created_at", "updated_at", "interpretation",
             "interpretation_at", "archived",
             "_citations", "artifact_manifest", "claims", "assumptions",
             # legacy keys — kept for loading old session files
@@ -327,6 +329,7 @@ class HydroSession:
         session.site_id = raw.get("site_id", "") or raw.get("gauge_id", "")
         session.site_type = raw.get("site_type", "")
         session.workspace_dir = raw.get("workspace_dir")
+        session.working_geometry_path = raw.get("working_geometry_path")
         session.notes = raw.get("notes", [])
         session.interpretation = raw.get("interpretation", "")
         session.interpretation_at = raw.get("interpretation_at")
@@ -359,6 +362,7 @@ class HydroSession:
             "site_id": self.site_id,
             "site_type": self.site_type,
             "workspace_dir": self.workspace_dir,
+            "working_geometry_path": self.working_geometry_path,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "archived": self.archived,

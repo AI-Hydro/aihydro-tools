@@ -150,7 +150,7 @@
 				"from ai_hydro.hydrocatch import anything",
 				"import hydrocatch"
 			],
-			"explanation": "The 'hydrocatch' module was DEPRECATED and REMOVED. All functionality is in 'ai_hydro.tools.*'",
+			"explanation": "The 'hydrocatch' module was DEPRECATED and REMOVED. Use MCP tools delineate_watershed_from_point (global lat/lon) or delineate_watershed (USGS gauge).",
 			"correct_pattern": "from ai_hydro.tools.watershed import delineate_watershed"
 		}
 	],

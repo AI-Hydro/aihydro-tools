@@ -19,6 +19,8 @@ from ai_hydro.mcp import tools_knowledge    # noqa: F401  — v1.6.4: Knowledge 
 from ai_hydro.mcp import tools_validators   # noqa: F401  — v1.6.6: Physics Validators
 from ai_hydro.mcp import tools_ledger       # noqa: F401  — v1.6.7: Claims & Assumptions
 from ai_hydro.mcp import tools_workflows    # noqa: F401  — v1.6.8: Workflow Manifests
+from ai_hydro.mcp import tools_gee          # noqa: F401  — GEE map/chat tools
+from ai_hydro.mcp import tools_map          # noqa: F401  — map orchestration (symbology, ROI, catalog)
 
 # ── Tier 1 post-run validator registrations ───────────────────────────────
 # Registered after all tool modules are imported so validator callables exist.

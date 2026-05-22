@@ -290,6 +290,298 @@ def delineate_watershed(
         return _tool_error_to_dict(e)
 
 
+def _watershed_slug(name: str | None, lat: float, lon: float) -> str:
+    if name:
+        slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in name.strip())
+        slug = slug.strip("_")[:48] or "basin"
+        return slug
+    return f"basin_{abs(lat):.3f}_{abs(lon):.3f}".replace(".", "p")
+
+
+def _store_point_watershed(
+    session_id: str,
+    d: dict,
+    geojson: dict,
+    slug: str,
+    workspace_dir: str | None,
+) -> list[str]:
+    """Persist point-delineated watershed to session + workspace (mirrors gauge flow)."""
+    files_saved: list[str] = []
+    from ai_hydro.session.store import _SESSIONS_DIR
+
+    sessions_geojson = _SESSIONS_DIR / f"{session_id}_{slug}.geojson"
+    _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(sessions_geojson, "w") as _f:
+        json.dump(geojson, _f)
+    files_saved.append(str(sessions_geojson))
+
+    d_lean = dict(d)
+    d_lean["data"] = {
+        **{k: v for k, v in d["data"].items() if k != "geometry_geojson"},
+        "geometry_geojson_path": str(sessions_geojson),
+    }
+    _session_store(session_id, "watershed", d_lean, tool_name="delineate_watershed_from_point")
+
+    if workspace_dir:
+        saved = _workspace_write(session_id, f"watershed_{slug}.geojson", geojson)
+        if saved:
+            files_saved.append(saved)
+    return files_saved
+
+
+@mcp.tool()
+def merit_ensure_basin(
+    lat: float,
+    lon: float,
+    download: bool = True,
+) -> dict:
+    """
+    Ensure MERIT-Hydro vector data exists for the Pfafstetter basin at (lat, lon).
+
+    Downloads level-2 index and river vectors when ``AIHYDRO_MERIT_BASE_URL`` is set
+    or manifest URLs are configured. Data root: ``AIHYDRO_MERIT_DIR`` or
+    ``~/.aihydro/merit/``.
+
+    Parameters
+    ----------
+    lat, lon : float
+        Outlet coordinates (WGS84).
+    download : bool
+        Attempt lazy download when files are missing (default True).
+
+    Returns
+    -------
+    dict with pfaf_code, readiness flags, and setup instructions.
+    """
+    try:
+        from ai_hydro.data.merit_manager import MeritDataManager
+
+        mgr = MeritDataManager()
+        status = mgr.ensure_basin(lat, lon, download=download)
+        return {
+            "data": {
+                "pfaf_code": status.pfaf_code,
+                "level2_ready": status.level2_ready,
+                "rivers_ready": status.rivers_ready,
+                "catchments_ready": status.catchments_ready,
+                "flowdir_ready": status.flowdir_ready,
+                "delineator_ready": mgr.delineator_ready(status.pfaf_code),
+                "merit_root": str(mgr.root),
+            },
+            "message": status.message,
+            "downloaded": status.downloaded,
+            "_note": (
+                "Install MERIT vectors from https://www.reachhydro.org/home/params/merit-basins "
+                "or set AIHYDRO_MERIT_BASE_URL for automated downloads."
+            ),
+        }
+    except Exception as e:
+        log.error("merit_ensure_basin failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def merit_ensure_region(
+    preset: str,
+    lat: float | None = None,
+    lon: float | None = None,
+    download: bool = True,
+) -> dict:
+    """
+    Ensure MERIT river vectors for all Pfaf basins in a named region preset.
+
+    Presets: ``conus``, ``south_asia``. Requires level-2 index (install via
+    ``merit_ensure_basin`` first if missing).
+    """
+    try:
+        from ai_hydro.hydro_map_cli import cmd_merit_ensure_region
+        import argparse
+
+        args = argparse.Namespace(
+            preset=preset,
+            lat=lat,
+            lon=lon,
+            no_download=not download,
+        )
+        return cmd_merit_ensure_region(args)
+    except Exception as e:
+        log.error("merit_ensure_region failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def merit_add_map_layers(
+    lat: float,
+    lon: float,
+    min_lon: float | None = None,
+    min_lat: float | None = None,
+    max_lon: float | None = None,
+    max_lat: float | None = None,
+    include_catchments: bool = False,
+    push_to_map: bool = True,
+) -> dict:
+    """
+    Build MERIT vector layers for the map viewport and optionally push to the map panel.
+
+    Clips local shapefiles to the view bounds. Install vectors first with
+    ``merit_ensure_basin`` or ``merit_ensure_region``.
+    """
+    try:
+        from ai_hydro.data.merit_map_layers import merit_map_layers_for_view
+        from ai_hydro.mcp.map_events import push_layer
+
+        layers = merit_map_layers_for_view(
+            lat=lat,
+            lon=lon,
+            min_lon=min_lon,
+            min_lat=min_lat,
+            max_lon=max_lon,
+            max_lat=max_lat,
+            include_catchments=include_catchments,
+        )
+        pushed: list[str] = []
+        if push_to_map:
+            for spec in layers:
+                gj = spec["geojson"]
+                geojson_str = json.dumps(gj) if isinstance(gj, dict) else str(gj)
+                push_layer(
+                    layer_id=spec["id"],
+                    name=spec["name"],
+                    geojson=geojson_str,
+                    layer_type=spec.get("layer_type", "line"),
+                    style_preset=spec.get("style_preset", "flowlines"),
+                    auto_zoom=len(pushed) == 0,
+                    open_map=len(pushed) == 0,
+                    metadata=spec.get("metadata"),
+                )
+                pushed.append(spec["id"])
+
+        return {
+            "ok": len(layers) > 0,
+            "data": {"layer_ids": [s["id"] for s in layers], "pushed": pushed},
+            "message": f"Added {len(pushed)} MERIT layer(s) to map"
+            if pushed
+            else (f"{len(layers)} layer(s) built (not pushed)" if layers else "No layers — install MERIT vectors first"),
+        }
+    except Exception as e:
+        log.error("merit_add_map_layers failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def delineate_watershed_from_point(
+    session_id: str,
+    lat: float,
+    lon: float,
+    workspace_dir: str | None = None,
+    expected_area_km2: float | None = None,
+    method: str = "auto",
+    name: str | None = None,
+) -> dict:
+    """
+    Delineate a watershed from a pour point anywhere on Earth (lat/lon).
+
+    Uses a tiered engine: cloud DEM + pysheds (fast), optional MERIT vector snap,
+    and MERIT-Basins via upstream-delineator when ``method='merit_basins'`` or
+    auto-escalation triggers. For USGS gauges use ``delineate_watershed`` instead.
+
+    Parameters
+    ----------
+    session_id : str
+        Research session identifier.
+    lat, lon : float
+        Outlet coordinates in decimal degrees (EPSG:4326).
+    workspace_dir : str, optional
+        VS Code workspace folder for GeoJSON output.
+    expected_area_km2 : float, optional
+        Known drainage area for validation and adaptive snapping.
+    method : str
+        ``auto`` (default), ``fast``, or ``merit_basins``.
+    name : str, optional
+        Basin label for filenames and map layer.
+
+    Returns
+    -------
+    dict with area_km2, method_used, pfaf_code, snap_distance_m, _file_saved.
+    Geometry is stored in the session watershed slot (not returned inline).
+    """
+    try:
+        session_id = _normalize_session_id(session_id)
+        session = _ensure_session(session_id, workspace_dir)
+        slug = _watershed_slug(name, lat, lon)
+        method_norm = method.strip().lower()
+        if method_norm not in ("auto", "fast", "merit_basins"):
+            raise ValueError("method must be auto, fast, or merit_basins")
+
+        from ai_hydro.analysis.delineation import delineate_from_point
+
+        result = delineate_from_point(
+            lat,
+            lon,
+            expected_area_km2=expected_area_km2,
+            method=method_norm,  # type: ignore[arg-type]
+            verbose=False,
+            name=name,
+        )
+        d = _result_to_dict(result)
+        geojson = d["data"]["geometry_geojson"]
+        files_saved = _store_point_watershed(
+            session_id, d, geojson, slug, session.workspace_dir or workspace_dir
+        )
+
+        from ai_hydro.session import HydroSession
+
+        _sess = HydroSession.load(session_id)
+        _sess.site_type = "pour_point"
+        if name:
+            _sess.site_name = name
+        _sess.save()
+
+        layer_label = name or f"Watershed ({slug})"
+        from ai_hydro.mcp.map_events import push_layer, push_gauge_point
+
+        push_layer(
+            layer_id=f"watershed_{slug}",
+            name=layer_label,
+            geojson=geojson,
+            layer_type="polygon",
+            style_preset="watershed",
+            auto_zoom=True,
+            open_map=True,
+            metadata={
+                "area_km2": str(round(d["data"].get("area_km2", 0), 1)),
+                "method_used": d["data"].get("method_used", method_norm),
+                "source": "delineation",
+                "pfaf_code": d["data"].get("pfaf_code") or "",
+            },
+        )
+        push_gauge_point(
+            layer_id=f"outlet_{slug}",
+            name=f"Outlet: {layer_label}",
+            lat=lat,
+            lon=lon,
+            metadata={"source": "pour_point"},
+        )
+
+        compact = {k: v for k, v in d["data"].items() if k != "geometry_geojson"}
+        resp: dict = {
+            "data": compact,
+            "meta": d.get("meta", {}),
+            "_files_saved": files_saved,
+            "_note": (
+                "Watershed stored in session; downstream tools (TWI, GEE, geomorphic) "
+                "use session geometry. Map layer pushed."
+            ),
+        }
+        reminder = _sync_reminder(session_id)
+        if reminder:
+            resp["_sync_required"] = reminder
+        return resp
+    except Exception as e:
+        log.error("delineate_watershed_from_point failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
 # ============================================================================
 # Tool: Fetch Streamflow Data
 # ============================================================================

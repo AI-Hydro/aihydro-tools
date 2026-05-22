@@ -1,0 +1,43 @@
+# MERIT-Hydro / MERIT-Basins lazy-download manifest for AI-Hydro.
+
+region_presets:
+  conus:
+    label: "CONUS (continental US)"
+    bbox: [-125, 24, -66, 50]
+  south_asia:
+    label: "South Asia (India and vicinity)"
+    bbox: [60, 5, 100, 40]
+# Set AIHYDRO_MERIT_BASE_URL to mirror these paths on your lab server.
+#
+# Primary public sources:
+#   - https://www.reachhydro.org/home/params/merit-basins
+#   - https://mghydro.com/data/
+
+level2:
+  description: Global Pfafstetter level-2 basin index (required for basin lookup)
+  relative_dir: shp/basins_level2
+  files:
+    - merit_hydro_vect_level2.shp
+    - merit_hydro_vect_level2.dbf
+    - merit_hydro_vect_level2.shx
+    - merit_hydro_vect_level2.prj
+  # Download manually or via merit_ensure_basin when URLs are configured
+  download_url: null
+
+basin_template:
+  rivers:
+    relative_dir: shp/merit_rivers
+    filename: "riv_pfaf_{pfaf}_MERIT_Hydro_v07_Basins_v01.shp"
+    download_url: null
+  catchments:
+    relative_dir: shp/merit_catchments
+    filename: "cat_pfaf_{pfaf}_MERIT_Hydro_v07_Basins_v01.shp"
+    download_url: null
+  flowdir:
+    relative_dir: raster/flowdir_basins
+    filename_glob: "*pfaf_{pfaf}*.tif"
+    download_url: null
+  accumulation:
+    relative_dir: raster/accum_basins
+    filename_glob: "*pfaf_{pfaf}*.tif"
+    download_url: null
