@@ -1,11 +1,12 @@
 """
-Skills registry — three-tier discovery for workflow playbooks.
+Skills registry — four-tier discovery for workflow playbooks.
 
-Tier 1 (built-in):  ai_hydro/skills/**/*.md
-Tier 2 (plugin):    aihydro.skills entry-point group
-Tier 3 (workspace): <workspace>/.aihydrorules/skills/**/*.md
+Tier 1 (built-in):      ai_hydro/skills/**/*.md
+Tier 2 (plugin):         aihydro.skills entry-point group
+Tier 3 (user-installed): ~/.aihydro/skills/{marketplace,agent-created,manual}/**/*.md
+Tier 4 (workspace):      <workspace>/.aihydrorules/skills/**/*.md
 
-Workspace overrides plugin overrides built-in when names collide.
+Later tiers override earlier when names collide.
 """
 from __future__ import annotations
 
@@ -127,7 +128,17 @@ def list_skills(domain: str | None = None, workspace_dir: str | None = None) -> 
         for skill in _load_skill_files_from_dir(plugin_dir):
             by_name[skill["name"]] = skill
 
-    # Tier 3: workspace
+    # Tier 3: user-installed (marketplace, agent-created, manual)
+    user_skills_dir = Path.home() / ".aihydro" / "skills"
+    if user_skills_dir.is_dir():
+        for sub in ("marketplace", "agent-created", "manual"):
+            sub_dir = user_skills_dir / sub
+            if sub_dir.is_dir():
+                for skill in _load_skill_files_from_dir(sub_dir):
+                    skill["_source"] = sub
+                    by_name[skill["name"]] = skill
+
+    # Tier 4: workspace
     if workspace_dir:
         ws_skills_dir = Path(workspace_dir) / ".aihydrorules" / "skills"
         if ws_skills_dir.is_dir():
