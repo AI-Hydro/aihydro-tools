@@ -83,6 +83,7 @@ TOOL_TIERS: dict[str, int] = {
     "show_on_map":                      3,
     "list_skills":                      3,
     "load_skill":                       3,
+    "save_skill":                       3,
     "list_available_workflows":         3,
     "get_workflow_manifest":            3,
     "gee.status":                       3,
@@ -132,8 +133,10 @@ mcp = FastMCP(
         "You operate across six capability layers:\n\n"
         " 1. TOOLS \u2014 typed computation and state management. Enumerate at start with\n"
         "    the tool-listing call; never guess names from memory.\n"
-        " 2. SKILLS \u2014 workflow playbooks for judgment-heavy tasks. List the skill\n"
-        "    catalog by domain and load a skill before multi-step analyses.\n"
+        " 2. SKILLS \u2014 workflow playbooks installed at ~/.aihydro/skills/.\n"
+        "    Call list_skills() to see available workflows, load_skill(name) to\n"
+        "    get full instructions before multi-step analyses. After completing\n"
+        "    a novel workflow, call save_skill() to capture it for reuse.\n"
         " 3. LIBRARY REFERENCES \u2014 API idioms, unit conventions, and gotchas for\n"
         "    external Python libraries. Consult the relevant card before writing\n"
         "    Python against any library.\n"
