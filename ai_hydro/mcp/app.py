@@ -84,6 +84,7 @@ TOOL_TIERS: dict[str, int] = {
     "list_skills":                      3,
     "load_skill":                       3,
     "save_skill":                       3,
+    "show_html_preview":                3,
     "list_available_workflows":         3,
     "get_workflow_manifest":            3,
     "gee.status":                       3,
