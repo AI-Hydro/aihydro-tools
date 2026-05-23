@@ -15,6 +15,7 @@ from ai_hydro.mcp import tools_project    # noqa: F401  — v1.2: project, liter
 from ai_hydro.mcp import tools_execution  # noqa: F401  — v1.6.0: run_python, list_relevant_clis
 from ai_hydro.mcp import resources          # noqa: F401  — v1.6.0: M8 knowledge resource layer
 from ai_hydro.mcp import tools_skills       # noqa: F401  — v1.6.0: list_skills, load_skill
+from ai_hydro.mcp import tools_artifacts    # noqa: F401  — show_html_preview (open HTML in preview panel)
 from ai_hydro.mcp import tools_knowledge    # noqa: F401  — v1.6.4: Knowledge Registry
 from ai_hydro.mcp import tools_validators   # noqa: F401  — v1.6.6: Physics Validators
 from ai_hydro.mcp import tools_ledger       # noqa: F401  — v1.6.7: Claims & Assumptions
