@@ -22,6 +22,8 @@ from ai_hydro.mcp import tools_ledger       # noqa: F401  — v1.6.7: Claims & A
 from ai_hydro.mcp import tools_workflows    # noqa: F401  — v1.6.8: Workflow Manifests
 from ai_hydro.mcp import tools_gee          # noqa: F401  — GEE map/chat tools
 from ai_hydro.mcp import tools_map          # noqa: F401  — map orchestration (symbology, ROI, catalog)
+from ai_hydro.mcp import tools_preview      # noqa: F401  — HTML preview observability (cells, events, comments)
+from ai_hydro.mcp import tools_citations    # noqa: F401  — v1.7.0: Citation lookup (CrossRef/SemanticScholar/DataCite)
 
 # ── Tier 1 post-run validator registrations ───────────────────────────────
 # Registered after all tool modules are imported so validator callables exist.
