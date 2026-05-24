@@ -35,6 +35,7 @@ log = logging.getLogger("ai_hydro.mcp")
 
 _PREVIEW_SESSION_DIR = Path.home() / ".aihydro" / "preview_session"
 _PREVIEW_EVENTS_DIR = Path.home() / ".aihydro" / "preview_events"
+_COMMENTS_DIR = Path.home() / ".aihydro" / "comments"
 
 
 def _safe_module_id(module_id: str) -> str:
@@ -311,4 +312,59 @@ def preview_address_comment(
         }
     except Exception as e:
         log.error("preview_address_comment failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def preview_get_pending_changes(module_id: str, status: str = "open") -> dict:
+    """
+    Return user comments + text edits awaiting agent attention for a module.
+
+    The Visual Edit Mode (v1.7) batches user changes (comments on prose, comments
+    on Python cells / maps / figures, prose text edits) into a single send. When
+    the user clicks "Send N changes to agent", PreviewSessionService persists
+    every change into ~/.aihydro/comments/<module_id>.json with status "open".
+
+    This tool returns that queue so the agent can process all changes in one turn,
+    calling `lookup_citation` etc as needed, then `preview_address_comment` for
+    each comment to round-trip a proposed diff back to the user.
+
+    Parameters
+    ----------
+    module_id : str
+        Module identifier (from preview_get_state or preview_list_modules).
+    status : str
+        Filter: "open" (default), "awaiting_review", "addressed", or "all".
+
+    Returns
+    -------
+    dict with keys:
+        module_id : str
+        comments  : list of comment objects
+            { id, body, anchor: {quote, context, ...}, status, createdAt,
+              proposedReplacement?, proposedDiff? }
+        count     : int (length of comments)
+    Returns {module_id, comments: [], count: 0} if the module has no comments yet.
+    """
+    try:
+        safe = _safe_module_id(module_id)
+        fp = _COMMENTS_DIR / f"{safe}.json"
+        if not fp.exists():
+            return {"module_id": module_id, "comments": [], "count": 0}
+        data = json.loads(fp.read_text(encoding="utf-8"))
+        comments = data.get("comments", [])
+        if status != "all":
+            comments = [c for c in comments if c.get("status") == status]
+        return {
+            "module_id": module_id,
+            "comments": comments,
+            "count": len(comments),
+            "_note": (
+                "Process each comment: read body + anchor, address it (look up citations, "
+                "propose edits, etc), then call preview_address_comment(module_id, comment_id, new_text) "
+                "to round-trip the proposal to the user for diff-review."
+            ),
+        }
+    except Exception as e:
+        log.error("preview_get_pending_changes failed: %s", e)
         return _tool_error_to_dict(e)
