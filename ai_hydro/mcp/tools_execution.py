@@ -30,40 +30,10 @@ def run_python(
     allow_network: bool = False,
 ) -> dict:
     """
-    Execute a Python script in the researcher's workspace directory.
-
-    Scripts run as a subprocess using the same interpreter that serves the MCP
-    server. Output is captured and returned. Designed for data processing,
-    analysis, and ad-hoc computation — not for long-running training (use
-    train_hydro_model for that).
-
-    Security surface
-    ----------------
-    - Workspace-scoped: cwd is set to workspace_dir; absolute paths outside
-      the workspace are refused.
-    - No network by default: allow_network=False injects a socket-blocking
-      preamble so scripts cannot reach the internet accidentally.
-    - Timeout: hard-killed at timeout_seconds (default 120 s).
-    - No shell interpolation: script is passed via stdin to python -, never
-      via shell=True.
-    - No pip: scripts that call pip install are rejected before execution.
-
-    Parameters
-    ----------
-    script : str
-        Python source to execute. Must not call pip install.
-    workspace_dir : str
-        Absolute path to the researcher's workspace. Script cwd is set here.
-        Paths are resolved and checked to stay within workspace_dir.
-    timeout_seconds : int, optional
-        Hard timeout (default 120). Use train_hydro_model for longer work.
-    allow_network : bool, optional
-        If False (default), socket.socket is shimmed to raise RuntimeError
-        so accidental network calls fail clearly.
-
-    Returns
-    -------
-    dict with stdout, stderr, returncode, duration_seconds, workspace_dir.
+    Execute a Python script in workspace_dir as a subprocess. Sandboxed:
+    network disabled by default (allow_network=True to opt in), pip install
+    rejected, hard timeout (default 120s). Use train_hydro_model for
+    long-running work. Returns stdout, stderr, returncode, duration.
     """
     try:
         # Validate workspace path
@@ -145,15 +115,8 @@ def run_python(
 @mcp.tool()
 def list_relevant_clis() -> dict:
     """
-    List AI-Hydro-aware command-line tools that are currently installed.
-
-    Returns tools registered via the aihydro.clis entry-point group, plus
-    the built-in aihydro-mcp binary. Use this to discover what domain CLIs
-    (e.g. swat, camels-extract) are available before driving them via shell.
-
-    Returns
-    -------
-    dict with clis (list of descriptors) and n_clis.
+    List installed AI-Hydro-aware CLIs (registered via aihydro.clis entry-point,
+    plus aihydro-mcp). Use before driving any domain CLI from a shell.
     """
     try:
         clis = []

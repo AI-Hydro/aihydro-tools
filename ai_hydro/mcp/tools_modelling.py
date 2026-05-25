@@ -59,41 +59,12 @@ def train_hydro_model(
     learning_rate: float = 0.05,
 ) -> dict:
     """
-    Kick off a hydrological model training job and return immediately.
-
-    Training runs as a detached subprocess writing checkpoints and status
-    to the artifact directory. Poll progress with get_training_status(job_id).
-
-    The job typically takes several minutes to hours depending on framework,
-    epochs, and hardware. Do NOT poll more than once per minute.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier. Must have watershed and forcing cached.
-    workspace_dir : str, optional
-        Workspace directory for artifact storage. Uses session.workspace_dir
-        or ~/.aihydro/models if not provided.
-    framework : str
-        'hbv' (differentiable HBV-light, recommended) or
-        'neuralhydrology' (LSTM, requires pip install neuralhydrology).
-    model : str
-        neuralhydrology only: 'cudalstm' (default), 'ealstm', 'transformer'.
-    epochs : int
-        Training epochs per restart (default 500).
-    n_restarts : int
-        HBV only: number of random restarts (default 3).
-    learning_rate : float
-        Optimizer learning rate (default 0.05 for HBV).
-
-    Returns
-    -------
-    dict:
-        job_id      : Unique job identifier for polling.
-        status      : "pending"
-        artifact_dir: Path where checkpoints and results are written.
-        log_path    : Path to training log (stream with 'tail -f').
-        started_at  : ISO-8601 timestamp.
+    Kick off a model training job (detached subprocess). Returns {job_id}
+    immediately — poll with get_training_status (≤1× per minute).
+    Requires watershed+forcing (HBV) or watershed+streamflow+forcing (LSTM).
+    framework: hbv (HBV-light, default) | neuralhydrology (LSTM, needs pip
+    install neuralhydrology). model (NH only): cudalstm | ealstm | transformer.
+    Typical runtime: 2-15 min (HBV), 15-60 min (LSTM).
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -186,24 +157,8 @@ def get_training_status(job_id: str) -> dict:
     Poll the status of a training job started by train_hydro_model.
 
     Reads the status.json checkpoint written by the training subprocess.
-    Call at most once per minute — the subprocess writes updates at each
-    epoch checkpoint, not continuously.
-
-    Parameters
-    ----------
-    job_id : str
-        The job_id returned by train_hydro_model.
-
-    Returns
-    -------
-    dict:
-        job_id         : str
-        status         : "pending" | "running" | "complete" | "failed"
-        progress       : {restarts_done, restarts_total, current_nse}
-        partial_results: final metrics dict when status="complete", else null
-        error          : {code, message} when status="failed", else null
-        log_path       : Path to training log
-        updated_at     : ISO-8601 of last checkpoint write
+    Poll ≤1× per minute (subprocess writes per-epoch checkpoints).
+    Returns status (pending|running|complete|failed) + progress + partial_results.
     """
     try:
         # Search common artifact locations for this job_id
@@ -249,21 +204,8 @@ def get_training_status(job_id: str) -> dict:
 @mcp.tool()
 def get_model_results(session_id: str, job_id: str | None = None) -> dict:
     """
-    Return the cached model training results for a session.
-
-    If job_id is provided and the job is complete, returns results from the
-    artifact directory. Otherwise returns from the session model slot.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-    job_id : str, optional
-        If provided, reads results from the job artifact directory directly.
-
-    Returns
-    -------
-    dict with framework, model_type, nse, kge, rmse, model_dir, and metadata.
+    Return cached training results: NSE, KGE, RMSE, model_dir. job_id reads
+    from the job artifact dir; otherwise from session.model.
     """
     try:
         session_id = _normalize_session_id(session_id)

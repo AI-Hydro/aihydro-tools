@@ -41,31 +41,10 @@ def start_project(
     topics: list[str] | None = None,
 ) -> dict:
     """
-    Create or resume a named research project.
-
-    A project is the top-level unit of research in AI-Hydro v1.2+. It spans
-    multiple gauges, a literature folder, and a persistent experiment journal.
-    Unlike gauge sessions (which are tied to a specific USGS gauge), a project
-    can cover any hydrological topic — ungauged basins, remote sensing, global
-    datasets, conceptual work — with no gauge required.
-
-    On first call: creates the project and sets it as the active project in
-    the researcher profile.
-    On subsequent calls: loads existing project and returns its current state.
-
-    Parameters
-    ----------
-    name : str
-        Short project name used as a directory key, e.g. "camels_lstm_study"
-        or "alpine_snowmelt_thesis". No spaces — use underscores.
-    description : str, optional
-        One-sentence description of the project.
-    topics : list[str], optional
-        Topic tags, e.g. ["LSTM", "ungauged basins", "CAMELS-US"].
-
-    Returns
-    -------
-    dict with project summary + literature_dir path + active status.
+    Create or resume a named research project — top-level unit spanning
+    multiple sessions + a literature folder + experiment journal. Idempotent.
+    name: directory-safe slug (no spaces). Sets the project as active in the
+    researcher profile.
     """
     try:
         from ai_hydro.session.project import ProjectSession
@@ -108,20 +87,8 @@ def start_project(
 @mcp.tool()
 def get_project_summary(project_name: str) -> dict:
     """
-    Return a full overview of a research project.
-
-    Includes all associated gauge sessions (with their computed/pending slots
-    and key metrics), recent journal entries, literature status, and project
-    metadata.
-
-    Parameters
-    ----------
-    project_name : str
-        Project name as given to start_project.
-
-    Returns
-    -------
-    dict with project metadata, gauge_summaries, recent_journal, literature_status.
+    Overview of a project: metadata, session summaries (with computed/pending
+    slots), recent journal entries, literature index status.
     """
     try:
         from ai_hydro.session.project import ProjectSession
@@ -152,24 +119,8 @@ def get_project_summary(project_name: str) -> dict:
 @mcp.tool()
 def add_session_to_project(project_name: str, session_id: str) -> dict:
     """
-    Associate a research session with a project.
-
-    This creates the link between a project and an existing (or future)
-    research session. The session does not need to exist yet — you can
-    pre-register sessions you plan to study. Sessions can represent any
-    research context: USGS gauges, GRDC stations, ungauged basins, or any
-    other hydrological study.
-
-    Parameters
-    ----------
-    project_name : str
-        Project name as given to start_project.
-    session_id : str
-        Research session identifier (any string — slug, gauge ID, UUID).
-
-    Returns
-    -------
-    dict with updated project session list.
+    Link a session to a project. Session need not exist yet (pre-registration
+    OK). Returns the updated session list.
     """
     try:
         from ai_hydro.session.project import ProjectSession
@@ -200,32 +151,10 @@ def search_experiments(
     compare_sessions: bool = False,
 ) -> dict:
     """
-    Search across all gauge sessions in a project.
-
-    Performs a full-text search over the JSON representation of every computed
-    result slot across all gauges in the project. Useful for questions like:
-      - "which gauges have high baseflow index?"
-      - "show me all gauges where I ran an LSTM model"
-      - "find basins with NSE > 0.7"
-
-    When compare_gauges=True, also returns a side-by-side metric table for
-    all gauges that have signature and model results.
-
-    Parameters
-    ----------
-    project_name : str
-        Project name.
-    query : str
-        Search term to match against stored results (case-insensitive).
-    compare_sessions : bool, optional
-        If True, include a side-by-side comparison table. Default False.
-
-    Returns
-    -------
-    dict with:
-        matches       : list of {gauge_id, slot, snippet} for each match
-        n_matches     : total number of matches
-        comparison    : side-by-side table (only if compare_gauges=True)
+    Full-text search across all sessions in a project (case-insensitive over
+    every computed slot's JSON). Use for "find basins with NSE > 0.7",
+    "which gauges have high BFI". compare_sessions=True adds a side-by-side
+    metrics table.
     """
     try:
         from ai_hydro.session.project import ProjectSession
@@ -261,29 +190,10 @@ def index_literature(
     folder_path: str | None = None,
 ) -> dict:
     """
-    Scan a folder of research papers and build a searchable index.
-
-    Reads .txt, .md, and .pdf files (PDF requires the 'pypdf' package).
-    Creates literature_index.md in the project directory containing file
-    names, detected titles, and the first ~800 characters of each document.
-
-    This index is what search_literature queries — it is fast (plain text,
-    no vector database), and the agent reads the relevant excerpts from the
-    full files when deeper content is needed.
-
-    Call this whenever you add new papers to the folder.
-
-    Parameters
-    ----------
-    project_name : str
-        Project name.
-    folder_path : str, optional
-        Path to folder containing papers. Defaults to the project's built-in
-        literature/ folder (~/.aihydro/projects/<name>/literature/).
-
-    Returns
-    -------
-    dict with n_files indexed, file list, and index path.
+    Scan a folder of papers (.txt, .md, .pdf via pypdf) and build a
+    text-only searchable index (literature_index.md with first ~800 chars
+    per doc). Re-run when papers are added. folder_path defaults to
+    ~/.aihydro/projects/<name>/literature/.
     """
     try:
         from ai_hydro.session.project import ProjectSession
@@ -408,34 +318,9 @@ def search_literature(
     return_full_content: bool = False,
 ) -> dict:
     """
-    Query the literature index for papers matching a topic or question.
-
-    Searches the index for matching document names and excerpts. If
-    return_full_content=True, reads and returns the full text of matching
-    documents so the agent can synthesize across them.
-
-    No vector embeddings — just fast text matching on the index, with the
-    LLM doing the synthesis. Works entirely offline after indexing.
-
-    Parameters
-    ----------
-    project_name : str
-        Project name.
-    query : str
-        Topic, term, or question to search for, e.g.
-        "baseflow recession analysis", "LSTM vs HBV performance",
-        "CAMELS benchmark results".
-    return_full_content : bool, optional
-        If True, return full document text for matched files (may be large).
-        Default False — returns index excerpts only.
-
-    Returns
-    -------
-    dict with:
-        matches       : list of {filename, excerpt} for matched documents
-        n_matches     : number of matched documents
-        full_content  : {filename: full_text} if return_full_content=True
-        suggestion    : synthesis prompt for the agent
+    Query the literature index. Text match on filenames + excerpts, no vector
+    DB. return_full_content=True returns full text of matched docs for the
+    LLM to synthesise (can be large).
     """
     try:
         from ai_hydro.session.project import ProjectSession
@@ -526,31 +411,9 @@ def add_journal_entry(
     tags: list[str] | None = None,
 ) -> dict:
     """
-    Add a timestamped entry to the project experiment journal.
-
-    The journal is the persistent record of what the researcher has tried,
-    found, and concluded — accumulating across all conversations. Entries are
-    searchable via search_experiments.
-
-    Use this to log:
-      - Key findings from a modelling run
-      - Decisions about which gauges to include/exclude
-      - Hypotheses being tested
-      - Anomalies or data quality issues noticed
-      - Conclusions from a literature synthesis
-
-    Parameters
-    ----------
-    project_name : str
-        Project name.
-    entry : str
-        Journal entry text. Plain language, any length.
-    tags : list[str], optional
-        Optional tags for easier retrieval, e.g. ["HBV", "gauge 01109000"].
-
-    Returns
-    -------
-    dict with the new entry and updated journal length.
+    Add a timestamped entry to the project's experiment journal (persistent
+    across conversations; searchable via search_experiments). Use for
+    findings, decisions, hypotheses, anomalies, lit-synthesis conclusions.
     """
     try:
         from ai_hydro.session.project import ProjectSession
@@ -577,17 +440,9 @@ def add_journal_entry(
 @mcp.tool()
 def get_researcher_profile() -> dict:
     """
-    Return the persistent researcher profile.
-
-    The profile is built up over time from interactions — the agent updates
-    it when it learns meaningful things about the researcher (domain, tools,
-    preferences, current focus). It is also editable by the researcher
-    directly via update_researcher_profile.
-
-    Returns
-    -------
-    dict with all profile fields and a formatted context_string suitable
-    for display or injection into conversation context.
+    Persistent researcher profile (domain, tools, preferences, focus). Built
+    up over time from interactions; editable via update_researcher_profile.
+    Returns fields + a formatted context_string for injection.
     """
     try:
         from ai_hydro.session.persona import ResearcherProfile
@@ -616,41 +471,9 @@ def update_researcher_profile(
     active_project: str | None = None,
 ) -> dict:
     """
-    Update the researcher profile with new information.
-
-    Can be called by the researcher directly ("remember that I prefer HBV")
-    or by the agent when it infers information from the conversation
-    ("the researcher just mentioned they're a PhD student at ETH Zurich").
-
-    List fields (expertise, preferred_models) accumulate — new values are
-    appended rather than replacing the existing list.
-    Dict fields (tools_familiarity) are merged.
-    String fields replace the existing value.
-
-    Parameters
-    ----------
-    name : str, optional
-    institution : str, optional
-    role : str, optional
-        e.g. "PhD student", "postdoc", "hydrological consultant"
-    domain : str, optional
-        e.g. "hydrology", "geomorphology", "remote sensing"
-    research_focus : str, optional
-        Current research focus in plain language.
-    expertise : list[str], optional
-        Specific areas to ADD to the expertise list.
-    preferred_models : list[str], optional
-        Models to ADD to the preferred list.
-    tools_familiarity : dict, optional
-        {tool: level} pairs to merge, e.g. {"python": "expert"}.
-    communication_style : str, optional
-        e.g. "concise technical", "detailed with equations"
-    active_project : str, optional
-        Currently active project name.
-
-    Returns
-    -------
-    dict with updated profile and list of changed fields.
+    Update the researcher profile. Strings replace; list fields (expertise,
+    preferred_models) append; dict fields (tools_familiarity) merge.
+    Call when the user states or you infer something durable about them.
     """
     try:
         from ai_hydro.session.persona import ResearcherProfile
@@ -690,33 +513,9 @@ def update_researcher_profile(
 @mcp.tool()
 def log_researcher_observation(observation: str) -> dict:
     """
-    Log an agent observation about the researcher.
-
-    This is the mechanism by which the agent builds up a picture of who the
-    researcher is over time — analogous to the memory feature in Claude.ai
-    or ChatGPT. Call this when you observe something meaningful and non-obvious
-    about the researcher from the conversation.
-
-    Good observations to log:
-      - "Researcher confirmed they are a PhD student studying ungauged basins"
-      - "Researcher prefers concise responses without derivations"
-      - "Researcher mentioned their study region is the Upper Colorado"
-      - "Researcher is not familiar with xarray but comfortable with pandas"
-      - "Researcher is targeting WRR for publication"
-
-    Do NOT log:
-      - Trivial interactions or task confirmations
-      - Information already in the profile
-      - Temporary preferences ("skip explanations for now")
-
-    Parameters
-    ----------
-    observation : str
-        Plain-language observation about the researcher.
-
-    Returns
-    -------
-    dict with updated observations list.
+    Log a meaningful observation about the researcher (memory-style; for
+    durable inferences not captured by structured profile fields).
+    Skip trivial confirmations or temporary preferences.
     """
     try:
         from ai_hydro.session.persona import ResearcherProfile

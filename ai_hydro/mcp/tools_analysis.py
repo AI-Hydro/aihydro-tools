@@ -109,42 +109,14 @@ def delineate_watershed(
     workspace_dir: str | None = None,
 ) -> dict:
     """
-    Delineate watershed boundary for a USGS stream gauge.
+    Delineate USGS gauge watershed via NLDI + NWIS metadata. Stores polygon
+    in session and sets session.site_id so downstream tools auto-resolve it.
 
-    Retrieves the standardized watershed polygon from USGS NLDI and gauge
-    metadata from NWIS. After delineation the gauge ID is stored in
-    session.site_id so downstream tools (signatures, geomorphic, TWI)
-    resolve it automatically.
+    gauge_id: 8-digit USGS station (e.g. '01031500'). Optional if a previous
+    call already set session.site_id, or if session_id itself is a USGS id.
+    workspace_dir: pass once, remembered for all future calls.
 
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier — any string (slug, UUID, basin name,
-        or gauge ID used as shorthand). Created automatically if new.
-    gauge_id : str, optional
-        8-digit USGS station number, e.g. '01031500'. If omitted the tool
-        checks session.site_id set by a previous call. At least one must
-        resolve to a valid USGS ID.
-    workspace_dir : str, optional
-        Absolute path to the VS Code workspace folder. Files are saved
-        here automatically. Pass once — remembered for all future tool calls.
-
-    Returns
-    -------
-    dict with keys (geometry is stored in session, NOT returned here):
-        data.area_km2    : Watershed drainage area in km²
-        data.gauge_name  : Official station name
-        data.gauge_lat   : Gauge latitude (°N)
-        data.gauge_lon   : Gauge longitude (°E)
-        data.huc_02      : 2-digit hydrologic unit code
-        _file_saved      : Path where watershed_<gauge_id>.geojson was written
-        _note            : Confirms geometry stored in session for downstream tools
-
-    Examples
-    --------
-    >>> delineate_watershed('piscataquis-2020', gauge_id='01031500',
-    ...                     workspace_dir='/path/to/workspace')
-    >>> delineate_watershed('01031500')  # gauge ID as session_id (backward compat)
+    Returns area_km2, gauge_name/lat/lon, huc_02. Geometry stays in session.
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -336,22 +308,8 @@ def merit_ensure_basin(
     download: bool = True,
 ) -> dict:
     """
-    Ensure MERIT-Hydro vector data exists for the Pfafstetter basin at (lat, lon).
-
-    Downloads level-2 index and river vectors when ``AIHYDRO_MERIT_BASE_URL`` is set
-    or manifest URLs are configured. Data root: ``AIHYDRO_MERIT_DIR`` or
-    ``~/.aihydro/merit/``.
-
-    Parameters
-    ----------
-    lat, lon : float
-        Outlet coordinates (WGS84).
-    download : bool
-        Attempt lazy download when files are missing (default True).
-
-    Returns
-    -------
-    dict with pfaf_code, readiness flags, and setup instructions.
+    Ensure MERIT-Hydro vectors exist for the Pfaf basin at (lat, lon) WGS84.
+    Auto-downloads if AIHYDRO_MERIT_BASE_URL is set. Returns readiness flags.
     """
     try:
         from ai_hydro.data.merit_manager import MeritDataManager
@@ -479,31 +437,13 @@ def delineate_watershed_from_point(
     name: str | None = None,
 ) -> dict:
     """
-    Delineate a watershed from a pour point anywhere on Earth (lat/lon).
+    Delineate a watershed from a pour point (lat/lon, EPSG:4326). Tiered:
+    cloud DEM + pysheds (fast), MERIT vector snap, MERIT-Basins via
+    upstream-delineator. For USGS gauges use delineate_watershed instead.
 
-    Uses a tiered engine: cloud DEM + pysheds (fast), optional MERIT vector snap,
-    and MERIT-Basins via upstream-delineator when ``method='merit_basins'`` or
-    auto-escalation triggers. For USGS gauges use ``delineate_watershed`` instead.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-    lat, lon : float
-        Outlet coordinates in decimal degrees (EPSG:4326).
-    workspace_dir : str, optional
-        VS Code workspace folder for GeoJSON output.
-    expected_area_km2 : float, optional
-        Known drainage area for validation and adaptive snapping.
-    method : str
-        ``auto`` (default), ``fast``, or ``merit_basins``.
-    name : str, optional
-        Basin label for filenames and map layer.
-
-    Returns
-    -------
-    dict with area_km2, method_used, pfaf_code, snap_distance_m, _file_saved.
-    Geometry is stored in the session watershed slot (not returned inline).
+    method: auto | fast | merit_basins
+    expected_area_km2: enables validation + adaptive snapping
+    Returns area_km2, method_used, pfaf_code, snap_distance_m.
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -597,39 +537,10 @@ def fetch_streamflow_data(
     """
     Fetch USGS streamflow time series for a gauge.
 
-    Downloads daily (or sub-daily) discharge from USGS NWIS and returns
-    a JSON-serializable time series with full provenance.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier. Must match the session used in
-        delineate_watershed so results are co-located.
-    gauge_id : str, optional
-        8-digit USGS station number, e.g. '01031500'. Resolved automatically
-        from session.site_id if omitted (set by delineate_watershed).
-    start_date : str
-        Start date in YYYY-MM-DD format
-    end_date : str
-        End date in YYYY-MM-DD format
-    interval : str
-        'daily' (default) or 'hourly'
-
-    Returns
-    -------
-    dict with keys:
-        data.dates    : list of ISO date strings
-        data.q_cms    : list of discharge values (m³/s)
-        data.units    : 'm^3/s'
-        data.n_days   : number of records
-        data.gauge_name, gauge_lat, gauge_lon
-        meta          : FAIR provenance
-
-    Examples
-    --------
-    >>> fetch_streamflow_data('piscataquis-2020', gauge_id='01031500',
-    ...                       start_date='2000-01-01', end_date='2020-12-31')
-    >>> fetch_streamflow_data('01031500', '2000-01-01', '2020-12-31')
+    Daily/sub-daily discharge from USGS NWIS. JSON-serializable time series
+    with FAIR provenance. gauge_id auto-resolved from session.site_id when
+    omitted. Dates in YYYY-MM-DD. interval: daily (default) | hourly.
+    Returns q_cms array + summary stats; full series saved to disk.
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -739,37 +650,10 @@ def extract_hydrological_signatures(
     end_date: str = "2009-09-30",
 ) -> dict:
     """
-    Extract 17 CAMELS-style hydrological signatures from a session's streamflow.
-
-    Computes flow statistics, baseflow index, runoff ratio, streamflow
-    elasticity, high/low flow event characteristics, flow timing, and
-    flow duration curve slope — all following CAMELS methodology.
-
-    Watershed geometry and area are loaded automatically from the session
-    (set by delineate_watershed). For USGS gauges the USGS station number
-    is resolved from session.site_id.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier. delineate_watershed must have been
-        called for this session first.
-    start_date : str
-        Analysis start date (default: CAMELS period 1989-10-01)
-    end_date : str
-        Analysis end date (default: CAMELS period 2009-09-30)
-
-    Returns
-    -------
-    dict with keys in data:
-        q_mean, q_std, q5, q95, q_median, baseflow_index,
-        runoff_ratio, stream_elas, high_q_freq, high_q_dur,
-        low_q_freq, low_q_dur, zero_q_freq, flow_variability,
-        hfd_mean, half_flow_date_std, slope_fdc
-
-    Examples
-    --------
-    >>> extract_hydrological_signatures('piscataquis-2020')
+    Extract 17 CAMELS-style hydrological signatures (flow stats, BFI,
+    runoff ratio, elasticity, high/low flow events, FDC slope, timing).
+    Requires delineate_watershed first. Defaults to CAMELS analysis period
+    1989-10-01 to 2009-09-30.
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -844,33 +728,10 @@ def extract_geomorphic_parameters(
     dem_resolution: int = 30,
 ) -> dict:
     """
-    Extract 28 geomorphic parameters for a watershed.
-
-    Computes basin morphometry, relief characteristics, stream network
-    metrics, and shape indices from a 30m DEM (py3dep).
-
-    Watershed geometry and outlet coordinates are loaded automatically
-    from the session (set by delineate_watershed). No geometry needed.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier. delineate_watershed must have been
-        called for this session first.
-    dem_resolution : int
-        DEM resolution in meters (default: 30)
-
-    Returns
-    -------
-    dict with 28 parameters including:
-        DA_km2, Lp_km, Lb_km, Lca_km (morphometry)
-        Rff, Rc, Re, Sb, Ru (shape indices)
-        H_m, HI, Rr_m_km, Rf (relief)
-        Dd_km_per_km2, ... (drainage network)
-
-    Examples
-    --------
-    >>> extract_geomorphic_parameters('piscataquis-2020')
+    Extract 28 geomorphic parameters (morphometry, relief, drainage network,
+    shape indices) from a 30m DEM via py3dep. Requires delineate_watershed
+    first. Returns DA_km2, Lp_km, Lb_km, shape indices, hypsometric integral,
+    drainage density, stream-order metrics, etc.
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -917,43 +778,10 @@ async def compute_twi(
     ctx: Context | None = None,
 ) -> dict:
     """
-    Compute Topographic Wetness Index (TWI) for a watershed.
-
-    TWI = ln(a / tan(beta)) quantifies the tendency of each location to
-    accumulate water. Used for soil moisture mapping, saturated zone
-    identification, and runoff generation analysis.
-
-    Watershed geometry is loaded automatically from the session (set by
-    delineate_watershed). No geometry needed.
-
-    When workspace_dir is set (via delineate_watershed), saves:
-    - twi_<session_id>.json          — statistics
-    - twi_<session_id>.tif           — GeoTIFF raster (if create_map=True)
-    - twi_<session_id>_map.png       — static map (if create_map=True)
-    - twi_<session_id>_map.html      — interactive Leaflet map (if create_map=True)
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier. delineate_watershed must have been
-        called for this session first.
-    resolution : int
-        DEM resolution in meters (default: 30)
-    create_map : bool
-        Generate PNG + interactive HTML map (default: True). Set False for
-        statistics only.
-
-    Returns
-    -------
-    dict with data keys:
-        twi_mean, twi_median, twi_std, twi_min, twi_max,
-        percent_high_twi, percent_low_twi, twi_p25, twi_p75
-        files_saved: list of paths written (raster, maps, json)
-
-    Examples
-    --------
-    >>> compute_twi('piscataquis-2020')
-    >>> compute_twi('piscataquis-2020', create_map=False)
+    Topographic Wetness Index TWI = ln(a / tan(beta)). Used for soil
+    moisture mapping, saturated zone ID, runoff generation. Requires
+    delineate_watershed first. Saves GeoTIFF + PNG + HTML map when
+    workspace_dir is set and create_map=True.
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -1090,26 +918,11 @@ async def create_cn_grid(
     create_map: bool = True,
     ctx: Context | None = None,
 ) -> dict:
-    """Create an NRCS Curve Number grid for the watershed.
-
-    Combines NLCD land cover with Polaris soil properties to produce
-    a spatially distributed CN grid. Requires watershed to be delineated
-    first (run delineate_watershed).
-
-    Returns CN statistics, zone percentages, LULC + soil breakdowns,
-    and saves GeoTIFF / NetCDF / PNG / HTML to the workspace.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier. delineate_watershed must have been
-        called for this session first.
-    year : int
-        NLCD land cover year (default: 2019)
-    resolution : int
-        Grid resolution in meters (default: 30)
-    create_map : bool
-        Generate PNG + interactive HTML map (default: True)
+    """
+    NRCS Curve Number grid: NLCD land cover × Polaris soil → distributed CN.
+    Requires delineate_watershed first. Returns CN stats, zone percentages,
+    LULC + soil breakdowns. Saves GeoTIFF / NetCDF / PNG / HTML.
+    year: NLCD year (default 2019).
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -1236,38 +1049,10 @@ async def fetch_forcing_data(
     ctx: Context | None = None,
 ) -> dict:
     """
-    Fetch basin-averaged daily forcing data from GridMET (CONUS only).
-
-    Retrieves precipitation, temperature, wind, humidity, and solar
-    radiation for a watershed. Essential for hydrological modelling input.
-
-    Watershed geometry is loaded automatically from the session (set by
-    delineate_watershed). No geometry needed.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier. delineate_watershed must have been
-        called for this session first.
-    start_date : str
-        Start date YYYY-MM-DD
-    end_date : str
-        End date YYYY-MM-DD
-    variables : list[str], optional
-        Subset of GridMET variables. Default: all available.
-        Options: pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc
-
-    Returns
-    -------
-    dict with data keys:
-        dates       : list of ISO date strings
-        <var>       : list of daily values for each requested variable
-        units       : dict mapping variable -> unit string
-        n_days      : number of records
-
-    Examples
-    --------
-    >>> fetch_forcing_data('piscataquis-2020', '2000-01-01', '2010-12-31')
+    Basin-averaged daily GridMET forcing (CONUS only): precip, temp, wind,
+    humidity, solar radiation. Requires delineate_watershed first.
+    variables: subset of [pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc]
+    (default all). Returns daily arrays saved to disk.
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -1344,56 +1129,11 @@ def fetch_camels_us(
     gauge_ids: list[str] | None = None,
 ) -> dict:
     """
-    Fetch CAMELS-US static catchment attributes — one gauge, many, or all 671.
-
-    pygeohydro.get_camels() downloads all 671 CONUS benchmark gauges in one
-    network call, so there is no performance penalty for requesting multiple
-    gauges at once.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-    gauge_id : str, optional
-        Single 8-digit USGS gauge ID. Defaults to session.site_id. Result is
-        cached in the session 'camels' slot for downstream use.
-    gauge_ids : list[str], optional
-        List of 8-digit USGS gauge IDs for bulk retrieval (regional studies,
-        benchmark comparisons). Pass an empty list [] to return all 671 gauges.
-        Result is NOT cached in session — it is saved directly to workspace.
-
-    Returns
-    -------
-    Single-gauge mode (gauge_id):
-        data.gauge_id          : USGS station ID
-        data.in_camels         : True/False
-        data.n_attributes      : number of attribute columns (~60)
-        data.attributes        : flat dict of all CAMELS attribute values
-        data.attribute_groups  : attributes grouped by theme (topography,
-                                 climate, hydrology, soil, vegetation, geology)
-
-    Multi-gauge mode (gauge_ids):
-        data.mode              : "multi"
-        data.n_requested       : number of gauges requested
-        data.n_found           : number in CAMELS
-        data.not_in_camels     : list of IDs not found
-        data.gauges            : {gauge_id: {in_camels, attributes,
-                                             attribute_groups}, ...}
-
-    Notes
-    -----
-    CAMELS covers 671 minimally-disturbed CONUS gauges (1980-2014 record).
-    For gauges outside CAMELS, use extract_geomorphic_parameters +
-    extract_hydrological_signatures to derive equivalent attributes.
-
-    Citation: Addor et al. (2017), HESS 21.
-
-    Examples
-    --------
-    >>> fetch_camels_us('piscataquis-2020')                       # session gauge
-    >>> fetch_camels_us('study', gauge_id='01031500')             # explicit single
-    >>> fetch_camels_us('maine', gauge_ids=['01031500','01013500']) # two gauges
-    >>> fetch_camels_us('all-camels', gauge_ids=[])               # all 671
+    CAMELS-US static catchment attributes (671 minimally-disturbed CONUS
+    gauges). Single gauge via ``gauge_id`` (cached in session) OR bulk via
+    ``gauge_ids`` (list, [] = all 671; saved to workspace).
+    Returns ~60 attributes grouped by topography/climate/hydrology/soil/
+    vegetation/geology. Citation: Addor et al. (2017), HESS 21.
     """
     try:
         import math
@@ -1571,36 +1311,10 @@ def separate_baseflow(
     n_passes: int = 3,
 ) -> dict:
     """
-    Separate baseflow from total streamflow using a digital filter method.
-
-    Writes the full daily baseflow series and a BFI scalar to the session
-    baseflow slot. The existing BFI scalar in extract_hydrological_signatures
-    is preserved for backward compatibility.
-
-    Methods
-    -------
-    lyne_hollick : Recursive digital filter (Lyne & Hollick, 1979).
-        Standard choice — fast, single parameter (alpha).
-        Recommended for most purposes.
-    ukih : UK Institute of Hydrology five-day interval method
-        (Gustard et al., 1992). Non-parametric, robust for perennial streams.
-        Use when you want an alpha-free estimate.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier. Streamflow must be in session.streamflow.
-    method : str
-        Separation method: 'lyne_hollick' (default) or 'ukih'.
-    alpha : float
-        Lyne-Hollick filter parameter (0.9-0.95). Ignored for UKIH.
-    n_passes : int
-        Number of forward/backward passes (1 or 3). Ignored for UKIH.
-
-    Returns
-    -------
-    dict with bfi, baseflow_mean_cms, total_flow_mean_cms, method, n_days,
-    and session slot written.
+    Separate baseflow from streamflow via digital filter. Writes daily series
+    + BFI to session.baseflow. Requires fetch_streamflow_data first.
+    method: lyne_hollick (default, recursive filter, alpha 0.9-0.95) |
+    ukih (UK Institute of Hydrology 5-day, non-parametric, no alpha).
     """
     try:
         from ai_hydro.session import HydroSession
