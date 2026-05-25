@@ -130,14 +130,22 @@ def delineate_watershed(
     workspace_dir: str | None = None,
 ) -> dict:
     """
-    Delineate USGS gauge watershed via NLDI + NWIS metadata. Stores polygon
-    in session and sets session.site_id so downstream tools auto-resolve it.
+    Delineate USGS gauge watershed via NLDI + NWIS metadata.
 
-    gauge_id: 8-digit USGS station (e.g. '01031500'). Optional if a previous
-    call already set session.site_id, or if session_id itself is a USGS id.
-    workspace_dir: pass once, remembered for all future calls.
+    Parameters
+    ----------
+    session_id : str (required)
+        Research session identifier. Any string (slug, UUID, basin name).
+    gauge_id : str, optional
+        8-digit USGS station number (e.g. '01031500'). Optional if a
+        previous call already set session.site_id, or if session_id itself
+        is a USGS id.
+    workspace_dir : str, optional
+        Absolute workspace path. Pass once — remembered for future calls.
 
-    Returns area_km2, gauge_name/lat/lon, huc_02. Geometry stays in session.
+    Stores the watershed polygon in session and sets session.site_id so
+    downstream tools auto-resolve it. Returns area_km2, gauge_name/lat/lon,
+    huc_02. Geometry stays in session (not returned inline).
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -556,12 +564,23 @@ def fetch_streamflow_data(
     interval: str = "daily",
 ) -> dict:
     """
-    Fetch USGS streamflow time series for a gauge.
+    Fetch USGS streamflow time series (NWIS).
 
-    Daily/sub-daily discharge from USGS NWIS. JSON-serializable time series
-    with FAIR provenance. gauge_id auto-resolved from session.site_id when
-    omitted. Dates in YYYY-MM-DD. interval: daily (default) | hourly.
-    Returns q_cms array + summary stats; full series saved to disk.
+    Parameters
+    ----------
+    session_id : str (required)
+        Research session identifier.
+    gauge_id : str, optional
+        8-digit USGS station. Auto-resolved from session.site_id if omitted.
+    start_date : str (required)
+        Period start, YYYY-MM-DD (e.g. '2000-01-01').
+    end_date : str (required)
+        Period end, YYYY-MM-DD.
+    interval : str
+        'daily' (default) | 'hourly'.
+
+    Returns q_cms array + summary stats; full daily series saved to disk
+    and referenced via the `_data_file` pointer in the response.
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -1076,8 +1095,16 @@ async def fetch_forcing_data(
     """
     Basin-averaged daily GridMET forcing (CONUS only): precip, temp, wind,
     humidity, solar radiation. Requires delineate_watershed first.
-    variables: subset of [pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc]
-    (default all). Returns daily arrays saved to disk.
+
+    Parameters
+    ----------
+    session_id : str (required)
+    start_date : str (required)  YYYY-MM-DD
+    end_date   : str (required)  YYYY-MM-DD
+    variables  : list[str], optional — subset of
+                 [pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc] (default all)
+
+    Returns daily arrays saved to disk; referenced via `_data_file` pointer.
     """
     try:
         session_id = _normalize_session_id(session_id)
@@ -1338,8 +1365,18 @@ def separate_baseflow(
     """
     Separate baseflow from streamflow via digital filter. Writes daily series
     + BFI to session.baseflow. Requires fetch_streamflow_data first.
-    method: lyne_hollick (default, recursive filter, alpha 0.9-0.95) |
-    ukih (UK Institute of Hydrology 5-day, non-parametric, no alpha).
+
+    Parameters
+    ----------
+    session_id : str (required)
+        Research session identifier.
+    method : str
+        'lyne_hollick' (default, recursive filter) | 'ukih' (UK Institute of
+        Hydrology 5-day smoothed-minimum, non-parametric).
+    alpha : float
+        Lyne-Hollick filter parameter (0.9-0.95, default 0.925). Ignored for ukih.
+    n_passes : int
+        Number of forward/backward passes (1 or 3, default 3). Ignored for ukih.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -1355,27 +1392,69 @@ def separate_baseflow(
                 "recovery": "fetch_streamflow_data(session_id, gauge_id)",
             }
 
-        # Extract streamflow array from session
+        # Extract streamflow array from session. The canonical key written by
+        # fetch_streamflow_data is `q_cms`; other names are legacy / defensive.
         sf = session.streamflow
         data = sf.get("data", sf) if isinstance(sf, dict) else sf
-        # Try common keys for flow array
+
+        # ── Cache miss because raw arrays got stripped to disk? ────────
+        # The session strips arrays >50 elements; the real array lives in
+        # the file pointed at by `_data_file`. Reload it transparently.
+        if isinstance(data, dict) and "q_cms" not in data:
+            data_file = (data.get("_data_file")
+                         or sf.get("_data_file")
+                         or sf.get("data", {}).get("_data_file"))
+            if data_file:
+                try:
+                    import json as _json
+                    with open(data_file) as _f:
+                        data = _json.load(_f)
+                except Exception as _exc:
+                    log.warning("Failed to reload streamflow from %s: %s",
+                                data_file, _exc)
+
         q = None
-        for key in ("discharge_cms", "flow_cms", "streamflow", "q"):
-            if key in data and data[key] is not None:
-                q = np.asarray(data[key], dtype=float)
-                break
-        if q is None:
-            # Fallback: take first numeric array value
-            for v in data.values():
-                if hasattr(v, "__len__") and len(v) > 1:
+        # Prioritised lookup, q_cms FIRST (the canonical key from
+        # fetch_streamflow_data). All keys here are arrays of floats; never
+        # a string that masquerades as one.
+        FLOW_KEYS = ("q_cms", "discharge_cms", "flow_cms", "streamflow", "q")
+        for key in FLOW_KEYS:
+            v = data.get(key) if isinstance(data, dict) else None
+            if isinstance(v, (list, tuple)) and len(v) > 1:
+                try:
                     q = np.asarray(v, dtype=float)
                     break
+                except (TypeError, ValueError):
+                    continue
+
+        if q is None:
+            # Hardened fallback: scan dict values but SKIP strings, dicts,
+            # and anything that can't cast to float64. The old fallback hit
+            # the units string ("m^3/s") because str has __len__ > 1.
+            for k, v in (data.items() if isinstance(data, dict) else []):
+                if isinstance(v, (str, bytes, dict)):
+                    continue
+                if not isinstance(v, (list, tuple)):
+                    continue
+                if len(v) < 10:
+                    continue
+                try:
+                    q = np.asarray(v, dtype=float)
+                    log.info("separate_baseflow: using fallback key %r as flow array", k)
+                    break
+                except (TypeError, ValueError):
+                    continue
+
         if q is None or len(q) < 10:
             return {
                 "error": True,
                 "code": "INVALID_STREAMFLOW",
-                "message": "Could not extract a flow array from session.streamflow.",
-                "recovery": "Ensure fetch_streamflow_data ran successfully and returned a daily series.",
+                "message": (
+                    f"Could not extract a flow array from session.streamflow. "
+                    f"Looked for keys {FLOW_KEYS}; found "
+                    f"{sorted(data.keys()) if isinstance(data, dict) else type(data).__name__}."
+                ),
+                "recovery": "Re-run fetch_streamflow_data and confirm it returns a 'q_cms' array.",
             }
 
         method = method.lower()
