@@ -79,6 +79,53 @@ def get_session_summary(session_id: str) -> dict:
 
 
 @mcp.tool()
+def get_session_health(session_id: str) -> dict:
+    """
+    Audit a session for identity drift, workspace problems, and consistency
+    gaps. Returns warnings keyed by code so the agent can fix issues before
+    they propagate into research.md, exports, or downstream tools.
+
+    Common warning codes:
+      - site_name_drift: display name disagrees with watershed.gauge_name
+      - site_id_format:  USGS site_type but site_id isn't a gauge number
+      - session_id_gauge_mismatch: session_id looks like a gauge != site_id
+      - workspace_missing: workspace_dir no longer exists on disk
+      - site_name_unset:  interpretation written but site_name empty
+
+    Also returns the audit trail of site_name overwrites (when the LLM
+    rewrote the display name during interpretation) and the canonical_id
+    used for workspace filenames.
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+        warnings = session.validate_identity()
+        return {
+            "session_id": session_id,
+            "canonical_id": session.canonical_id,
+            "site_name": session.site_name,
+            "site_id": session.site_id,
+            "site_type": session.site_type,
+            "workspace_dir": session.workspace_dir,
+            "warnings": warnings,
+            "n_warnings": len(warnings),
+            "site_name_history": session._site_name_history,
+            "n_notes": len(session.notes),
+            "n_computed_slots": len(session.computed()),
+            "has_interpretation": bool(session.interpretation),
+            "_remediation": (
+                "If a warning is real, fix the underlying field via the "
+                "appropriate tool — e.g. re-run write_research_interpretation "
+                "with a corrected site_name; re-run delineate_watershed with "
+                "the right gauge_id; update workspace_dir via start_session."
+            ) if warnings else None,
+        }
+    except Exception as e:
+        log.error("get_session_health failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
 def clear_session(session_id: str, slots: list[str] | None = None) -> dict:
     """
     Clear cached results to force recompute. Notes/workspace_dir/site_name/
@@ -125,7 +172,14 @@ def add_note(session_id: str, note: str) -> dict:
     try:
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
-        session.notes.append(note)
+        added = session.add_note(note)
+        if not added:
+            # Deduped — surface clearly so the agent knows the note already exists.
+            summary = session.summary()
+            summary["_note_deduped"] = (
+                "Identical note already at the tail of the list — not appended again."
+            )
+            return summary
         session.save()
         return session.summary()
     except Exception as e:
@@ -219,7 +273,11 @@ def write_research_interpretation(
         session = HydroSession.load(session_id)
         session.interpretation = interpretation.strip()
         session.interpretation_at = datetime.now(timezone.utc).isoformat()
-        session.site_name = site_name.strip()
+        # Use set_site_name so the previous value (if any) is audited into
+        # _site_name_history — this is how we catch the "the agent rewrote
+        # site_name during interpretation and drifted from the canonical
+        # gauge_name" failure mode.
+        session.set_site_name(site_name, reason="set via write_research_interpretation")
         session.save()
 
         tools_path = _write_tools_md()
