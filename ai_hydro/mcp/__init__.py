@@ -25,6 +25,7 @@ from ai_hydro.mcp import tools_map          # noqa: F401  — map orchestration 
 from ai_hydro.mcp import tools_preview      # noqa: F401  — HTML preview observability (cells, events, comments)
 from ai_hydro.mcp import tools_citations    # noqa: F401  — v1.7.0: Citation lookup (CrossRef/SemanticScholar/DataCite)
 from ai_hydro.mcp import tools_course       # noqa: F401  — v1.8.0: course mode (state, navigate, set_progress, scaffold, curriculum)
+from ai_hydro.mcp import tools_discovery    # noqa: F401  — v1.8.0: aihydro_describe_capability (token-efficient tool discovery)
 
 # ── Tier 1 post-run validator registrations ───────────────────────────────
 # Registered after all tool modules are imported so validator callables exist.

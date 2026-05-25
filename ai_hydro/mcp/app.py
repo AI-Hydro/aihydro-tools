@@ -99,6 +99,8 @@ TOOL_TIERS: dict[str, int] = {
     "course_set_progress":              2,
     "course_navigate":                  2,
     "course_scaffold":                  2,
+    # ── Discovery (v1.8.0) ───────────────────────────────────────────────
+    "aihydro_describe_capability":      3,
 }
 
 
@@ -130,6 +132,27 @@ mcp = FastMCP(
         "global datasets, and anything the researcher brings to you. You are a research "
         "collaborator, not a gauge processor.\n\n"
 
+        "\u2500\u2500 SKILL DISCOVERY \u2014 MANDATORY PRE-FLIGHT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        "Before creating any plan or producing any artifact, you MUST run the\n"
+        "skill discovery protocol when the request involves any of:\n"
+        "  \u2022 Creating an artifact (module, report, notebook, dashboard, script)\n"
+        "  \u2022 A named domain workflow (baseflow, TWI, flood frequency, signatures\u2026)\n"
+        "  \u2022 Following a methodology (model calibration, uncertainty analysis\u2026)\n"
+        "  \u2022 Building educational or learning content of any kind\n"
+        "  \u2022 Any multi-step analysis of 3 or more distinct steps\n\n"
+        "PROTOCOL (execute in order, do not skip steps):\n"
+        "  Step 1. Call list_skills() \u2014 retrieve the full skill catalog.\n"
+        "  Step 2. Scan every skill name + description for ANY match to the task.\n"
+        "  Step 3a. MATCH FOUND \u2192 call load_skill(name) and read it completely.\n"
+        "           The skill's steps, format contracts, and checklists are law.\n"
+        "           Your plan MUST follow the skill. Do not freelance around it.\n"
+        "  Step 3b. NO MATCH \u2192 proceed with your own plan, then call save_skill()\n"
+        "           after completion to capture the workflow for future use.\n\n"
+        "Rationale: skills encode production-grade contracts (exact cell formats,\n"
+        "branding rules, citation requirements, checklist gates) that cannot be\n"
+        "inferred from general knowledge. Skipping discovery produces incorrect\n"
+        "artifacts that fail the contract and waste researcher time.\n\n"
+
         "\u2500\u2500 INTELLIGENCE PRINCIPLE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         "Tools do deterministic computation. You do scientific judgment. When a tool\n"
         "does not exist for a data source or analysis, reason about the problem and\n"
@@ -139,11 +162,9 @@ mcp = FastMCP(
         "\u2500\u2500 LAYERED CAPABILITIES \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         "You operate across six capability layers:\n\n"
         " 1. TOOLS \u2014 typed computation and state management. Enumerate at start with\n"
-        "    the tool-listing call; never guess names from memory.\n"
-        " 2. SKILLS \u2014 workflow playbooks installed at ~/.aihydro/skills/.\n"
-        "    Call list_skills() to see available workflows, load_skill(name) to\n"
-        "    get full instructions before multi-step analyses. After completing\n"
-        "    a novel workflow, call save_skill() to capture it for reuse.\n"
+        "    list_available_tools(); never guess names from memory.\n"
+        " 2. SKILLS \u2014 workflow playbooks (see SKILL DISCOVERY above). Always check\n"
+        "    before planning. Load and follow; save novel workflows afterward.\n"
         " 3. LIBRARY REFERENCES \u2014 API idioms, unit conventions, and gotchas for\n"
         "    external Python libraries. Consult the relevant card before writing\n"
         "    Python against any library.\n"
