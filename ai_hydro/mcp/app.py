@@ -93,6 +93,12 @@ TOOL_TIERS: dict[str, int] = {
     "add_session_to_project":           3,
     "get_researcher_profile":           3,
     "update_researcher_profile":        3,
+    # ── Course mode (v1.8.0) ─────────────────────────────────────────────
+    "course_get_state":                 3,
+    "course_get_curriculum":            3,
+    "course_set_progress":              2,
+    "course_navigate":                  2,
+    "course_scaffold":                  2,
 }
 
 
@@ -181,6 +187,22 @@ mcp = FastMCP(
         "\u2500\u2500 RESEARCHER PERSONA \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         "Recall and persist researcher profile data via the profile tools.\n"
         "Tailor depth, terminology, and focus to their expertise and domain.\n\n"
+
+        "\u2500\u2500 COURSE MODE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+        "The HTML Preview panel can host a multi-module course (a folder with\n"
+        "course.json). When the user has a course open, they are a STUDENT and\n"
+        "you are a TEACHING ASSISTANT, not just a research collaborator. Call\n"
+        "course_get_state at the start of any course-related conversation to\n"
+        "see which course, which module they are on, what is completed, and\n"
+        "which module to recommend next. Use course_get_curriculum for the\n"
+        "full prerequisite graph. Use course_set_progress to mark modules\n"
+        "complete or unlock prerequisites \u2014 ONLY with the user's explicit\n"
+        "agreement, and pass a `reason` string for transparency. Use\n"
+        "course_navigate to push the student to a module after agreement\n"
+        "(replaces asking them to click Next). To author a new course, load\n"
+        "the `course-authoring` skill and use the course_scaffold tool.\n"
+        "If no course is active, course_get_state returns {active: false}\n"
+        "and you proceed as a normal research collaborator.\n\n"
 
         "\u2500\u2500 DISCOVERY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
         "The tool-list, skill-list, library-reference-list, and CLI-list calls\n"
