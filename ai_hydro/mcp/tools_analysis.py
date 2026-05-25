@@ -33,6 +33,7 @@ from ai_hydro.mcp.app import mcp, Context
 from ai_hydro.mcp.enforcement import post_run as _post_run
 from ai_hydro.mcp.helpers import (
     _cached_response,
+    _canonical_workspace_path,
     _ensure_session,
     _get_session_geometry,
     _normalize_session_id,
@@ -44,6 +45,26 @@ from ai_hydro.mcp.helpers import (
     _validate_usgs_gauge_id,
     _workspace_write,
 )
+
+
+def _canonical_fname(session_id: str, prefix: str, ext: str = "json") -> str:
+    """Return the session's canonical workspace filename, with a safe
+    fallback to the legacy session-id-based name if resolution fails."""
+    return _canonical_workspace_path(session_id, prefix, ext) or f"{prefix}_{session_id}.{ext}"
+
+
+def _canonical_prefix(session_id: str, kind: str) -> str:
+    """Return the bare canonical filename prefix (no extension), used as the
+    ``output_prefix`` for analysis modules that build several files of their
+    own (TWI raster + map + PNG; CN raster + NetCDF + map; ...).
+
+    Equivalent to ``f"{kind}_{session.canonical_id}"`` when the session is
+    loadable, with a safe fallback to the session-id form on failure.
+    """
+    full = _canonical_workspace_path(session_id, kind, "json")
+    if full and full.endswith(".json"):
+        return full[: -len(".json")]
+    return f"{kind}_{session_id}"
 
 log = logging.getLogger("ai_hydro.mcp")
 
@@ -678,7 +699,7 @@ def extract_hydrological_signatures(
         _session_store(session_id, "signatures", d, tool_name="extract_hydrological_signatures")
         files_saved: list[str] = []
         saved = _workspace_write(
-            session_id, f"signatures_{session_id}.json", d["data"]
+            session_id, _canonical_fname(session_id, "signatures", "json"), d["data"]
         )
         if saved:
             files_saved.append(saved)
@@ -753,7 +774,7 @@ def extract_geomorphic_parameters(
         d = _result_to_dict(result)
         _session_store(session_id, "geomorphic", d, tool_name="extract_geomorphic_parameters")
         saved = _workspace_write(
-            session_id, f"geomorphic_{session_id}.json", d["data"]
+            session_id, _canonical_fname(session_id, "geomorphic", "json"), d["data"]
         )
         if saved:
             d["_file_saved"] = saved
@@ -803,13 +824,14 @@ async def compute_twi(
                 watershed_shapely = _shape(watershed_geojson)
                 from ai_hydro.analysis.twi import compute_twi as _fn_full
 
+                twi_prefix = _canonical_prefix(session_id, "twi")
                 result = await asyncio.to_thread(
                     _fn_full,
                     watershed_shapely,
                     resolution=resolution,
                     save_outputs=True,
                     output_dir=workspace,
-                    output_prefix=f"twi_{session_id}",
+                    output_prefix=twi_prefix,
                     create_visualizations=True,
                 )
 
@@ -843,13 +865,13 @@ async def compute_twi(
                             array=twi_arr,
                             bounds_wgs84=bounds_wgs84,
                             output_dir=workspace,
-                            name=f"twi_{session_id}",
+                            name=twi_prefix,
                             colormap="viridis_r",
                         )
                         if tile_result:
                             tile_path, tile_bounds = tile_result
                             push_raster_layer(
-                                layer_id=f"twi_{session_id}",
+                                layer_id=twi_prefix,
                                 name=f"TWI: {session_id}",
                                 png_path=tile_path,
                                 bounds_wgs84=tile_bounds,
@@ -879,7 +901,7 @@ async def compute_twi(
         )
         d = _result_to_dict(result)
         _session_store(session_id, "twi", d, tool_name="compute_twi")
-        saved = _workspace_write(session_id, f"twi_{session_id}.json", d["data"])
+        saved = _workspace_write(session_id, _canonical_fname(session_id, "twi", "json"), d["data"])
         if saved:
             d["_file_saved"] = saved
         if not workspace:
@@ -950,7 +972,10 @@ async def create_cn_grid(
         )
 
         watershed_shapely = _shape(watershed_geojson)
-        output_dir = str(Path(workspace) / f"cn_grid_{session_id}")
+        cn_prefix = _canonical_prefix(session_id, "cn")
+        # Subfolder name mirrors the canonical prefix for tidiness
+        cn_folder = cn_prefix.replace("cn_", "cn_grid_", 1)
+        output_dir = str(Path(workspace) / cn_folder)
 
         result = await asyncio.to_thread(
             _fn,
@@ -960,7 +985,7 @@ async def create_cn_grid(
             save_outputs=True,
             output_dir=output_dir,
             create_visualizations=create_map,
-            output_prefix=f"cn_{session_id}",
+            output_prefix=cn_prefix,
         )
 
         if ctx:
@@ -1008,14 +1033,14 @@ async def create_cn_grid(
                     array=cn_array,
                     bounds_wgs84=bounds_wgs84,
                     output_dir=output_dir,
-                    name=f"cn_{session_id}",
+                    name=cn_prefix,
                     colormap="YlOrRd",
                 )
                 if tile_result:
                     tile_path, tile_bounds = tile_result
                     push_raster_layer(
-                        layer_id=f"cn_{session_id}",
-                        name=f"Curve Number: {session_id}",
+                        layer_id=cn_prefix,
+                        name=f"Curve Number: {session.canonical_id if hasattr(session, 'canonical_id') else session_id}",
                         png_path=tile_path,
                         bounds_wgs84=tile_bounds,
                         colormap="YlOrRd",
@@ -1090,7 +1115,7 @@ async def fetch_forcing_data(
             await ctx.report_progress(progress=2, total=2)
 
         d = _result_to_dict(result)
-        saved = _workspace_write(session_id, f"forcing_{session_id}.json", d["data"])
+        saved = _workspace_write(session_id, _canonical_fname(session_id, "forcing", "json"), d["data"])
         # Record data file path in slot so train_hydro_model can reload arrays
         if saved:
             d["data"]["_data_file"] = saved

@@ -1079,55 +1079,177 @@ def _create_interactive_map(
     gauge_id: str
 ) -> None:
     """
-    Create interactive HTML map of CN grid using Folium.
-    
-    Internal function for interactive visualization.
+    Interactive HTML map of the CN grid via Folium.
+
+    Implementation notes / bug-fix history:
+
+    1. CRS handling. The cn_grid comes out of NLCD-derived computation in
+       EPSG:5070 (CONUS Albers), with x/y in metres. The previous version
+       treated cn_grid.x/.y as lat/lon, which put bounds millions of
+       degrees off the equator and folium silently drew nothing. We now
+       reproject bounds through rasterio.warp.transform_bounds and force
+       the watershed GeoDataFrame into WGS84 before serialising.
+
+    2. Actual overlay. The previous version computed `bounds` but never
+       added an ImageOverlay layer — so the map had only the watershed
+       outline and a popup, no raster. We now (a) colormap the array to
+       an RGBA PNG, (b) downsample to <=2000 px on the longest side, and
+       (c) reference the PNG by relative basename via a raw Leaflet
+       imageOverlay snippet, matching the TWI fix. This keeps the HTML
+       under 100 KB instead of base64-inlining a multi-MB PNG.
     """
-    # Get watershed center for map
-    centroid = watershed_gdf.geometry.centroid.iloc[0]
-    center_lat = centroid.y
-    center_lon = centroid.x
-    
-    # Create base map
-    m = folium.Map(
-        location=[center_lat, center_lon],
-        zoom_start=10,
-        tiles='OpenStreetMap'
-    )
-    
-    # Add watershed boundary
+    import json
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib import colors as mpl_colors
+
+    # ── Watershed boundary in WGS84 for folium ─────────────────────────
+    if watershed_gdf.crs is None:
+        watershed_gdf = watershed_gdf.set_crs(epsg=4326)
+    if watershed_gdf.crs.to_epsg() != 4326:
+        watershed_gdf = watershed_gdf.to_crs(epsg=4326)
+
+    # Map center from the watershed (use a representative point for
+    # multipolygons since .centroid can fall outside the geometry)
+    rep = watershed_gdf.geometry.representative_point().iloc[0]
+    center_lat, center_lon = rep.y, rep.x
+
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=9,
+                   tiles='OpenStreetMap')
+    folium.TileLayer('cartodbpositron', name='Light').add_to(m)
+    folium.TileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri', name='Satellite', overlay=False, control=True,
+    ).add_to(m)
+
+    # Watershed boundary
     folium.GeoJson(
         watershed_gdf.to_json(),
         name='Watershed Boundary',
-        style_function=lambda x: {
-            'fillColor': 'none',
-            'color': 'black',
-            'weight': 3
-        }
+        style_function=lambda _x: {
+            'fillColor': 'transparent', 'color': 'black',
+            'weight': 2.5, 'opacity': 0.9, 'fillOpacity': 0,
+        },
     ).add_to(m)
-    
-    # Convert CN grid to image overlay (simplified approach)
-    # Note: For production, consider using rasterio for proper georeferencing
-    bounds = [
-        [float(cn_grid.y.min()), float(cn_grid.x.min())],
-        [float(cn_grid.y.max()), float(cn_grid.x.max())]
-    ]
-    
-    # Add title
-    title_html = f'''
-    <div style="position: fixed; 
-                top: 10px; left: 50px; width: 300px; height: 90px; 
-                background-color: white; border:2px solid grey; z-index:9999; 
-                font-size:14px; padding: 10px">
-    <b>Curve Number Grid</b><br>
-    Gauge ID: {gauge_id}<br>
-    CN Range: {float(cn_grid.min().values):.0f} - {float(cn_grid.max().values):.0f}
+
+    # ── Reproject bounds to WGS84 ──────────────────────────────────────
+    # cn_grid carries its own CRS via rioxarray (`rio.crs`); fall back to
+    # the .crs attr if set, then to EPSG:5070 which is the NLCD default.
+    try:
+        src_crs = cn_grid.rio.crs
+    except Exception:
+        src_crs = None
+    if src_crs is None:
+        src_crs = cn_grid.attrs.get('crs') or 'EPSG:5070'
+
+    # Compute native bounds from the grid coordinates (x is "longitude
+    # axis" in pixel space, but in projected CRS it's easting metres)
+    x_min, x_max = float(cn_grid.x.min()), float(cn_grid.x.max())
+    y_min, y_max = float(cn_grid.y.min()), float(cn_grid.y.max())
+    try:
+        from rasterio.warp import transform_bounds
+        west, south, east, north = transform_bounds(
+            src_crs, 'EPSG:4326', x_min, y_min, x_max, y_max
+        )
+    except Exception:
+        # Last-resort fallback: assume native is already WGS84
+        west, south, east, north = x_min, y_min, x_max, y_max
+
+    # ── Build the colormapped overlay PNG ──────────────────────────────
+    # CN values run 30-100. Use RdYlBu_r so high CN (= more runoff) is
+    # red, low CN (= more infiltration) is blue. Mask NoData.
+    arr = cn_grid.values.astype(float)
+    arr = np.ma.masked_invalid(arr)
+
+    # Downsample if huge — keeps overlay PNGs lean for web display
+    MAX_OVERLAY_DIM = 2000
+    h, w = arr.shape
+    if max(h, w) > MAX_OVERLAY_DIM:
+        scale = MAX_OVERLAY_DIM / max(h, w)
+        new_h, new_w = int(h * scale), int(w * scale)
+        try:
+            from skimage.transform import resize
+            data_ds = resize(arr.filled(np.nan), (new_h, new_w),
+                             order=1, anti_aliasing=True, preserve_range=True)
+            mask_ds = resize(arr.mask.astype(float), (new_h, new_w),
+                             order=0, preserve_range=True) > 0.5
+            arr = np.ma.array(data_ds, mask=mask_ds)
+        except Exception:
+            step_y, step_x = max(1, h // new_h), max(1, w // new_w)
+            arr = arr[::step_y, ::step_x]
+
+    cn_min, cn_max = 30.0, 100.0  # NRCS-standard CN range
+    norm = mpl_colors.Normalize(vmin=cn_min, vmax=cn_max)
+    cmap = plt.get_cmap('RdYlBu_r')
+    rgba = cmap(norm(arr))
+
+    overlay_basename = f"{output_path.stem}_cn_overlay.png"
+    overlay_path = output_path.parent / overlay_basename
+    plt.imsave(str(overlay_path), rgba)
+
+    # ── Wire the overlay into the map via raw Leaflet ──────────────────
+    # See TWI map for rationale — folium.ImageOverlay would base64-embed
+    # the PNG into the HTML, blowing the file past the preview cap.
+    overlay_js = f"""
+    <script>
+    (function() {{
+        function wireCNOverlay() {{
+            var maps = Object.values(window).filter(function(v) {{
+                return v && typeof v === 'object' && v.eachLayer && v._container;
+            }});
+            if (!maps.length) {{ return setTimeout(wireCNOverlay, 80); }}
+            var m = maps[0];
+            var overlay = L.imageOverlay(
+                {json.dumps(overlay_basename)},
+                [[{south}, {west}], [{north}, {east}]],
+                {{opacity: 0.7}}
+            );
+            overlay.addTo(m);
+            if (m.layerscontrol) {{
+                m.layerscontrol.addOverlay(overlay, 'Curve Number Grid');
+            }}
+        }}
+        if (document.readyState === 'complete') {{ wireCNOverlay(); }}
+        else {{ window.addEventListener('load', wireCNOverlay); }}
+    }})();
+    </script>
+    """
+    m.get_root().html.add_child(folium.Element(overlay_js))
+
+    # ── Title + legend ─────────────────────────────────────────────────
+    cn_lo = float(np.nanmin(cn_grid.values))
+    cn_hi = float(np.nanmax(cn_grid.values))
+    cn_mean = float(np.nanmean(cn_grid.values))
+    title_html = f"""
+    <div style="position: fixed; top: 10px; left: 50px; width: 290px;
+                background-color: white; border:2px solid #444;
+                z-index:9999; font-size:13px; padding: 10px 12px;
+                font-family: system-ui, sans-serif;">
+      <b>Curve Number Grid</b><br>
+      Gauge ID: {gauge_id}<br>
+      Mean CN: {cn_mean:.1f} &middot; Range: {cn_lo:.0f}–{cn_hi:.0f}
     </div>
-    '''
+    """
     m.get_root().html.add_child(folium.Element(title_html))
-    
-    # Add layer control
+
+    legend_html = """
+    <div style="position: fixed; bottom: 30px; right: 20px; width: 200px;
+                background-color: white; border:2px solid #444; z-index:9999;
+                font-size:12px; padding: 10px 12px;
+                font-family: system-ui, sans-serif;">
+      <b>CN Legend</b><br>
+      <div style="height: 14px; margin: 6px 0;
+                  background: linear-gradient(to right,
+                    #313695, #74add1, #ffffbf, #f46d43, #a50026);"></div>
+      <div style="display: flex; justify-content: space-between; font-size: 11px;">
+        <span>30 (low runoff)</span><span>100 (high)</span>
+      </div>
+      <div style="margin-top: 6px; font-size: 11px; color: #555;">
+        Palette: RdYlBu_r &middot; NRCS standard
+      </div>
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(legend_html))
+
     folium.LayerControl().add_to(m)
-    
-    # Save map
     m.save(str(output_path))

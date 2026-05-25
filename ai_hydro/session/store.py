@@ -590,6 +590,18 @@ class HydroSession:
         the user would lose the whole study's session.
         """
         self.updated_at = datetime.now(timezone.utc).isoformat()
+        # Auto-audit identity on every save — log (not raise) so we don't
+        # break workflows but the warnings show up in server logs + the
+        # next get_session_health call surfaces them too.
+        try:
+            for w in self.validate_identity():
+                if w.get("severity") in ("warn", "error"):
+                    log.warning(
+                        "[session %s] %s: %s",
+                        self.session_id, w.get("code"), w.get("message"),
+                    )
+        except Exception:
+            pass
         _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         target = self._path(self.session_id, self.shard_id)
         tmp = target.with_suffix(
