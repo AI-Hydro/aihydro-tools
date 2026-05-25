@@ -88,11 +88,15 @@ delineation = [
     "odc-stac>=0.3.0",
 ]
 
-# MERIT-Basins accurate tier (upstream-delineator; Python 3.11+ recommended upstream)
-delineation-full = [
-    "aihydro-tools[delineation]",
-    "upstream-delineator @ git+https://github.com/Upstream-Tech/delineator.git",
-]
+# MERIT-Basins accurate tier — the `upstream-delineator` package is NOT on PyPI
+# (only available as a GitHub repo), so it cannot be declared as a direct
+# dependency on a PyPI-published package. Users who want the MERIT-Basins
+# accurate tier must install it manually after `pip install aihydro-tools[delineation]`:
+#
+#     pip install aihydro-tools[delineation]
+#     pip install git+https://github.com/Upstream-Tech/delineator.git
+#
+# The `delineation-full` extra is intentionally omitted from PyPI metadata.
 
 # Modelling: HBV-light (PyTorch), NeuralHydrology LSTM
 modelling = [
@@ -116,7 +120,7 @@ gee = [
 
 # Full install: all tools + MCP server (no RAG)
 all = [
-    "aihydro-tools[data,analysis,modelling,mcp,viz,gee,delineation,delineation-full]",
+    "aihydro-tools[data,analysis,modelling,mcp,viz,gee,delineation]",
 ]
 
 # Development
