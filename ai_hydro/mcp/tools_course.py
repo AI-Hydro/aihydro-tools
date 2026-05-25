@@ -156,24 +156,9 @@ def _resolve_course_path(course_id_or_path: str | None) -> tuple[str | None, str
 @mcp.tool()
 def course_get_state() -> dict:
     """
-    Read the active-course pointer and return a teaching-ready snapshot.
-
-    The HTML Preview panel updates ``~/.aihydro/active_course.json`` whenever
-    the user opens a module inside a course (a folder containing ``course.json``).
-    Use this tool at the start of any conversation that might be about the
-    course — it tells you which course, where the user is, what they've
-    completed, what's locked, and what to suggest next.
-
-    Returns
-    -------
-    dict
-        ``active`` : bool — false if no course pointer exists.
-        ``course_id``, ``title``, ``version``, ``abstract``, ``estimated_hours``
-        ``current_module`` : the module the user is reading right now (may be null)
-        ``modules`` : list of {id, title, completed, locked, missing_prerequisites}
-        ``completed_count``, ``total``, ``completion_pct``
-        ``next_recommended`` : id of the next accessible incomplete module
-        ``course_path``, ``course_root`` : disk locations for follow-up reads
+    Snapshot of the active course: current module, completion %, locked
+    modules, next_recommended id. Call at the start of any course
+    conversation. Returns {active: false} if no course is open.
     """
     pointer = _load_active_pointer()
     if not pointer or not pointer.get("courseId"):
@@ -241,28 +226,9 @@ def course_get_state() -> dict:
 @mcp.tool()
 def course_get_curriculum(course_id_or_path: str | None = None) -> dict:
     """
-    Return the full course manifest including the prerequisite graph.
-
-    Use this when you need the complete curriculum (not just progress) — e.g.
-    to plan a study schedule, explain how modules build on each other, or
-    answer "what topics does this course cover?"
-
-    Parameters
-    ----------
-    course_id_or_path : str, optional
-        Either a ``courseId`` (must match the currently active course to be
-        resolvable) or an absolute path to a ``course.json`` file. If omitted,
-        the active course is used.
-
-    Returns
-    -------
-    dict
-        ``course_id``, ``title``, ``version``, ``abstract``, ``estimated_hours``
-        ``authors`` : [{name, affiliation?, orcid?}]
-        ``modules`` : full list with ``id``, ``title``, ``path``,
-                      ``prerequisites``, ``estimatedMinutes``
-        ``prerequisite_graph`` : { moduleId: [prereqId, ...] }
-        ``module_count``
+    Full manifest + prerequisite_graph for a course. Use when you need the
+    structure (not just progress). ``course_id_or_path``: courseId of the
+    active course OR absolute path to course.json. Defaults to active course.
     """
     course_id, course_path = _resolve_course_path(course_id_or_path)
     manifest = _load_manifest(course_path)
@@ -305,36 +271,12 @@ def course_set_progress(
     reason: str | None = None,
 ) -> dict:
     """
-    Mutate the user's progress for the active course.
+    Mutate progress for the active course. Requires explicit user agreement.
 
-    Use sparingly and only after explicit user agreement — progress is the
-    student's record of their work. Good reasons to call this:
-
-      • action="complete"        — user verbally demonstrated mastery and asked
-                                   you to mark a module done.
-      • action="uncomplete"      — user wants to redo a module.
-      • action="unlock_prereqs"  — user wants to skip ahead and you've judged
-                                   they have the prerequisite knowledge (e.g.
-                                   from prior coursework). Marks ALL of the
-                                   target module's prerequisites as completed
-                                   so the lock disappears.
-      • action="set_current"     — point the bookmark at a module (does not
-                                   change completion).
-
-    Parameters
-    ----------
-    module_id : str
-        The module's ``id`` (from course_get_curriculum or course_get_state).
-    action : {"complete", "uncomplete", "unlock_prereqs", "set_current"}
-    reason : str, optional
-        Stored alongside the completion record for transparency (e.g.
-        "user demonstrated TWI computation in chat — granted credit").
-
-    Returns
-    -------
-    dict
-        Either ``{ok: True, progress: <new snapshot>}`` or an error dict.
-        The webview UI will pick up the change on its next navigation.
+    action: complete | uncomplete | unlock_prereqs | set_current
+      • unlock_prereqs marks ALL prerequisites of module_id as completed
+        (use when user has prior knowledge and wants to skip ahead).
+    reason: short string stored on the completion record for audit.
     """
     pointer = _load_active_pointer()
     if not pointer or not pointer.get("courseId"):
@@ -395,37 +337,10 @@ def course_set_progress(
 @mcp.tool()
 def course_navigate(module_id: str, reason: str | None = None) -> dict:
     """
-    Ask the HTML Preview panel to open a specific course module.
+    Push the HTML Preview panel to open a specific course module.
 
-    Writes a navigation-intent file (~/.aihydro/course_nav_intent.json) which
-    the extension host watches; if the user has the preview panel open, the
-    view switches to the requested module within ~1 second. The user can
-    always navigate elsewhere afterwards — this is a one-shot push, not a
-    lock.
-
-    USE CASES:
-      • You finished explaining a concept and the user agreed to continue —
-        navigate to the next module instead of asking them to click.
-      • The user asks "take me to the TWI module" by topic, not id.
-      • After course_set_progress(unlock_prereqs), you want to drop them
-        directly into the unlocked module.
-
-    PREREQUISITE GATE: the webview will refuse to navigate to a locked
-    module. Call course_set_progress(action='unlock_prereqs', ...) first
-    if the user has agreed to skip ahead.
-
-    Parameters
-    ----------
-    module_id : str
-        Target module's ``id`` (from course_get_state or course_get_curriculum).
-    reason : str, optional
-        Stored in the intent file for the webview's logging.
-
-    Returns
-    -------
-    dict
-        ``{ok: True, module_id, course_id}`` on success, or an error dict
-        if no active course or the module id is unknown.
+    Webview enforces the prerequisite gate — call course_set_progress
+    (action='unlock_prereqs') first if the target is locked.
     """
     pointer = _load_active_pointer()
     if not pointer or not pointer.get("courseId"):
@@ -630,47 +545,17 @@ def course_scaffold(
     overwrite: bool = False,
 ) -> dict:
     """
-    Scaffold a new course on disk: write course.json plus a styled HTML
-    skeleton for each module (with edit-mode markers and the AI-Hydro
-    design language). The agent then authors each module's body using
-    the Read/Edit/Write tools.
+    Scaffold a course on disk: course.json + one styled module.html per
+    module (AI-Hydro design + edit-mode markers). Load the
+    ``course-authoring`` skill first for the full workflow.
 
-    Pairs with the ``course-authoring`` SKILL — load that skill first to
-    see the full workflow (interview → outline → scaffold → author → test).
+    ``modules`` items: {title (required), id?, prerequisites?,
+    estimated_minutes?, abstract?, executable?}. Missing ids are
+    auto-slugified. Order = curriculum order.
 
-    Parameters
-    ----------
-    title : str
-        Course title shown in the HTML Preview header.
-    out_dir : str
-        Absolute path to the directory that will *contain* course.json.
-        Created if missing. One subfolder per module is created inside.
-    modules : list[dict]
-        Ordered list of {id?, title (required), prerequisites?,
-        estimated_minutes?, abstract?, executable?} entries. Missing
-        ids are auto-slugified from titles. Order in this list defines
-        the curriculum order.
-    course_id : str, optional
-        Stable course identifier (used as the progress-file key).
-        Auto-slugified from title if omitted.
-    abstract : str, optional
-        Short course description (shown in CourseNavigator footer).
-    estimated_hours : float, optional
-        Total estimated time. Defaults to sum(estimated_minutes)/60.
-    author_name, author_affiliation : str
-        Embedded in both course.json and each module's manifest.
-    topic, level : str
-        Default per-module values written into the manifest header.
-    overwrite : bool, default False
-        If False and any target file exists, returns an error without
-        writing anything.
-
-    Returns
-    -------
-    dict
-        ``{ok: True, course_path, module_paths: [...], course_id}``
-        on success, or an error dict with ``valid_module_ids`` /
-        ``cycle`` / ``conflicts`` to help the agent fix the input.
+    Validates: required fields, duplicate ids, unknown prereq refs,
+    prereq cycles. Returns error with ``cycle`` / ``conflicts`` /
+    ``valid_module_ids`` to help fix the input.
     """
     if not title or not str(title).strip():
         return {"error": True, "message": "title is required."}
