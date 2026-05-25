@@ -69,11 +69,8 @@ def _recent_outbound_events(limit: int = 10) -> list[dict[str, Any]]:
 @mcp.tool()
 def map_get_state(session_id: str | None = None, event_limit: int = 10) -> dict:
     """
-    Return the current map session snapshot: basemap, view, visible layers,
-    workspace root, and recent map events.
-
-    Reads ~/.aihydro/map_session.json written by the VS Code host. Use after
-    the user interacts with the map or after map.set_roi / delineate_watershed.
+    Map session snapshot from ~/.aihydro/map_session.json: basemap, view,
+    visible layers, workspace root, active ROI, recent events.
     """
     try:
         session_id = _normalize_session_id(session_id) if session_id else None
@@ -229,10 +226,8 @@ def map_update_layer(
     color_ramp: str = "viridis",
 ) -> dict:
     """
-    Update symbology or visibility of an existing map layer by id (in-place).
-    Do not write a new GeoJSON file to change styling.
-
-    For choropleth styling, set graduated_attribute (and optional method/classes/ramp).
+    Update layer style/visibility in-place (don't rewrite GeoJSON for styling).
+    For choropleth, set graduated_attribute (+ method/classes/ramp).
     """
     try:
         entry = find_catalog_layer(layer_id)

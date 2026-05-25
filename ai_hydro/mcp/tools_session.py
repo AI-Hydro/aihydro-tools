@@ -29,32 +29,10 @@ def start_session(
     workspace_dir: str | None = None,
 ) -> dict:
     """
-    Start or resume a research session.
-
-    A session is the persistent memory for a study — it stores all computed
-    results across tool calls. The session_id can be anything meaningful:
-    a slug ("piscataquis-snowmelt-2000-2020"), a USGS gauge number used as
-    a shorthand ("01031500"), a UUID, or any unique label. If omitted, one
-    is auto-generated ("hydro-<8hex>").
-
-    The session is completely independent of data source — it stores results
-    from USGS tools, CSV data, remote sensing outputs, or anything else.
-
-    Parameters
-    ----------
-    session_id : str, optional
-        Unique identifier for this research session. Auto-generated if omitted.
-    shard_id : str, optional
-        Temporary shard identifier for sub-agent parallelization.
-    workspace_dir : str, optional
-        Absolute path to the VS Code workspace folder. When provided, all MCP
-        tools save output files there automatically. Pass once — remembered for
-        all subsequent tool calls on this session.
-
-    Returns
-    -------
-    dict with session_id, site_name, site_id, computed, pending, workspace_dir,
-    python_interpreter (path to the Python interpreter used by run_python), and available_packages.
+    Start or resume a research session (persistent memory for a study).
+    session_id: any string (slug, USGS gauge id, UUID); auto-generated if
+    omitted. workspace_dir: pass once, remembered for all future calls —
+    enables auto-save of tool outputs there. shard_id: for sub-agent forks.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -87,17 +65,7 @@ def start_session(
 @mcp.tool()
 def get_session_summary(session_id: str) -> dict:
     """
-    Return what has been computed and what still needs computing.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-
-    Returns
-    -------
-    dict with session_id, site_name, site_id, computed/pending slot lists,
-    researcher notes, and has_interpretation flag.
+    Return computed/pending slots for the session + notes + interpretation.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -113,24 +81,10 @@ def get_session_summary(session_id: str) -> dict:
 @mcp.tool()
 def clear_session(session_id: str, slots: list[str] | None = None) -> dict:
     """
-    Clear cached results from a session to force re-computation.
-
-    Notes, workspace_dir, site_name, and interpretation are always preserved.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-    slots : list[str], optional
-        Specific slots to clear: watershed, streamflow, signatures, geomorphic,
-        camels, forcing, twi, cn, model.
-        Omit to clear ALL data slots.
-
-    Examples
-    --------
-    >>> clear_session('piscataquis-study')                        # reset all
-    >>> clear_session('piscataquis-study', ['streamflow'])        # re-fetch only
-    >>> clear_session('01031500', ['signatures', 'twi'])          # recompute
+    Clear cached results to force recompute. Notes/workspace_dir/site_name/
+    interpretation are always preserved. slots: subset of [watershed,
+    streamflow, signatures, geomorphic, camels, forcing, twi, cn, model]
+    (omit for all data slots).
     """
     try:
         from ai_hydro.session import HydroSession
@@ -166,14 +120,7 @@ def clear_session(session_id: str, slots: list[str] | None = None) -> dict:
 @mcp.tool()
 def add_note(session_id: str, note: str) -> dict:
     """
-    Add a researcher annotation to the session.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-    note : str
-        Annotation text (hypothesis, anomaly, decision, observation).
+    Append a researcher annotation (hypothesis, anomaly, decision) to the session.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -190,21 +137,9 @@ def add_note(session_id: str, note: str) -> dict:
 @mcp.tool()
 def archive_session(session_id: str) -> dict:
     """
-    Archive a research session to freeze its current state.
-
-    All current interpretations and notes are moved to a 'Historical' section
-    in the research context (research.md). Use this when concluding a phase
-     of study or when the current hypotheses are no longer the primary focus.
-    Archived sessions can still be read and exported.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-
-    Returns
-    -------
-    dict with session_id, archived status, and summary.
+    Freeze the session: move current interpretations + notes to a 'Historical'
+    section in research.md. Use when concluding a study phase. Archived
+    sessions stay readable and exportable.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -219,25 +154,9 @@ def archive_session(session_id: str) -> dict:
 @mcp.tool()
 def get_session_raw_state(session_id: str) -> dict:
     """
-    Return raw computed state from the session for LLM interpretation.
-
-    This is Phase 1 of the two-phase interpretation workflow (G1 compliance):
-    Python returns the raw computed data; the LLM reads it and authors the
-    scientific interpretation via write_research_interpretation.
-
-    Large time-series arrays are represented as summary statistics + head/tail
-    rows rather than the full array (context-window protection).
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-
-    Returns
-    -------
-    dict with session_id, slots (one entry per computed slot), notes,
-    pending (list of not-yet-computed slots), and a reminder to call
-    write_research_interpretation after reading.
+    Phase 1 of interpretation: return raw computed state for the LLM to read
+    (large arrays summarised). Follow with write_research_interpretation to
+    author + persist the prose synthesis.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -268,24 +187,9 @@ def get_session_raw_state(session_id: str) -> dict:
 @mcp.tool()
 def merge_session_shards(session_id: str, shard_ids: list[str] | None = None) -> dict:
     """
-    Merge sub-agent session shards into the main research session.
-
-    When work is delegated to sub-agents, they write their results to temporary
-    shard files to avoid concurrent write conflicts. Call this tool after
-    sub-agents return to consolidate their notes, citations, and computed
-    slots into the main session state. Shard files are deleted after merge.
-
-    Parameters
-    ----------
-    session_id : str
-        The main research session identifier.
-    shard_ids : list[str], optional
-        Specific shard IDs to merge. If omitted, all available shards for
-        this session are merged.
-
-    Returns
-    -------
-    dict with shards_merged, slots_updated, conflicts, and session_id.
+    Consolidate sub-agent shard files into the main session (notes, citations,
+    slots). Shard files are deleted after merge. shard_ids: subset or omit to
+    merge all available shards.
     """
     try:
         from ai_hydro.session import merge_session_shards as _merge
@@ -302,27 +206,10 @@ def write_research_interpretation(
     interpretation: str,
 ) -> dict:
     """
-    Write LLM-authored scientific interpretation into research.md and session.
-
-    This is Phase 2 of the two-phase interpretation workflow (G1 compliance):
-    The LLM authors the prose after reading get_session_raw_state; this tool
-    stores it durably so it is auto-injected into every future conversation.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-    site_name : str
-        Short descriptive slug for the session display name and export filenames.
-        Example: 'piscataquis-snowmelt-signatures-2000-2020'.
-    interpretation : str
-        3-6 sentences of scientific prose covering: what the data shows,
-        cross-slot patterns, contradictions with researcher notes, and what to
-        do next. Write flowing prose — no bullet points.
-
-    Returns
-    -------
-    dict with written_path, char_count, session_id, site_name.
+    Phase 2 of interpretation: persist LLM-authored scientific synthesis to
+    research.md + session so it's auto-injected into every future conversation.
+    interpretation: 3-6 sentences of flowing prose (no bullets). site_name:
+    short descriptive slug for display + exports.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -368,11 +255,9 @@ def write_research_interpretation(
 @mcp.tool()
 def list_available_tools() -> dict:
     """
-    List all MCP tools currently registered on this AI-Hydro server.
-
-    Includes built-in tools and any community plugin tools discovered via
-    the aihydro.tools entry point. Always prefer this over documentation
-    for an accurate picture of what is installed.
+    List all registered MCP tools (built-in + community plugins via the
+    aihydro.tools entry point). For token-efficient discovery, prefer
+    aihydro_describe_capability(domain) over this full dump.
     """
     try:
         from ai_hydro.mcp.tools_docs import _list_tools_sync
@@ -414,31 +299,10 @@ def export_session(
     format: str = "capsule",
 ) -> dict:
     """
-    Export session as a reproducible research capsule or individual file.
-
-    All output is SAVED TO DISK — never returned inline.
-
-    The capsule layout (PLATFORM_VISION §3):
-        README.md       — LLM-authored overview + scientific interpretation
-        methods.md      — provenance table for every computed analysis
-        citations.bib   — BibTeX for all data sources
-        environment.yml — exact conda/pip environment for reproduction
-        session.json    — complete provenance record
-        data/           — JSON/GeoJSON/TIF files from workspace
-        figures/        — PNG/HTML figures from workspace
-        model/          — trained model artifacts (HBV params, simulated_q.csv)
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-    capsule_path : str, optional
-        Absolute path to write the capsule folder. Defaults to
-        <workspace_dir>/capsule_<slug>_<date>/ or ~/.aihydro/exports/.
-    format : str
-        'capsule' (default) — full reproducible research package (folder).
-        'bibtex' — BibTeX references only.
-        'json'   — raw session JSON only.
+    Export the session. format='capsule' (default) writes a reproducible
+    research folder (README.md + methods.md + citations.bib + environment.yml
+    + session.json + data/figures/model/); 'bibtex' or 'json' write a single
+    file. capsule_path: override default location.
     """
     try:
         from ai_hydro.session import HydroSession

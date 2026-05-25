@@ -26,24 +26,9 @@ _PREVIEW_REQUESTS_DIR = Path.home() / ".aihydro" / "preview-requests"
 @mcp.tool()
 def show_html_preview(file_path: str, title: str | None = None) -> dict:
     """
-    Open an HTML file in the AI-Hydro HTML Preview panel.
-
-    Use this after writing an interactive learning module (see the
-    `interactive-module-builder` skill) or any standalone HTML artifact you
-    want the researcher to view inside the extension. The bundled Python
-    kernel will execute `.aihydro-cell` Python cells in the file — no
-    external browser needed.
-
-    Parameters
-    ----------
-    file_path : str
-        Absolute path to the .html file on disk.
-    title : str, optional
-        Tab title for the preview. Defaults to the file basename.
-
-    Returns
-    -------
-    dict with `success` and the request marker path.
+    Open an HTML file in the AI-Hydro HTML Preview panel (executes any
+    .aihydro-cell Python cells inline). Use after writing a module via
+    the interactive-module-builder skill. file_path must be absolute.
     """
     try:
         abs_path = str(Path(file_path).expanduser().resolve())

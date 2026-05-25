@@ -245,40 +245,13 @@ def lookup_citation(
     force_refresh: bool = False,
 ) -> dict:
     """
-    Look up a citation by free-text query (author, year, title fragment, or DOI).
+    Look up a citation (free text or DOI). Cascade: CrossRef → Semantic
+    Scholar → DataCite. Cached at ~/.aihydro/citations/ (30 day TTL).
 
-    Uses CrossRef (primary) → Semantic Scholar (fallback) → DataCite (datasets)
-    in cascade.  Results are cached in ~/.aihydro/citations/ (TTL: 30 days).
-
-    CRITICAL RULES for the agent:
-    - ALWAYS call this tool before writing any reference in a module.
-    - If the result contains not_found=True, write:
-        "No peer-reviewed citation found for this method."
-      and do NOT invent a DOI, author, journal, or year.
-    - Use the returned formatted_apa and doi EXACTLY as returned.
-
-    Parameters
-    ----------
-    query : str
-        Free-text: "Beven Kirkby 1979 topographic wetness index"
-        or a DOI: "10.1080/02626667909491834"
-    source_hint : str, optional
-        Force a specific provider: "crossref", "semantic-scholar", or "datacite".
-        Default is to cascade all three.
-    force_refresh : bool
-        Skip the cache and re-query APIs. Default False.
-
-    Returns
-    -------
-    dict with:
-      doi         : str   — verified DOI
-      formatted_apa : str — ready-to-paste APA citation
-      csl_json    : dict  — CSL-JSON record
-      source      : str   — which provider resolved it
-      confidence  : str   — "high" | "medium" | "low"
-      from_cache  : bool
-    Or:
-      not_found   : True  — no provider returned a result; NEVER invent a citation
+    ALWAYS call before writing any reference. If not_found, write
+    "No peer-reviewed citation found" — NEVER invent a DOI/author/year.
+    Use the returned formatted_apa and doi exactly as returned.
+    source_hint: crossref | semantic-scholar | datacite (default: cascade).
     """
     try:
         if not query.strip():
@@ -342,33 +315,15 @@ def lookup_citation(
 @mcp.tool()
 def get_citation_by_doi(doi: str, force_refresh: bool = False) -> dict:
     """
-    Get a citation by exact DOI.  Reads from cache if available and fresh.
-
-    Parameters
-    ----------
-    doi : str
-        DOI string, e.g. "10.1080/02626667909491834" or "https://doi.org/10.1080/..."
-    force_refresh : bool
-        Skip the cache.
-
-    Returns
-    -------
-    Same schema as lookup_citation, or not_found=True.
+    Resolve a citation by exact DOI (uses cache when fresh). Same schema
+    as lookup_citation.
     """
     return lookup_citation(doi, force_refresh=force_refresh)
 
 
 @mcp.tool()
 def list_cached_citations() -> dict:
-    """
-    List all DOIs currently cached in ~/.aihydro/citations/.
-
-    Useful for checking what the citation cache contains without API calls.
-
-    Returns
-    -------
-    dict with `cached` (list of {doi, source, confidence, cachedAt}) and `count`.
-    """
+    """List cached DOIs in ~/.aihydro/citations/. No API calls."""
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         items = []

@@ -207,32 +207,11 @@ def draft_claim_from_run(
     claim_id: str | None = None,
 ) -> dict:
     """
-    Draft a scientific claim pre-populated with evidence from a Tier 1 tool run.
-
-    Reads the run log written by post_run() (injected automatically after every
-    successful Tier 1 tool call) and returns a claim template with evidence_spans
-    already bound. The agent authors only the 'statement' field.
-
-    Parameters
-    ----------
-    session_id : str
-        Research session identifier.
-    run_id : str
-        The '_run_id' returned in the Tier 1 tool result
-        (e.g. "sigs.20260508.01031500.a3f2").
-    metric_ref : str
-        Which output metric this claim is about
-        (e.g. "runoff_ratio", "kge", "baseflow_index").
-    claim_id : str, optional
-        Suggested claim ID for the drafted claim. Auto-generated if omitted.
-
-    Returns
-    -------
-    dict:
-        status          : "drafted"
-        claim_template  : dict ready to pass to add_claim() after authoring 'statement'
-        key_outputs     : key scalar outputs from the run (context for authoring)
-        note            : instruction for the agent
+    Draft a claim pre-bound to evidence from a Tier 1 run. Reads
+    session._run_log[run_id], returns a template with evidence_spans filled
+    in. Agent authors only the 'statement' and 'confidence_rationale'.
+    run_id: from a Tier 1 tool's _run_id field. metric_ref: e.g. kge,
+    runoff_ratio, baseflow_index.
     """
     try:
         session = HydroSession.load(session_id)

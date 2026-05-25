@@ -90,20 +90,8 @@ def _read_events(
 @mcp.tool()
 def preview_get_state(module_id: str | None = None) -> dict:
     """
-    Return the current HTML Preview session snapshot for a module.
-
-    Use this to inspect:
-      - the module manifest (title, authors, license, citation)
-      - cell registry (cell IDs, languages, last-run status, last errors)
-      - the most recent error events (up to 10)
-
-    If `module_id` is omitted, returns the snapshot for whichever module is
-    currently open in the preview panel (the most recently updated one).
-
-    Returns
-    -------
-    dict with keys: module_id, manifest, cells, recent_errors, updated_at_ms.
-    Empty dict if no module is open.
+    HTML Preview session snapshot: manifest, cell registry (IDs + last-run
+    status), recent_errors. module_id defaults to most-recently-updated.
     """
     try:
         if module_id is None:
@@ -159,29 +147,9 @@ def preview_recent_events(
     limit: int = 50,
 ) -> dict:
     """
-    Return recent PreviewEvent records for a module — every cell run, output,
-    error, user comment, and interaction inside the preview iframe.
-
-    Use this to:
-      - check if a cell failed after the user ran it (kind='cell.error')
-      - watch for user comments to address (kind='user.comment')
-      - poll for new events since the last call (pass `since_seq`)
-
-    Parameters
-    ----------
-    module_id : str, optional
-        Specific module; defaults to the most-recently-updated open module.
-    since_seq : int
-        Only return events with eventSeq > since_seq. Use 0 for all recent.
-    kind_filter : str, optional
-        Filter by event kind (e.g. 'cell.error', 'user.comment',
-        'cell.run.completed').
-    limit : int
-        Max events to return (default 50, hard cap 200).
-
-    Returns
-    -------
-    dict with `events` (list) and `next_seq` (int — pass back next time).
+    Recent PreviewEvent records (cell runs/errors, user comments, iframe
+    interactions). Poll with since_seq for new-only. kind_filter examples:
+    cell.error | user.comment | cell.run.completed. limit cap 200.
     """
     try:
         if module_id is None:
@@ -232,17 +200,7 @@ def preview_list_modules() -> dict:
 @mcp.tool()
 def preview_focus_cell(module_id: str, cell_id: str) -> dict:
     """
-    Ask the HTML Preview panel to scroll to and highlight a specific cell.
-
-    Use this when you've found a failing cell via `preview_recent_events` and
-    want to point the user at it.
-
-    Parameters
-    ----------
-    module_id : str
-        Module ID (from `preview_get_state` or `preview_list_modules`).
-    cell_id : str
-        Cell ID (from the cell's `data-aihydro-cell-id` attribute).
+    Scroll the HTML Preview to a specific cell and highlight it.
     """
     try:
         ok = push_focus_cell(module_id, cell_id)
@@ -259,18 +217,8 @@ def preview_focus_cell(module_id: str, cell_id: str) -> dict:
 @mcp.tool()
 def preview_revise_section(module_id: str, section_id: str, new_html: str) -> dict:
     """
-    Propose a revised HTML section. The host shows the user a diff; on accept,
-    the section in the rendered module is replaced.
-
-    Use this after addressing a user comment (Phase 4 edit-mode flow).
-
-    Parameters
-    ----------
-    module_id : str
-    section_id : str
-        The section's `id` attribute or `data-aihydro-section-id`.
-    new_html : str
-        The proposed replacement HTML (well-formed snippet, no <html>/<body>).
+    Propose a revised HTML section (well-formed snippet, no <html>/<body>).
+    User sees a diff to accept/reject. Used in the edit-mode comment flow.
     """
     try:
         ok = push_revise_section(module_id, section_id, new_html)
@@ -290,18 +238,8 @@ def preview_address_comment(
     module_id: str, comment_id: str, new_text: str | None = None
 ) -> dict:
     """
-    Address a user comment in the HTML Preview. Optionally propose replacement
-    text for the commented selection. The host resolves the comment and shows
-    the user a diff.
-
-    Parameters
-    ----------
-    module_id : str
-    comment_id : str
-        Comment ID from the `user.comment` event payload.
-    new_text : str, optional
-        Replacement text for the commented selection. If omitted, the comment
-        is just marked as addressed without a content change.
+    Address a user comment. new_text (optional) proposes replacement text
+    for the commented selection — user sees a diff. Omit to just resolve.
     """
     try:
         ok = push_address_comment(module_id, comment_id, new_text)
@@ -318,33 +256,10 @@ def preview_address_comment(
 @mcp.tool()
 def preview_get_pending_changes(module_id: str, status: str = "open") -> dict:
     """
-    Return user comments + text edits awaiting agent attention for a module.
-
-    The Visual Edit Mode (v1.7) batches user changes (comments on prose, comments
-    on Python cells / maps / figures, prose text edits) into a single send. When
-    the user clicks "Send N changes to agent", PreviewSessionService persists
-    every change into ~/.aihydro/comments/<module_id>.json with status "open".
-
-    This tool returns that queue so the agent can process all changes in one turn,
-    calling `lookup_citation` etc as needed, then `preview_address_comment` for
-    each comment to round-trip a proposed diff back to the user.
-
-    Parameters
-    ----------
-    module_id : str
-        Module identifier (from preview_get_state or preview_list_modules).
-    status : str
-        Filter: "open" (default), "awaiting_review", "addressed", or "all".
-
-    Returns
-    -------
-    dict with keys:
-        module_id : str
-        comments  : list of comment objects
-            { id, body, anchor: {quote, context, ...}, status, createdAt,
-              proposedReplacement?, proposedDiff? }
-        count     : int (length of comments)
-    Returns {module_id, comments: [], count: 0} if the module has no comments yet.
+    Return the batched queue of pending user comments + text edits for a
+    module (from ~/.aihydro/comments/<id>.json). Process them in one turn,
+    then preview_address_comment each.
+    status: open (default) | awaiting_review | addressed | all.
     """
     try:
         safe = _safe_module_id(module_id)
