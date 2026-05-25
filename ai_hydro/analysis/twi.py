@@ -556,7 +556,11 @@ def _create_interactive_map(
         tooltip="Watershed Boundary"
     ).add_to(m)
     
-    # Add TWI overlay
+    # Add TWI overlay — IMPORTANT: write the PNG once, downsampled for web
+    # display, and reference it as a relative path from the HTML so folium
+    # does NOT base64-embed it. Embedding a multi-MB raster as base64 inflates
+    # the HTML to >50 MB which busts both the VS Code preview cap and any
+    # downstream sharing.
     with rasterio.open(raster_path) as src:
         from rasterio.warp import transform_bounds
         twi_bounds_wgs84 = transform_bounds(src.crs, 'EPSG:4326', *src.bounds)
@@ -564,19 +568,70 @@ def _create_interactive_map(
         # Create colormap image
         norm = colors.Normalize(vmin=_TWI_DISPLAY_RANGE[0], vmax=_TWI_DISPLAY_RANGE[1])
         cmap = plt.cm.get_cmap(_TWI_CMAP_NAME)
-        twi_rgb = cmap(norm(np.ma.masked_invalid(src.read(1))))
+        twi_raw = np.ma.masked_invalid(src.read(1))
 
-        # Save overlay image
-        overlay_path = os.path.join(output_dir, f"{output_prefix}_overlay.png")
+        # Downsample for the web overlay if the native raster is huge.
+        # Target: longest side ≤ 2000 px (≈4 MP), more than enough for a
+        # Leaflet basemap-overlaid raster. Preserves aspect ratio.
+        MAX_OVERLAY_DIM = 2000
+        h, w = twi_raw.shape
+        if max(h, w) > MAX_OVERLAY_DIM:
+            scale = MAX_OVERLAY_DIM / max(h, w)
+            new_h, new_w = int(h * scale), int(w * scale)
+            # Block-average pooling preserves the mask sensibly.
+            try:
+                from skimage.transform import resize
+                twi_ds = np.ma.array(
+                    resize(twi_raw.filled(np.nan), (new_h, new_w),
+                           order=1, anti_aliasing=True, preserve_range=True),
+                    mask=resize(twi_raw.mask.astype(float), (new_h, new_w),
+                                order=0, preserve_range=True) > 0.5,
+                )
+            except Exception:
+                # Fall back to simple stride if scikit-image is unavailable
+                step_y, step_x = max(1, h // new_h), max(1, w // new_w)
+                twi_ds = twi_raw[::step_y, ::step_x]
+        else:
+            twi_ds = twi_raw
+
+        twi_rgb = cmap(norm(twi_ds))
+
+        # Save overlay image next to the HTML (basename for relative ref)
+        overlay_basename = f"{output_prefix}_overlay.png"
+        overlay_path = os.path.join(output_dir, overlay_basename)
         plt.imsave(overlay_path, twi_rgb)
-    
-    folium.raster_layers.ImageOverlay(
-        image=overlay_path,
-        bounds=[[twi_bounds_wgs84[1], twi_bounds_wgs84[0]], 
-                [twi_bounds_wgs84[3], twi_bounds_wgs84[2]]],
-        opacity=0.6,
-        name='TWI Overlay'
-    ).add_to(m)
+
+    # Folium's ImageOverlay always tries to open() the path and base64-embed
+    # the bytes, which is the very thing we're trying to avoid. Bypass it
+    # with a raw Leaflet imageOverlay JS snippet that loads the sibling PNG
+    # by relative URL — the HTML and PNG live in the same directory.
+    sw_lat, sw_lon = twi_bounds_wgs84[1], twi_bounds_wgs84[0]
+    ne_lat, ne_lon = twi_bounds_wgs84[3], twi_bounds_wgs84[2]
+    overlay_js = f"""
+    <script>
+    (function() {{
+        function wireOverlay() {{
+            var maps = Object.values(window).filter(function(v) {{
+                return v && typeof v === 'object' && v.eachLayer && v._container;
+            }});
+            if (!maps.length) {{ return setTimeout(wireOverlay, 80); }}
+            var m = maps[0];
+            var overlay = L.imageOverlay(
+                {json.dumps(overlay_basename)},
+                [[{sw_lat}, {sw_lon}], [{ne_lat}, {ne_lon}]],
+                {{opacity: 0.6}}
+            );
+            overlay.addTo(m);
+            if (m.layerscontrol) {{
+                m.layerscontrol.addOverlay(overlay, 'TWI Overlay');
+            }}
+        }}
+        if (document.readyState === 'complete') {{ wireOverlay(); }}
+        else {{ window.addEventListener('load', wireOverlay); }}
+    }})();
+    </script>
+    """
+    m.get_root().html.add_child(folium.Element(overlay_js))
     
     # Add legend
     legend_html = '''
