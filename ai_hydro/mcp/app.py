@@ -63,6 +63,7 @@ TOOL_TIERS: dict[str, int] = {
     # Session plumbing, discovery, profile management; zero validation load.
     "start_session":                    3,
     "get_session_summary":              3,
+    "get_session_health":               3,
     "clear_session":                    3,
     "archive_session":                  3,
     "get_session_raw_state":            3,

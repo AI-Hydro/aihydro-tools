@@ -201,6 +201,25 @@ def _workspace_write(session_id: str, filename: str, content: Any) -> str | None
         return None
 
 
+def _canonical_workspace_path(session_id: str, prefix: str, ext: str = "json") -> str | None:
+    """
+    Return a workspace-relative filename using the session's canonical_id
+    (preferring site_id, falling back to a slugified session_id). Use this
+    in tools that write artifacts so a single study's outputs land in a
+    consistent namespace regardless of how the tool was called.
+
+    Returns None if the session can't be loaded (no fatal — caller should
+    fall back to whatever local filename it had).
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+        return session.workspace_filename(prefix, ext)
+    except Exception as exc:
+        log.debug("canonical filename resolution failed: %s", exc)
+        return None
+
+
 def _ensure_session(session_id: str, workspace_dir: str | None = None):
     """Load (or create) a HydroSession. Store workspace_dir if new."""
     from ai_hydro.session import HydroSession
