@@ -30,6 +30,36 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.7.0] — 2026-05-25
+
+### Added — Course mode
+
+Five MCP tools that make the agent course-aware and able to author courses. Targets the HTML Preview panel's course feature (folders with a `course.json` manifest grouping multiple HTML modules into a guided learning path).
+
+- **`course_get_state`** (tier 3) — read the active-course pointer at `~/.aihydro/active_course.json` plus the per-course progress file; return current module, completion %, locked modules, and a `next_recommended` module id.
+- **`course_get_curriculum`** (tier 3) — full manifest + prerequisite graph; defaults to the active course or accepts an explicit `course.json` path.
+- **`course_set_progress`** (tier 2) — `complete | uncomplete | unlock_prereqs | set_current`. Records `agentGranted: true` + caller-supplied `reason` for transparency.
+- **`course_navigate`** (tier 2) — write `~/.aihydro/course_nav_intent.json`; the HTML Preview panel watches it and switches to the requested module (prerequisite gate enforced webview-side).
+- **`course_scaffold`** (tier 2) — write `course.json` + AI-Hydro-styled HTML skeletons for each module. Auto-slugifies ids from titles, validates the prerequisite graph for cycles via iterative 3-colour DFS.
+
+### Companion artifact
+
+- `course-authoring` skill added to the AI-Hydro Skills marketplace (separate repo: `github.com/AI-Hydro/Skills`) — pairs with `course_scaffold` per the established skill+tool pattern.
+
+### System prompt
+
+- New `COURSE MODE` section instructing the agent to call `course_get_state` at the start of any course-related conversation and to require explicit user agreement before mutating progress.
+
+### Disk contracts (shared with the VS Code extension)
+
+| File | Reader | Writer |
+|---|---|---|
+| `~/.aihydro/active_course.json` | tools | webview |
+| `~/.aihydro/course_progress/<id>.json` | tools, webview | tools, webview |
+| `~/.aihydro/course_nav_intent.json` | extension host | tools |
+
+---
+
 ## [2.0.0] — 2026-04-24
 
 ### Removed (breaking changes)
