@@ -62,6 +62,66 @@ for _name, _fn in _discover_tools():
     mcp.tool(name=_name)(_fn)
 
 
+# ── Wave 1.5: tag registered tools with tier/domain metadata ──────────────────
+# After all tools are registered, attach `meta={"tier": N, "domain": "X"}` to
+# each tool's MCP-wire payload. MCP-compatible clients (Cline patched, others
+# falling back gracefully) can use this to filter the tool list shown to the
+# model, keeping system-prompt context tight.
+#
+# tier:   from app.TOOL_TIERS (1 = scientific output, 2 = workflow, 3 = infra)
+# domain: from tools_discovery._DOMAIN_PREFIXES (longest-prefix match)
+#
+# Tools NOT in TOOL_TIERS default to tier 2. Tools NOT matching any domain
+# prefix get domain "general".
+
+def _tag_tools_with_tier_meta() -> None:
+    """Patch tier/domain into the meta dict of every registered tool."""
+    from ai_hydro.mcp.app import TOOL_TIERS
+    from ai_hydro.mcp.tools_discovery import _DOMAIN_PREFIXES
+
+    # Reverse-lookup: longest matching prefix wins (more specific first)
+    prefix_to_domain: list[tuple[str, str]] = []
+    for domain, prefixes in _DOMAIN_PREFIXES.items():
+        for p in prefixes:
+            prefix_to_domain.append((p, domain))
+    prefix_to_domain.sort(key=lambda x: -len(x[0]))
+
+    def _domain_for(name: str) -> str:
+        for prefix, domain in prefix_to_domain:
+            if name.startswith(prefix):
+                return domain
+        return "general"
+
+    # FastMCP stores tools in mcp._local_provider._components keyed by tool.key
+    components = getattr(mcp._local_provider, "_components", {})
+    tagged = 0
+    for key, comp in components.items():
+        if not hasattr(comp, "name") or not hasattr(comp, "meta"):
+            continue
+        name = comp.name
+        tier = TOOL_TIERS.get(name, 2)  # default tier 2 if unregistered
+        domain = _domain_for(name)
+        # Merge into existing meta dict rather than replacing
+        existing = dict(comp.meta) if comp.meta else {}
+        existing.setdefault("tier", tier)
+        existing.setdefault("domain", domain)
+        comp.meta = existing
+        tagged += 1
+    import logging
+    logging.getLogger("ai_hydro.mcp").info(
+        "Wave 1.5: tagged %d tools with tier+domain metadata", tagged
+    )
+
+
+try:
+    _tag_tools_with_tier_meta()
+except Exception as _e:
+    import logging
+    logging.getLogger("ai_hydro.mcp").warning(
+        "Wave 1.5 tier tagging skipped: %s", _e
+    )
+
+
 def main() -> None:
     """Entry point for the ``aihydro-mcp`` console script."""
     import sys
