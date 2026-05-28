@@ -61,15 +61,15 @@ def ensure_level2_index(level2_dir: Path, *, clone_delineator: bool = True) -> b
     return _copy_level2_from_delineator(level2_dir)
 
 
-def download_river_shapefile(pfaf: str, dest_dir: Path) -> bool:
+def _download_vector_shapefile(pfaf: str, dest_dir: Path, *, prefix_kind: str) -> bool:
     """
-    Download ``riv_pfaf_##`` shapefile components into ``dest_dir``.
+    Download ``riv_pfaf_##`` or ``cat_pfaf_##`` components into ``dest_dir``.
 
     Returns True when ``.shp`` exists after download.
     """
     pfaf = str(int(pfaf)).zfill(2)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    prefix = f"riv_pfaf_{pfaf}_MERIT_Hydro_v07_Basins_v01"
+    prefix = f"{prefix_kind}_pfaf_{pfaf}_MERIT_Hydro_v07_Basins_v01"
     shp = dest_dir / f"{prefix}.shp"
     if shp.exists():
         return True
@@ -77,15 +77,16 @@ def download_river_shapefile(pfaf: str, dest_dir: Path) -> bool:
     _ensure_gdown()
     import gdown
 
-    log.info("Downloading MERIT rivers for Pfaf %s from Google Drive…", pfaf)
+    label = "rivers" if prefix_kind == "riv" else "catchments"
+    log.info("Downloading MERIT %s for Pfaf %s from Google Drive…", label, pfaf)
     files = gdown.download_folder(_RIVERS_GDRIVE_FOLDER, skip_download=True, quiet=True)
     targets = {
         getattr(f, "path", ""): getattr(f, "id", "")
         for f in files
-        if f"riv_pfaf_{pfaf}_" in getattr(f, "path", "")
+        if f"{prefix_kind}_pfaf_{pfaf}_" in getattr(f, "path", "")
     }
     if not targets:
-        log.warning("No Google Drive files found for riv_pfaf_%s", pfaf)
+        log.warning("No Google Drive files found for %s_pfaf_%s", prefix_kind, pfaf)
         return False
 
     for path, fid in targets.items():
@@ -96,3 +97,13 @@ def download_river_shapefile(pfaf: str, dest_dir: Path) -> bool:
         gdown.download(id=fid, output=str(out), quiet=False)
 
     return shp.exists()
+
+
+def download_river_shapefile(pfaf: str, dest_dir: Path) -> bool:
+    """Download ``riv_pfaf_##`` shapefile components into ``dest_dir``."""
+    return _download_vector_shapefile(pfaf, dest_dir, prefix_kind="riv")
+
+
+def download_catchment_shapefile(pfaf: str, dest_dir: Path) -> bool:
+    """Download ``cat_pfaf_##`` shapefile components into ``dest_dir``."""
+    return _download_vector_shapefile(pfaf, dest_dir, prefix_kind="cat")

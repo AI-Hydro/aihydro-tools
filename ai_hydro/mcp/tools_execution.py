@@ -30,10 +30,17 @@ def run_python(
     allow_network: bool = False,
 ) -> dict:
     """
-    Execute a Python script in workspace_dir as a subprocess. Sandboxed:
-    network disabled by default (allow_network=True to opt in), pip install
-    rejected, hard timeout (default 120s). Use train_hydro_model for
-    long-running work. Returns stdout, stderr, returncode, duration.
+    Execute a Python snippet in a sandboxed subprocess inside workspace_dir.
+
+    PREFER the bash tool for: shell commands, CLI invocations, file ops,
+    package checks, or any task where a subprocess is cleaner. Use
+    run_python when you need: (a) network-disabled isolation, (b) to run
+    multi-line Python logic that imports ai_hydro internals directly, or
+    (c) a hard timeout guard on untrusted/long-running compute.
+
+    Constraints: network off by default (allow_network=True to opt in),
+    pip install rejected, hard timeout 120 s (raise to max ~600 s).
+    Returns stdout, stderr, returncode, duration_seconds.
     """
     try:
         # Validate workspace path

@@ -36,7 +36,7 @@ basin_template:
   flowdir:
     relative_dir: raster/flowdir_basins
     filename_glob: "*pfaf_{pfaf}*.tif"
-    download_url: null
+    download_url: "https://mghydro.com/watersheds/rasters/flow_dir_basins/flowdir{pfaf}.tif"
   accumulation:
     relative_dir: raster/accum_basins
     filename_glob: "*pfaf_{pfaf}*.tif"

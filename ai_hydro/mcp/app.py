@@ -11,9 +11,31 @@ Tool tiers (see DESIGN_PRINCIPLES.md §Tool tiering):
 """
 from __future__ import annotations
 
+import contextvars
 from fastmcp import FastMCP, Context
 
-__all__ = ["mcp", "Context", "TOOL_TIERS", "get_tool_tiers", "get_tool_tier"]
+__all__ = [
+    "mcp", "Context", "TOOL_TIERS", "get_tool_tiers", "get_tool_tier",
+    "ACTIVE_CHAT_ID", "ACTIVE_WORKSPACE",
+]
+
+# ---------------------------------------------------------------------------
+# Per-request identity context (Wave 3 Axis 3 + Design A)
+# ---------------------------------------------------------------------------
+# The TypeScript extension injects ``_chat_id`` and ``_workspace`` into every
+# ai-hydro MCP tool call.  FastMCP rejects unknown parameters via Pydantic
+# validation, so we intercept the raw arguments dict inside ``_call_tool_mcp``
+# BEFORE dispatch, pop both fields, and store them in ContextVars.
+#
+# _resolve_session() in helpers.py reads ACTIVE_CHAT_ID automatically.
+# ACTIVE_WORKSPACE carries the VS Code workspaceFolders[0] path so that
+# auto-created sessions can set workspace_dir without the tool declaring it.
+ACTIVE_CHAT_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ACTIVE_CHAT_ID", default=None
+)
+ACTIVE_WORKSPACE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ACTIVE_WORKSPACE", default=None
+)
 
 # ---------------------------------------------------------------------------
 # Tier registry — single source of truth for all tool tier assignments.
@@ -26,8 +48,11 @@ TOOL_TIERS: dict[str, int] = {
     "delineate_watershed":              1,
     "delineate_watershed_from_point":   1,
     "merit_ensure_basin":               2,
+    "merit_ensure_routing_region":      2,
+    "merit_ensure_basins_region":       2,
     "merit_ensure_region":              2,
     "merit_add_map_layers":             2,
+    "delineation_doctor":               3,
     "extract_hydrological_signatures":  1,
     "extract_geomorphic_parameters":    1,
     "compute_twi":                      1,
@@ -44,8 +69,11 @@ TOOL_TIERS: dict[str, int] = {
     "check_unit_consistency":           1,
     # ── Tier 2: Workflow / data ────────────────────────────────────────────
     # Data retrieval, LLM-authored prose, orchestration; no auto-enforcement.
-    "fetch_streamflow_data":            2,
-    "fetch_forcing_data":               2,
+    # fetch_streamflow_data / fetch_forcing_data demoted to tier 3 (Wave 2.5
+    # Axis 4): agents should now use data_fetch directly; legacy tools are
+    # retained as backward-compat shims only and no longer surface by default.
+    "fetch_streamflow_data":            3,
+    "fetch_forcing_data":               3,
     "fetch_camels_us":                  2,
     "run_python":                       2,
     "gee.preview_layer":                2,
@@ -57,8 +85,22 @@ TOOL_TIERS: dict[str, int] = {
     "search_experiments":               2,
     "index_literature":                 2,
     "search_literature":                2,
+    "lookup_citation":                  2,
+    "get_citation_by_doi":              2,
+    "data_fetch":                       2,
+    "data_batch_fetch":                 2,
+    "data_list_products":               2,
+    "data_describe_product":            2,
+    "data_validate_request":            2,
     "add_journal_entry":                2,
     "log_researcher_observation":       2,
+    "map_set_roi":                      2,
+    "map_set_working_geometry":         2,
+    "map_save_roi":                     2,
+    "map_update_layer":                 2,
+    "map_apply_symbology":              2,
+    "preview_revise_section":           2,
+    "preview_address_comment":          2,
     # ── Tier 3: Infrastructure ─────────────────────────────────────────────
     # Session plumbing, discovery, profile management; zero validation load.
     "start_session":                    3,
@@ -82,10 +124,23 @@ TOOL_TIERS: dict[str, int] = {
     "list_relevant_clis":               3,
     "get_library_reference":            3,
     "show_on_map":                      3,
+    "map_get_state":                    3,
+    "map_show":                         3,
+    "map_fit_extent":                   3,
+    "map_list_layers":                  3,
+    "map_remove_layer":                 3,
+    "map_set_basemap":                  3,
+    "map_fit_layer":                    3,
     "list_skills":                      3,
     "load_skill":                       3,
     "save_skill":                       3,
     "show_html_preview":                3,
+    "preview_get_state":                3,
+    "preview_recent_events":            3,
+    "preview_list_modules":             3,
+    "preview_focus_cell":               3,
+    "preview_get_pending_changes":      3,
+    "list_cached_citations":            3,
     "list_available_workflows":         3,
     "get_workflow_manifest":            3,
     "gee.status":                       3,
@@ -102,6 +157,16 @@ TOOL_TIERS: dict[str, int] = {
     "course_scaffold":                  2,
     # ── Discovery (v1.8.0) ───────────────────────────────────────────────
     "aihydro_describe_capability":      3,
+    # ── Dataverse infra (Wave 2.5 / v1.8.0) ──────────────────────────────
+    # data_get_cache_status, data_invalidate_cache, data_doctor, data_help
+    # are utility/discovery tools — no scientific validation load.
+    "data_get_cache_status":            3,
+    "data_invalidate_cache":            3,
+    "data_doctor":                      3,
+    "data_help":                        3,
+    # ── Chat-native session management (Wave 3) ───────────────────────────
+    "aihydro_rebind_chat":              3,
+    "aihydro_chat_status":              3,
 }
 
 
@@ -127,111 +192,121 @@ mcp = FastMCP(
     name="AI-Hydro",
     version=_pkg_version(),
     instructions=(
-        "You are AI-Hydro \u2014 a scientific research assistant for hydrology and earth "
-        "sciences. Your scope is the full breadth of hydrological research: streamflow, "
-        "groundwater, snow, remote sensing, climate, water quality, ungauged basins, "
-        "global datasets, and anything the researcher brings to you. You are a research "
-        "collaborator, not a gauge processor.\n\n"
+        "You are AI-Hydro, a scientific research assistant for hydrology and "
+        "earth sciences. Your scope includes surface water, groundwater, snow, "
+        "remote sensing, climate, water quality, ungauged basins, global data, "
+        "modeling, reproducibility, and the researcher\u2019s custom workflows.\n\n"
 
-        "\u2500\u2500 SKILL DISCOVERY \u2014 MANDATORY PRE-FLIGHT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "Before creating any plan or producing any artifact, you MUST run the\n"
-        "skill discovery protocol when the request involves any of:\n"
-        "  \u2022 Creating an artifact (module, report, notebook, dashboard, script)\n"
-        "  \u2022 A named domain workflow (baseflow, TWI, flood frequency, signatures\u2026)\n"
-        "  \u2022 Following a methodology (model calibration, uncertainty analysis\u2026)\n"
-        "  \u2022 Building educational or learning content of any kind\n"
-        "  \u2022 Any multi-step analysis of 3 or more distinct steps\n\n"
-        "PROTOCOL (execute in order, do not skip steps):\n"
-        "  Step 1. Call list_skills() \u2014 retrieve the full skill catalog.\n"
-        "  Step 2. Scan every skill name + description for ANY match to the task.\n"
-        "  Step 3a. MATCH FOUND \u2192 call load_skill(name) and read it completely.\n"
-        "           The skill's steps, format contracts, and checklists are law.\n"
-        "           Your plan MUST follow the skill. Do not freelance around it.\n"
-        "  Step 3b. NO MATCH \u2192 proceed with your own plan, then call save_skill()\n"
-        "           after completion to capture the workflow for future use.\n\n"
-        "Rationale: skills encode production-grade contracts (exact cell formats,\n"
-        "branding rules, citation requirements, checklist gates) that cannot be\n"
-        "inferred from general knowledge. Skipping discovery produces incorrect\n"
-        "artifacts that fail the contract and waste researcher time.\n\n"
+        "Use tools for deterministic computation and state management; use your "
+        "judgment for study design, interpretation, caveats, and next-step "
+        "reasoning. Call tools only when they provide deterministic value — "
+        "never call a tool to look up something you already know or to fulfil "
+        "a procedural checklist. Do not guess tool or library names; if you "
+        "need to verify a name use list_available_tools() once.\n\n"
 
-        "\u2500\u2500 INTELLIGENCE PRINCIPLE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "Tools do deterministic computation. You do scientific judgment. When a tool\n"
-        "does not exist for a data source or analysis, reason about the problem and\n"
-        "use the Python-execution tool to fill the gap. Your knowledge defines what\n"
-        "can be studied \u2014 not the tool catalog.\n\n"
+        "IMPORTANT — capability discovery is for genuine uncertainty only. "
+        "Do NOT call aihydro_describe_capability() before standard hydrological "
+        "operations (watershed delineation, TWI computation, geomorphic analysis, "
+        "signature extraction, hydrological modelling, session management, or data "
+        "retrieval). These are well-known operations — call the appropriate tool "
+        "directly without any preceding lookup. Use aihydro_describe_capability() "
+        "only when the user requests an unfamiliar operation and you genuinely do "
+        "not know which tool name to use — one call, once, then proceed.\n\n"
 
-        "\u2500\u2500 LAYERED CAPABILITIES \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "You operate across six capability layers:\n\n"
-        " 1. TOOLS \u2014 typed computation and state management. Enumerate at start with\n"
-        "    list_available_tools(); never guess names from memory.\n"
-        " 2. SKILLS \u2014 workflow playbooks (see SKILL DISCOVERY above). Always check\n"
-        "    before planning. Load and follow; save novel workflows afterward.\n"
-        " 3. LIBRARY REFERENCES \u2014 API idioms, unit conventions, and gotchas for\n"
-        "    external Python libraries. Consult the relevant card before writing\n"
-        "    Python against any library.\n"
-        " 4. PYTHON EXECUTION \u2014 when no tool or library card covers the need,\n"
-        "    write and run a Python script in the researcher's workspace.\n"
-        " 5. CLI \u2014 when a mature external CLI exists for the domain software,\n"
-        "    drive it through the shell rather than reimplementing it as a tool.\n"
-        " 6. SESSION & PROJECT MEMORY \u2014 per-study and cross-study durable state.\n\n"
+        "Check the skill catalog only when the user explicitly asks for a "
+        "reusable workflow, a named report format, or says 'use the skill for'. "
+        "Do NOT check skills before every multi-step analysis — that adds "
+        "unnecessary latency. If a completed workflow is genuinely reusable and "
+        "the user asks you to save it, use save_skill().\n\n"
 
-        "\u2500\u2500 TOOL FAILURE POLICY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "If a tool returns error: true, never tell the researcher a step is\n"
-        "impossible. Inspect the error, then:\n"
-        "  - DEPENDENCY / NETWORK errors  \u2192 fall back to Python execution.\n"
-        "  - MISSING PREREQUISITES       \u2192 run the prerequisite tool first.\n"
-        "  - Other errors                \u2192 read the message, adjust, retry or\n"
-        "                                   reimplement via Python execution.\n\n"
+        "When a tool reports an error, inspect the message and recover: run a "
+        "missing prerequisite, adjust inputs, retry, use a general execution "
+        "path, or explain the remaining blocker with evidence. Do not report a "
+        "scientific result as complete when validation, data access, or provenance "
+        "failed.\n\n"
 
-        "\u2500\u2500 RESEARCH CONTEXT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "A research context document is auto-injected each turn. It contains\n"
-        "a computed skeleton (slots, pending tasks) and your authored scientific\n"
-        "interpretation. Whenever you build a multi-step plan of two or more\n"
-        "tool calls, the final step must be updating your interpretation.\n"
-        "Read raw session state, then author the prose yourself \u2014 Python does\n"
-        "not interpret, you do.\n\n"
+        "Preserve research context. Check session summaries before repeating "
+        "expensive work. Store outputs through tool-supported workspace paths and "
+        "keep provenance, parameters, and quality flags visible. After a "
+        "computation completes, summarise results directly in your response — "
+        "do not call additional tools solely to record an interpretation.\n\n"
 
-        "\u2500\u2500 LONG-RUNNING WORK \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "Work expected to exceed a few minutes (model training, calibration,\n"
-        "batch extractions) runs asynchronously: a kickoff call returns a job_id\n"
-        "and an artifact path; a status call polls. Parallelisable batch work\n"
-        "should be delegated to a sub-agent if supported by the environment.\n"
-        "Sub-agents MUST call start_session(..., shard_id=...) to avoid write\n"
-        "conflicts, and the orchestrator MUST call merge_session_shards on return.\n"
-        "Consolidate sub-agent results via a SubAgentDigest return contract.\n\n"
+        "For long-running work, prefer asynchronous jobs with a job identifier "
+        "and artifact path. For parallel shards, use separate session shards "
+        "and merge when complete.\n\n"
 
-        "\u2500\u2500 TRANSPARENCY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "For model training: always report per-restart metric progression and\n"
-        "the log path so the researcher can tail progress. For fallback soils,\n"
-        "auto-detected outlets, synthetic weather, or any scientific-quality\n"
-        "compromise: flag it explicitly in your response, never silently.\n\n"
+        "Be transparent about scientific compromises: fallback data, inferred "
+        "outlets, synthetic inputs, failed validation, uncertain geometry, or "
+        "model-quality limits must be called out explicitly. Tailor depth, "
+        "terminology, and focus to the researcher\u2019s profile.\n\n"
 
-        "\u2500\u2500 RESEARCHER PERSONA \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "Recall and persist researcher profile data via the profile tools.\n"
-        "Tailor depth, terminology, and focus to their expertise and domain.\n\n"
+        "If course mode is active, act as a teaching assistant: inspect course "
+        "state, respect prerequisites, ask before marking progress, and navigate "
+        "only after agreement. If no course is active, proceed as a research "
+        "collaborator.\n\n"
 
-        "\u2500\u2500 COURSE MODE \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "The HTML Preview panel can host a multi-module course (a folder with\n"
-        "course.json). When the user has a course open, they are a STUDENT and\n"
-        "you are a TEACHING ASSISTANT, not just a research collaborator. Call\n"
-        "course_get_state at the start of any course-related conversation to\n"
-        "see which course, which module they are on, what is completed, and\n"
-        "which module to recommend next. Use course_get_curriculum for the\n"
-        "full prerequisite graph. Use course_set_progress to mark modules\n"
-        "complete or unlock prerequisites \u2014 ONLY with the user's explicit\n"
-        "agreement, and pass a `reason` string for transparency. Use\n"
-        "course_navigate to push the student to a module after agreement\n"
-        "(replaces asking them to click Next). To author a new course, load\n"
-        "the `course-authoring` skill and use the course_scaffold tool.\n"
-        "If no course is active, course_get_state returns {active: false}\n"
-        "and you proceed as a normal research collaborator.\n\n"
+        "For data retrieval, prefer the variable-centric dataverse interface "
+        "that auto-routes by region, falls back across sources on failure, and "
+        "carries citation and license metadata on every result. Before an "
+        "expensive fetch (large bbox, long window, remote compute backend), "
+        "run a pre-flight validation to catch coverage gaps and estimate "
+        "payload size. Use the bundled onboarding help once per session rather "
+        "than guessing the API; inspect individual product specs on demand "
+        "rather than listing every catalog entry. Older single-source fetch "
+        "wrappers are retained for backward compatibility but routed through "
+        "the new pipeline internally — their responses carry a deprecation "
+        "note. Discover the full data-fetch tool surface via the capability "
+        "discovery tool with the corresponding domain filter.\n\n"
 
-        "\u2500\u2500 DISCOVERY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        "The tool-list, skill-list, library-reference-list, and CLI-list calls\n"
-        "are the ground truth for what is installed, including community plugins.\n"
-        "Never guess capability from memory.\n"
-        "Files save automatically to workspace_dir \u2014 never hand-write tool data.\n"
-        "Results are cached in the session \u2014 check the session summary before\n"
-        "re-running any tool.\n"
+        "Session identity is automatic. Every analysis tool resolves the active "
+        "study from the chat context — do NOT prompt the user to supply a "
+        "session_id or ask them to name the study. The delineation tools "
+        "(delineate_watershed, delineate_watershed_from_point) auto-create a "
+        "study and bind it to the current chat on first call; all subsequent "
+        "tools in the same chat operate on that study automatically. Pass "
+        "session_id explicitly only when you need to switch to a named study. "
+        "Use aihydro_chat_status() to inspect the current binding and "
+        "aihydro_rebind_chat(study_id) to recover when the wrong study was "
+        "selected. Never use 'map' as a session_id — it is a legacy placeholder "
+        "that may collide with other chats."
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 Axis 3 — intercept raw MCP tool-call arguments to extract _chat_id
+# ---------------------------------------------------------------------------
+# FastMCP validates tool arguments through a Pydantic model that rejects any
+# key not declared as a function parameter.  We need to strip ``_chat_id``
+# BEFORE that validation runs.  The lowest-level entry point is
+# ``FastMCP._call_tool_mcp(key, arguments)``; we wrap it here so no tool
+# function ever sees ``_chat_id`` while still making it available via the
+# ACTIVE_CHAT_ID ContextVar throughout the request lifetime.
+
+_original_call_tool_mcp = mcp._call_tool_mcp  # type: ignore[attr-defined]
+
+
+async def _patched_call_tool_mcp(key: str, arguments: dict) -> object:  # type: ignore[override]
+    """Strip ``_chat_id`` + ``_workspace`` from ``arguments`` and store in ContextVars."""
+    chat_id: str | None = None
+    workspace: str | None = None
+    if arguments and ("_chat_id" in arguments or "_workspace" in arguments):
+        # Work on a copy so we don't mutate the caller's dict.
+        arguments = dict(arguments)
+        chat_id = arguments.pop("_chat_id", None)
+        workspace = arguments.pop("_workspace", None)
+        if not isinstance(chat_id, str):
+            chat_id = None
+        if not isinstance(workspace, str):
+            workspace = None
+
+    token_chat = ACTIVE_CHAT_ID.set(chat_id)
+    token_ws = ACTIVE_WORKSPACE.set(workspace)
+    try:
+        return await _original_call_tool_mcp(key, arguments)
+    finally:
+        ACTIVE_CHAT_ID.reset(token_chat)
+        ACTIVE_WORKSPACE.reset(token_ws)
+
+
+mcp._call_tool_mcp = _patched_call_tool_mcp  # type: ignore[method-assign]

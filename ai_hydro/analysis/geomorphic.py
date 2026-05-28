@@ -376,9 +376,24 @@ def _compute_relief_metrics(
     dict with keys: H_m, Rh, Rp, mean_slope_pct, outlet_elev
     """
     try:
-        # Get DEM
-        dem = py3dep.get_dem(geom, resolution=resolution)
-        dem_proj = dem.rio.reproject("EPSG:5070")
+        # Get DEM — auto-routes to 3DEP inside CONUS, GLO-30 globally
+        from ai_hydro.analysis._dem import fetch_dem, _geom_in_conus
+        dem = fetch_dem(geom, resolution=resolution, prefer="auto")
+        if _geom_in_conus(geom):
+            dem_proj = dem.rio.reproject("EPSG:5070")
+        else:
+            # Project to UTM zone derived from the DEM centroid so the
+            # outlet-pixel index math below uses metric coordinates.
+            try:
+                lat0 = float(dem.y.mean()) if hasattr(dem, "y") else outlet_lat
+                lon0 = float(dem.x.mean()) if hasattr(dem, "x") else outlet_lon
+                zone = int((lon0 + 180) // 6) + 1
+                epsg = 32600 + zone if lat0 >= 0 else 32700 + zone
+                dem_proj = dem.rio.reproject(f"EPSG:{epsg}")
+            except Exception:
+                # Last resort — keep native CRS; downstream math may be off
+                # but the function still returns rather than crashing.
+                dem_proj = dem
         
         # Get outlet elevation
         outlet_pt = gpd.GeoSeries(

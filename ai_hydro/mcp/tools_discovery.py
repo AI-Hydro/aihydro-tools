@@ -27,8 +27,8 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "session":     ("start_session", "get_session", "clear_session", "archive_session",
                     "merge_session", "add_note", "export_session"),
     "project":     ("start_project", "get_project", "add_session_to_project"),
-    "watershed":   ("delineate_watershed", "merit_", "extract_geomorphic", "compute_twi",
-                    "create_cn_grid"),
+    "watershed":   ("delineate_watershed", "delineation_", "merit_", "extract_geomorphic",
+                    "compute_twi", "create_cn_grid"),
     "streamflow":  ("fetch_streamflow", "separate_baseflow", "extract_hydrological"),
     "forcing":     ("fetch_forcing",),
     "camels":      ("fetch_camels",),
@@ -48,6 +48,12 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "execution":   ("run_python", "list_relevant_clis", "get_library_reference"),
     "persona":     ("get_researcher", "update_researcher", "log_researcher"),
     "ledger":      ("add_journal", "search_experiments"),
+    # Wave 2.5 — aihydro-data tools surfaced via the `aihydro.tools` entry-point group.
+    # Longest-prefix match means these win over any generic prefixes.
+    "data_fetch":  ("data_fetch", "data_batch", "data_list_products",
+                    "data_describe_product", "data_validate_request",
+                    "data_get_cache_status", "data_invalidate_cache",
+                    "data_doctor", "data_help"),
 }
 
 

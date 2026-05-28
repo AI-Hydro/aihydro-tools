@@ -682,14 +682,14 @@ class HydroSession:
 
     def is_stale(self, field: str) -> bool:
         """
-        Whether a field is older than its staleness threshold.
+        Whether a field should be treated as stale/historical.
 
-        Note: ``archived`` is NOT the same as ``stale``. Archived sessions
-        carry intentionally historical data; ``is_stale`` continues to use
-        the per-field timestamp so an archived session can still surface
-        a recent interpretation in the Historical section without being
-        treated as "older than X days".
+        Archived sessions are entirely historical, so every field is treated
+        as stale even if its timestamp is recent.
         """
+        if self.archived:
+            return True
+
         # 1. Computed slots — use the slot's own computed_at
         if field in self._slots:
             result = self.get(field)

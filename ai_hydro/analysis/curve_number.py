@@ -1093,10 +1093,12 @@ def _create_interactive_map(
     2. Actual overlay. The previous version computed `bounds` but never
        added an ImageOverlay layer — so the map had only the watershed
        outline and a popup, no raster. We now (a) colormap the array to
-       an RGBA PNG, (b) downsample to <=2000 px on the longest side, and
-       (c) reference the PNG by relative basename via a raw Leaflet
-       imageOverlay snippet, matching the TWI fix. This keeps the HTML
-       under 100 KB instead of base64-inlining a multi-MB PNG.
+       an RGBA PNG, (b) downsample to ≤2000 px on the longest side, and
+       (c) embed the PNG as a base64 data URI inside a raw Leaflet
+       imageOverlay script block.  Using a data URI (rather than a
+       relative file path) is necessary because the VS Code HTML preview
+       loads HTML via `srcdoc`, which gives the iframe no base URL —
+       relative paths simply 404.
     """
     import json
     import numpy as np
@@ -1183,31 +1185,45 @@ def _create_interactive_map(
     cmap = plt.get_cmap('RdYlBu_r')
     rgba = cmap(norm(arr))
 
+    # Encode the colourised overlay as a base64 data URI.
+    # The VS Code HTML preview renders HTML via `srcdoc` (inline string
+    # injection into an iframe), which gives the iframe NO base URL —
+    # relative paths like "watershed_cn_overlay.png" simply 404. A data
+    # URI is self-contained and works in both srcdoc iframes and regular
+    # browser file:// loads. After ≤2000px downsampling the PNG is
+    # typically 300 KB–2 MB, well within webview limits.
+    import io as _io, base64 as _b64
+    _buf = _io.BytesIO()
+    plt.imsave(_buf, rgba, format='png')
+    _buf.seek(0)
+    overlay_data_uri = (
+        "data:image/png;base64,"
+        + _b64.b64encode(_buf.read()).decode('ascii')
+    )
+    # Also write the PNG as a sibling artefact for standalone browser use.
     overlay_basename = f"{output_path.stem}_cn_overlay.png"
     overlay_path = output_path.parent / overlay_basename
     plt.imsave(str(overlay_path), rgba)
 
-    # ── Wire the overlay into the map via raw Leaflet ──────────────────
-    # See TWI map for rationale — folium.ImageOverlay would base64-embed
-    # the PNG into the HTML, blowing the file past the preview cap.
+    # ── Wire the overlay into the Leaflet map via raw <script> ─────────
+    # Use `m._id` to get the exact Leaflet variable name folium emits
+    # (e.g. `map_a3f9b2…`) rather than scanning Object.values(window),
+    # which can miss the map variable in strict VS Code webview sandboxes.
+    map_var = f"map_{m._id}"
     overlay_js = f"""
     <script>
     (function() {{
+        var _dataUri = {json.dumps(overlay_data_uri)};
         function wireCNOverlay() {{
-            var maps = Object.values(window).filter(function(v) {{
-                return v && typeof v === 'object' && v.eachLayer && v._container;
-            }});
-            if (!maps.length) {{ return setTimeout(wireCNOverlay, 80); }}
-            var m = maps[0];
-            var overlay = L.imageOverlay(
-                {json.dumps(overlay_basename)},
-                [[{south}, {west}], [{north}, {east}]],
-                {{opacity: 0.7}}
-            );
-            overlay.addTo(m);
-            if (m.layerscontrol) {{
-                m.layerscontrol.addOverlay(overlay, 'Curve Number Grid');
+            if (typeof {map_var} === 'undefined') {{
+                return setTimeout(wireCNOverlay, 80);
             }}
+            var overlay = L.imageOverlay(
+                _dataUri,
+                [[{south}, {west}], [{north}, {east}]],
+                {{opacity: 0.7, interactive: false}}
+            );
+            overlay.addTo({map_var});
         }}
         if (document.readyState === 'complete') {{ wireCNOverlay(); }}
         else {{ window.addEventListener('load', wireCNOverlay); }}

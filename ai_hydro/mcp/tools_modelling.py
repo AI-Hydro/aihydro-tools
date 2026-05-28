@@ -18,6 +18,7 @@ from pathlib import Path
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
     _normalize_session_id,
+    _resolve_session,
     _tool_error_to_dict,
 )
 
@@ -43,7 +44,7 @@ def _pending_status(job_id: str, artifact_dir: Path) -> dict:
 
 @mcp.tool()
 def train_hydro_model(
-    session_id: str,
+    session_id: str | None = None,
     workspace_dir: str | None = None,
     framework: str = "hbv",
     model: str = "cudalstm",
@@ -67,7 +68,7 @@ def train_hydro_model(
     Typical runtime: 2-15 min (HBV), 15-60 min (LSTM).
     """
     try:
-        session_id = _normalize_session_id(session_id)
+        session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
@@ -202,13 +203,14 @@ def get_training_status(job_id: str) -> dict:
 
 
 @mcp.tool()
-def get_model_results(session_id: str, job_id: str | None = None) -> dict:
+def get_model_results(session_id: str | None = None, job_id: str | None = None) -> dict:
     """
     Return cached training results: NSE, KGE, RMSE, model_dir. job_id reads
     from the job artifact dir; otherwise from session.model.
+    session_id : str | None (optional from Wave 3) — auto-resolved from chat context.
     """
     try:
-        session_id = _normalize_session_id(session_id)
+        session_id = _resolve_session(session_id, None)
 
         # If job_id provided, try to read from artifact dir first
         if job_id:

@@ -24,84 +24,11 @@ import pytest
 class TestToolRegistration:
     """Verify that importing ai_hydro.mcp registers all expected tools."""
 
-    EXPECTED_TOOLS = {
-        # Analysis
-        "delineate_watershed",
-        "delineate_watershed_from_point",
-        "merit_ensure_basin",
-        "fetch_streamflow_data",
-        "fetch_camels_us",
-        "extract_hydrological_signatures",
-        "extract_geomorphic_parameters",
-        "compute_twi",
-        "create_cn_grid",
-        "fetch_forcing_data",
-        "get_library_reference",
-        "show_on_map",
-        "separate_baseflow",          # T2.8 — 1.6.0
-        # Session (8 — sync_research_context alias removed in 2.0)
-        "start_session",
-        "get_session_summary",
-        "clear_session",
-        "add_note",
-        "export_session",
-        "archive_session",             # T2.2 — 1.6.0
-        "list_available_tools",
-        "get_session_raw_state",       # T2.2 — 1.6.0
-        "write_research_interpretation",  # T2.2 — 1.6.0
-        "merge_session_shards",           # T1.1 — 1.6.3
-        # Execution (1 — 1.6.0)
-        "run_python",                  # T2.4 — 1.6.0
-        # Skills (2 — 1.6.0)
-        "list_skills",                 # T2.6 — 1.6.0
-        "load_skill",                  # T2.6 — 1.6.0
-        # Discovery (1 — 1.6.0)
-        "list_relevant_clis",          # T2.7 — 1.6.0
-        # Google Earth Engine / map-agent bridge
-        "gee.status",
-        "gee.preview_layer",
-        "gee.extract_timeseries",
-        # Modelling (3 — get_training_status added in 1.7.0)
-        "train_hydro_model",
-        "get_model_results",
-        "get_training_status",         # T3.1 — 1.7.0
-        # Project management (5)
-        "start_project",
-        "add_session_to_project",
-        "get_project_summary",
-        "add_journal_entry",
-        "search_experiments",
-        # Literature (2)
-        "index_literature",
-        "search_literature",
-        # Researcher profile (3)
-        "get_researcher_profile",
-        "update_researcher_profile",
-        "log_researcher_observation",
-        # Knowledge Registry (6 — 1.6.4)
-        "list_known_variables",
-        "get_variable_definition",
-        "list_known_metrics",
-        "get_metric_definition",
-        "get_equation_definition",    # T1.1 — 1.6.4
-        "list_known_datasets",
-        "get_dataset_info",
-        # Physics Validators (3 — 1.6.6)
-        "check_water_balance_consistency",
-        "check_temporal_alignment",
-        "check_unit_consistency",
-        # Claims & Assumptions (6 — 1.6.7)
-        "add_claim",
-        "update_claim_status",
-        "add_assumption",
-        "list_claims",
-        "list_assumptions",
-        "promote_claim_to_registry",
-        "draft_claim_from_run",
-        # Workflow Manifests (2 — 1.6.8)
-        "list_available_workflows",
-        "get_workflow_manifest",
-    }
+    @staticmethod
+    def expected_tools() -> set[str]:
+        """Tool registry is the maintained contract for built-in tools."""
+        from ai_hydro.mcp.app import TOOL_TIERS
+        return set(TOOL_TIERS)
 
     def test_import_mcp_singleton(self):
         """Importing ai_hydro.mcp should provide the FastMCP instance."""
@@ -114,16 +41,17 @@ class TestToolRegistration:
         from ai_hydro.mcp import mcp
         tools = asyncio.run(mcp.list_tools())
         tool_names = {t.name for t in tools}
-        assert tool_names == self.EXPECTED_TOOLS, (
-            f"Missing: {self.EXPECTED_TOOLS - tool_names}, "
-            f"Extra: {tool_names - self.EXPECTED_TOOLS}"
+        expected_tools = self.expected_tools()
+        assert tool_names == expected_tools, (
+            f"Missing: {expected_tools - tool_names}, "
+            f"Extra: {tool_names - expected_tools}"
         )
 
     def test_tool_count_matches_expected(self):
         """Tool count matches EXPECTED_TOOLS — catches accidental duplicates or drops."""
         from ai_hydro.mcp import mcp
         tools = asyncio.run(mcp.list_tools())
-        assert len(tools) == len(self.EXPECTED_TOOLS)
+        assert len(tools) == len(self.expected_tools())
 
     def test_all_tools_have_descriptions(self):
         """Every tool should have a non-empty description (from docstring)."""
@@ -364,7 +292,7 @@ class TestToolSmoke:
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
             # Pass an invalid USGS gauge_id — session_id is fine, gauge_id is not
-            result = delineate_watershed("my-test-session", gauge_id="not_a_gauge")
+            result = delineate_watershed(session_id="my-test-session", gauge_id="not_a_gauge")
             assert result["error"] is True
 
     def test_start_session_exposes_python_interpreter(self, tmp_path):

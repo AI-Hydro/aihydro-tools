@@ -1,7 +1,8 @@
 """
 Global watershed delineation (lat/lon outlets).
 
-Tiered routing: MERIT vector snap → cloud DEM pysheds (fast) → upstream-delineator (accurate).
+Tiered routing: NLDI where authoritative, then MERIT Hydro / MERIT-Basins
+global routes with raw DEM only as an explicitly lower-confidence fallback.
 """
 
 from __future__ import annotations

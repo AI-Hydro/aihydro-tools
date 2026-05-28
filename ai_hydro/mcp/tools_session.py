@@ -14,7 +14,9 @@ from pathlib import Path
 
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
+    SessionResolutionError,
     _normalize_session_id,
+    _resolve_session,
     _tool_error_to_dict,
     _workspace_write,
 )
@@ -63,11 +65,13 @@ def start_session(
 
 
 @mcp.tool()
-def get_session_summary(session_id: str) -> dict:
+def get_session_summary(session_id: str | None = None) -> dict:
     """
     Return computed/pending slots for the session + notes + interpretation.
+    session_id is optional — auto-resolved from the active chat when omitted.
     """
     try:
+        session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         summary = session.summary()
@@ -79,7 +83,7 @@ def get_session_summary(session_id: str) -> dict:
 
 
 @mcp.tool()
-def get_session_health(session_id: str) -> dict:
+def get_session_health(session_id: str | None = None) -> dict:
     """
     Audit a session for identity drift, workspace problems, and consistency
     gaps. Returns warnings keyed by code so the agent can fix issues before
@@ -97,6 +101,7 @@ def get_session_health(session_id: str) -> dict:
     used for workspace filenames.
     """
     try:
+        session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         warnings = session.validate_identity()
@@ -126,7 +131,7 @@ def get_session_health(session_id: str) -> dict:
 
 
 @mcp.tool()
-def clear_session(session_id: str, slots: list[str] | None = None) -> dict:
+def clear_session(session_id: str | None = None, slots: list[str] | None = None) -> dict:
     """
     Clear cached results to force recompute. Notes/workspace_dir/site_name/
     interpretation are always preserved. slots: subset of [watershed,
@@ -134,6 +139,7 @@ def clear_session(session_id: str, slots: list[str] | None = None) -> dict:
     (omit for all data slots).
     """
     try:
+        session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
         from ai_hydro.session.store import _COMMON_SLOTS as _RESULT_SLOTS
         session = HydroSession.load(session_id)
@@ -165,11 +171,12 @@ def clear_session(session_id: str, slots: list[str] | None = None) -> dict:
 
 
 @mcp.tool()
-def add_note(session_id: str, note: str) -> dict:
+def add_note(session_id: str | None = None, note: str = "") -> dict:
     """
     Append a researcher annotation (hypothesis, anomaly, decision) to the session.
     """
     try:
+        session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         added = session.add_note(note)
@@ -189,13 +196,14 @@ def add_note(session_id: str, note: str) -> dict:
 
 
 @mcp.tool()
-def archive_session(session_id: str) -> dict:
+def archive_session(session_id: str | None = None) -> dict:
     """
     Freeze the session: move current interpretations + notes to a 'Historical'
     section in research.md. Use when concluding a study phase. Archived
     sessions stay readable and exportable.
     """
     try:
+        session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         session.archive()
@@ -206,13 +214,14 @@ def archive_session(session_id: str) -> dict:
 
 
 @mcp.tool()
-def get_session_raw_state(session_id: str) -> dict:
+def get_session_raw_state(session_id: str | None = None) -> dict:
     """
     Phase 1 of interpretation: return raw computed state for the LLM to read
     (large arrays summarised). Follow with write_research_interpretation to
     author + persist the prose synthesis.
     """
     try:
+        session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         slots = {}
@@ -239,13 +248,14 @@ def get_session_raw_state(session_id: str) -> dict:
 
 
 @mcp.tool()
-def merge_session_shards(session_id: str, shard_ids: list[str] | None = None) -> dict:
+def merge_session_shards(session_id: str | None = None, shard_ids: list[str] | None = None) -> dict:
     """
     Consolidate sub-agent shard files into the main session (notes, citations,
     slots). Shard files are deleted after merge. shard_ids: subset or omit to
     merge all available shards.
     """
     try:
+        session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import merge_session_shards as _merge
         result = _merge(session_id, shard_ids=shard_ids)
         return result
@@ -255,9 +265,9 @@ def merge_session_shards(session_id: str, shard_ids: list[str] | None = None) ->
 
 @mcp.tool()
 def write_research_interpretation(
-    session_id: str,
-    site_name: str,
-    interpretation: str,
+    session_id: str | None = None,
+    site_name: str = "",
+    interpretation: str = "",
 ) -> dict:
     """
     Phase 2 of interpretation: persist LLM-authored scientific synthesis to
@@ -266,6 +276,7 @@ def write_research_interpretation(
     short descriptive slug for display + exports.
     """
     try:
+        session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
         from ai_hydro.session.store import _REPO_ROOT, _RULES_DIR_NAME
         from ai_hydro.mcp.tools_docs import _write_tools_md, _list_tools_sync
@@ -352,7 +363,7 @@ def list_available_tools() -> dict:
 
 @mcp.tool()
 def export_session(
-    session_id: str,
+    session_id: str | None = None,
     capsule_path: str | None = None,
     format: str = "capsule",
 ) -> dict:
@@ -363,6 +374,7 @@ def export_session(
     file. capsule_path: override default location.
     """
     try:
+        session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
         import shutil
         from datetime import datetime
@@ -609,3 +621,117 @@ def _build_environment_yml(name: str) -> str:
         pass
 
     return _curated()
+
+
+# ============================================================================
+# Admin: Chat ↔ Study rebinding (Wave 3)
+# ============================================================================
+
+@mcp.tool()
+def aihydro_rebind_chat(
+    study_id: str,
+    chat_id: str | None = None,
+) -> dict:
+    """
+    Rebind the current chat to a specific existing study.
+
+    Use when the agent selected the wrong study, or when you want to resume a
+    previous study from a fresh chat.
+
+    Parameters
+    ----------
+    study_id : str
+        The session/study ID to bind to (e.g. 'basin_26p9_78p1' or '01031500').
+    chat_id : str | None
+        The Cline chat ULID to bind. Normally injected automatically by the
+        extension; pass explicitly only in edge cases.
+
+    Returns
+    -------
+    dict with ``bound_to``, ``study_id``, and confirmation message.
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        from ai_hydro.session.chat_binding import get_binding_store
+
+        # Validate study exists (loads or creates)
+        sid = _normalize_session_id(study_id)
+        session = HydroSession.load(sid)  # raises if truly invalid path
+        slots_done = session.computed()
+
+        store = get_binding_store()
+        if chat_id:
+            store.bind(chat_id, sid)
+
+        return {
+            "bound_to": sid,
+            "study_id": sid,
+            "chat_id": chat_id,
+            "study_slots": slots_done,
+            "message": (
+                f"Chat rebound to study '{sid}'. "
+                f"Computed slots: {slots_done or 'none yet'}. "
+                "All subsequent analysis tools will operate on this study."
+            ),
+        }
+    except Exception as e:
+        log.error("aihydro_rebind_chat failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def aihydro_chat_status(chat_id: str | None = None) -> dict:
+    """
+    Show what study (if any) is currently bound to this chat.
+
+    Returns the bound study_id, its computed slots, and whether the binding
+    came from a previous session or is brand new.  Useful for diagnostics and
+    at the start of a fresh conversation to see if a study is already in scope.
+
+    chat_id : str | None — injected automatically by the extension; pass
+    explicitly when calling outside a chat context.
+    """
+    try:
+        from ai_hydro.session.chat_binding import get_binding_store
+        store = get_binding_store()
+        bound = store.lookup_study(chat_id) if chat_id else None
+
+        if bound:
+            from ai_hydro.session import HydroSession
+            try:
+                session = HydroSession.load(bound)
+                slots = session.computed()
+                notes_count = len(session.notes or [])
+                return {
+                    "bound": True,
+                    "study_id": bound,
+                    "chat_id": chat_id,
+                    "computed_slots": slots,
+                    "notes": notes_count,
+                    "message": (
+                        f"This chat is bound to study '{bound}'. "
+                        f"Computed: {slots or 'none yet'}."
+                    ),
+                }
+            except Exception as load_err:
+                return {
+                    "bound": True,
+                    "study_id": bound,
+                    "chat_id": chat_id,
+                    "computed_slots": [],
+                    "warning": f"Study file unreadable: {load_err}",
+                }
+        else:
+            return {
+                "bound": False,
+                "study_id": None,
+                "chat_id": chat_id,
+                "message": (
+                    "No study is bound to this chat yet. "
+                    "Run delineate_watershed or delineate_watershed_from_point "
+                    "to auto-create one, or call start_session(session_id=...) explicitly."
+                ),
+            }
+    except Exception as e:
+        log.error("aihydro_chat_status failed: %s", e)
+        return _tool_error_to_dict(e)

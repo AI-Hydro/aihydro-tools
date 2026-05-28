@@ -25,26 +25,10 @@ def list_skills(
     workspace_dir: str | None = None,
 ) -> dict:
     """
-    List all installed workflow skills.
-
-    Skills are workflow playbooks that guide multi-step hydrological analyses.
-    They are installed from the AI-Hydro Skills marketplace, created by the
-    agent via save_skill(), or added manually by the user.
-
-    Use list_skills() at the start of a conversation to see what workflows
-    are available, then load_skill(name) to get the full instructions.
-
-    Parameters
-    ----------
-    domain : str, optional
-        Filter by domain: 'frequency-analysis', 'baseflow', 'modelling',
-        'interpretation', 'composition', or 'general'.
-    workspace_dir : str, optional
-        Workspace path for workspace-local skills.
-
-    Returns
-    -------
-    dict with skills list and count.
+    List installed workflow skills (playbooks). See SKILL DISCOVERY in the
+    system prompt for the mandatory pre-flight protocol. ``domain`` filters
+    to one of: frequency-analysis, baseflow, modelling, interpretation,
+    composition, teaching, general.
     """
     try:
         from ai_hydro.skills.registry import list_skills as _list
@@ -70,18 +54,9 @@ def load_skill(
     workspace_dir: str | None = None,
 ) -> dict:
     """
-    Load the full content of a workflow skill by name.
-
-    Returns the complete SKILL.md content (frontmatter + body).
-    Read the skill fully before starting the workflow — it contains
-    parameter guides, interpretation thresholds, and code examples.
-
-    Parameters
-    ----------
-    name : str
-        Skill name as returned by list_skills().
-    workspace_dir : str, optional
-        Workspace path for workspace-local skills.
+    Load a skill's full SKILL.md (frontmatter + body). The skill's steps and
+    format contracts are binding — see SKILL DISCOVERY in the system prompt.
+    name: exact match from list_skills().
     """
     try:
         from ai_hydro.skills.registry import load_skill as _load
@@ -112,36 +87,9 @@ def save_skill(
     tools_used: list[str] | None = None,
 ) -> dict:
     """
-    Save a reusable workflow skill for future conversations.
-
-    Call this when you have completed a novel multi-step hydrological
-    analysis and want to capture the workflow as a reusable skill.
-    The skill will be saved to ~/.aihydro/skills/agent-created/ and
-    will appear in list_skills() and the VS Code Skills panel immediately.
-
-    The saved SKILL.md follows the Agent Skills open standard format
-    and can be shared via the AI-Hydro Skills marketplace.
-
-    Parameters
-    ----------
-    name : str
-        Human-readable skill name (e.g. "Drought Index Analysis").
-        Will be slugified for the file path.
-    description : str
-        One-sentence description of what this skill does.
-    content : str
-        Full markdown body of the skill (everything after the frontmatter).
-        Should include numbered steps, code examples, interpretation guides.
-    domain : str
-        One of: frequency-analysis, baseflow, modelling, interpretation,
-        composition, general. Default 'general'.
-    when_to_use : str, optional
-        When should the agent apply this skill? Be specific about trigger
-        phrases and contexts.  Defaults to the description.
-    tags : list[str], optional
-        Keywords for discovery and filtering.
-    tools_used : list[str], optional
-        AI-Hydro MCP tools used in this workflow.
+    Persist a new SKILL.md (Agent Skills open format) to
+    ~/.aihydro/skills/agent-created/. Use after completing a novel workflow
+    worth reusing. name will be slugified; content is the markdown body.
     """
     try:
         from ai_hydro.skills.registry import save_skill as _save

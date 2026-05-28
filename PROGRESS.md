@@ -332,3 +332,195 @@ Verification:
 2. Full test suite:
    - Command: `pytest tests/ -m "not live" -q`
    - Result: `136 passed`
+
+---
+
+## Feature — GEE Backend Contracts
+
+- Branch: `feature/gee-backend-contracts`
+- Date: 2026-05-20
+- Executor: Codex
+
+### Tasks
+
+#### G1 — Backend audit and ecosystem review
+Status: Completed
+Files:
+    - `local-docs/gee-backend-audit.md`
+    - `local-docs/geetools-inspection.md`
+Verification:
+    Audited MCP registration, GEE modules, session ROI/provenance helpers, dependency extras, tests, and duplication risk with the VS Code extension. Reviewed `geetools` conceptually and deferred dependency adoption.
+
+#### G2 — GEE contracts and preset registry
+Status: Completed
+Files:
+    - `ai_hydro/gee/contracts.py`
+    - `ai_hydro/gee/presets.py`
+    - `local-docs/gee-contracts-design.md`
+    - `local-docs/gee-capability-registry.md`
+Verification:
+    Added JSON-serializable contracts for ROI, dataset presets, live layers, analysis artifacts, report bundles, provenance records, export task records, and workflow runs. Added hydrology-aware presets for CHIRPS, SRTM, MODIS NDVI, NLCD, ESA WorldCover, and ERA5-Land.
+
+#### G3 — MCP GEE contract alignment
+Status: Completed
+Files:
+    - `ai_hydro/mcp/tools_gee.py`
+    - `tests/test_mcp_gee_tools.py`
+    - `tests/test_gee_contracts.py`
+Verification:
+    Updated `gee.status` to scrub secret-adjacent fields. Updated `gee.preview_layer` to return a `LiveLayer` and provenance record. Updated `gee.extract_timeseries` to return an `AnalysisArtifact`, summary JSON, and provenance record. Enforced explicit ROI resolution and preset reducer/aggregation validation.
+
+#### G4 — Live marker correction
+Status: Completed
+Files:
+    - `tests/test_bench.py`
+Verification:
+    Marked `bench_live` tasks with `@pytest.mark.live` so the documented non-live command excludes live network tests.
+
+#### G5 — Dataset preset-only input support
+Status: Completed
+Files:
+    - `ai_hydro/mcp/tools_gee.py`
+    - `tests/test_mcp_gee_tools.py`
+Verification:
+    `gee.preview_layer` and `gee.extract_timeseries` now resolve `dataset_id` and `band` from `dataset_preset` when callers provide a preset only. Added regression coverage for preset-only preview and extraction calls.
+
+### Verification Log
+1. Run focused GEE tests:
+   - Command: `pytest tests/test_gee_contracts.py tests/test_mcp_gee_tools.py tests/test_gee_cli.py -q`
+   - Initial result: `16 passed in 155.85s`
+   - Final result after preset-only regression tests: `18 passed in 2.36s`
+2. Run documented non-live suite:
+   - Command: `pytest -m 'not live' -v`
+   - First result: failed because `bench_live` was not also marked `live`; this ran a live watershed benchmark and failed against current external data.
+   - Intermediate result after marker correction: `209 passed, 8 deselected, 1 warning in 31.33s`
+   - Final result after preset-only regression tests: `211 passed, 8 deselected, 1 warning in 12.67s`
+
+## 2026-05-25 — MERIT Hydro GEE + pyflwdir global delineation tier
+
+- Added `merit_gee_pyflwdir` as the global default path behind `delineate_watershed_from_point(method="auto")` after CONUS NLDI attempts.
+- Added `local_merit_pyflwdir`, `nldi`, `merit_gee`, and `dem_raw_fallback` router methods; kept `fast` as a backward-compatible alias for raw DEM fallback.
+- Added GEE MERIT Hydro raster fetch/cache, MERIT outlet snapping using `upa`/`wth`, local `pyflwdir` basin delineation, area validation, quality flags, citation, and license fields.
+- Added `delineation_doctor()` MCP tool for GEE/project/dependency readiness.
+- Updated watershed delineation docs and added missing `PROJECT.md` cold-start entry point.
+
+Verification:
+- `python -m pytest -q tests/test_delineation.py -m 'not live'`: `19 passed, 1 deselected`.
+- `python -m pytest -q tests/test_delineation.py::test_delineate_watershed_from_point_invalid_method`: `1 passed`.
+- `python -m compileall -q ai_hydro/analysis/delineation ai_hydro/mcp`: passed.
+- `delineation_doctor()` smoke check returned `default_global_method="merit_gee_pyflwdir"` with `pyflwdir`, `earthengine_api`, `rasterio`, and `geopandas` available.
+- Broader registry tests remain blocked by stale pre-existing tier/expected-tool coverage for map, preview, citation, course, and discovery tools; not introduced by this delineation change.
+
+Follow-up live NLDI comparison:
+- `nebraska_test` at `(40.71829, -96.41265)`: NLDI area `114.332 km²`; MERIT GEE + `pyflwdir` area `114.047 km²`; area error `0.25%`; polygon IoU `0.9756`; no quality flags; first uncached MERIT run `39.43 s`.
+- Larger CONUS comparison attempts at `(40.4, -86.1)` and `(35.03, -120.48)` reached Earth Engine synchronous `getPixels` limits during adaptive window expansion; the fetcher now reports the GEE error body with async-export guidance instead of a generic HTTP error.
+- Adjusted MERIT GEE sync defaults to `20 km` initial half-window and required bands `dir`, `upa`, `wth` to stay under GEE sync limits for small/medium basins.
+- Added `workflow_steps` to delineation outputs so agents/users can read the exact method, data, and step sequence without inferring it from metadata.
+- Added `scripts/benchmark_merit_gee_vs_nldi.py` for repeatable live NLDI-vs-MERIT accuracy checks.
+- Script smoke result for `nebraska_test`: cached MERIT run `1.69 s`, total comparison `4.29 s`, area error `0.249%`, IoU `0.9756`.
+- Ran 18 live CONUS NLDI comparison attempts across Plains/Midwest/Southeast/Texas candidates. Current state after snap hardening:
+  - `12` completed MERIT comparisons, `6` failed due GEE sync memory/window limits or invalid far-snap basin.
+  - `11` completed comparisons were clean/unflagged: median area error `0.35%`, max clean area error `4.51%`, median IoU `0.9255`, min clean IoU `0.7454`.
+  - `1` completed comparison was flagged (`OUTLET_SNAP_FAR`); it had good area agreement but zero overlap against NLDI, confirming far area-target snaps must not be treated as high-confidence.
+  - Main production gap: larger/adaptive windows need async GEE export or tiled MERIT fetch; synchronous `getPixels` is not enough for many 200-300 km² basins.
+
+## 2026-05-26 — MERIT-Basins hybrid overflow routing scaffold
+
+- Added provisional adaptive-window safe-envelope policy:
+  - `MERIT_INTERACTIVE_MAX_WINDOW_CELLS = 60_000_000`
+  - `MERIT_INTERACTIVE_MAX_RSS_DELTA_MB = 600`
+  - `MERIT_SCIENTIFIC_MAX_WINDOW_CELLS = 120_000_000`
+  - `MERIT_SCIENTIFIC_MAX_RSS_DELTA_MB = 1_500`
+  - `safe_envelope_version = "benchmark_2026-05-26_v1"`
+- Added MERIT-Basins regional cache/status helpers and MCP tool `merit_ensure_basins_region`.
+- Added `merit_basins_hybrid_delineate`: GEE tiny `upa/wth` snap reference, staged MERIT-Basins catchment topology traversal, upstream vector assembly, and terminal local MERIT flowdir refinement when safe.
+- Router now promotes adaptive local overflow / GEE memory recovery cases to `method_used="merit_basins_hybrid"` when staged topology is available, or returns/records `HYBRID_ROUTING_REQUIRED` rather than unbounded raster expansion.
+- Offline snap-cache preparation now defaults to optional `published_accum`; full-Pfaf local upstream-area derivation remains explicit via `offline_snap_asset="local_upstream_area"`.
+
+Verification:
+- `python -m pytest -q tests/test_delineation.py -m 'not live'`: `33 passed, 1 deselected`.
+- `python -m compileall -q ai_hydro/analysis/delineation ai_hydro/data ai_hydro/mcp`: passed.
+- `python -m pytest -q tests/test_tool_tiers.py`: initially exposed pre-existing un-tiered tools (`data_fetch`, citation tools, map tools, preview tools); resolved in the follow-up hygiene patch below.
+
+## 2026-05-26 — Global Watershed Delineation v1 freeze
+
+- Staged real MERIT-Basins Level-2 vectors for Pfaf 74 and 77 from the ReachHydro Google Drive MERIT_Hydro_v07_Basins_v01 source.
+- Wrote vector/raster provenance manifests:
+  - `/Users/mgalib/.aihydro/merit/metadata/basins_74.json`
+  - `/Users/mgalib/.aihydro/merit/metadata/basins_77.json`
+- Fixed hybrid topology loading so unit-catchment polygons merge river-flowline topology (`NextDownID`, `uparea`, `up1..up4`) by `COMID`; real catchment polygons only carry `COMID` and `unitarea`.
+- Changed terminal raster refinement to read only the terminal catchment flowdir window and intersect with the terminal catchment, avoiding full adaptive-basin routing inside the hybrid method.
+- Validated real topology:
+  - Pfaf 74 Nebraska: terminal `COMID=74033128`, upstream catchments `1`, vector-only area `126.600 km²`, official MERIT UPA `113.873 km²`.
+  - Pfaf 77 Sacramento: terminal `COMID=77013205`, upstream catchments `1311`, vector area `58154.251 km²`, official MERIT UPA error `0.131%`.
+- Live gate benchmarks:
+  - Nebraska/Pfaf 74 hybrid: area `114.038 km²`, NLDI area error `0.257%`, IoU vs NLDI `0.9779`, IoU vs adaptive local `~1.0`, MERIT UPA error `0.145%`, terminal refinement succeeded.
+  - Sacramento/Pfaf 77 hybrid: area `58154.251 km²`, NLDI area error `2.299%`, IoU vs NLDI `0.8322`, MERIT UPA error `0.131%`, terminal refinement succeeded, upstream catchments `1311`.
+  - Sacramento adaptive local interactive correctly refused the 116,238,493-cell window with `HYBRID_ROUTING_REQUIRED`.
+  - Sacramento adaptive local scientific completed in `66.5 s`; hybrid completed in `9.6 s` with IoU vs scientific adaptive `0.99988`.
+
+Verification:
+- `python -m pytest -q tests/test_delineation.py -m 'not live'`: `34 passed, 1 deselected`.
+- `python -m compileall -q ai_hydro/analysis/delineation ai_hydro/data ai_hydro/mcp`: passed.
+- `git diff --check ...`: passed.
+- `python -m pytest -q tests/test_tool_tiers.py`: initially failed on pre-existing un-tiered tools outside delineation (`data_fetch`, citation, map, preview); resolved in the follow-up hygiene patch below.
+
+Status:
+- Global Watershed Delineation v1 is frozen/stable. Supported routing modes and limitations are documented in `local-docs/watershed-delineation.md`.
+- Stop adding delineation architecture unless future users expose a concrete defect or a clearly measured production gap.
+
+## 2026-05-26 — Tool tier registry hygiene
+
+- Added missing tier entries for pre-existing citation, data-fetch, map, and preview tools in `ai_hydro/mcp/app.py`.
+- Assigned citation/data-fetch and user-facing map/preview edit commands to Tier 2; assigned map/preview state/navigation/listing commands and cached-citation listing to Tier 3.
+
+Verification:
+- `python -m pytest -q tests/test_tool_tiers.py`: `6 passed`.
+- `python -m pytest -q tests/test_delineation.py -m 'not live'`: `34 passed, 1 deselected`.
+- `python -m compileall -q ai_hydro/mcp ai_hydro/analysis/delineation ai_hydro/data`: passed.
+
+Status:
+- Global Watershed Delineation v1: stable.
+- Feature-level tests: passing.
+- Previously unrelated tool-tier registry issue: resolved.
+
+## 2026-05-26 — Repository hygiene after delineation v1 freeze
+
+- Replaced the stale hard-coded MCP expected-tool list in `tests/test_mcp_integration.py` with the maintained `TOOL_TIERS` registry as the registration contract.
+- Shortened the MCP server persona/instructions block to stay under the Phase 2 budget while preserving skill discovery, provenance, recovery, session-context, long-running-work, transparency, and course-mode guidance.
+- Aligned `HydroSession.is_stale()` with archived-session behavior: archived sessions are treated as historical/stale regardless of per-field timestamps.
+
+Verification:
+- `python -m pytest -q tests/test_mcp_integration.py::TestToolRegistration tests/test_mcp_integration.py::TestPhase2Persona tests/test_staleness.py::test_session_staleness_logic`: `8 passed`.
+- `python -m pytest -q -m 'not live'`: `251 passed, 9 deselected, 9 warnings`.
+- `python -m compileall -q ai_hydro tests/test_mcp_integration.py tests/test_staleness.py`: passed.
+
+Status:
+- Global Watershed Delineation v1: stable.
+- Feature-level and broad non-live tests: passing.
+- Known unrelated tool-tier registry issue: resolved.
+
+## 2026-05-26 — Map quick delineation uses staged MERIT workflow
+
+- Fixed `hydro_map_cli delineate-point --method auto` so non-CONUS map clicks first stage/check the Pfaf regional MERIT flowdir with `acquisition_policy="download_if_missing"`.
+- When the regional flowdir is available, the map bridge now calls `method="local_merit"`; when staging is unavailable, it calls `method="merit_gee"` instead of silently allowing raw DEM fallback.
+- CONUS map clicks still preserve the existing `method="auto"` path so NLDI/NHDPlus remains first.
+- Staged Pfaf 45 flowdir only for the live map test:
+  - `/Users/mgalib/.aihydro/merit/raster/flowdir_basins/flowdir45.tif`
+  - size `276,428,799` bytes
+  - no accumulation raster downloaded
+- Re-ran the exact map outlet `(25.744005258240417, 79.38185026023648)`:
+  - method `local_merit_pyflwdir`
+  - wall time `22.59 s`
+  - local routing runtime `16.99 s`
+  - area `10,781.518 km²`
+  - official MERIT UPA `10,775.046 km²`
+  - relative area error vs MERIT UPA `0.0006`
+  - `window_complete=true`
+  - quality flags: `ADAPTIVE_WINDOW_EXPANDED`
+
+Verification:
+- `python -m pytest -q tests/test_hydro_map_cli.py tests/test_delineation.py -m 'not live'`: `37 passed, 1 deselected`.
+- `python -m pytest -q -m 'not live'`: `254 passed, 9 deselected, 9 warnings`.
+- `python -m compileall -q ai_hydro/hydro_map_cli.py tests/test_hydro_map_cli.py`: passed.
+- `git diff --check -- ai_hydro/hydro_map_cli.py tests/test_hydro_map_cli.py tests/test_delineation.py`: passed.

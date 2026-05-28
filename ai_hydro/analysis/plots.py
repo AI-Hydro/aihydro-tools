@@ -385,17 +385,18 @@ def plot_raster_tile(
         alpha_mask = np.isfinite(arr).astype(float)
         rgba[..., 3] = alpha_mask
 
-    # Flip vertically — raster row 0 is north, image row 0 is top
-    rgba_flipped = rgba[::-1, :, :]
+    # No vertical flip — raster row 0 is north, matplotlib imshow places row 0 at the
+    # top of the image, and Leaflet imageOverlay places the top of the image at the
+    # north bound.  Flipping would invert the tile on the Leaflet canvas.
 
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{name}_tile.png")
 
     fig, ax = plt.subplots(
-        figsize=(rgba_flipped.shape[1] / 100, rgba_flipped.shape[0] / 100),
+        figsize=(rgba.shape[1] / 100, rgba.shape[0] / 100),
         dpi=100,
     )
-    ax.imshow(rgba_flipped, aspect="auto", interpolation="nearest")
+    ax.imshow(rgba, aspect="auto", interpolation="nearest")
     ax.axis("off")
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
     plt.savefig(out_path, dpi=100, bbox_inches="tight", pad_inches=0, transparent=True)

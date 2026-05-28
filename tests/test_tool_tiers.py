@@ -26,7 +26,9 @@ def test_tier_distribution_sanity():
 def test_get_tool_tier_known():
     """get_tool_tier() returns the correct tier for known tools."""
     assert get_tool_tier("delineate_watershed") == 1
-    assert get_tool_tier("fetch_streamflow_data") == 2
+    # fetch_streamflow_data demoted to tier 3 in Wave 2.5 Axis 4:
+    # agents should use data_fetch directly; legacy tool is a backward-compat shim.
+    assert get_tool_tier("fetch_streamflow_data") == 3
     assert get_tool_tier("start_session") == 3
 
 

@@ -213,15 +213,41 @@ def compute_twi(
             if progress_callback is not None:
                 progress_callback(step, total, msg)
 
-        # === Step 1: Download DEM ===
-        _progress(1, 10, "Downloading DEM from USGS 3DEP...")
-        dem = py3dep.get_map(
-            "DEM", 
-            watershed_geom, 
-            resolution=resolution, 
-            geo_crs=4326, 
-            crs=5070
-        )
+        # === Step 1: Download DEM (auto: 3DEP in CONUS, GLO-30 globally) ===
+        _progress(1, 10, "Downloading DEM (USGS 3DEP for CONUS, Copernicus GLO-30 globally)...")
+        from ai_hydro.analysis._dem import fetch_dem, _geom_in_conus
+
+        _is_conus = _geom_in_conus(watershed_geom)
+        dem, _dem_product, _dem_source = fetch_dem(watershed_geom, resolution=resolution, prefer="auto")
+        # fetch_dem already calls _normalize_dem → CRS set, band squeezed, dims y/x.
+        log.info("DEM provenance: product=%s, source=%s", _dem_product, _dem_source)
+
+        # Reproject to a metric CRS so flow accumulation cell counts are
+        # meaningful. EPSG:5070 (CONUS Albers) inside CONUS; UTM elsewhere.
+        if _is_conus:
+            try:
+                dem = dem.rio.reproject("EPSG:5070")
+            except Exception as _proj_exc:
+                log.warning("DEM reproject to EPSG:5070 failed (%s); keeping native CRS", _proj_exc)
+        else:
+            try:
+                # Derive UTM zone from the watershed centroid (more reliable than
+                # DEM pixel coordinates, which depend on rioxarray dim naming).
+                _centroid = watershed_geom.centroid if hasattr(watershed_geom, "centroid") else watershed_geom
+                lat0 = float(getattr(_centroid, "y", 0.0))
+                lon0 = float(getattr(_centroid, "x", 0.0))
+                zone = int((lon0 + 180) // 6) + 1
+                epsg = 32600 + zone if lat0 >= 0 else 32700 + zone
+                dem = dem.rio.reproject(f"EPSG:{epsg}")
+                # Squeeze again in case reproject adds a band dim back
+                if dem.ndim == 3:
+                    dem = dem.squeeze(drop=True)
+                print(f"   ✓ Reprojected to UTM zone {zone} (EPSG:{epsg})")
+            except Exception as _proj_exc:
+                log.warning("UTM reproject failed (%s); keeping native CRS", _proj_exc)
+                # Ensure still 2-D
+                if dem.ndim == 3:
+                    dem = dem.squeeze(drop=True)
         print(f"   ✓ DEM shape: {dem.shape}")
         print(f"   ✓ Elevation range: {float(dem.min()):.1f} - {float(dem.max()):.1f} m")
         
@@ -254,40 +280,117 @@ def compute_twi(
         print(f"   ✓ Flow accumulation computed")
         print(f"   ✓ Max accumulation: {acc.max():.0f} cells")
         
-        # === Step 6: Download Slope ===
-        _progress(6, 10, "Downloading slope data from USGS 3DEP...")
-        slope_deg = py3dep.get_map(
-            "Slope Degrees", 
-            watershed_geom, 
-            resolution=resolution, 
-            geo_crs=4326, 
-            crs=5070
-        )
+        # === Step 6: Compute Slope ===
+        # Inside CONUS, prefer 3DEP's published Slope-Degrees layer (matches
+        # the DEM and is already QC'd). Outside CONUS, derive slope from the
+        # DEM directly via numpy gradient — works anywhere on Earth.
+        if _is_conus:
+            try:
+                _progress(6, 10, "Downloading slope data from USGS 3DEP...")
+                slope_deg = py3dep.get_map(
+                    "Slope Degrees",
+                    watershed_geom,
+                    resolution=resolution,
+                    geo_crs=4326,
+                    crs=5070,
+                )
+            except Exception as _slope_exc:
+                log.warning("3DEP slope fetch failed (%s); computing from DEM", _slope_exc)
+                from ai_hydro.analysis._dem import slope_from_dem
+                slope_deg = slope_from_dem(dem)
+        else:
+            _progress(6, 10, "Computing slope from DEM (global path)...")
+            from ai_hydro.analysis._dem import slope_from_dem
+            slope_deg = slope_from_dem(dem)
         print(f"   ✓ Slope range: {float(slope_deg.min()):.2f} - {float(slope_deg.max()):.2f}°")
         
         # === Step 7: Calculate TWI ===
         _progress(7, 10, "Computing Topographic Wetness Index...")
-        
-        # Convert slope to radians
-        slope_rad = np.radians(slope_deg.values)
-        
+
+        # Convert slope to radians — ensure 2-D (squeeze any band axis)
+        slope_arr = np.squeeze(slope_deg.values)
+        slope_rad = np.radians(slope_arr)
+
+        # pysheds acc may have a different 2-D shape than slope when the
+        # raster was clipped to the watershed mask.  Resize slope to match.
+        acc_arr = np.array(acc)
+        if slope_rad.shape != acc_arr.shape:
+            try:
+                from scipy.ndimage import zoom as _zoom
+                zy = acc_arr.shape[0] / slope_rad.shape[0]
+                zx = acc_arr.shape[1] / slope_rad.shape[1]
+                slope_rad = _zoom(slope_rad, (zy, zx), order=1)
+                log.debug("Slope resampled from %s to %s to match acc shape",
+                          slope_arr.shape, acc_arr.shape)
+            except Exception:
+                # Last resort: trim/pad to matching shape
+                h = min(slope_rad.shape[0], acc_arr.shape[0])
+                w = min(slope_rad.shape[1], acc_arr.shape[1])
+                slope_rad = slope_rad[:h, :w]
+                acc_arr = acc_arr[:h, :w]
+
         # Set minimum slope to avoid division by zero
         min_slope_rad = np.radians(min_slope_deg)
         slope_rad = np.where(slope_rad < min_slope_rad, min_slope_rad, slope_rad)
-        
+
         # Get cell size in meters
         cell_size = abs(dem.rio.resolution()[0])
-        
+
         # Specific catchment area (m²/m)
         # SCA = (acc * cell_size²) / cell_size = acc * cell_size
-        sca = acc * cell_size
-        
+        sca = acc_arr * cell_size
+
         # Calculate TWI = ln(a / tan(slope))
         twi = np.log(sca / np.tan(slope_rad))
         
         # Mask invalid values
         twi_masked = np.where(np.isfinite(twi), twi, np.nan)
-        
+
+        # === Clip to watershed polygon ===
+        # pysheds returns a full-bbox array; mask out pixels outside the
+        # watershed boundary so the raster and statistics are watershed-only.
+        try:
+            from rasterio.features import geometry_mask
+            from rasterio.transform import from_bounds
+            from shapely.ops import transform as shp_transform
+            import pyproj
+
+            # Re-project watershed_geom to the DEM's current (metric) CRS
+            src_crs = pyproj.CRS("EPSG:4326")
+            dem_crs = dem.rio.crs
+            if dem_crs is not None:
+                transformer = pyproj.Transformer.from_crs(
+                    src_crs, dem_crs, always_xy=True
+                )
+                if hasattr(watershed_geom, "geoms"):
+                    # MultiPolygon or GeometryCollection
+                    geom_proj = shp_transform(transformer.transform, watershed_geom)
+                else:
+                    geom_proj = shp_transform(transformer.transform, watershed_geom)
+            else:
+                geom_proj = watershed_geom  # keep as-is if CRS unknown
+
+            # Build an affine transform matching the DEM raster
+            rows, cols = twi_masked.shape
+            bounds_dem = dem.rio.bounds()  # (left, bottom, right, top)
+            affine = from_bounds(
+                bounds_dem[0], bounds_dem[1], bounds_dem[2], bounds_dem[3],
+                cols, rows,
+            )
+
+            # geometry_mask returns True *outside* the polygon — invert for inside
+            from shapely.geometry import mapping
+            outside = geometry_mask(
+                [mapping(geom_proj)],
+                transform=affine,
+                invert=False,   # True where OUTSIDE the polygon
+                out_shape=(rows, cols),
+            )
+            twi_masked = np.where(outside, np.nan, twi_masked)
+            print("   ✓ TWI clipped to watershed polygon")
+        except Exception as _mask_exc:
+            log.warning("Watershed polygon masking failed (%s); using bbox raster.", _mask_exc)
+
         print("   ✓ TWI computed successfully")
         
         # === Step 8: Calculate Statistics ===
@@ -319,11 +422,14 @@ def compute_twi(
         
         # Spatial metadata
         bounds = dem.rio.bounds()
-        twi_stats['bounds'] = [float(bounds[0]), float(bounds[1]), 
+        twi_stats['bounds'] = [float(bounds[0]), float(bounds[1]),
                                float(bounds[2]), float(bounds[3])]
         twi_stats['crs'] = str(dem.rio.crs)
         twi_stats['resolution_m'] = float(cell_size)
         twi_stats['twi_array'] = twi_masked
+        # DEM provenance — which backend / product served the elevation data
+        twi_stats['dem_product'] = _dem_product
+        twi_stats['dem_source'] = _dem_source
         
         # Print summary
         print("\n" + "=" * 60)
@@ -556,11 +662,11 @@ def _create_interactive_map(
         tooltip="Watershed Boundary"
     ).add_to(m)
     
-    # Add TWI overlay — IMPORTANT: write the PNG once, downsampled for web
-    # display, and reference it as a relative path from the HTML so folium
-    # does NOT base64-embed it. Embedding a multi-MB raster as base64 inflates
-    # the HTML to >50 MB which busts both the VS Code preview cap and any
-    # downstream sharing.
+    # Add TWI overlay. We read the raw GeoTIFF, downsample to ≤2000 px,
+    # colourise, then encode as a base64 data URI that is embedded directly
+    # in the HTML.  The VS Code preview renders HTML via `srcdoc` (iframe
+    # with no base URL), so relative file paths don't resolve — a data URI
+    # is the only reliable way to ship the raster inside the HTML file.
     with rasterio.open(raster_path) as src:
         from rasterio.warp import transform_bounds
         twi_bounds_wgs84 = transform_bounds(src.crs, 'EPSG:4326', *src.bounds)
@@ -596,35 +702,48 @@ def _create_interactive_map(
 
         twi_rgb = cmap(norm(twi_ds))
 
-        # Save overlay image next to the HTML (basename for relative ref)
+        # Encode the colourised overlay as a base64 data URI so that the
+        # image is self-contained inside the HTML. The VS Code HTML preview
+        # loads HTML via `srcdoc` (inline string injection), which gives the
+        # iframe NO base URL — relative file:// references simply 404.
+        # Embedding as a data URI avoids that entirely.  After the ≤2000px
+        # downsample above, the PNG is typically 300 KB–2 MB which is fine.
+        import io as _io, base64 as _b64
+        _buf = _io.BytesIO()
+        plt.imsave(_buf, twi_rgb, format='png')
+        _buf.seek(0)
+        overlay_data_uri = (
+            "data:image/png;base64,"
+            + _b64.b64encode(_buf.read()).decode('ascii')
+        )
+        # Also persist the PNG as a sibling for users who open the HTML in
+        # a regular browser (where a data URI works too, but the file is
+        # a useful standalone artefact).
         overlay_basename = f"{output_prefix}_overlay.png"
         overlay_path = os.path.join(output_dir, overlay_basename)
         plt.imsave(overlay_path, twi_rgb)
 
-    # Folium's ImageOverlay always tries to open() the path and base64-embed
-    # the bytes, which is the very thing we're trying to avoid. Bypass it
-    # with a raw Leaflet imageOverlay JS snippet that loads the sibling PNG
-    # by relative URL — the HTML and PNG live in the same directory.
+    # Wire the overlay into the Leaflet map via a raw <script> block.
+    # We use `m._id` to construct the exact variable name that folium
+    # emits (e.g. `map_a3f9b2…`) rather than scanning Object.values(window),
+    # which can miss the map in strict VS Code webview sandboxes.
+    map_var = f"map_{m._id}"
     sw_lat, sw_lon = twi_bounds_wgs84[1], twi_bounds_wgs84[0]
     ne_lat, ne_lon = twi_bounds_wgs84[3], twi_bounds_wgs84[2]
     overlay_js = f"""
     <script>
     (function() {{
+        var _dataUri = {json.dumps(overlay_data_uri)};
         function wireOverlay() {{
-            var maps = Object.values(window).filter(function(v) {{
-                return v && typeof v === 'object' && v.eachLayer && v._container;
-            }});
-            if (!maps.length) {{ return setTimeout(wireOverlay, 80); }}
-            var m = maps[0];
-            var overlay = L.imageOverlay(
-                {json.dumps(overlay_basename)},
-                [[{sw_lat}, {sw_lon}], [{ne_lat}, {ne_lon}]],
-                {{opacity: 0.6}}
-            );
-            overlay.addTo(m);
-            if (m.layerscontrol) {{
-                m.layerscontrol.addOverlay(overlay, 'TWI Overlay');
+            if (typeof {map_var} === 'undefined') {{
+                return setTimeout(wireOverlay, 80);
             }}
+            var overlay = L.imageOverlay(
+                _dataUri,
+                [[{sw_lat}, {sw_lon}], [{ne_lat}, {ne_lon}]],
+                {{opacity: 0.6, interactive: false}}
+            );
+            overlay.addTo({map_var});
         }}
         if (document.readyState === 'complete') {{ wireOverlay(); }}
         else {{ window.addEventListener('load', wireOverlay); }}
@@ -821,6 +940,9 @@ def compute_twi_result(
             clean["bounds"] = None
 
         clean["crs"] = raw.get("crs")
+        # DEM provenance
+        clean["dem_product"] = raw.get("dem_product")
+        clean["dem_source"] = raw.get("dem_source")
 
         return HydroResult(
             data=clean,

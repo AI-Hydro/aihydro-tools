@@ -95,19 +95,21 @@ def _get_version() -> str:
 # ---------------------------------------------------------------------------
 
 def extract_hydrological_signatures(
-    gauge_id: str,
+    gauge_id: str | None,
     watershed_geojson: dict,
     area_km2: float,
     start_date: str = "1989-10-01",
     end_date: str = "2009-09-30",
+    q_cms_series: list | None = None,
 ) -> HydroResult:
     """
-    Extract 17 CAMELS-style hydrological signatures for a USGS gauge.
+    Extract 17 CAMELS-style hydrological signatures for a watershed.
 
     Parameters
     ----------
-    gauge_id : str
-        USGS gauge identifier (8-digit code)
+    gauge_id : str or None
+        USGS gauge identifier (8-digit code). Pass None for globally-delineated
+        watersheds — in that case ``q_cms_series`` must be provided instead.
     watershed_geojson : dict
         Watershed boundary as GeoJSON polygon dict (from delineate_watershed)
     area_km2 : float
@@ -116,6 +118,10 @@ def extract_hydrological_signatures(
         Start date YYYY-MM-DD (default: "1989-10-01" — CAMELS period)
     end_date : str, optional
         End date YYYY-MM-DD (default: "2009-09-30" — CAMELS period)
+    q_cms_series : list[float] or None, optional
+        Pre-loaded daily streamflow array (m³/s). When supplied the USGS
+        NWIS fetch is skipped — enables global / non-USGS workflows where
+        streamflow was already fetched via ``data_fetch`` or another source.
 
     Returns
     -------
@@ -154,8 +160,18 @@ def extract_hydrological_signatures(
         ) from e
 
     try:
-        # Fetch streamflow via internal helper (returns old-style dict)
-        streamflow_result = _fetch_streamflow_internal(gauge_id, start_date, end_date)
+        # Streamflow source: pre-loaded array (global / non-USGS path) takes
+        # priority over a live USGS NWIS fetch, which requires gauge_id.
+        if q_cms_series is not None:
+            streamflow_result = {"q_cms": list(q_cms_series)}
+        elif gauge_id:
+            streamflow_result = _fetch_streamflow_internal(gauge_id, start_date, end_date)
+        else:
+            log.warning(
+                "extract_hydrological_signatures: no gauge_id and no q_cms_series — "
+                "returning default (zero) signatures."
+            )
+            streamflow_result = None
 
         if streamflow_result is None or len(streamflow_result.get("q_cms", [])) < 365:
             log.warning("Insufficient streamflow data for gauge %s", gauge_id)
@@ -172,21 +188,27 @@ def extract_hydrological_signatures(
                 **compute_timing_stats_camels(q_mm_day),
                 **compute_slope_fdc_camels(q_mm_day),
             }
-            log.info("Extracted %d signatures for gauge %s", len(sigs), gauge_id)
+            log.info(
+                "Extracted %d signatures (gauge=%s, preloaded_q=%s)",
+                len(sigs),
+                gauge_id or "none",
+                q_cms_series is not None,
+            )
 
         # Ensure all values are JSON-serializable Python floats
         clean = {k: (float(v) if v is not None and np.isfinite(float(v)) else None)
                  for k, v in sigs.items()}
 
+        _sources = _SOURCES_GRIDMET + (_SOURCES_NWIS if gauge_id else [])
         return HydroResult(
             data=clean,
             meta=HydroMeta(
                 tool=_TOOL_PATH_SIGNATURES,
                 version=_get_version(),
-                gauge_id=gauge_id,
-                sources=_SOURCES_NWIS + _SOURCES_GRIDMET,
+                gauge_id=gauge_id or "",
+                sources=_sources,
                 params={
-                    "gauge_id": gauge_id,
+                    "gauge_id": gauge_id or "global_watershed",
                     "area_km2": area_km2,
                     "start_date": start_date,
                     "end_date": end_date,

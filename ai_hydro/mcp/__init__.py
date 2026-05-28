@@ -56,10 +56,18 @@ _rpv(
 # Third-party packages register tools in their pyproject.toml:
 #   [project.entry-points."aihydro.tools"]
 #   my_tool = "my_package.module:my_tool_function"
-from ai_hydro.mcp.registry import discover_tools as _discover_tools
+from ai_hydro.mcp.registry import (  # noqa: E402
+    discover_tools as _discover_tools,
+    invoke_plugin_registrars as _invoke_plugin_registrars,
+)
 
+# Pattern 1: single-tool entry points (one function = one tool)
 for _name, _fn in _discover_tools():
     mcp.tool(name=_name)(_fn)
+
+# Pattern 2: multi-tool registrars (one function = many tools)
+# aihydro-data uses this to register its 9 data_* tools in one call.
+_invoke_plugin_registrars(mcp)
 
 
 # ── Wave 1.5: tag registered tools with tier/domain metadata ──────────────────
