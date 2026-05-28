@@ -3,6 +3,8 @@ CLI bridge for AI-Hydro map panel (MERIT vectors + pour-point delineation).
 
 Usage:
   python -m ai_hydro.hydro_map_cli merit-ensure-basin --lat 30 --lon 76 --json
+  python -m ai_hydro.hydro_map_cli merit-ensure-basins-region --pfaf 45 --json
+  python -m ai_hydro.hydro_map_cli merit-catchment-layers --lat 30 --lon 76 --json
   python -m ai_hydro.hydro_map_cli merit-ensure-region --preset south_asia --json
   python -m ai_hydro.hydro_map_cli merit-layers --lat 30 --lon 76 --json
   python -m ai_hydro.hydro_map_cli delineate-point --lat 30 --lon 76 --json
@@ -91,6 +93,52 @@ def cmd_merit_ensure_region(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_merit_ensure_basins_region(args: argparse.Namespace) -> dict[str, Any]:
+    from dataclasses import asdict, is_dataclass
+
+    from ai_hydro.data.merit_manager import MeritDataManager
+
+    mgr = MeritDataManager()
+    pfaf = args.pfaf.zfill(2) if args.pfaf else None
+    if pfaf is None:
+        if args.lat is None or args.lon is None:
+            return {
+                "ok": False,
+                "type": "merit_ensure_basins_region",
+                "message": "Either --pfaf or --lat/--lon is required.",
+            }
+        if args.download:
+            # Resolving from coordinates needs the level-2 index. This may stage
+            # the small lookup index and rivers, but regional catchments remain
+            # controlled by ensure_basins_region below.
+            basin_status = mgr.ensure_basin(args.lat, args.lon, download=True)
+            pfaf = basin_status.pfaf_code
+        else:
+            pfaf = mgr.resolve_pfaf_region(args.lat, args.lon)
+
+    status = mgr.ensure_basins_region(
+        pfaf,
+        acquisition_policy="download_if_missing" if args.download else "check_only",
+    )
+    payload = asdict(status) if is_dataclass(status) else dict(vars(status))
+    ready = bool(status.catchments_ready)
+    payload.update(
+        {
+            "ok": ready,
+            "type": "merit_ensure_basins_region",
+            "pfaf_region": status.pfaf_region,
+            "message": status.message,
+        }
+    )
+    if not ready and args.download:
+        payload["message"] = (
+            status.message
+            + " Configure AIHYDRO_MERIT_BASE_URL or manifest download_url entries for "
+            "MERIT-Basins catchment archives."
+        )
+    return payload
+
+
 def _merit_layers_message(
     layers: list[dict[str, Any]],
     *,
@@ -157,26 +205,122 @@ def cmd_merit_layers(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def cmd_merit_catchment_layers(args: argparse.Namespace) -> dict[str, Any]:
+    from dataclasses import asdict, is_dataclass
+
+    from ai_hydro.data.merit_manager import MeritDataManager
+    from ai_hydro.data.merit_map_layers import merit_map_layers_for_view
+
+    mgr = MeritDataManager()
+    if args.pfaf:
+        pfaf = args.pfaf.zfill(2)
+    else:
+        # Ensure the small level-2 lookup exists if a configured/minimal source is
+        # available, mirroring the river-network button behavior.
+        mgr.ensure_basin(args.lat, args.lon, download=not args.no_download)
+        pfaf = mgr.resolve_pfaf_region(args.lat, args.lon)
+
+    staging = mgr.ensure_basins_region(
+        pfaf,
+        acquisition_policy="download_if_missing" if not args.no_download else "check_only",
+    )
+    if not staging.catchments_ready:
+        staging_payload = asdict(staging) if is_dataclass(staging) else dict(vars(staging))
+        message = staging.message
+        if not args.no_download:
+            message += (
+                " No MERIT-Basins vector download source is configured. Set "
+                "AIHYDRO_MERIT_BASE_URL or add catchment download_url entries "
+                "to merit_manifest.yaml."
+            )
+        return {
+            "ok": False,
+            "type": "merit_catchment_layers",
+            "layers": [],
+            "staging": staging_payload,
+            "message": message,
+        }
+
+    layers = merit_map_layers_for_view(
+        lat=args.lat,
+        lon=args.lon,
+        min_lon=args.min_lon,
+        min_lat=args.min_lat,
+        max_lon=args.max_lon,
+        max_lat=args.max_lat,
+        include_level2=False,
+        include_rivers=False,
+        include_catchments=True,
+        pfaf_codes=[pfaf],
+    )
+    staging_payload = asdict(staging) if is_dataclass(staging) else dict(vars(staging))
+    return {
+        "ok": len(layers) > 0,
+        "type": "merit_catchment_layers",
+        "layers": layers,
+        "staging": staging_payload,
+        "message": (
+            f"MERIT catchments loaded for Pfaf {pfaf}."
+            if layers
+            else f"MERIT catchments are staged for Pfaf {pfaf}, but none intersect this view."
+        ),
+    }
+
+
 def cmd_delineate_point(args: argparse.Namespace) -> dict[str, Any]:
-    from ai_hydro.mcp.helpers import _normalize_session_id
     from ai_hydro.mcp.tools_analysis import delineate_watershed_from_point
 
-    session_id = _normalize_session_id(args.session_id)
+    # Pass session_id=None (default) so delineate_watershed_from_point generates
+    # a coordinate-based slug via _resolve_session auto-create.  Only use an
+    # explicit session_id when the caller (e.g. map panel with existing session)
+    # provides one.
+    session_id: str | None = args.session_id or None
+    method = args.method
+    staging: dict[str, Any] | None = None
+    if method == "auto":
+        try:
+            from ai_hydro.analysis.delineation.router import is_conus
+            from ai_hydro.analysis.delineation.merit_flowdir_pipeline import (
+                merit_ensure_routing_region,
+                merit_resolve_pfaf_region,
+            )
+
+            if not is_conus(args.lat, args.lon):
+                pfaf = merit_resolve_pfaf_region(args.lat, args.lon)
+                staging = merit_ensure_routing_region(
+                    pfaf_region=pfaf,
+                    acquisition_policy="download_if_missing",
+                )
+                method = "local_merit" if staging.get("flowdir_ready") else "merit_gee"
+        except Exception as e:
+            staging = {
+                "message": f"MERIT regional staging check failed: {e}",
+                "flowdir_ready": False,
+            }
+            method = "merit_gee"
+
     result = delineate_watershed_from_point(
         session_id=session_id,
         lat=args.lat,
         lon=args.lon,
         workspace_dir=args.workspace_dir,
         expected_area_km2=args.expected_area_km2,
-        method=args.method,
+        method=method,
         name=args.name,
     )
     if result.get("error") or result.get("code"):
-        return {"ok": False, "type": "delineate_point", "message": result.get("message", "Delineation failed"), **result}
+        return {
+            "ok": False,
+            "type": "delineate_point",
+            "message": result.get("message", "Delineation failed"),
+            "staging": staging,
+            **result,
+        }
     return {
         "ok": True,
         "type": "delineate_point",
         "data": result.get("data", {}),
+        "staging": staging,
         "message": f"Delineated {result.get('data', {}).get('area_km2', '?')} km² ({result.get('data', {}).get('method_used', '')})",
     }
 
@@ -342,6 +486,12 @@ def main(argv: list[str] | None = None) -> int:
     p_reg.add_argument("--lon", type=float, default=None)
     p_reg.add_argument("--no-download", action="store_true")
 
+    p_basins = sub.add_parser("merit-ensure-basins-region")
+    p_basins.add_argument("--pfaf", default=None)
+    p_basins.add_argument("--lat", type=float, default=None)
+    p_basins.add_argument("--lon", type=float, default=None)
+    p_basins.add_argument("--download", action="store_true")
+
     p_layers = sub.add_parser("merit-layers")
     p_layers.add_argument("--lat", type=float, required=True)
     p_layers.add_argument("--lon", type=float, required=True)
@@ -354,10 +504,20 @@ def main(argv: list[str] | None = None) -> int:
     p_layers.add_argument("--catchments", action="store_true")
     p_layers.add_argument("--pfaf", action="append", default=None)
 
+    p_cat_layers = sub.add_parser("merit-catchment-layers")
+    p_cat_layers.add_argument("--lat", type=float, required=True)
+    p_cat_layers.add_argument("--lon", type=float, required=True)
+    p_cat_layers.add_argument("--min-lon", type=float, default=None)
+    p_cat_layers.add_argument("--min-lat", type=float, default=None)
+    p_cat_layers.add_argument("--max-lon", type=float, default=None)
+    p_cat_layers.add_argument("--max-lat", type=float, default=None)
+    p_cat_layers.add_argument("--pfaf", default=None)
+    p_cat_layers.add_argument("--no-download", action="store_true")
+
     p_del = sub.add_parser("delineate-point")
     p_del.add_argument("--lat", type=float, required=True)
     p_del.add_argument("--lon", type=float, required=True)
-    p_del.add_argument("--session-id", default="map")
+    p_del.add_argument("--session-id", default=None)
     p_del.add_argument("--workspace-dir", default=None)
     p_del.add_argument("--expected-area-km2", type=float, default=None)
     p_del.add_argument("--method", default="auto")
@@ -408,8 +568,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     handlers = {
         "merit-ensure-basin": cmd_merit_ensure_basin,
+        "merit-ensure-basins-region": cmd_merit_ensure_basins_region,
         "merit-ensure-region": cmd_merit_ensure_region,
         "merit-layers": cmd_merit_layers,
+        "merit-catchment-layers": cmd_merit_catchment_layers,
         "delineate-point": cmd_delineate_point,
         "list-presets": cmd_list_presets,
         "wbd-layers": cmd_wbd_layers,
