@@ -23,6 +23,7 @@ Thumbs.db
 # Cache
 *.sqlite
 cache/
+outputs/
 
 # Testing
 .pytest_cache/
