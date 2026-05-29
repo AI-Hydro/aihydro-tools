@@ -341,53 +341,135 @@ def plot_raster_tile(
     name: str,
     colormap: str = "viridis",
     nodata_alpha: bool = True,
+    index_name: Optional[str] = None,
+    watershed: "Optional[BaseGeometry]" = None,
+    tile_trigger_size: int = 8_000_000,
 ) -> Optional[tuple]:
-    """
-    Save a clean, decoration-free PNG suitable for use as a map tile overlay.
+    """Save a clean, decoration-free PNG suitable for use as a map tile overlay.
 
     No axes, no title, no colorbar — just the colormap applied to the data
-    array with NaN cells rendered as transparent (alpha=0). The returned
+    array with NaN cells rendered as transparent (alpha=0).  The returned
     bounds tuple is the geographic extent in WGS84 ready for deck.gl
-    BitmapLayer: [west, south, east, north].
+    BitmapLayer: ``[west, south, east, north]``.
+
+    For rasters larger than ``tile_trigger_size`` pixels (default 8 M), the
+    function automatically generates a multi-resolution tile pyramid via
+    :func:`~ai_hydro.analysis.tile_pyramid.generate_tile_pyramid` and returns
+    the overview PNG path.  Smaller rasters use the original single-PNG path.
 
     Parameters
     ----------
     array       : 2D float numpy array (NaN = nodata).
     bounds_wgs84: [west, south, east, north] in decimal degrees.
-    output_dir  : Directory to write the PNG.
+    output_dir  : Directory to write the PNG (and the tile pyramid if triggered).
     name        : Output filename stem (no extension).
-    colormap    : matplotlib colormap name (default: 'viridis').
+    colormap    : matplotlib colormap name (default: ``'viridis'``).
+                  Auto-resolved from the INDEX_REGISTRY when ``index_name``
+                  is provided.
     nodata_alpha: Render NaN cells as fully transparent (default: True).
+    index_name  : Optional spectral index name (e.g. ``'NDWI'``).  When given,
+                  the colormap is looked up in ``INDEX_REGISTRY`` unless the
+                  caller already overrode ``colormap`` explicitly.
+    watershed   : Optional shapely polygon (same CRS as the raster) passed to
+                  :class:`CatchmentGridSampler` inside the tile pyramid for
+                  chip pruning.  Only used when the large-raster path triggers.
+    tile_trigger_size : Pixel count above which the tile pyramid path is used.
 
     Returns
     -------
-    (path, bounds_list) — PNG path and WGS84 bounds, or None on failure.
+    ``(path, bounds_list)`` — PNG path and WGS84 bounds, or ``None`` on failure.
+    The ``path`` points to the overview PNG when the tile pyramid fires, so
+    callers can push it via :func:`push_raster_layer` without changes.
+
+    Notes
+    -----
+    No vertical flip — raster row 0 is north, matplotlib imshow places row 0
+    at the top of the image, and Leaflet/deck.gl imageOverlay places the top
+    at the north bound.  Flipping would invert the tile on the map canvas.
     """
     from matplotlib.colors import Normalize
 
     arr = np.asarray(array, dtype=float)
-
     valid = arr[np.isfinite(arr)]
     if len(valid) == 0:
         log.warning("plot_raster_tile: no valid pixels for %s", name)
         return None
 
+    # ------------------------------------------------------------------
+    # Colormap — consult INDEX_REGISTRY when index_name is given and the
+    # caller hasn't already overridden colormap from the default.
+    # ------------------------------------------------------------------
+    if index_name is not None and colormap == "viridis":
+        try:
+            from aihydro_data.transforms.indices import INDEX_REGISTRY
+            entry = INDEX_REGISTRY.get(index_name.upper())
+            if entry is not None:
+                colormap = entry.get("colormap", colormap)
+                log.debug(
+                    "plot_raster_tile: resolved colormap '%s' from INDEX_REGISTRY[%s]",
+                    colormap, index_name,
+                )
+        except Exception:
+            pass  # aihydro_data not installed; keep default
+
+    # ------------------------------------------------------------------
+    # Large-raster path: tile pyramid
+    # ------------------------------------------------------------------
+    if arr.size > tile_trigger_size:
+        log.info(
+            "plot_raster_tile: %d cells > %d — generating tile pyramid for '%s'",
+            arr.size, tile_trigger_size, name,
+        )
+        try:
+            import xarray as xr
+            from ai_hydro.analysis.tile_pyramid import generate_tile_pyramid
+
+            # Rebuild a minimal DataArray so the tile pyramid can use the
+            # sampler.  The caller passed a raw numpy array, so we reconstruct
+            # a uniform-spaced grid from bounds_wgs84.
+            h, w = arr.shape
+            x = np.linspace(bounds_wgs84[0], bounds_wgs84[2], w)
+            y = np.linspace(bounds_wgs84[3], bounds_wgs84[1], h)  # north→south
+            raster_da = xr.DataArray(
+                arr.astype("float32"),
+                dims=("y", "x"),
+                coords={"y": y, "x": x},
+            )
+            result = generate_tile_pyramid(
+                raster=raster_da,
+                output_dir=output_dir,
+                name=name,
+                colormap=colormap,
+                watershed=watershed,
+                generate_tiles=True,
+            )
+            overview_path = result["overview_png"]
+            log.info(
+                "plot_raster_tile: pyramid for '%s': %d chips, overview → %s",
+                name, result["n_chips"], overview_path,
+            )
+            return overview_path, bounds_wgs84
+
+        except Exception as _exc:
+            log.warning(
+                "plot_raster_tile: tile pyramid failed (%s); falling back to single PNG",
+                _exc,
+            )
+            # Fall through to single-PNG path below.
+
+    # ------------------------------------------------------------------
+    # Single-PNG path (small rasters, or pyramid fallback)
+    # ------------------------------------------------------------------
     vmin, vmax = float(np.percentile(valid, 2)), float(np.percentile(valid, 98))
     if vmin == vmax:
         vmax = vmin + 1.0
 
     norm = Normalize(vmin=vmin, vmax=vmax)
     cmap = plt.get_cmap(colormap)
-
-    rgba = cmap(norm(arr))  # shape (H, W, 4), values 0–1
+    rgba = cmap(norm(arr))  # (H, W, 4), values 0–1
 
     if nodata_alpha:
-        alpha_mask = np.isfinite(arr).astype(float)
-        rgba[..., 3] = alpha_mask
-
-    # No vertical flip — raster row 0 is north, matplotlib imshow places row 0 at the
-    # top of the image, and Leaflet imageOverlay places the top of the image at the
-    # north bound.  Flipping would invert the tile on the Leaflet canvas.
+        rgba[..., 3] = np.isfinite(arr).astype(float)
 
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, f"{name}_tile.png")

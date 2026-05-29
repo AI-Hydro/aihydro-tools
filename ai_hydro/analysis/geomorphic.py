@@ -10,10 +10,12 @@ References:
     - Strahler, A.N. (1952) - Hypsometric analysis
     - Schumm, S.A. (1956) - Evolution of drainage systems
     - Gray, D.M. (1961) - Synthetic unit hydrographs
+    - Horn, B.K.P. (1981) - Hill shading and the reflectance map
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 from typing import Tuple, Dict, Optional, Union
@@ -32,7 +34,69 @@ except ImportError:
     _DEPS_AVAILABLE = False
     geod = None
 
+log = logging.getLogger(__name__)
+
+# Auto-trigger chunked slope computation when DEM exceeds this cell count.
+# 10 M cells ≈ 80 MB at float64 — single-pass xrspatial.slope is fine below
+# this; above it we stream through CatchmentGridSampler to avoid OOM.
+_SLOPE_CHUNK_TRIGGER = 10_000_000
+
 warnings.filterwarnings('ignore')
+
+
+def _slope_horn_kernel(
+    dem_arr: np.ndarray,
+    mask: np.ndarray,
+    cell_size_m: float,
+) -> np.ndarray:
+    """Compute slope (degrees) via Horn (1981) 3×3 finite-difference formula.
+
+    This is a pure-numpy alternative to ``xrspatial.slope``, compatible with
+    Python 3.13+ and usable as the ``fn`` argument to
+    ``chunked_raster_apply``.  Pass ``kernel_pad=1`` so that the 1-cell
+    border (whose neighbourhood extends outside the chip) is dropped before
+    stitching.
+
+    Parameters
+    ----------
+    dem_arr : np.ndarray  shape (H, W)
+        Elevation values in metres.
+    mask : np.ndarray  shape (H, W)
+        Boolean watershed mask (unused here — slope is valid everywhere, and
+        the final masking is applied by the applier).  Kept in signature so
+        the function satisfies the ``fn(arr, mask)`` contract.
+    cell_size_m : float
+        Pixel size in metres (used in the denominator).
+
+    Returns
+    -------
+    np.ndarray  shape (H, W), dtype float32
+        Slope in degrees.  Border pixels (row/col 0 and -1) get NaN because
+        the 3×3 window is incomplete there; ``kernel_pad=1`` in the applier
+        ensures these are never stitched into the output.
+    """
+    arr = dem_arr.astype(np.float64)
+    out = np.full(arr.shape, np.nan, dtype=np.float32)
+    if arr.shape[0] < 3 or arr.shape[1] < 3:
+        return out
+
+    # Horn (1981) gradient in x and y directions.
+    # dz_dx = ((z[r-1,c+1] + 2*z[r,c+1] + z[r+1,c+1]) -
+    #           (z[r-1,c-1] + 2*z[r,c-1] + z[r+1,c-1])) / (8 * cell_size)
+    # dz_dy = ((z[r+1,c-1] + 2*z[r+1,c] + z[r+1,c+1]) -
+    #           (z[r-1,c-1] + 2*z[r-1,c] + z[r-1,c+1])) / (8 * cell_size)
+    dz_dx = (
+        (arr[:-2, 2:] + 2.0 * arr[1:-1, 2:] + arr[2:, 2:]) -
+        (arr[:-2, :-2] + 2.0 * arr[1:-1, :-2] + arr[2:, :-2])
+    ) / (8.0 * cell_size_m)
+    dz_dy = (
+        (arr[2:, :-2] + 2.0 * arr[2:, 1:-1] + arr[2:, 2:]) -
+        (arr[:-2, :-2] + 2.0 * arr[:-2, 1:-1] + arr[:-2, 2:])
+    ) / (8.0 * cell_size_m)
+
+    slope_rad = np.arctan(np.sqrt(dz_dx ** 2 + dz_dy ** 2))
+    out[1:-1, 1:-1] = np.degrees(slope_rad).astype(np.float32)
+    return out
 
 
 def extract_geomorphic_parameters(
@@ -432,8 +496,59 @@ def _compute_relief_metrics(
         else:
             H_m = max(0.0, z_max - outlet_elev)
         
-        # Compute slope
-        slope_deg = xrspatial.slope(dem_proj)
+        # Compute slope — chunked path for large DEMs to avoid OOM.
+        # xrspatial.slope uses a 3×3 neighbourhood (Horn 1981), so
+        # kernel_pad=1 is correct for the chunked applier.
+        try:
+            res = dem_proj.rio.resolution()
+            _cell_m = abs(float(res[0]))
+        except Exception:
+            _cell_m = 30.0  # default 30 m if resolution unavailable
+
+        if dem_proj.size > _SLOPE_CHUNK_TRIGGER:
+            # Build a projected watershed polygon in the DEM's native CRS so
+            # the sampler can prune chips that don't intersect the basin.
+            try:
+                _ws_geom_proj = gpd.GeoDataFrame(
+                    [1], geometry=[geom], crs="EPSG:4326"
+                ).to_crs(dem_proj.rio.crs).geometry.iloc[0]
+            except Exception:
+                _ws_geom_proj = None
+
+            if _ws_geom_proj is not None:
+                log.info(
+                    "geomorphic._compute_relief_metrics: DEM has %d cells > "
+                    "threshold %d — using chunked slope computation",
+                    dem_proj.size, _SLOPE_CHUNK_TRIGGER,
+                )
+                try:
+                    from aihydro_data.sampling import chunked_raster_apply
+                    _slope_fn = lambda arr, msk: _slope_horn_kernel(arr, msk, _cell_m)
+                    slope_deg = chunked_raster_apply(
+                        dem_proj, _ws_geom_proj, _slope_fn,
+                        kernel_pad=1,
+                        auto_trigger_size=0,   # force chunked
+                    )
+                except Exception as _ce:
+                    log.warning(
+                        "Chunked slope failed (%s); falling back to xrspatial", _ce
+                    )
+                    slope_deg = xrspatial.slope(dem_proj)
+            else:
+                slope_deg = xrspatial.slope(dem_proj)
+        else:
+            # Small DEM — single-pass xrspatial (fast, no overhead).
+            try:
+                slope_deg = xrspatial.slope(dem_proj)
+            except Exception:
+                # xrspatial unavailable (e.g., Python 3.13) — fall back to
+                # the numpy kernel unconditionally.
+                _slope_fn = lambda arr, msk: _slope_horn_kernel(arr, msk, _cell_m)
+                import xarray as xr
+                slope_arr = _slope_fn(dem_proj.values, np.ones(dem_proj.shape, dtype=bool))
+                slope_deg = xr.DataArray(
+                    slope_arr, dims=dem_proj.dims, coords=dem_proj.coords
+                )
         slope_pct = np.tan(np.deg2rad(slope_deg)) * 100.0
         mean_slope_pct = float(np.nanmean(slope_pct.values))
         

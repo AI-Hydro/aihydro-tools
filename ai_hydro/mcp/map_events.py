@@ -197,6 +197,83 @@ def push_raster_layer(
         return False
 
 
+def push_tile_layer(
+    layer_id: str,
+    name: str,
+    overview_png: str,
+    manifest_path: str,
+    bounds_wgs84: list,
+    colormap: str = "viridis",
+    opacity: float = 0.75,
+    auto_zoom: bool = True,
+    open_map: bool = True,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    """Write a tile-pyramid map layer event.
+
+    The webview renders the overview PNG immediately via the existing
+    BitmapLayer path (``layerType: "raster"``), while storing the manifest
+    path in metadata for future progressive-tile loading support.
+
+    Parameters
+    ----------
+    layer_id      : Unique layer key.
+    name          : Display name.
+    overview_png  : Absolute path to the downsampled overview PNG from
+                    :func:`~ai_hydro.analysis.tile_pyramid.generate_tile_pyramid`.
+    manifest_path : Absolute path to the JSON manifest (chip bounds + levels).
+    bounds_wgs84  : [west, south, east, north] in EPSG:4326.
+    colormap      : Colormap name embedded as metadata for legend hints.
+    opacity       : Overall layer opacity (0–1).
+    auto_zoom     : Fit the map to this layer's extent.
+    open_map      : Open the map panel if not already visible.
+    metadata      : Extra key/value pairs shown in the Layers panel.
+
+    Returns
+    -------
+    True if the event file was written successfully.
+    """
+    try:
+        _MAP_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+
+        event: dict[str, Any] = {
+            "id": layer_id,
+            "name": name,
+            # Use "raster" layerType so the existing BitmapLayer path renders
+            # the overview PNG immediately.  The manifest_path in metadata
+            # enables future native progressive-tile rendering.
+            "layerType": "raster",
+            "raster": {
+                "path": str(overview_png),
+                "bounds": bounds_wgs84,
+                "opacity": opacity,
+                "colormap": colormap,
+            },
+            "geojson": "",
+            "style": {},
+            "autoZoom": auto_zoom,
+            "openMap": open_map,
+            "metadata": {
+                "raster_colormap": colormap,
+                "raster_bounds": json.dumps(bounds_wgs84),
+                "tile_pyramid": "true",
+                "tile_pyramid_manifest": str(manifest_path),
+                "tile_pyramid_overview": str(overview_png),
+                **(metadata or {}),
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
+        event_file.write_text(json.dumps(event), encoding="utf-8")
+        log.debug("Tile layer map event written: %s → %s", layer_id, event_file.name)
+        return True
+
+    except Exception as exc:
+        log.warning("push_tile_layer failed (non-fatal): %s", exc)
+        return False
+
+
 def push_gauge_point(
     layer_id: str,
     name: str,

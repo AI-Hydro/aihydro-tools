@@ -45,6 +45,8 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
                     "list_known_metrics", "get_dataset_info", "list_known_datasets",
                     "get_equation"),
     "workflows":   ("list_available_workflows", "get_workflow_manifest"),
+    "discovery":   ("aihydro_describe_capability", "describe_tool", "describe_tools",
+                    "list_available_tools"),
     "execution":   ("run_python", "list_relevant_clis", "get_library_reference"),
     "persona":     ("get_researcher", "update_researcher", "log_researcher"),
     "ledger":      ("add_journal", "search_experiments"),
@@ -54,6 +56,8 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
                     "data_describe_product", "data_validate_request",
                     "data_get_cache_status", "data_invalidate_cache",
                     "data_doctor", "data_help"),
+    # v0.2.0 — spectral index tools (TorchGeo cherry-pick Day 5)
+    "analysis":    ("compute_spectral_index", "list_spectral_indices"),
 }
 
 
@@ -120,3 +124,172 @@ async def aihydro_describe_capability(domain: str | None = None) -> dict:
         })
     matched.sort(key=lambda x: (x["tier"] or 99, x["name"]))
     return {"domain": d, "count": len(matched), "tools": matched}
+
+
+# ---------------------------------------------------------------------------
+# describe_tool / describe_tools — on-demand full-schema fetch
+#
+# Under progressive disclosure, less-common tools are injected into the system
+# prompt as a one-line summary only (no parameter schema). Before the agent
+# calls such a tool for the first time it must fetch the exact parameters with
+# describe_tool(name). This returns the full inputSchema, per-parameter docs,
+# and a copy-pasteable worked example — everything a weak model needs to make
+# a correct call without guessing parameter names.
+# ---------------------------------------------------------------------------
+
+def _example_value(name: str, spec: dict):
+    """Best-effort placeholder value for a parameter, for the worked example."""
+    if "default" in spec and spec["default"] is not None:
+        return spec["default"]
+    if "enum" in spec and spec["enum"]:
+        return spec["enum"][0]
+    t = spec.get("type")
+    if isinstance(t, list):  # e.g. ["string", "null"]
+        t = next((x for x in t if x != "null"), "string")
+    # A few name-based hints for common AI-Hydro params
+    lname = name.lower()
+    if "session_id" in lname:
+        return "<session_id>"
+    if lname in ("start", "end") or lname.endswith("_date"):
+        return "2024-01-01"
+    if "lat" in lname:
+        return 28.22
+    if "lon" in lname:
+        return 76.77
+    if t == "string":
+        return f"<{name}>"
+    if t == "integer":
+        return 0
+    if t == "number":
+        return 0.0
+    if t == "boolean":
+        return True
+    if t == "array":
+        return []
+    if t == "object":
+        return {}
+    return f"<{name}>"
+
+
+def _describe_one(tool) -> dict:
+    """Build the full descriptor for a single MCP tool object."""
+    mt = tool.to_mcp_tool() if hasattr(tool, "to_mcp_tool") else tool
+    schema = getattr(mt, "inputSchema", None) or {}
+    props: dict = schema.get("properties", {}) or {}
+    required = set(schema.get("required", []) or [])
+
+    params = []
+    for pname, spec in props.items():
+        spec = spec or {}
+        ptype = spec.get("type")
+        if isinstance(ptype, list):
+            ptype = "|".join(ptype)
+        params.append({
+            "name": pname,
+            "type": ptype or "any",
+            "required": pname in required,
+            "description": (spec.get("description") or "").strip(),
+            "default": spec.get("default"),
+            "enum": spec.get("enum"),
+        })
+    # Required params first, then alphabetical
+    params.sort(key=lambda p: (not p["required"], p["name"]))
+
+    # Worked example: all required params + any with a non-null default
+    example_args = {}
+    for pname, spec in props.items():
+        spec = spec or {}
+        if pname in required or (spec.get("default") is not None):
+            example_args[pname] = _example_value(pname, spec)
+
+    return {
+        "name": mt.name,
+        "description": (mt.description or "").strip(),
+        "tier": TOOL_TIERS.get(mt.name),
+        "input_schema": schema,
+        "parameters": params,
+        "required": sorted(required),
+        "example_call": {"tool": mt.name, "arguments": example_args},
+    }
+
+
+@mcp.tool()
+async def describe_tool(name: str) -> dict:
+    """
+    Fetch the FULL parameter schema for a single tool, plus a worked example.
+
+    Call this BEFORE the first time you use any tool that was shown to you by
+    name only (summary-level tools, listed under their domain). It returns the
+    exact parameter names, types, which are required, and a copy-pasteable
+    example call — so you never have to guess parameter names.
+
+    Parameters
+    ----------
+    name : str
+        Exact tool name (e.g. "compute_twi"). Case-insensitive match is
+        attempted as a fallback.
+
+    Returns
+    -------
+    dict with `name`, `description`, `tier`, `input_schema` (full JSON schema),
+    `parameters` (per-param docs), `required`, and `example_call`.
+    On an unknown name: `error`, `message`, and `did_you_mean` (closest names).
+    """
+    tools = await mcp.list_tools()
+    by_name = {t.name: t for t in tools}
+
+    tool = by_name.get(name)
+    if tool is None:
+        # Case-insensitive fallback
+        lower = {t.name.lower(): t for t in tools}
+        tool = lower.get(name.strip().lower())
+
+    if tool is None:
+        import difflib
+        suggestions = difflib.get_close_matches(name, list(by_name.keys()), n=5, cutoff=0.4)
+        return {
+            "error": True,
+            "message": f"Unknown tool '{name}'.",
+            "did_you_mean": suggestions,
+            "hint": "Use aihydro_describe_capability(domain) to browse tools, "
+                    "or list_available_tools() for the full name list.",
+        }
+
+    return _describe_one(tool)
+
+
+@mcp.tool()
+async def describe_tools(names: list[str]) -> dict:
+    """
+    Fetch full parameter schemas for several tools at once (batch describe_tool).
+
+    Use this when you plan to chain multiple summary-level tools — fetch all
+    their schemas in one call instead of one round-trip each.
+
+    Parameters
+    ----------
+    names : list[str]
+        Tool names to describe.
+
+    Returns
+    -------
+    dict with `tools` (list of descriptors, same shape as describe_tool) and
+    `unknown` (names that could not be resolved, with suggestions).
+    """
+    tools = await mcp.list_tools()
+    by_name = {t.name: t for t in tools}
+    lower = {t.name.lower(): t for t in tools}
+
+    out, unknown = [], []
+    import difflib
+    for raw in names or []:
+        tool = by_name.get(raw) or lower.get(str(raw).strip().lower())
+        if tool is None:
+            unknown.append({
+                "name": raw,
+                "did_you_mean": difflib.get_close_matches(
+                    raw, list(by_name.keys()), n=3, cutoff=0.4),
+            })
+        else:
+            out.append(_describe_one(tool))
+    return {"count": len(out), "tools": out, "unknown": unknown}

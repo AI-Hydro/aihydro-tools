@@ -26,6 +26,7 @@ from ai_hydro.mcp import tools_preview      # noqa: F401  — HTML preview obser
 from ai_hydro.mcp import tools_citations    # noqa: F401  — v1.7.0: Citation lookup (CrossRef/SemanticScholar/DataCite)
 from ai_hydro.mcp import tools_course       # noqa: F401  — v1.8.0: course mode (state, navigate, set_progress, scaffold, curriculum)
 from ai_hydro.mcp import tools_discovery    # noqa: F401  — v1.8.0: aihydro_describe_capability (token-efficient tool discovery)
+from ai_hydro.mcp import tools_indices      # noqa: F401  — v0.2.0: spectral index tools (compute_spectral_index, list_spectral_indices)
 
 # ── Tier 1 post-run validator registrations ───────────────────────────────
 # Registered after all tool modules are imported so validator callables exist.
@@ -84,7 +85,7 @@ _invoke_plugin_registrars(mcp)
 
 def _tag_tools_with_tier_meta() -> None:
     """Patch tier/domain into the meta dict of every registered tool."""
-    from ai_hydro.mcp.app import TOOL_TIERS
+    from ai_hydro.mcp.app import TOOL_TIERS, is_hot_tool
     from ai_hydro.mcp.tools_discovery import _DOMAIN_PREFIXES
 
     # Reverse-lookup: longest matching prefix wins (more specific first)
@@ -113,6 +114,9 @@ def _tag_tools_with_tier_meta() -> None:
         existing = dict(comp.meta) if comp.meta else {}
         existing.setdefault("tier", tier)
         existing.setdefault("domain", domain)
+        # `hot` drives the extension's progressive-disclosure renderer: hot
+        # tools get their full inputSchema inline, others get a summary line.
+        existing.setdefault("hot", is_hot_tool(name))
         comp.meta = existing
         tagged += 1
     import logging
@@ -127,6 +131,21 @@ except Exception as _e:
     import logging
     logging.getLogger("ai_hydro.mcp").warning(
         "Wave 1.5 tier tagging skipped: %s", _e
+    )
+
+
+# ── WS-4: argument-repair + self-correcting-error middleware ──────────────────
+# Sits in front of every tool call: repairs aliased/mistyped arguments before
+# execution, and on unrecoverable failure returns a structured self-help payload
+# (schema + corrected example) instead of a bare error, so the weak driving
+# model can self-correct on its next turn.
+try:
+    from ai_hydro.mcp.arg_repair import install_arg_repair as _install_arg_repair
+    _install_arg_repair(mcp)
+except Exception as _e:
+    import logging
+    logging.getLogger("ai_hydro.mcp").warning(
+        "WS-4 arg-repair middleware not installed: %s", _e
     )
 
 

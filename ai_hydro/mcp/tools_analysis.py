@@ -774,7 +774,11 @@ def fetch_streamflow_data(
     interval: str = "daily",
 ) -> dict:
     """
-    Fetch USGS streamflow time series (NWIS).
+    [DEPRECATED — prefer data_fetch] Fetch USGS streamflow time series (NWIS).
+
+    Superseded by the unified data_fetch (aihydro-data). This shim still works
+    and is scheduled for removal in the next minor release. New code should call
+    data_fetch(variable='streamflow', ...).
 
     Parameters
     ----------
@@ -1547,9 +1551,12 @@ async def fetch_forcing_data(
     ctx: Context | None = None,
 ) -> dict:
     """
-    Basin-averaged daily forcing data. Globally aware:
+    [DEPRECATED — prefer data_fetch] Basin-averaged daily forcing data. Globally aware:
     - **CONUS**: GridMET (pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc).
     - **Global**: CHIRPS precipitation + ERA5-Land temperature via aihydro-data.
+
+    Superseded by the unified data_fetch (aihydro-data). This shim still works and
+    is scheduled for removal in the next minor release.
 
     Requires delineate_watershed or delineate_watershed_from_point first.
 

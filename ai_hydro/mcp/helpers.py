@@ -219,6 +219,41 @@ def _resolve_session(
                 log.debug("Could not persist auto-created binding: %s", exc)
         return sid
 
+    # 3.5 Most-recent-session fallback (WS-4 session-binding fix).
+    # The weak model frequently omits session_id on a follow-up call before a
+    # chat binding exists. Rather than hard-failing, fall back to the most
+    # recently modified study on disk and bind it to the chat. This is gated by
+    # allow_auto_create so query/admin tools that opt out are unaffected.
+    if allow_auto_create:
+        try:
+            # Reference the private symbol: tests patch ``_SESSIONS_DIR`` to a
+            # tmp dir, so reading it here keeps the fallback test-isolated.
+            from ai_hydro.session.store import _SESSIONS_DIR as SESSIONS_DIR
+            candidates = [
+                p for p in SESSIONS_DIR.glob("*.json")
+                if ".shard." not in p.name and not p.name.startswith("_")
+            ]
+            if candidates:
+                latest = max(candidates, key=lambda p: p.stat().st_mtime)
+                sid = latest.stem
+                log.info(
+                    "No session_id and no chat binding; falling back to most "
+                    "recent study '%s'. Pass session_id to target another.", sid
+                )
+                if chat_id:
+                    try:
+                        store.bind(chat_id, sid)
+                    except Exception as exc:
+                        log.debug("Could not persist fallback binding: %s", exc)
+                try:
+                    from ai_hydro.session import HydroSession
+                    _maybe_set_workspace(HydroSession.load(sid))
+                except Exception:
+                    pass
+                return sid
+        except Exception as exc:
+            log.debug("Most-recent-session fallback skipped: %s", exc)
+
     # 4. Failure
     hint_parts: list[str] = []
     if chat_id:
@@ -428,6 +463,25 @@ def _workspace_write(session_id: str, filename: str, content: Any) -> str | None
     except Exception as exc:
         log.debug("Workspace write skipped (%s): %s", filename, exc)
         return None
+
+
+def _canonical_prefix(session_id: str, prefix: str) -> str:
+    """Return a canonical filename prefix for artifacts.
+
+    Tries to use the session's canonical site/gauge ID so outputs from the
+    same study share a stable namespace.  Falls back to ``<session_id>_<prefix>``
+    when the session cannot be loaded.
+
+    Example: ``_canonical_prefix("01031500", "index_ndwi")``
+             → ``"01031500_index_ndwi"``
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+        canonical_id = getattr(session, "canonical_id", None) or session_id
+        return f"{canonical_id}_{prefix}"
+    except Exception:
+        return f"{session_id}_{prefix}"
 
 
 def _canonical_workspace_path(session_id: str, prefix: str, ext: str = "json") -> str | None:

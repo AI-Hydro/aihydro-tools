@@ -43,6 +43,8 @@ Rules:
 - Validators are Tier 3 — they produce `ValidatorResult`, not `HydroResult`, and do not need their own validators.
 - The escape hatch `acknowledged_compromise=True` is available only on Tier 1 tools, is logged, and surfaces in the capsule README as a flagged exception.
 
+> **Authoring a tool that respects these contracts:** see [`knowledge/tools/AUTHORING_GUIDE.md`](knowledge/tools/AUTHORING_GUIDE.md) for the concrete conventions — how tier maps to the `hot` injection flag, domain-prefix naming, parameter naming so the argument-repair middleware and self-correcting errors work, and the session-resolution pattern. Loadable live as the `mcp-tool-authoring` skill.
+
 ---
 
 ## Load-bearing paths

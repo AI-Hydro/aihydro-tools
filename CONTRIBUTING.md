@@ -30,6 +30,8 @@ If you are also developing the VS Code extension, `pip install -e` in the extens
 
 ## Adding a new tool
 
+> **Read first: [`knowledge/tools/AUTHORING_GUIDE.md`](knowledge/tools/AUTHORING_GUIDE.md)** — the full conventions (naming/domain prefixes, tier + `hot` selection, the one-line-summary contract, param naming so argument-repair works, session resolution, output shape, copy-paste template). The agent can load these live via the `mcp-tool-authoring` skill (`load_skill("mcp-tool-authoring")`).
+
 1. Assign a tier (`"scientific"` / `"workflow"` / `"infrastructure"`). When in doubt, assign `"scientific"`.
 2. If Tier 1 (scientific): add `citations` to `TOOL_CITATIONS` in `ai_hydro/citations.py`, add validator calls in the tool body, and populate `uncertainty` on numeric outputs.
 3. Run `pytest tests/ -m "not live" -q` — must pass.

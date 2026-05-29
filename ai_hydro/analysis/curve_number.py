@@ -6,14 +6,34 @@ data with soil properties to characterize runoff potential.
 
 Data retrieval functions (fetch_lulc_data, fetch_soil_data_polaris) are in
 ai_hydro.data.landcover and ai_hydro.data.soil respectively.
+
+Large-basin performance
+~~~~~~~~~~~~~~~~~~~~~~~
+For watersheds where the LULC raster exceeds ``_CN_CHUNK_TRIGGER`` cells
+(default 10 M), the LULC × soil overlay is computed via
+``aihydro_data.sampling.chunked_raster_apply`` instead of operating on the
+full array at once.  The "joint" encoding packs both LULC class and soil
+hydrologic group into a single float32 channel so that the single-raster
+applier can be reused without API changes::
+
+    joint_value = float(lulc_class * 10 + soil_group)   # e.g. 41→Group B: 412.0
+
+A flat lookup array (size 1000) converts joint values back to CN values in
+O(n) time with one vectorised numpy index.
 """
 
 from __future__ import annotations
 
+import logging
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import warnings
+
+log = logging.getLogger(__name__)
+
+# Auto-trigger chunked CN overlay when the LULC raster exceeds this size.
+_CN_CHUNK_TRIGGER = 10_000_000
 
 try:
     import xarray as xr
@@ -243,10 +263,11 @@ def create_curve_number_grid(
     print("Step 4: Create Curve Number grid")
     print("-" * 50)
     cn_grid, soil_group_grid, soil_stats = _create_cn_grid_from_data(
-        lulc_data, soil_data, year, resolution
+        lulc_data, soil_data, year, resolution,
+        watershed_geom=watershed_geom,
     )
     print()
-    
+
     # Step 5: Calculate statistics
     print("Step 5: Calculate statistics and zones")
     print("-" * 50)
@@ -262,10 +283,10 @@ def create_curve_number_grid(
         'cn_p75': float(np.percentile(valid_cn, 75)),
         'cn_p90': float(np.percentile(valid_cn, 90))
     }
-    
+
     # Classify CN zones
     cn_zones = _classify_cn_zones(cn_grid.values)
-    
+
     print(f"  CN Statistics:")
     print(f"    Mean: {statistics['cn_mean']:.1f}")
     print(f"    Median: {statistics['cn_median']:.1f}")
@@ -276,13 +297,13 @@ def create_curve_number_grid(
     print(f"    Medium CN (70-85): {cn_zones['percent_medium_cn']:.1f}%")
     print(f"    High CN (>85): {cn_zones['percent_high_cn']:.1f}%")
     print()
-    
+
     # Step 6: Save outputs
     file_paths = {}
     if save_outputs:
         print("Step 6: Save outputs")
         print("-" * 50)
-        
+
         # Save watershed boundary
         watershed_path = output_path / f'{output_prefix}_watershed_{gauge_id}.gpkg'
         watershed_gdf.to_file(watershed_path, driver='GPKG')
@@ -594,10 +615,11 @@ def create_curve_number_grid_from_geometry(
     print("Step 4: Create Curve Number grid")
     print("-" * 50)
     cn_grid, soil_group_grid, soil_stats = _create_cn_grid_from_data(
-        lulc_data, soil_data, year, resolution
+        lulc_data, soil_data, year, resolution,
+        watershed_geom=watershed_geom,
     )
     print()
-    
+
     # Step 5: Calculate statistics
     print("Step 5: Calculate statistics and zones")
     print("-" * 50)
@@ -613,10 +635,10 @@ def create_curve_number_grid_from_geometry(
         'cn_p75': float(np.percentile(valid_cn, 75)),
         'cn_p90': float(np.percentile(valid_cn, 90))
     }
-    
+
     # Classify CN zones
     cn_zones = _classify_cn_zones(cn_grid.values)
-    
+
     print(f"  CN Statistics:")
     print(f"    Mean: {statistics['cn_mean']:.1f}")
     print(f"    Median: {statistics['cn_median']:.1f}")
@@ -627,13 +649,13 @@ def create_curve_number_grid_from_geometry(
     print(f"    Medium CN (70-85): {cn_zones['percent_medium_cn']:.1f}%")
     print(f"    High CN (>85): {cn_zones['percent_high_cn']:.1f}%")
     print()
-    
+
     # Step 6: Save outputs
     file_paths = {}
     if save_outputs:
         print("Step 6: Save outputs")
         print("-" * 50)
-        
+
         # Save watershed boundary
         watershed_path = output_path / f'{output_prefix}_watershed.gpkg'
         watershed_gdf.to_file(watershed_path, driver='GPKG')
@@ -794,25 +816,62 @@ def _convert_geometry_to_geodataframe(geometry) -> gpd.GeoDataFrame:
                    "Expected: str/Path (file), GeoDataFrame, GeoSeries, or shapely Polygon/MultiPolygon")
 
 
+def _build_joint_cn_lookup(cn_table: Dict) -> np.ndarray:
+    """Build a flat lookup array indexed by joint key = NLCD * 10 + soil_group.
+
+    NLCD classes are 11–95, soil groups 1–4, so joint values are 111–954.
+    We size the array at 1000 to have comfortable headroom.
+
+    Parameters
+    ----------
+    cn_table : dict
+        Mapping ``(nlcd_class, soil_group) -> cn_value``.
+
+    Returns
+    -------
+    np.ndarray  shape (1000,), dtype float32
+        ``lookup[nlcd * 10 + soil_group]`` = CN value (NaN if not in table).
+    """
+    lookup = np.full(1000, np.nan, dtype=np.float32)
+    for (nlcd, sg), cn_val in cn_table.items():
+        key = int(nlcd) * 10 + int(sg)
+        if 0 <= key < 1000:
+            lookup[key] = float(cn_val)
+    return lookup
+
+
 def _create_cn_grid_from_data(
     lulc_data: xr.Dataset,
     soil_data: xr.Dataset,
     year: int,
-    resolution: int
+    resolution: int,
+    watershed_geom=None,
 ) -> Tuple[xr.DataArray, np.ndarray, Dict]:
-    """
-    Create CN grid from LULC and soil data.
-    
-    Internal function that combines land cover and soil properties
-    to generate the Curve Number grid.
+    """Create CN grid from LULC and soil data.
+
+    Internal function that combines land cover and soil properties to generate
+    the Curve Number grid.
+
+    The LULC × soil overlay is vectorised via a flat lookup array (O(n),
+    single pass) rather than the former nested-loop approach (O(n_classes ×
+    n_soil_groups × n_pixels) with repeated boolean mask scans).  For rasters
+    larger than ``_CN_CHUNK_TRIGGER`` cells, the overlay is additionally
+    streamed through ``chunked_raster_apply`` to cap peak memory usage.
+
+    Parameters
+    ----------
+    watershed_geom : shapely.geometry.BaseGeometry or None
+        Watershed polygon in the same CRS as the LULC raster.  Used only by
+        the chunked path for chip pruning; ignored when the raster is small
+        enough for single-pass execution.
     """
     # Extract land cover
     cover_var = f'cover_{year}'
     lulc = lulc_data[cover_var]
-    
+
     # Extract soil properties
     soil_vars = list(soil_data.data_vars)
-    
+
     # Map to correct variable names (Polaris naming can vary)
     if 'sand_0_5cm_mean' in soil_vars:
         sand_da = soil_data['sand_0_5cm_mean']
@@ -826,7 +885,7 @@ def _create_cn_grid_from_data(
         ksat_da = soil_data.get('ksat_5', None)
     else:
         raise ValueError(f"Unexpected soil variable names: {soil_vars}")
-    
+
     # Resample soil data to match LULC grid if needed
     if sand_da.shape != lulc.shape:
         print(f"  Resampling soil data from {sand_da.shape} to match LULC grid {lulc.shape}...")
@@ -835,37 +894,88 @@ def _create_cn_grid_from_data(
         clay_da = clay_da.rio.reproject_match(lulc)
         if ksat_da is not None:
             ksat_da = ksat_da.rio.reproject_match(lulc)
-    
+
     # Extract values
     sand = sand_da.values
     silt = silt_da.values
     clay = clay_da.values
     ksat = ksat_da.values if ksat_da is not None else None
     lulc_values = lulc.values
-    
+
     # Classify soil hydrologic groups
     print("  Classifying soil hydrologic groups...")
     soil_groups, soil_stats = _classify_soil_hydrologic_group(sand, silt, clay, ksat)
-    
-    # Create CN lookup table
+
+    # Create CN lookup table + flat lookup array
     cn_table = _create_cn_lookup_table()
-    
-    # Initialize CN grid
-    cn_grid_values = np.full_like(lulc_values, np.nan, dtype=np.float32)
-    
-    # Apply lookup table
+    lookup = _build_joint_cn_lookup(cn_table)
+
     print("  Applying CN lookup table...")
-    for nlcd_class in np.unique(lulc_values[~np.isnan(lulc_values)]):
-        nlcd_mask = (lulc_values == nlcd_class)
-        for soil_group in range(1, 5):
-            soil_mask = (soil_groups == soil_group)
-            combined_mask = nlcd_mask & soil_mask
-            
-            # Get CN value from lookup table
-            key = (int(nlcd_class), soil_group)
-            if key in cn_table:
-                cn_grid_values[combined_mask] = cn_table[key]
-    
+
+    n_pixels = lulc.size
+    if n_pixels > _CN_CHUNK_TRIGGER and watershed_geom is not None:
+        # ------------------------------------------------------------------
+        # Chunked path — encode LULC + soil_group into a single float32
+        # channel so that chunked_raster_apply (single-raster API) can be
+        # reused without modification.
+        #
+        # Joint encoding: joint = lulc_class * 10 + soil_group
+        # NLCD classes are 11–95, soil groups 1–4 → keys 111–954, well
+        # inside the lookup array bounds.
+        # ------------------------------------------------------------------
+        log.info(
+            "curve_number._create_cn_grid_from_data: %d cells > threshold %d "
+            "— using chunked CN overlay",
+            n_pixels, _CN_CHUNK_TRIGGER,
+        )
+        try:
+            from aihydro_data.sampling import chunked_raster_apply
+
+            lulc_safe = np.where(np.isnan(lulc_values), 0, lulc_values).astype(np.float32)
+            sg_safe = soil_groups.astype(np.float32)
+            joint_arr = lulc_safe * 10.0 + sg_safe
+            joint_da = xr.DataArray(
+                joint_arr, dims=lulc.dims, coords=lulc.coords,
+                attrs=lulc.attrs,
+            )
+
+            # Capture lookup in closure (read-only; safe for multi-threaded use
+            # since numpy fancy indexing is thread-safe on CPython).
+            _lookup = lookup
+
+            def _cn_fn(arr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+                keys = np.where(
+                    (arr > 0) & np.isfinite(arr),
+                    arr.astype(np.int32),
+                    0,
+                )
+                result = _lookup[np.clip(keys, 0, len(_lookup) - 1)]
+                # Pixels with key == 0 (NoData / unclassified) stay NaN.
+                result = np.where(keys > 0, result, np.nan)
+                return result.astype(np.float32)
+
+            cn_da = chunked_raster_apply(
+                joint_da, watershed_geom, _cn_fn,
+                kernel_pad=0,
+                auto_trigger_size=0,   # always chunked
+                fill_value=np.nan,
+            )
+            cn_grid_values = cn_da.values
+
+        except Exception as _ce:
+            log.warning(
+                "Chunked CN overlay failed (%s); falling back to vectorised single-pass",
+                _ce,
+            )
+            cn_grid_values = _vectorised_cn_lookup(lulc_values, soil_groups, lookup)
+
+    else:
+        # ------------------------------------------------------------------
+        # Single-pass vectorised path (small raster or no geometry for
+        # chunked pruning).
+        # ------------------------------------------------------------------
+        cn_grid_values = _vectorised_cn_lookup(lulc_values, soil_groups, lookup)
+
     # Create xarray DataArray
     cn_grid = xr.DataArray(
         cn_grid_values,
@@ -877,20 +987,52 @@ def _create_cn_grid_from_data(
             'description': 'SCS Curve Number for AMC-II conditions',
             'source': 'NLCD land cover + Polaris soil data',
             'year': year,
-            'resolution_m': resolution
-        }
+            'resolution_m': resolution,
+        },
     )
-    
+
     # Add CRS
-    cn_grid.rio.write_crs(lulc.rio.crs, inplace=True)
-    
+    try:
+        cn_grid.rio.write_crs(lulc.rio.crs, inplace=True)
+    except Exception:
+        pass
+
     # Print statistics
     valid_cn = cn_grid_values[~np.isnan(cn_grid_values)]
-    print(f"  CN Grid created:")
-    print(f"    Mean: {valid_cn.mean():.1f}")
-    print(f"    Range: {valid_cn.min():.0f} - {valid_cn.max():.0f}")
-    
+    if valid_cn.size > 0:
+        print(f"  CN Grid created:")
+        print(f"    Mean: {valid_cn.mean():.1f}")
+        print(f"    Range: {valid_cn.min():.0f} - {valid_cn.max():.0f}")
+
     return cn_grid, soil_groups, soil_stats
+
+
+def _vectorised_cn_lookup(
+    lulc_values: np.ndarray,
+    soil_groups: np.ndarray,
+    lookup: np.ndarray,
+) -> np.ndarray:
+    """Apply the CN lookup table via vectorised numpy indexing.
+
+    Parameters
+    ----------
+    lulc_values, soil_groups : np.ndarray
+        Co-registered arrays of NLCD class codes and soil hydrologic groups
+        (1–4), both shape (H, W).
+    lookup : np.ndarray
+        Flat lookup array built by :func:`_build_joint_cn_lookup`.
+
+    Returns
+    -------
+    np.ndarray  shape (H, W), dtype float32
+    """
+    lulc_safe = np.where(np.isnan(lulc_values), 0, lulc_values).astype(np.int32)
+    sg_safe = soil_groups.astype(np.int32)
+    keys = lulc_safe * 10 + sg_safe
+    cn_values = lookup[np.clip(keys, 0, len(lookup) - 1)]
+    # Pixels where lulc was NaN or key == 0 stay NaN.
+    cn_values = np.where(keys > 0, cn_values, np.nan)
+    return cn_values.astype(np.float32)
 
 
 def _classify_soil_hydrologic_group(

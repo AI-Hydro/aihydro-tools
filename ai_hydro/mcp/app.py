@@ -157,6 +157,8 @@ TOOL_TIERS: dict[str, int] = {
     "course_scaffold":                  2,
     # ── Discovery (v1.8.0) ───────────────────────────────────────────────
     "aihydro_describe_capability":      3,
+    "describe_tool":                    3,
+    "describe_tools":                   3,
     # ── Dataverse infra (Wave 2.5 / v1.8.0) ──────────────────────────────
     # data_get_cache_status, data_invalidate_cache, data_doctor, data_help
     # are utility/discovery tools — no scientific validation load.
@@ -167,7 +169,50 @@ TOOL_TIERS: dict[str, int] = {
     # ── Chat-native session management (Wave 3) ───────────────────────────
     "aihydro_rebind_chat":              3,
     "aihydro_chat_status":              3,
+    # ── Spectral indices (v0.2.0 / TorchGeo cherry-pick Day 5) ───────────
+    "compute_spectral_index":           2,
+    "list_spectral_indices":            3,
 }
+
+
+# ---------------------------------------------------------------------------
+# Hot tools — the "full schema, always inline" set for context injection.
+#
+# A tool is HOT when its complete inputSchema is injected into the system
+# prompt verbatim (zero round-trip to call correctly). Everything else is
+# injected as a one-line summary and its schema is fetched on demand via
+# describe_tool(). Keep this set small and high-frequency: all Tier-1
+# scientific tools are hot automatically, plus a curated allowlist of the
+# entry-point tools the agent reaches for constantly, plus the discovery
+# tools themselves (so the agent can always see how to call them).
+#
+# See ai_hydro/mcp/__init__.py:_tag_tools_with_tier_meta() which stamps the
+# resulting `hot` flag into each tool's MCP `_meta`, and the extension's
+# system-prompt/components/mcp.ts which renders full vs. summary accordingly.
+# ---------------------------------------------------------------------------
+HOT_TOOL_ALLOWLIST: frozenset[str] = frozenset({
+    # High-frequency entry points (mostly Tier 2/3 but used in nearly every run)
+    "start_session",
+    "get_session_summary",
+    "data_fetch",
+    "compute_spectral_index",
+    "fetch_camels_us",
+    "run_python",
+    # Discovery tools — must be fully visible so the agent can always use the
+    # on-demand schema-fetch protocol.
+    "aihydro_describe_capability",
+    "describe_tool",
+    "describe_tools",
+    "list_available_tools",
+})
+
+
+def is_hot_tool(name: str) -> bool:
+    """True if a tool's full schema should be injected inline (vs. summary-only).
+
+    Hot = any Tier-1 tool (scientific output) or a member of HOT_TOOL_ALLOWLIST.
+    """
+    return TOOL_TIERS.get(name) == 1 or name in HOT_TOOL_ALLOWLIST
 
 
 def get_tool_tiers() -> dict[str, int]:
@@ -204,14 +249,12 @@ mcp = FastMCP(
         "a procedural checklist. Do not guess tool or library names; if you "
         "need to verify a name use list_available_tools() once.\n\n"
 
-        "IMPORTANT — capability discovery is for genuine uncertainty only. "
-        "Do NOT call aihydro_describe_capability() before standard hydrological "
-        "operations (watershed delineation, TWI computation, geomorphic analysis, "
-        "signature extraction, hydrological modelling, session management, or data "
-        "retrieval). These are well-known operations — call the appropriate tool "
-        "directly without any preceding lookup. Use aihydro_describe_capability() "
-        "only when the user requests an unfamiliar operation and you genuinely do "
-        "not know which tool name to use — one call, once, then proceed.\n\n"
+        "TOOL DISCLOSURE PROTOCOL. Tools appear at two levels: common ones show "
+        "their full schema inline (call directly); the rest are listed by NAME + "
+        "one-line summary only (parameters hidden). Before the FIRST call to any "
+        "name-only tool, call describe_tool(name) to fetch its parameters and "
+        "example, then call it. NEVER guess parameter names. Unsure which tool "
+        "exists? Call aihydro_describe_capability(domain) to browse first.\n\n"
 
         "Check the skill catalog only when the user explicitly asks for a "
         "reusable workflow, a named report format, or says 'use the skill for'. "
@@ -219,9 +262,10 @@ mcp = FastMCP(
         "unnecessary latency. If a completed workflow is genuinely reusable and "
         "the user asks you to save it, use save_skill().\n\n"
 
-        "When a tool reports an error, inspect the message and recover: run a "
-        "missing prerequisite, adjust inputs, retry, use a general execution "
-        "path, or explain the remaining blocker with evidence. Do not report a "
+        "When a tool reports an error, inspect the message and recover: an error "
+        "often inlines the schema and a corrected example_call — use it rather "
+        "than repeating the failed call. Run a missing prerequisite, adjust "
+        "inputs, retry, or explain the remaining blocker with evidence. Do not report a "
         "scientific result as complete when validation, data access, or provenance "
         "failed.\n\n"
 
@@ -244,6 +288,13 @@ mcp = FastMCP(
         "state, respect prerequisites, ask before marking progress, and navigate "
         "only after agreement. If no course is active, proceed as a research "
         "collaborator.\n\n"
+
+        "For spectral indices (NDWI, NDVI, NDBI, NBR, MNDWI, …) use "
+        "compute_spectral_index(index_name, ...) — never write custom GEE "
+        "scripts or call data_fetch with raw band names. It handles band "
+        "fetch, cloud masking, compositing, colormap, GeoTIFF, and map overlay "
+        "in one call. Pass frequency='monthly'/'yearly' for time-series change "
+        "detection (per-period stats + Mann-Kendall trend).\n\n"
 
         "For data retrieval, prefer the variable-centric dataverse interface "
         "that auto-routes by region, falls back across sources on failure, and "
