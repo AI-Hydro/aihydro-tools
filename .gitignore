@@ -29,3 +29,10 @@ outputs/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Internal working docs (kept local, not for the public repo)
+/PROGRESS.md
+/STATUS.md
+/TOOL_AUDIT.md
+/PROJECT.md
+/local-docs/

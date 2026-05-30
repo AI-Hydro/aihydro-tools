@@ -272,4 +272,4 @@ def compute_my_metric(
 
 See also: `CONTRIBUTING.md`, `DESIGN_PRINCIPLES.md` (tiers, three primitives,
 trigger-based deferral), `AGENT_EXECUTION_MODEL.md` (how tools are presented,
-made reliable, and run as jobs), `TOOL_AUDIT.md`.
+made reliable, and run as jobs).
