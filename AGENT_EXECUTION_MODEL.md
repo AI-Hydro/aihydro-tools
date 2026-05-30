@@ -140,21 +140,84 @@ list_jobs(kind?)       -> active/recent jobs for this user
 
 ---
 
-## 4. Subagents = jobs that run their own tool loop
+## 4. Subagents
 
-A subagent is **not** a new transport or framework. It is a job whose runner
+### 4.1 What exists today (two distinct mechanisms — don't conflate them)
+
+The extension (fork of Cline) ships **two** things that get called "subagent."
+They solve different problems:
+
+| Mechanism | What it is | Where it lives (extension repo) | Parallel? | Returns to parent? |
+|-----------|-----------|----------------------------------|-----------|--------------------|
+| **`new_task`** | A *linear handoff*: clears the current task and starts a fresh one seeded with a summary blob. Cline's context-compaction trick. | `core/task/tools/handlers/NewTaskHandler.ts`, `core/controller/index.ts` (`clearTask` before init) | No | No — not parent/child; the old task is gone |
+| **CLI subagent** | A *real delegation*: the agent shells out via `execute_command` running `aihydro "prompt"`, rewritten to `… -s yolo_mode_toggled=true -s max_consecutive_mistakes=6 -F plain -y --oneshot`. Spawns a **separate autonomous AI-Hydro OS process**; output returns as plain terminal text. | `integrations/cli-subagents/subagent_command.ts`, `core/prompts/system-prompt/components/cli_subagents.ts` (`isSubagentsEnabledAndCliInstalled` gate) | **Yes** (background `execute_command`) | Via scraped terminal stdout |
+
+`new_task` is **not** a subagent — leave it as-is. The CLI subagent is the real
+mechanism, and it is quietly the right shape: because it goes through the
+**terminal as a separate OS process**, it already answers the MCP transport
+limits in §2 — it is genuinely parallelizable, killable (TerminalManager owns the
+process), and cold-isolated (its own context window). It is the bash-process
+answer to "MCP can't fork / can't cancel," reached independently.
+
+### 4.2 Two parallelism needs (the model currently blurs them)
+
+- **LLM-reasoning delegation** — fan out *thinking/exploration* (read N files,
+  research a codebase) into isolated context windows. Today: CLI subagent.
+- **Long-running compute** — detach a *deterministic heavy job* (calibration,
+  training). Today: §3's modelling `Popen`.
+
+They want the **same lifecycle contract** (start / status / result / cancel) but
+different runners. The end state (§4.4) is to unify both under `jobs.py`: a
+subagent and a training run become *the same kind of killable, typed job* — one
+runs an agent loop, the other runs a numerical solver.
+
+### 4.3 Where the CLI subagent is immature
+
+1. **macOS-only gate** — `cli_subagents.ts` only surfaces it when subagents are
+   enabled + CLI installed, and the flag is macOS-gated. Biggest usefulness cap.
+2. **No structured result** — parent scrapes plain terminal text (same defect as
+   modelling scraping `status.json` instead of a typed envelope).
+3. **Read-only is convention, not capability** — the prompt *tells* it not to
+   edit/run; nothing enforces it.
+4. **One generic role** — a single "research" subagent vs. Claude Code's
+   Explore/Plan/specialized profiles with curated toolsets.
+5. **No session inheritance** — each CLI subagent cold-starts; it can't reuse the
+   bound `gauge_id`/session to run MCP tools against the *same* study.
+6. **No fan-out/fan-in or PID registry** — no concurrency cap, no join/aggregate,
+   no tracked set of child PIDs for cascade-cancel.
+
+### 4.4 Target state: a subagent is a job that runs its own tool loop
+
+A subagent is **not** a new transport or framework. It is a §3 job whose runner
 drives a constrained agent loop:
 
-- `start_job(kind="subagent", runner="ai_hydro.agents.runner", config={goal, tool_allow=[...], tier_max, budget})`
+- `start_job(kind="subagent", runner="ai_hydro.agents.runner", config={goal, profile, tool_allow=[...], tier_max, session_id, budget})`
 - The subprocess runs an inner loop over a **tier-restricted** toolset, writing
   progress/checkpoints to `status.json` exactly like the modelling runner.
-- The parent polls with `get_job_status`, cancels with `cancel_job`, collects
-  with `get_job_result`.
+- The parent polls with `get_job_status`, cancels with `cancel_job`, collects a
+  **typed result envelope** with `get_job_result`.
 
-This gives parallel subagents (N detached processes), cancellation, and budget
-control with **zero** new infrastructure beyond §3. Scope discipline
-(DESIGN_PRINCIPLES trigger-based deferral): build the subagent runner only when a
-benchmarked single-loop failure demands it.
+This gives parallel subagents (N detached processes), cancellation, profiles, and
+budget control with **zero** new infrastructure beyond §3.
+
+### 4.5 Maturation plan (phased; gated by trigger-based deferral)
+
+| Phase | Goal | Closes gaps | Notes |
+|-------|------|-------------|-------|
+| **0** | Build `jobs.py` (§3 contract + PID registry); migrate `train_hydro_model` as first consumer | — | Keystone. Trigger evidence already exists: modelling job can't be cancelled (PID discarded). Prove the contract on code we already trust. |
+| **1** | CLI subagent becomes a first-class job: typed `result.json` envelope, PID tracked → cascade-cancel | 2, 6 (cancel) | Wrap the `aihydro "…"` spawn behind the contract instead of raw `execute_command`. |
+| **2** | Named profiles with **capability-enforced** read-only (`explorer`, `data-runner`) | 3, 4 | The hydrology payoff. Read-only guaranteed by toolset, not prompt. |
+| **3** | Lift macOS gate; add fan-out/fan-in (concurrency cap, join/aggregate) | 1, 6 (parallelism) | — |
+| **4** | Session inheritance (`gauge_id` propagation); per-subagent token/cost/trace surfaced to user | 5 | — |
+
+**Sequencing:** Phase 0 is the keystone — do it against `train_hydro_model` first
+so the contract is proven before any subagent depends on it. 1→2 is the critical
+path to "useful for hydrology." 3–4 land anytime after 1.
+
+**The one commitment:** Phase 0 means we **stop deferring `jobs.py`**. The
+deferral gate (DESIGN_PRINCIPLES) is satisfied — the un-cancellable modelling job
+is the documented failure — so this is justified, not speculative. Each later
+phase still needs its own documented trigger before it's built.
 
 ---
 
@@ -170,8 +233,10 @@ benchmarked single-loop failure demands it.
 3. **Execution**: MCP calls return fast. Slow/parallel/cancellable work is a
    **job** (`jobs.py`): detached process, persisted PID, registry, `cancel_job`.
    `run_python` is the open-ended escape hatch.
-4. **Subagents**: a job whose runner runs a tier-restricted tool loop. Same
-   contract, no new framework.
+4. **Subagents**: two mechanisms exist today — `new_task` (linear handoff, leave
+   as-is) and the CLI subagent (real OS-process delegation). Target state folds
+   the latter into a job whose runner runs a tier-restricted tool loop — same
+   contract, no new framework. Maturation is phased (§4.5), keystone is `jobs.py`.
 5. **Adding anything** (tool, middleware, job kind): requires a documented
    failure of the simpler existing layer — a benchmark ID or session trace, per
    DESIGN_PRINCIPLES trigger-based deferral. Tool count already grew 11 → 56 →
@@ -206,3 +271,5 @@ of the simpler layer (trigger-based deferral).
 - `mcp/tools_discovery.py` — discovery protocol
 - `mcp/arg_repair.py` — reliability middleware
 - `mcp/tools_modelling.py` — current (only) async-job implementation → template for `jobs.py`
+- extension `integrations/cli-subagents/subagent_command.ts` — CLI subagent spawn/rewrite (§4.1)
+- extension `core/prompts/system-prompt/components/cli_subagents.ts` — subagent prompt + enablement gate (§4.3)
