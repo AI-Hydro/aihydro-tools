@@ -7,14 +7,12 @@ get_model_results   — read cached model results from session.
 """
 from __future__ import annotations
 
-import json
 import logging
-import subprocess
-import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ai_hydro.mcp import jobs
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
     _normalize_session_id,
@@ -96,13 +94,11 @@ def train_hydro_model(
 
         job_id = uuid.uuid4().hex[:12]
 
-        # Resolve artifact dir
+        # Resolve artifact dir (preserve workspace-based location)
         ws = workspace_dir or session.workspace_dir
         base = Path(ws) if ws else Path.home() / ".aihydro" / "models"
         artifact_dir = base / "runs" / job_id
-        artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write job config for the subprocess runner
         config = {
             "job_id": job_id,
             "session_id": session_id,
@@ -119,29 +115,26 @@ def train_hydro_model(
             "hidden_size": hidden_size,
             "learning_rate": learning_rate,
         }
-        (artifact_dir / "job_config.json").write_text(json.dumps(config, indent=2))
 
-        # Write initial status
-        status = _pending_status(job_id, artifact_dir)
-        (artifact_dir / "status.json").write_text(json.dumps(status, indent=2))
-
-        # Spawn detached subprocess
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "ai_hydro.modelling.runner", str(artifact_dir)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
+        # Spawn as a registered, cancellable job (PID persisted → cancel_job works).
+        job = jobs.start_job(
+            kind="training",
+            runner_module="ai_hydro.modelling.runner",
+            config=config,
+            artifact_dir=artifact_dir,
+            log_name="train.log",
+            status_seed=_pending_status(job_id, artifact_dir),
         )
-        log.info("Training job %s spawned (pid=%d)", job_id, proc.pid)
 
         return {
-            "job_id": job_id,
+            "job_id": job["job_id"],
             "status": "pending",
-            "artifact_dir": str(artifact_dir),
-            "log_path": str(artifact_dir / "train.log"),
-            "started_at": _now(),
+            "artifact_dir": job["artifact_dir"],
+            "log_path": job["log_path"],
+            "started_at": job["started_at"],
             "_note": (
-                f"Training started. Poll with get_training_status('{job_id}'). "
+                f"Training started. Poll with get_training_status('{job['job_id']}'); "
+                f"cancel with cancel_job('{job['job_id']}'). "
                 "Check log_path with 'tail -f' for live progress. "
                 "Typical runtime: 2-15 min (HBV), 15-60 min (LSTM)."
             ),
@@ -159,46 +152,32 @@ def get_training_status(job_id: str) -> dict:
 
     Reads the status.json checkpoint written by the training subprocess.
     Poll ≤1× per minute (subprocess writes per-epoch checkpoints).
-    Returns status (pending|running|complete|failed) + progress + partial_results.
+    Returns status (pending|running|complete|failed|cancelled) + progress + partial_results.
     """
     try:
-        # Search common artifact locations for this job_id
-        candidates = [
-            Path.home() / ".aihydro" / "models" / "runs" / job_id / "status.json",
-        ]
-        # Also check any workspace that sessions reference
-        from ai_hydro.session.store import _SESSIONS_DIR
-        sessions_dir = _SESSIONS_DIR
-        if sessions_dir.exists():
-            for sf in sessions_dir.glob("*.json"):
-                try:
-                    data = json.loads(sf.read_text())
-                    ws = data.get("workspace_dir")
-                    if ws:
-                        candidates.append(
-                            Path(ws) / "runs" / job_id / "status.json"
-                        )
-                except Exception:
-                    pass
-
-        for status_path in candidates:
-            if status_path.exists():
-                try:
-                    return json.loads(status_path.read_text())
-                except json.JSONDecodeError:
-                    pass
-
-        return {
-            "error": True,
-            "code": "JOB_NOT_FOUND",
-            "message": (
-                f"No status.json found for job_id='{job_id}'. "
-                "The job may not have started yet or the artifact directory was moved."
-            ),
-        }
-
+        return jobs.get_job_status(job_id)
     except Exception as e:
         log.error("get_training_status failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def cancel_job(job_id: str) -> dict:
+    """Cancel a running job (e.g. a training job) by killing its detached process group."""
+    try:
+        return jobs.cancel_job(job_id)
+    except Exception as e:
+        log.error("cancel_job failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def list_jobs(kind: str | None = None) -> dict:
+    """List recent background jobs (job_id, kind, status, whether still running). kind filters, e.g. 'training'."""
+    try:
+        return jobs.list_jobs(kind)
+    except Exception as e:
+        log.error("list_jobs failed: %s", e)
         return _tool_error_to_dict(e)
 
 

@@ -114,6 +114,8 @@ TOOL_TIERS: dict[str, int] = {
     "list_claims":                      3,
     "list_assumptions":                 3,
     "get_training_status":              3,
+    "cancel_job":                       3,
+    "list_jobs":                        3,
     "get_variable_definition":          3,
     "list_known_variables":             3,
     "get_metric_definition":            3,

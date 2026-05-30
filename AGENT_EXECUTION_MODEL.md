@@ -26,7 +26,7 @@ guessed parameter name).
 | 1 | Tiered progressive disclosure | Keep the prompt lean across ~100+ tools | `mcp/app.py` (`TOOL_TIERS`, `HOT_TOOL_ALLOWLIST`, `is_hot_tool`), `mcp/__init__.py` (`_tag_tools_with_tier_meta`), extension `system-prompt/components/mcp.ts` | **Solid — keep** |
 | 2 | Discovery protocol | Fetch full schema on demand for the long tail | `mcp/tools_discovery.py` (`aihydro_describe_capability`, `describe_tool`, `describe_tools`, `list_available_tools`) | **Solid — keep** |
 | 3 | Reliability middleware | Turn near-miss calls into successes / teaching turns | `mcp/arg_repair.py` (FastMCP `Middleware`), `mcp/enforcement.py` | **Strongest piece — keep, use as template** |
-| 4 | Async jobs | Run long / parallel / cancellable work without blocking MCP | `mcp/tools_modelling.py` (only) | **Incomplete — generalize (see §3)** |
+| 4 | Async jobs | Run long / parallel / cancellable work without blocking MCP | `mcp/jobs.py` (substrate + PID registry), `mcp/tools_modelling.py` (first adopter) | **Shipped — `jobs.py` substrate + cancel (see §3)** |
 
 ### 1.1 Tiered progressive disclosure
 
@@ -98,23 +98,28 @@ The conclusion is *not* "switch to bash." It's "make every slow tool a job."
 
 ---
 
-## 3. The async-job contract (standard going forward)
+## 3. The async-job contract (shipped)
 
-Today only modelling does this, and incompletely. `train_hydro_model`:
-- spawns a detached `subprocess.Popen([... "-m", "ai_hydro.modelling.runner", artifact_dir], start_new_session=True)`,
-- writes `job_config.json` + `status.json` into a per-job `runs/<job_id>/` dir,
-- returns `{job_id, status: "pending", log_path, ...}` immediately,
-- is polled by `get_training_status(job_id)` reading `status.json` checkpoints,
-- final artifact read by `get_model_results`.
+`ai_hydro/mcp/jobs.py` implements this contract and `train_hydro_model` is the
+first adopter. The kickoff tool:
+- calls `jobs.start_job(kind="training", runner_module="ai_hydro.modelling.runner", config, artifact_dir)`,
+  which writes `job_config.json` + `status.json` into the per-job dir, spawns a
+  detached `subprocess.Popen(..., start_new_session=True)`, and **persists the PID**
+  in the registry,
+- returns `{job_id, status: "pending", pid, log_path, ...}` immediately,
+- is polled by `get_training_status(job_id)` → `jobs.get_job_status` (registry-first),
+- cancelled by `cancel_job(job_id)` → `jobs.cancel_job` (kills the PID's process
+  group via `os.killpg`), final artifact read by `get_model_results`.
 
-**Good instinct. Gaps to close when generalizing:**
-- **PID is logged then discarded** → no cancellation possible. *Must persist it.*
-- Status files searched across ad-hoc locations → needs a **registry**.
-- No orphan cleanup, no restart recovery, no uniform shape.
+**Gaps from the previous (modelling-only) implementation, now closed:**
+- ~~PID logged then discarded → no cancellation~~ → **PID persisted in the registry; `cancel_job` works.**
+- ~~Status files searched across ad-hoc locations~~ → **registry is the lookup (legacy path search kept only as fallback).**
+- Still open: orphan/zombie reaping and restart recovery are best-effort (CPython
+  subprocess reaps; `_pid_alive` annotates crashed non-terminal jobs).
 
-### Proposed shared module: `ai_hydro/mcp/jobs.py`
+### Shared module: `ai_hydro/mcp/jobs.py`
 
-A standard any long-running tool adopts:
+The standard any long-running tool adopts:
 
 ```
 start_job(kind, runner_module, config) -> {job_id, status:"pending", ...}
@@ -204,7 +209,7 @@ budget control with **zero** new infrastructure beyond §3.
 
 | Phase | Goal | Closes gaps | Notes |
 |-------|------|-------------|-------|
-| **0** | Build `jobs.py` (§3 contract + PID registry); migrate `train_hydro_model` as first consumer | — | Keystone. Trigger evidence already exists: modelling job can't be cancelled (PID discarded). Prove the contract on code we already trust. |
+| **0 ✅** | Build `jobs.py` (§3 contract + PID registry); migrate `train_hydro_model`; add `cancel_job`/`list_jobs` tools | — | **Done.** Keystone shipped. Trigger evidence: modelling job couldn't be cancelled (PID discarded) — now fixed. `tests/test_jobs.py` covers start/status/result/cancel. |
 | **1** | CLI subagent becomes a first-class job: typed `result.json` envelope, PID tracked → cascade-cancel | 2, 6 (cancel) | Wrap the `aihydro "…"` spawn behind the contract instead of raw `execute_command`. |
 | **2** | Named profiles with **capability-enforced** read-only (`explorer`, `data-runner`) | 3, 4 | The hydrology payoff. Read-only guaranteed by toolset, not prompt. |
 | **3** | Lift macOS gate; add fan-out/fan-in (concurrency cap, join/aggregate) | 1, 6 (parallelism) | — |
@@ -214,10 +219,10 @@ budget control with **zero** new infrastructure beyond §3.
 so the contract is proven before any subagent depends on it. 1→2 is the critical
 path to "useful for hydrology." 3–4 land anytime after 1.
 
-**The one commitment:** Phase 0 means we **stop deferring `jobs.py`**. The
-deferral gate (DESIGN_PRINCIPLES) is satisfied — the un-cancellable modelling job
-is the documented failure — so this is justified, not speculative. Each later
-phase still needs its own documented trigger before it's built.
+**The one commitment (now made):** Phase 0 shipped `jobs.py`, so the substrate
+exists. The deferral gate (DESIGN_PRINCIPLES) was satisfied — the un-cancellable
+modelling job was the documented failure. Each later phase still needs its own
+documented trigger before it's built.
 
 ---
 
@@ -270,6 +275,7 @@ of the simpler layer (trigger-based deferral).
 - `mcp/app.py` — tier + hot source of truth
 - `mcp/tools_discovery.py` — discovery protocol
 - `mcp/arg_repair.py` — reliability middleware
-- `mcp/tools_modelling.py` — current (only) async-job implementation → template for `jobs.py`
+- `mcp/jobs.py` — async-job substrate (start/status/result/cancel/list + PID registry)
+- `mcp/tools_modelling.py` — first adopter of `jobs.py` (`train_hydro_model` + `cancel_job`/`list_jobs`)
 - extension `integrations/cli-subagents/subagent_command.ts` — CLI subagent spawn/rewrite (§4.1)
 - extension `core/prompts/system-prompt/components/cli_subagents.ts` — subagent prompt + enablement gate (§4.3)
