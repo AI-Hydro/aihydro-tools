@@ -13,7 +13,7 @@ ai_guidance: |
   - User wants to understand the modeling process step-by-step
   
   If user needs standard automated modeling without modifications, consider recommending the hardcoded
-  'auto_modeling' TOOL from tier3_tools.json instead.
+  `train_hydro_model` MCP tool instead.
 
 use_when:
   - User needs custom calibration algorithms

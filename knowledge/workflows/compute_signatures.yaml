@@ -13,7 +13,7 @@ ai_guidance: |
   - User wants to understand the extraction process step-by-step
   
   If user needs complete standard CAMELS attributes without modifications, consider recommending the hardcoded
-  'camels_extraction' TOOL from tier3_tools.json instead.
+  `fetch_camels_us` / `extract_camels_attributes` MCP tools instead.
 
 use_when:
   - User needs specific attribute categories only

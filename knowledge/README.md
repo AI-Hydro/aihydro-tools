@@ -35,11 +35,10 @@ Hydrological concepts, terminology, and theoretical knowledge:
 
 ### 🔧 Tools (`tools/`)
 
-Documentation of available Python tools and functions:
-- `tier1_libraries.json` - External library integrations
-- `tier2_wrappers.json` - AI-Hydro wrapper functions
-- `tier3_workflows.json` - Complete workflow orchestrations
+Documentation and authoring conventions for AI-Hydro's MCP tools:
+- `AUTHORING_GUIDE.md` - how to add a born-compliant MCP tool
 - `camels_tools.json` - CAMELS-specific tools
+- See `tools/README.md` for how tool **tiers** (1/2/3) are defined
 
 ### 🔄 Workflows (`workflows/`)
 

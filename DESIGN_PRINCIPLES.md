@@ -29,21 +29,53 @@ The benchmark failure ID is the universal currency. It applies equally to tools,
 
 ## Tool tiering
 
-Every `@mcp.tool()` carries a `tier` field in its registration metadata. Enforcement depends on tier.
+Every `@mcp.tool()` has a numeric `tier` (1/2/3), defined once in
+`ai_hydro/mcp/app.py::TOOL_TIERS` — the single source of truth. Enforcement,
+and whether the tool's full schema is injected (`hot`), both depend on tier.
+"Tier" has exactly one meaning in AI-Hydro; it is **not** a complexity or
+library-vs-wrapper axis (how tools compose is a separate question — see below).
 
 | Tier | What belongs here | Enforcement |
 |---|---|---|
-| `"scientific"` | Tools whose outputs a paper could cite — signatures, watershed, modelling, validators | Mandatory: provenance + quality checks + uncertainty + citations + claim binding when inside a workflow |
-| `"workflow"` | Data fetch, session ops, export, project management | Provenance + citations |
-| `"infrastructure"` | Ledger ops, knowledge access, skill loading, session housekeeping | Provenance timestamp only |
+| **1** (scientific) | Tools whose outputs a paper could cite — signatures, watershed, modelling, validators. Automatically `hot`. | Mandatory: provenance + quality checks + uncertainty + citations + claim binding when inside a workflow |
+| **2** (workflow) | Data fetch, session ops, export, project management | Provenance + citations |
+| **3** (infrastructure) | Ledger ops, knowledge access, skill loading, session housekeeping | Provenance timestamp only |
 
 Rules:
-- Tier is assigned at tool registration, not inferred.
+- Tier is assigned at tool registration in `TOOL_TIERS`, not inferred.
 - A tool that returns a number a hydrologist might argue about is Tier 1. When in doubt, assign Tier 1.
 - Validators are Tier 3 — they produce `ValidatorResult`, not `HydroResult`, and do not need their own validators.
 - The escape hatch `acknowledged_compromise=True` is available only on Tier 1 tools, is logged, and surfaces in the capsule README as a flagged exception.
 
 > **Authoring a tool that respects these contracts:** see [`knowledge/tools/AUTHORING_GUIDE.md`](knowledge/tools/AUTHORING_GUIDE.md) for the concrete conventions — how tier maps to the `hot` injection flag, domain-prefix naming, parameter naming so the argument-repair middleware and self-correcting errors work, and the session-resolution pattern. Loadable live as the `mcp-tool-authoring` skill.
+
+---
+
+## Three primitives (composition, not tiers)
+
+Tier is an *enforcement/injection* axis. **Composition** — how capability is
+packaged and combined — is a separate axis with three primitives. An earlier
+design tried to encode complexity into the tier number (library → wrapper →
+workflow); that conflated two things. The clean model:
+
+| Primitive | Is | Use it for | Where |
+|---|---|---|---|
+| **MCP tool** | One atomic, typed, enforced capability | A single deterministic action with a verifiable contract | `@mcp.tool()` in `ai_hydro/mcp/` |
+| **Skill** | A workflow playbook composing tools | A multi-step procedure / methodology the agent follows | `knowledge/tools/skills/`, `knowledge/workflows/*.yaml` |
+| **Package knowledge** | Reference / domain facts | Definitions, datasets, equations the agent reasons *with* | `knowledge/concepts/`, `knowledge/datasets/`, etc. |
+
+Decision rule when adding capability:
+
+- Is it **one verifiable action**? → an MCP tool (pick the tier; keep it atomic).
+- Is it **a sequence of existing tools / a methodology**? → a skill, not a new
+  tool. Don't hardcode a multi-step pipeline as one mega-tool.
+- Is it **knowledge the model should reason with, not execute**? → package
+  knowledge. (DESIGN_PRINCIPLES: the system provides the environment, not the
+  hydrology — but reference data lives here when it's load-bearing.)
+
+This is why long pipelines became *skills*, and why the agent's runtime view is
+the three discovery primitives, not a complexity ladder. See
+`AGENT_EXECUTION_MODEL.md` for how each is presented and executed.
 
 ---
 

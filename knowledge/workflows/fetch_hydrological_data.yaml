@@ -13,7 +13,7 @@ ai_guidance: |
   - User wants to understand the data fetching process step-by-step
   
   If user just needs standard USGS data without customization, consider recommending the hardcoded
-  'fetch_hydrological_data' TOOL from tier3_tools.json instead.
+  `fetch_streamflow_data` / `data_fetch` MCP tools instead.
 
 use_when:
   - User needs custom data filtering or processing

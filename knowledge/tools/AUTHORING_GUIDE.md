@@ -11,6 +11,28 @@ no follow-up cleanup pass.
 
 ---
 
+## 0. Should this be a tool at all? (decision gate)
+
+Answer these **before** writing code. Most "I need a new tool" turns out to be a
+skill or a parameter.
+
+1. **Is it one atomic, verifiable action?** If it's a multi-step pipeline, it's a
+   **skill**, not a tool (see `DESIGN_PRINCIPLES.md` → Three primitives). If it's
+   reference knowledge the model reasons *with*, it's **package knowledge**.
+2. **Has the simpler existing layer demonstrably failed?** Trigger-based deferral
+   (`DESIGN_PRINCIPLES.md`): you need a documented benchmark/trace failure, not a
+   hypothetical. Tool count grew 11 → 56 → ~100 without this discipline.
+3. **Which tier?** (set in `app.py::TOOL_TIERS`)
+   - Returns a number a hydrologist could cite/argue about → **Tier 1** (auto-hot,
+     gets a validator). When in doubt, Tier 1.
+   - Data fetch / workflow op → **Tier 2**. Infra / state / discovery → **Tier 3**.
+4. **Will it run > ~30 s, or want to run in parallel / be cancellable?** Then it
+   must be a **job**, not a blocking tool — see §7.5 and `AGENT_EXECUTION_MODEL.md`.
+
+If 1–2 don't clear the gate, stop — don't add the tool.
+
+---
+
 ## 1. The 90-second mental model
 
 The MCP server is the **single source of truth** for how a tool is presented to
@@ -158,6 +180,26 @@ def my_tool(session_id: str | None = None, ...) -> dict:
 
 ---
 
+## 7.5 Long-running tools must be jobs (not blocking calls)
+
+An MCP call must return fast. If your tool can exceed ~30 s, may run in parallel,
+or might need cancelling, **do not block** — kick off detached work and return a
+`job_id` immediately, then expose poll/result tools.
+
+The pattern today lives in `tools_modelling.py` (`train_hydro_model` →
+`get_training_status` → `get_model_results`): write a `job_config.json`, spawn a
+detached `subprocess.Popen(..., start_new_session=True)` running a
+`python -m <pkg>.runner <dir>` entry that writes `status.json` checkpoints, and
+return `{job_id, status:"pending", log_path}`. The agent polls; results are read
+from the artifact dir.
+
+> A shared `ai_hydro/mcp/jobs.py` (start/status/result/**cancel**/list + a PID
+> registry) is the planned generalization — see `AGENT_EXECUTION_MODEL.md` §3.
+> Until it lands, copy the modelling pattern **and persist the PID** so the work
+> is cancellable.
+
+---
+
 ## 8. Registration
 
 ```python
@@ -228,4 +270,6 @@ def compute_my_metric(
 - [ ] Tier-1 only: post-run validator registered.
 - [ ] A test exists (registration + a smoke call). Run `pytest -m "not live"`.
 
-See also: `CONTRIBUTING.md`, `DESIGN_PRINCIPLES.md`, `TOOL_AUDIT.md`.
+See also: `CONTRIBUTING.md`, `DESIGN_PRINCIPLES.md` (tiers, three primitives,
+trigger-based deferral), `AGENT_EXECUTION_MODEL.md` (how tools are presented,
+made reliable, and run as jobs), `TOOL_AUDIT.md`.

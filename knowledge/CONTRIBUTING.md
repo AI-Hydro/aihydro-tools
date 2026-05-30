@@ -73,39 +73,18 @@ git push origin add-knowledge-<description>
 }
 ```
 
-### 2. Tool Documentation (`tools/`)
+### 2. Tools (`tools/`)
 
-**Purpose**: Document available Python tools and their capabilities
+**Purpose**: Conventions and reference for AI-Hydro's MCP tools.
 
 **Files**:
-- `tier1_libraries.json` - External libraries (PySheds, Xarray, etc.)
-- `tier2_wrappers.json` - AI-Hydro wrapper functions
-- `tier3_workflows.json` - Complete workflow functions
-- `camels_tools.json` - CAMELS-specific tools
+- `AUTHORING_GUIDE.md` - how to add a born-compliant `@mcp.tool()`
+- `skills/mcp-tool-authoring/` - the live-loadable skill version
+- `camels_tools.json` - CAMELS-specific tool reference
 
-**Structure**:
-```json
-{
-  "tool_name": {
-    "full_path": "ai_hydro.module.submodule.function_name",
-    "tier": "tier1|tier2|tier3",
-    "category": "watershed|climate|modeling|etc",
-    "description": "What the tool does",
-    "purpose": "When to use this tool",
-    "inputs": {
-      "param1": {"type": "str", "description": "Parameter description", "required": true},
-      "param2": {"type": "float", "description": "Optional parameter", "required": false}
-    },
-    "outputs": {
-      "type": "GeoDataFrame|dict|array",
-      "description": "What is returned"
-    },
-    "usage_example": "from ai_hydro import func\nresult = func(param1='value')",
-    "dependencies": ["library1", "library2"],
-    "references": ["doi:10.xxxx/xxxxx"]
-  }
-}
-```
+**To add a tool**, follow `tools/AUTHORING_GUIDE.md` — tools are registered as
+`@mcp.tool()` functions in `ai_hydro/mcp/`, and their **tier** (1/2/3) is set in
+`ai_hydro/mcp/app.py::TOOL_TIERS`. There is no separate JSON catalog to edit.
 
 ### 3. Workflows (`workflows/`)
 
@@ -368,40 +347,27 @@ Edit `knowledge/concepts/hydrology_concepts.json`:
 }
 ```
 
-### Example 2: Documenting a New Tool
+### Example 2: Adding a New Tool
 
-Edit `knowledge/tools/tier2_wrappers.json`:
+Tools are not catalogued in JSON — they are `@mcp.tool()` functions. Follow
+[`tools/AUTHORING_GUIDE.md`](tools/AUTHORING_GUIDE.md). In short:
 
-```json
-{
-  "calculate_aridity_index": {
-    "full_path": "ai_hydro.climate.indices.calculate_aridity_index",
-    "tier": "tier2",
-    "category": "climate",
-    "description": "Calculate aridity index (AI = PET/P) for a catchment",
-    "purpose": "Quantify climate aridity to classify watersheds",
-    "inputs": {
-      "precipitation": {
-        "type": "array",
-        "description": "Mean annual precipitation [mm/year]",
-        "required": true
-      },
-      "pet": {
-        "type": "array",
-        "description": "Mean annual potential evapotranspiration [mm/year]",
-        "required": true
-      }
-    },
-    "outputs": {
-      "type": "float",
-      "description": "Aridity index (dimensionless). AI < 0.5 = humid, AI > 2.0 = arid"
-    },
-    "usage_example": "from ai_hydro.climate.indices import calculate_aridity_index\nai = calculate_aridity_index(precipitation=1200, pet=800)\nprint(f'Aridity Index: {ai:.2f}')",
-    "dependencies": ["numpy"],
-    "references": ["doi:10.1016/j.jhydrol.2011.07.012"]
-  }
-}
+```python
+# ai_hydro/mcp/tools_climate.py
+from ai_hydro.mcp.app import mcp
+from ai_hydro.mcp.helpers import _resolve_session
+
+@mcp.tool()
+def compute_aridity_index(session_id: str | None = None) -> dict:
+    """Compute aridity index (AI = PET/P) for the bound study; AI<0.5 humid, AI>2.0 arid."""
+    session_id = _resolve_session(session_id, None)
+    ...
+    return {"aridity_index": 0.67}
 ```
+
+Then set its tier in `ai_hydro/mcp/app.py::TOOL_TIERS` (Tier 1 if it produces a
+citable result), import the module in `ai_hydro/mcp/__init__.py`, and add a test.
+See the authoring guide's pre-merge checklist.
 
 ### Example 3: Creating a New Workflow
 

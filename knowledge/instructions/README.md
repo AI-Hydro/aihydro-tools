@@ -181,8 +181,7 @@ Poor instruction:
 
 Instructions complement other knowledge base components:
 
-- **tools/tier2_wrappers.json**: Tool metadata and capabilities
-- **tools/tier3_workflows.json**: Workflow definitions
+- **tools/AUTHORING_GUIDE.md**: how MCP tools are defined (the live tool surface)
 - **workflows/*.yaml**: Step-by-step workflow specifications
 - **concepts/*.json**: Hydrological concept definitions
 - **templates/*.json**: Code templates and scaffolding
@@ -190,8 +189,8 @@ Instructions complement other knowledge base components:
 ### Consistency Across Files
 
 Ensure consistency with:
-- Tool names match those in tier2_wrappers.json
-- Workflow names match tier3_workflows.json
+- Tool names match the registered `@mcp.tool()` functions in `ai_hydro/mcp/`
+- Workflow names match `workflows/*.yaml`
 - Parameter names match actual function signatures
 - Examples use real, working code
 
