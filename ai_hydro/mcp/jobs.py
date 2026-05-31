@@ -36,6 +36,7 @@ log = logging.getLogger("ai_hydro.mcp.jobs")
 
 _JOBS_DIR = Path.home() / ".aihydro" / "jobs"
 _REGISTRY = _JOBS_DIR / "registry.json"
+_SUBAGENTS_DIR = Path.home() / ".aihydro" / "subagents"  # TypeScript-spawned CLI subagents
 
 _TERMINAL = {"complete", "failed", "cancelled"}
 
@@ -159,7 +160,12 @@ def _resolve_artifact_dir(job_id: str) -> Path | None:
     if entry and entry.get("artifact_dir"):
         return Path(entry["artifact_dir"])
 
-    # Legacy fallback: jobs started before the registry existed.
+    # TypeScript-side CLI subagent jobs (written by the extension, not the Python registry).
+    subagent_dir = _SUBAGENTS_DIR / job_id
+    if (subagent_dir / "status.json").exists():
+        return subagent_dir
+
+    # Legacy fallback: Python-spawned jobs started before the registry existed.
     candidates = [Path.home() / ".aihydro" / "models" / "runs" / job_id]
     try:
         from ai_hydro.session.store import _SESSIONS_DIR
@@ -226,7 +232,32 @@ def cancel_job(job_id: str) -> dict:
     """Kill the job's process group by its persisted PID and mark it cancelled."""
     reg = _read_registry()
     entry = reg.get(job_id)
+
+    # CLI subagents are spawned by TypeScript and not in the Python registry.
+    # The extension writes the shell PID to ~/.aihydro/subagents/<job_id>/pid.
     if entry is None:
+        subagent_dir = _SUBAGENTS_DIR / job_id
+        pid_file = subagent_dir / "pid"
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+            except (ValueError, OSError):
+                return {"error": True, "code": "JOB_NOT_FOUND",
+                        "message": f"CLI subagent job '{job_id}': pid file unreadable."}
+            killed = _pid_alive(pid)
+            if killed:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    killed = False
+            # Mark cancelled in status.json
+            status = _read_status_file(subagent_dir) or {"job_id": job_id}
+            status.update({"status": "cancelled", "updated_at": _now(),
+                           "error": {"code": "CANCELLED", "message": "Cancelled by user."}})
+            (subagent_dir / "status.json").write_text(json.dumps(status, indent=2))
+            return {"job_id": job_id, "status": "cancelled", "signalled": killed,
+                    "message": "CLI subagent cancelled." if killed
+                    else "CLI subagent marked cancelled (process was already gone)."}
         return {"error": True, "code": "JOB_NOT_FOUND",
                 "message": f"No registered job '{job_id}' to cancel."}
 
@@ -261,9 +292,15 @@ def cancel_job(job_id: str) -> dict:
 
 
 def list_jobs(kind: str | None = None) -> dict:
-    """List registered jobs (optionally filtered by kind), reconciled with status.json."""
+    """List registered jobs (optionally filtered by kind), reconciled with status.json.
+
+    Includes both Python-registry jobs and TypeScript-spawned CLI subagents
+    (written to ~/.aihydro/subagents/ by the VS Code extension).
+    """
     reg = _read_registry()
-    jobs = []
+    result_jobs = []
+
+    # Python-registry jobs (training, future compute jobs)
     for job_id, entry in reg.items():
         if kind and entry.get("kind") != kind:
             continue
@@ -273,7 +310,7 @@ def list_jobs(kind: str | None = None) -> dict:
             sf = _read_status_file(Path(artifact_dir))
             if sf and sf.get("status"):
                 status = sf["status"]
-        jobs.append({
+        result_jobs.append({
             "job_id": job_id,
             "kind": entry.get("kind"),
             "status": status,
@@ -281,5 +318,29 @@ def list_jobs(kind: str | None = None) -> dict:
             "started_at": entry.get("started_at"),
             "artifact_dir": artifact_dir,
         })
-    jobs.sort(key=lambda j: j.get("started_at") or "", reverse=True)
-    return {"count": len(jobs), "jobs": jobs}
+
+    # CLI subagent jobs (TypeScript-spawned; not in Python registry)
+    if kind is None or kind == "cli-subagent":
+        if _SUBAGENTS_DIR.exists():
+            for subdir in _SUBAGENTS_DIR.iterdir():
+                if not subdir.is_dir():
+                    continue
+                sf = _read_status_file(subdir)
+                if sf is None:
+                    continue
+                pid: int | None = None
+                try:
+                    pid = int((subdir / "pid").read_text().strip())
+                except (OSError, ValueError):
+                    pass
+                result_jobs.append({
+                    "job_id": sf.get("job_id", subdir.name),
+                    "kind": sf.get("kind", "cli-subagent"),
+                    "status": sf.get("status"),
+                    "pid_alive": _pid_alive(pid),
+                    "started_at": sf.get("started_at"),
+                    "artifact_dir": str(subdir),
+                })
+
+    result_jobs.sort(key=lambda j: j.get("started_at") or "", reverse=True)
+    return {"count": len(result_jobs), "jobs": result_jobs}

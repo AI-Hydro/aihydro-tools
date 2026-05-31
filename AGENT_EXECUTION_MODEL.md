@@ -210,7 +210,7 @@ budget control with **zero** new infrastructure beyond §3.
 | Phase | Goal | Closes gaps | Notes |
 |-------|------|-------------|-------|
 | **0 ✅** | Build `jobs.py` (§3 contract + PID registry); migrate `train_hydro_model`; add `cancel_job`/`list_jobs` tools | — | **Done.** Keystone shipped. Trigger evidence: modelling job couldn't be cancelled (PID discarded) — now fixed. `tests/test_jobs.py` covers start/status/result/cancel. |
-| **1** | CLI subagent becomes a first-class job: typed `result.json` envelope, PID tracked → cascade-cancel | 2, 6 (cancel) | Wrap the `aihydro "…"` spawn behind the contract instead of raw `execute_command`. |
+| **1 ✅** | CLI subagent becomes a first-class job: typed `result.json` envelope, PID tracked → cancel bridge | 2, 6 (cancel) | **Done.** `prepareSubagentCommand()` generates job dir + status.json; augments prompt with write_to_file instruction; extension writes shell PID to `pid` file; completion reads `result.json`; Python `cancel_job` + `list_jobs` bridge to `~/.aihydro/subagents/`. |
 | **2** | Named profiles with **capability-enforced** read-only (`explorer`, `data-runner`) | 3, 4 | The hydrology payoff. Read-only guaranteed by toolset, not prompt. |
 | **3** | Lift macOS gate; add fan-out/fan-in (concurrency cap, join/aggregate) | 1, 6 (parallelism) | — |
 | **4** | Session inheritance (`gauge_id` propagation); per-subagent token/cost/trace surfaced to user | 5 | — |
