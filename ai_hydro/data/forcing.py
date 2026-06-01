@@ -901,3 +901,52 @@ def fetch_forcing_data_routed(
             },
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# @feature_tool kernel — the canonical, decorated entry point (Phase B)
+# ---------------------------------------------------------------------------
+
+def _make_forcing_kernel():
+    """
+    Build and return the @feature_tool-decorated forcing kernel.
+
+    Deferred inside a factory so the aihydro_core import is lazy (avoids
+    hard startup failure when aihydro-core is not installed).
+    """
+    try:
+        from aihydro_core.features.compute import feature_tool as _feature_tool
+    except ImportError:
+        return None  # graceful degradation — MCP tool falls back to manual pattern
+
+    @_feature_tool(product="forcing", citations=["gridmet", "chirps", "era5"])
+    def _forcing_kernel(geom: dict, *, start_date: str, end_date: str,
+                        variables=None, product=None) -> dict:
+        """
+        Pure forcing computation kernel.
+
+        Called by the @feature_tool decorator after feature resolution and cache
+        check. Receives the raw GeoJSON geometry dict and compute params; returns
+        a result envelope ``{"data": {...}, "meta": {...}}``.
+
+        The kernel is pure: no session I/O, no disk writes. Large daily arrays
+        are stripped before storage; the MCP tool adds ``_data_file`` after the
+        workspace write.
+
+        Parameters
+        ----------
+        geom : dict   GeoJSON geometry resolved from the feature registry.
+        start_date, end_date : str   YYYY-MM-DD
+        variables : list | None      Subset of forcing vars (default: core 4)
+        product : str | None         Dataset family pin (e.g. "ERA5L")
+        """
+        result = fetch_forcing_data_routed(
+            geom, start_date, end_date, variables=variables, product=product
+        )
+        return result.to_dict()  # {"data": {...}, "meta": {...}}
+
+    return _forcing_kernel
+
+
+# Build the kernel at module import time (None if aihydro-core not available)
+forcing_kernel = _make_forcing_kernel()

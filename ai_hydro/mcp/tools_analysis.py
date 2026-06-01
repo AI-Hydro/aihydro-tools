@@ -1888,72 +1888,133 @@ async def fetch_forcing_data(
         from ai_hydro.session import HydroSession as _HS2
         session = _HS2.load(session_id)
 
-        # C4: feature-keyed cache check
-        _forcing_params = {
-            "start_date": start_date,
-            "end_date": end_date,
-            "variables": sorted(variables) if variables else None,
-            "product": product,
-        }
-        _feature_id, _key, _cached, _geom = _feature_cache_resolve(
-            session, "forcing", _forcing_params, feature, geometry_geojson,
-        )
-        if _cached is not None:
-            compact = _strip_forcing_arrays(_cached.get("data", {}))
-            return {
-                "data": compact,
-                "meta": _cached.get("meta", {}),
-                "_cache_hit": True,
-                "feature_id": _feature_id,
-                "product": _cached.get("data", {}).get("product", "unknown"),
-                "source":  _cached.get("data", {}).get("source",  "unknown"),
-                "_note": "Forcing data already cached. Full daily arrays on disk.",
+        # ── Geometry: resolve from feature registry or session ─────────────
+        # @feature_tool handles feature resolution + cache internally.
+        # For geometry_geojson overrides (no stable feature_id), fall back to
+        # the manual pattern so the override path still works.
+        from ai_hydro.data.forcing import forcing_kernel as _fk
+        _use_kernel = _fk is not None and not geometry_geojson
+
+        if _use_kernel:
+            # Phase B: @feature_tool handles resolve → cache → store → commit
+            if ctx:
+                await ctx.report_progress(progress=0, total=2)
+
+            result_envelope: dict = await asyncio.to_thread(
+                _fk,
+                store=session,
+                feature=feature,
+                start_date=start_date,
+                end_date=end_date,
+                variables=variables,
+                product=product,
+            )
+
+            if ctx:
+                await ctx.report_progress(progress=2, total=2)
+
+            _feature_id = result_envelope.get("feature_id", "__unknown__")
+            _is_cache_hit = result_envelope.get("_cache_hit", False)
+            d_data = result_envelope.get("data", {})
+
+            if _is_cache_hit:
+                # Cache hit: arrays already on disk from first compute
+                compact = _strip_forcing_arrays(d_data)
+                return {
+                    "data": compact,
+                    "meta": result_envelope.get("meta", {}),
+                    "_cache_hit": True,
+                    "feature_id": _feature_id,
+                    "product": d_data.get("product", "unknown"),
+                    "source":  d_data.get("source",  "unknown"),
+                    "_note": "Forcing data already cached. Full daily arrays on disk.",
+                }
+
+            # First compute: write large arrays to disk, update stored result
+            saved = _workspace_write(
+                session_id, _canonical_fname(session_id, "forcing", "json"), d_data
+            )
+            if saved:
+                d_data["_data_file"] = saved
+                # Update the cached envelope to include _data_file pointer
+                from aihydro_core.primitives.hashing import param_hash as _ph2
+                _params_key = _ph2({
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "variables": sorted(variables) if variables else None,
+                    "product": product,
+                })
+                _stored = session.get_result("forcing", _feature_id, _params_key) or result_envelope
+                if "data" in _stored:
+                    _stored["data"]["_data_file"] = saved
+                session.put_result("forcing", _feature_id, _params_key, _stored)
+                session.commit()
+
+        else:
+            # Fallback: geometry_geojson override or kernel unavailable
+            # Use the manual pattern so geometry_geojson works correctly.
+            _forcing_params = {
+                "start_date": start_date,
+                "end_date": end_date,
+                "variables": sorted(variables) if variables else None,
+                "product": product,
             }
+            _feature_id, _params_key, _cached, _geom = _feature_cache_resolve(
+                session, "forcing", _forcing_params, feature, geometry_geojson,
+            )
+            if _cached is not None:
+                compact = _strip_forcing_arrays(_cached.get("data", {}))
+                return {
+                    "data": compact,
+                    "meta": _cached.get("meta", {}),
+                    "_cache_hit": True,
+                    "feature_id": _feature_id,
+                    "product": _cached.get("data", {}).get("product", "unknown"),
+                    "source":  _cached.get("data", {}).get("source",  "unknown"),
+                    "_note": "Forcing data already cached. Full daily arrays on disk.",
+                }
 
-        watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
+            watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
+            if ctx:
+                await ctx.report_progress(progress=0, total=2)
 
-        if ctx:
-            await ctx.report_progress(progress=0, total=2)
+            from ai_hydro.data.forcing import fetch_forcing_data_routed as _fn
+            result = await asyncio.to_thread(
+                _fn, watershed_geojson=watershed_geojson,
+                start_date=start_date, end_date=end_date,
+                variables=variables, product=product,
+            )
+            d = _result_to_dict(result)
+            if ctx:
+                await ctx.report_progress(progress=2, total=2)
 
-        # ── Unified global-aware fetch via aihydro_data router ──────────────
-        from ai_hydro.data.forcing import fetch_forcing_data_routed as _fn
-        result = await asyncio.to_thread(
-            _fn,
-            watershed_geojson=watershed_geojson,
-            start_date=start_date,
-            end_date=end_date,
-            variables=variables,
-            product=product,
-        )
-        d = _result_to_dict(result)
+            saved = _workspace_write(
+                session_id, _canonical_fname(session_id, "forcing", "json"), d["data"]
+            )
+            if saved:
+                d["data"]["_data_file"] = saved
+            _feature_cache_store(session, "forcing", _feature_id, _params_key, d,
+                                 citations=["gridmet", "chirps", "era5"])
+            d_data = d["data"]
 
-        if ctx:
-            await ctx.report_progress(progress=2, total=2)
-
-        saved = _workspace_write(
-            session_id, _canonical_fname(session_id, "forcing", "json"), d["data"]
-        )
-        if saved:
-            d["data"]["_data_file"] = saved
-        _feature_cache_store(session, "forcing", _feature_id, _key, d,
-                             citations=["gridmet", "chirps", "era5"])
-
-        compact = _strip_forcing_arrays(d["data"])
-        if saved:
-            compact["_data_file"] = saved
+        # ── Build compact response ─────────────────────────────────────────
+        compact = _strip_forcing_arrays(d_data)
+        if d_data.get("_data_file"):
+            compact["_data_file"] = d_data["_data_file"]
 
         resp: dict = {
             "data": compact,
-            "meta": d.get("meta", {}),
+            "meta": result_envelope.get("meta", {}) if _use_kernel else d.get("meta", {}),
             "feature_id": _feature_id,
-            "product": d["data"].get("product", "unknown"),
-            "source":  d["data"].get("source",  "unknown"),
-            "_file_saved": saved,
+            "product": d_data.get("product", "unknown"),
+            "source":  d_data.get("source",  "unknown"),
+            "_file_saved": d_data.get("_data_file"),
             "_note": (
                 f"Forcing data ({compact.get('n_days', '?')} records, "
                 f"{len(compact.get('variables', []))} variables) "
-                f"saved to {saved or 'session'}. Raw daily arrays are NOT in the "
-                "session JSON or this response — load from _data_file when needed."
+                f"saved to {d_data.get('_data_file') or 'session'}. "
+                "Raw daily arrays are NOT in the session JSON or this response "
+                "— load from _data_file when needed."
             ),
         }
         reminder = _sync_reminder(session_id)
