@@ -36,6 +36,39 @@ back to a slug of ``session_id``. Tools should always call
 ``session.workspace_filename(prefix, ext)`` rather than building paths
 by hand, so the same study's outputs land in a consistent namespace.
 
+Slot model (C1 — aihydro-core)
+-------------------------------
+Slots now use a three-level keyed structure:
+
+    _slots[product][feature_id][params_key] = result_dict
+
+This means two features' results for the same product (e.g. TWI for two
+map annotations) coexist without collision. Caching is keyed by
+(product, feature_id, params_key) — identical geometry+params is a hit;
+different geometry is always a miss.
+
+Backward compatibility
+----------------------
+All existing tool code uses:
+  - ``session.twi`` / ``session.watershed`` etc. (property getters/setters)
+  - ``session.set(slot, value)`` / ``session.get(slot)``
+  - ``session.record_result(slot, data)``
+
+These all write to / read from the ``__legacy__`` sentinel feature ID so
+that un-migrated tools continue working exactly as before. New tools use
+the Store Protocol methods (``put_result``, ``get_result``) with explicit
+feature IDs.
+
+Old session files (``_hydro_slots_v2`` key absent) are migrated losslessly
+on first load: each single-value slot becomes
+``{slot: {"__legacy__": {"": old_value}}}``.
+
+Store Protocol (aihydro_core.store.Store)
+-----------------------------------------
+HydroSession implements the Store Protocol from aihydro-core so that
+FeatureRegistry and (C2) @feature_tool can operate on it without importing
+the session layer. All Store methods are defined below.
+
 Dynamic slots
 -------------
 Plugins can register their own result slots without editing core code:
@@ -57,13 +90,18 @@ from typing import Any
 log = logging.getLogger("ai_hydro.session")
 
 SESSIONS_DIR = Path.home() / ".aihydro" / "sessions"
-_SESSIONS_DIR = SESSIONS_DIR  # for backward compat within file
+_SESSIONS_DIR = SESSIONS_DIR  # backward compat alias
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _RULES_DIR_NAME = ".aihydrorules"
 
+# Sentinel feature ID used by backward-compat set()/get() path.
+# Old tools write results here; new @feature_tool tools use real feature IDs.
+_LEGACY_FEATURE_ID = "__legacy__"
+
+# Params key used by backward-compat set()/get() (params unknown for old results).
+_LEGACY_PARAMS_KEY = ""
+
 # Lists longer than this are stripped from the session JSON on disk.
-# They are replaced by a ``{key}_n`` count key so the record stays
-# interpretable without the full array.
 _ARRAY_STRIP_THRESHOLD = 50
 
 # Common slot names corresponding to built-in MCP tools.
@@ -79,38 +117,26 @@ _COMMON_SLOTS = (
     "model",
 )
 
-# Days before a field is considered stale in the active context
 STALENESS_THRESHOLD = {
     "computed": 365,
     "notes": 30,
     "interpretation": 14,
 }
 
-# Notes added more than this many seconds apart with identical text are kept;
-# duplicates within the window are dropped. (1 hour is generous for typical
-# multi-turn tool chains; longer-form dedup is the user's job.)
 _NOTE_DEDUP_WINDOW_SEC = 3600
 
 
+# --------------------------------------------------------------------------- #
+# Serialisation helpers
+# --------------------------------------------------------------------------- #
+
 def _lean_slot(val: Any) -> Any:
-    """
-    Return a disk-safe (lean) copy of a slot value.
-
-    Strips any list longer than ``_ARRAY_STRIP_THRESHOLD`` from the ``data``
-    sub-dict, replacing it with a ``{key}_n`` count key so the record stays
-    interpretable. The ``meta`` sub-dict and scalar ``data`` values are kept
-    verbatim. Private keys (``_data_file`` etc.) are preserved.
-
-    The in-memory ``_slots`` dict is never modified — stripping only happens
-    when serialising to JSON via ``_to_raw()``.
-    """
+    """Return a disk-safe (lean) copy of a single result dict."""
     if val is None:
         return None
     if not isinstance(val, dict):
         return val
-    # Model slot may store data directly (no data/meta wrapper) — handle both
     if "data" not in val:
-        # Flat dict (legacy model slot) — strip large lists in-place copy
         lean: dict = {}
         for k, v in val.items():
             if isinstance(v, list) and len(v) > _ARRAY_STRIP_THRESHOLD:
@@ -127,91 +153,125 @@ def _lean_slot(val: Any) -> Any:
     return {**val, "data": lean_data}
 
 
+def _lean_product_slot(by_feature: dict) -> dict:
+    """Apply _lean_slot to every result dict in a v2 product slot."""
+    return {
+        feature_id: {params_key: _lean_slot(result) for params_key, result in by_key.items()}
+        for feature_id, by_key in by_feature.items()
+    }
+
+
 def _slugify_for_filename(s: str) -> str:
-    """Lowercase, alnum + dot/dash/underscore only; trimmed of leading/trailing
-    separators. Used to derive a canonical_id from a free-form session_id."""
     s = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(s)).strip("-_.")
     return s.lower() or "session"
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _synopsis_from_result(result: dict | None) -> dict:
+    """Extract a lean LLM-readable synopsis from one result dict."""
+    if not result:
+        return {}
+    data = result.get("data", {})
+    meta = result.get("meta", {})
+    synopsis: dict = {}
+    for k, v in data.items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, list):
+            if len(v) > _ARRAY_STRIP_THRESHOLD:
+                synopsis[f"{k}_n"] = len(v)
+            else:
+                synopsis[k] = v
+        elif isinstance(v, dict):
+            synopsis[k] = {
+                dk: (dv if not (isinstance(dv, list) and len(dv) > _ARRAY_STRIP_THRESHOLD)
+                     else f"[{len(dv)} items]")
+                for dk, dv in v.items()
+            }
+        else:
+            synopsis[k] = v
+    computed_at = meta.get("computed_at", "")
+    synopsis["_computed_at"] = computed_at[:10] if computed_at else None
+    synopsis["_tool"] = meta.get("tool")
+    if meta.get("params"):
+        synopsis["_params"] = meta["params"]
+    return synopsis
+
+
+def _latest_result_in_feature(by_key: dict) -> dict | None:
+    """Return the most recently computed result from a feature's params-keyed dict."""
+    valid = [(k, v) for k, v in by_key.items() if v is not None]
+    if not valid:
+        return None
+    return max(
+        valid,
+        key=lambda kv: (kv[1] or {}).get("meta", {}).get("computed_at", ""),
+    )[1]
+
+
+# --------------------------------------------------------------------------- #
+# HydroSession
+# --------------------------------------------------------------------------- #
+
 class HydroSession:
-    """Persistent research state for a single study across tool calls."""
+    """Persistent research state for a single study across tool calls.
+
+    Implements the aihydro_core.store.Store Protocol so FeatureRegistry and
+    the (C2) @feature_tool decorator can address it directly.
+    """
 
     def __init__(self, session_id: str, shard_id: str | None = None) -> None:
         self.session_id: str = session_id
         self.shard_id: str | None = shard_id
-        # Display name — set by the data source (gauge_name) and confirmed
-        # in the LLM's interpretation. Changes are audited via _site_name_history.
         self.site_name: str = ""
-        # Data source identifier — e.g. USGS gauge "01031500", GRDC "6335060"
-        # Optional: may be empty for remote sensing, CSV, or ungauged studies
         self.site_id: str = ""
-        # Data source type — "usgs_gauge" | "grdc_station" | "ungauged" | "csv" | ...
         self.site_type: str = ""
         self.workspace_dir: str | None = None
-        # Relative path under workspace_dir for map/GEE study geometry (map_set_working_geometry)
         self.working_geometry_path: str | None = None
-        self._slots: dict[str, dict | None] = {}
+
+        # Three-level slot store: product → feature_id → params_key → result_dict.
+        # Old tools write to _LEGACY_FEATURE_ID via set()/get() backward compat.
+        # New @feature_tool tools write with real feature IDs via put_result().
+        self._slots: dict[str, dict[str, dict[str, dict | None]]] = {}
+
+        # Feature registry: feature_id → Feature.to_dict() (aihydro_core)
+        self._features: dict[str, dict] = {}
+        self.active_feature_id: str | None = None
+
         self.notes: list[str] = []
-        # LLM-authored scientific interpretation — written via write_research_interpretation
         self.interpretation: str = ""
         self.interpretation_at: str | None = None
-        self.created_at: str = datetime.now(timezone.utc).isoformat()
+        self.created_at: str = _now()
         self.updated_at: str = self.created_at
         self.archived: bool = False
-        # Citation keys accumulated as tools run (Tier 1 data sources + Plugin plugins).
         self._citations: set[str] = set()
-        # Provenance: artifact_id -> {type, source, fetch_parameters, parameter_hash, content_hash, ...}
         self.artifact_manifest: dict[str, dict] = {}
-        # Scientific Claims: claim_id -> ScientificClaim (dict)
         self.claims: dict[str, dict] = {}
-        # Assumptions: assumption_id -> Assumption (dict)
         self.assumptions: dict[str, dict] = {}
-        # Audit trail: every prior site_name with the reason it was overwritten.
-        # Items: {"prev": str, "next": str, "at": iso8601, "reason": str?}
         self._site_name_history: list[dict] = []
 
     # ------------------------------------------------------------------
-    # Backward-compat property: gauge_id → site_id (or session_id)
+    # Backward-compat: gauge_id → site_id
     # ------------------------------------------------------------------
 
     @property
     def gauge_id(self) -> str:
-        """Backward-compat alias — returns site_id if set, else session_id."""
         return self.site_id or self.session_id
 
     # ------------------------------------------------------------------
-    # Canonical identity for workspace filenames
+    # Canonical identity
     # ------------------------------------------------------------------
 
     @property
     def canonical_id(self) -> str:
-        """
-        Stable identifier used for all workspace artifact filenames so a
-        single study's outputs land in a consistent namespace.
-
-        Resolution:
-          1. ``site_id`` if non-empty (preferred — e.g. USGS gauge number)
-          2. slugified ``session_id`` otherwise
-
-        Tools should NEVER hand-build filenames by interpolating gauge IDs
-        or session IDs themselves; call ``workspace_filename`` so this
-        resolution stays in one place.
-        """
         if self.site_id:
             return _slugify_for_filename(self.site_id)
         return _slugify_for_filename(self.session_id)
 
     def workspace_filename(self, prefix: str, ext: str = "json") -> str:
-        """
-        Build a workspace-relative filename using the session's canonical_id.
-
-        ``prefix`` is the artifact kind (e.g. ``"watershed"``, ``"streamflow"``).
-        ``ext`` is the file extension (no leading dot — defaults to "json").
-
-        Returns e.g. ``"watershed_01031500.geojson"`` regardless of whether
-        the tool was called with the gauge ID, a slug, or just session_id.
-        """
         prefix = prefix.strip("_")
         ext = ext.lstrip(".")
         return f"{prefix}_{self.canonical_id}.{ext}"
@@ -221,52 +281,24 @@ class HydroSession:
     # ------------------------------------------------------------------
 
     def set_site_name(self, name: str, reason: str | None = None) -> None:
-        """
-        Set ``site_name`` with audit trail.
-
-        If the new name differs from the current one (and the current one
-        wasn't empty), the previous value is appended to ``_site_name_history``
-        with the supplied ``reason``. Use this rather than ``session.site_name = ...``
-        anywhere there is a chance the LLM might rewrite the name (e.g.
-        write_research_interpretation).
-        """
         name = (name or "").strip()
         prev = (self.site_name or "").strip()
         if name == prev:
             return
         if prev:
             self._site_name_history.append({
-                "prev": prev,
-                "next": name,
-                "at": datetime.now(timezone.utc).isoformat(),
-                "reason": reason or "",
+                "prev": prev, "next": name,
+                "at": _now(), "reason": reason or "",
             })
         self.site_name = name
 
-    # ------------------------------------------------------------------
-    # Identity validation — surfaces drift between session_id / site_id /
-    # site_name / watershed.gauge_name without raising.
-    # ------------------------------------------------------------------
-
     def validate_identity(self) -> list[dict]:
-        """
-        Return a list of warning records describing identity inconsistencies.
-
-        Each warning: {"code": str, "severity": "info"|"warn"|"error", "message": str}.
-        An empty list means the session's identity fields are mutually consistent.
-
-        Used by ``get_session_health`` and surfaced in summary() so the LLM
-        can fix drift before it propagates into research.md or exports.
-        """
         warnings: list[dict] = []
 
-        # 1. Cross-check site_name against the canonical gauge_name from
-        #    the watershed slot (set by delineate_watershed from USGS NWIS).
         if self.watershed and self.site_name:
             canonical = (self.watershed.get("data", {}) or {}).get("gauge_name") or ""
             canonical = canonical.strip()
             if canonical:
-                # Normalised comparison: strip case, punctuation, common abbreviations
                 def _norm(s: str) -> str:
                     return re.sub(r"[^a-z0-9 ]+", " ", s.lower()).strip()
                 if _norm(self.site_name) != _norm(canonical) and (
@@ -274,80 +306,88 @@ class HydroSession:
                     and _norm(self.site_name) not in _norm(canonical)
                 ):
                     warnings.append({
-                        "code": "site_name_drift",
-                        "severity": "warn",
+                        "code": "site_name_drift", "severity": "warn",
                         "message": (
                             f"site_name '{self.site_name}' disagrees with the "
-                            f"canonical gauge_name '{canonical}' from the watershed "
-                            "slot. Either the wrong gauge was queried or the "
-                            "interpretation renamed the site incorrectly."
+                            f"canonical gauge_name '{canonical}' from the watershed slot."
                         ),
-                        "site_name": self.site_name,
-                        "canonical_name": canonical,
+                        "site_name": self.site_name, "canonical_name": canonical,
                     })
 
-        # 2. If site_type says USGS but site_id isn't a valid gauge number.
         if self.site_type == "usgs_gauge" and self.site_id:
             if not (self.site_id.isdigit() and 7 <= len(self.site_id) <= 10):
                 warnings.append({
-                    "code": "site_id_format",
-                    "severity": "warn",
+                    "code": "site_id_format", "severity": "warn",
                     "message": (
                         f"site_type is 'usgs_gauge' but site_id '{self.site_id}' "
                         "is not a 7-10 digit USGS station number."
                     ),
                 })
 
-        # 3. session_id looks like a USGS gauge but site_id is different
-        #    (e.g. user started session with one gauge, then queried another).
         if (self.session_id.isdigit()
                 and 7 <= len(self.session_id) <= 10
                 and self.site_id
                 and self.site_id != self.session_id):
             warnings.append({
-                "code": "session_id_gauge_mismatch",
-                "severity": "info",
+                "code": "session_id_gauge_mismatch", "severity": "info",
                 "message": (
                     f"session_id '{self.session_id}' looks like a USGS gauge "
-                    f"but the analysed site is '{self.site_id}'. This is fine "
-                    "if intentional; file naming will use site_id."
+                    f"but the analysed site is '{self.site_id}'."
                 ),
             })
 
-        # 4. Workspace existence check — files may have been moved.
         if self.workspace_dir and not Path(self.workspace_dir).is_dir():
             warnings.append({
-                "code": "workspace_missing",
-                "severity": "warn",
-                "message": (
-                    f"workspace_dir '{self.workspace_dir}' no longer exists. "
-                    "Tool outputs cannot be saved. Update via "
-                    "start_session(session_id, workspace_dir='<new_path>')."
-                ),
+                "code": "workspace_missing", "severity": "warn",
+                "message": f"workspace_dir '{self.workspace_dir}' no longer exists.",
             })
 
-        # 5. Site name unconfirmed despite interpretation already authored.
         if self.interpretation and not self.site_name and self.site_id:
             warnings.append({
-                "code": "site_name_unset",
-                "severity": "info",
-                "message": (
-                    "An interpretation has been written but site_name is empty. "
-                    "Pass a descriptive site_name to write_research_interpretation."
-                ),
+                "code": "site_name_unset", "severity": "info",
+                "message": "An interpretation exists but site_name is empty.",
             })
 
         return warnings
 
     # ------------------------------------------------------------------
-    # Dynamic slot access
+    # Backward-compat slot access  (set / get)
+    #
+    # Both write to / read from __legacy__ sentinel feature so all existing
+    # tool code keeps working unchanged through the C1→C2 migration window.
     # ------------------------------------------------------------------
 
     def set(self, slot: str, value: dict | None) -> None:
-        self._slots[slot] = value
+        """Backward-compat: store a result under the __legacy__ feature."""
+        self._slots.setdefault(slot, {}).setdefault(_LEGACY_FEATURE_ID, {})[_LEGACY_PARAMS_KEY] = value
 
     def get(self, slot: str) -> dict | None:
-        return self._slots.get(slot)
+        """
+        Backward-compat: return the active feature's latest result, or __legacy__.
+
+        Resolution order:
+        1. active_feature_id's most recent result (new @feature_tool path)
+        2. __legacy__ most recent result (old tool path)
+        3. None
+        """
+        by_feature = self._slots.get(slot)
+        if not by_feature:
+            return None
+
+        # 1. Try active feature (non-legacy)
+        if self.active_feature_id and self.active_feature_id != _LEGACY_FEATURE_ID:
+            by_key = by_feature.get(self.active_feature_id, {})
+            result = _latest_result_in_feature(by_key)
+            if result is not None:
+                return result
+
+        # 2. Fall back to __legacy__
+        by_key = by_feature.get(_LEGACY_FEATURE_ID, {})
+        return _latest_result_in_feature(by_key)
+
+    # ------------------------------------------------------------------
+    # Provenance (unchanged API — backward compat)
+    # ------------------------------------------------------------------
 
     def add_artifact(
         self,
@@ -357,15 +397,12 @@ class HydroSession:
         source: str,
         artifact_type: str = "timeseries",
         units: str | None = None,
-        metadata: dict | None = None
+        metadata: dict | None = None,
     ) -> str:
-        """
-        Record a data artifact in the session manifest with provenance hashes.
-        Returns the artifact_id.
-        """
-        param_hash = self._hash(fetch_parameters)
-        content_hash = self._hash(data)
-
+        """Record a data artifact with provenance hashes (existing API)."""
+        from ai_hydro.session.store import _hash_obj
+        param_hash = _hash_obj(fetch_parameters)
+        content_hash = _hash_obj(data)
         self.artifact_manifest[artifact_id] = {
             "artifact_id": artifact_id,
             "type": artifact_type,
@@ -374,8 +411,8 @@ class HydroSession:
             "parameter_hash": param_hash,
             "content_hash": content_hash,
             "units": units,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            **(metadata or {})
+            "created_at": _now(),
+            **(metadata or {}),
         }
         return artifact_id
 
@@ -386,56 +423,126 @@ class HydroSession:
         uncertainty: dict | None = None,
         artifacts_used: list[str] | None = None,
         metric_ref: str | None = None,
-        tool_name: str | None = None
+        tool_name: str | None = None,
+        *,
+        feature_id: str | None = None,
     ) -> None:
-        """Record a scientifically defensible result in a session slot."""
+        """
+        Record a result in a session slot.
+
+        feature_id (keyword-only): if given, stores under that feature id rather
+        than __legacy__. New tools (C2+) pass this explicitly; old tools omit it.
+        """
         val: dict[str, Any] = {
             "data": data,
             "meta": {
-                "computed_at": datetime.now(timezone.utc).isoformat(),
+                "computed_at": _now(),
                 "tool": tool_name,
-                "metric_ref": metric_ref
-            }
+                "metric_ref": metric_ref,
+            },
         }
         if uncertainty:
             val["uncertainty"] = uncertainty
         if artifacts_used:
             val["artifacts_used"] = artifacts_used
-        self.set(slot, val)
+
+        fid = feature_id or self.active_feature_id or _LEGACY_FEATURE_ID
+        self.put_result(slot, fid, _LEGACY_PARAMS_KEY, val)
 
     def _hash(self, obj: Any) -> str:
-        """Compute a deterministic SHA-256 hash of a serialisable object."""
-        import hashlib
+        return _hash_obj(obj)
+
+    # ------------------------------------------------------------------
+    # Store Protocol — feature registry
+    # ------------------------------------------------------------------
+
+    def put_feature(self, feature: Any) -> None:  # feature: aihydro_core Feature
+        """Register or update a Feature in the session's feature registry."""
+        self._features[feature.feature_id] = feature.to_dict()
+
+    def get_feature(self, feature_id: str) -> Any:  # → Feature | None
+        """Look up a Feature by id."""
+        d = self._features.get(feature_id)
+        if d is None:
+            return None
         try:
-            s = json.dumps(obj, sort_keys=True)
+            from aihydro_core.primitives.geometry import Feature
+            return Feature.from_dict(d)
         except Exception:
-            s = str(obj)
-        return hashlib.sha256(s.encode("utf-8")).hexdigest()
+            return None
+
+    def list_features(self) -> list[Any]:  # → list[Feature]
+        """Return all registered features."""
+        try:
+            from aihydro_core.primitives.geometry import Feature
+            return [Feature.from_dict(d) for d in self._features.values()]
+        except Exception:
+            return []
+
+    def get_active_feature_id(self) -> str | None:
+        """Return the active (default) feature id."""
+        return self.active_feature_id
+
+    def set_active_feature_id(self, feature_id: str) -> None:
+        """Set the active (default) feature id."""
+        self.active_feature_id = feature_id
+
+    # ------------------------------------------------------------------
+    # Store Protocol — keyed result store
+    # ------------------------------------------------------------------
+
+    def put_result(
+        self,
+        product: str,
+        feature_id: str,
+        params_key: str,
+        value: dict | None,
+    ) -> None:
+        """Store a result under (product, feature_id, params_key)."""
+        self._slots.setdefault(product, {}).setdefault(feature_id, {})[params_key] = value
+
+    def get_result(
+        self,
+        product: str,
+        feature_id: str,
+        params_key: str,
+    ) -> dict | None:
+        """Retrieve a result. Returns None on cache miss."""
+        return self._slots.get(product, {}).get(feature_id, {}).get(params_key)
+
+    def list_results(self, product: str) -> dict[str, list[str]]:
+        """Return {feature_id: [params_key, ...]} for a product."""
+        by_feature = self._slots.get(product, {})
+        return {fid: list(by_key.keys()) for fid, by_key in by_feature.items()}
+
+    # ------------------------------------------------------------------
+    # Store Protocol — provenance (new API)
+    # ------------------------------------------------------------------
+
+    def store_artifact(self, art: Any) -> None:  # art: aihydro_core Artifact
+        """Record an Artifact (aihydro_core.primitives.Artifact) in the manifest."""
+        self.artifact_manifest[art.artifact_id] = art.to_dict()
+
+    def add_citations(self, keys: list[str]) -> None:
+        """Accumulate citation keys (no auto-save — caller must call save())."""
+        self._citations.update(keys)
+
+    def commit(self) -> None:
+        """Persist state (Store Protocol alias for save())."""
+        self.save()
 
     # ------------------------------------------------------------------
     # Notes with dedup
     # ------------------------------------------------------------------
 
     def add_note(self, note: str) -> bool:
-        """
-        Append a researcher note. Returns True if the note was added, False if
-        it was deduped (identical text added recently).
-
-        Dedup window is intentionally small (1 hour) so the same note can be
-        re-added later in a long study without surprise.
-        """
         note = (note or "").strip()
         if not note:
             return False
-        # Compare against last few notes (cheap, exact-text dedup)
         for existing in self.notes[-5:]:
             if existing.strip() == note:
-                # We don't track per-note timestamps, but if the session was
-                # touched recently and the same note is at the tail, drop it.
-                # Conservative: dedup only when the LAST note matches exactly.
                 if self.notes[-1].strip() == note:
                     return False
-        # Hard cap to avoid runaway growth
         if len(self.notes) >= 500:
             self.notes = self.notes[-499:]
         self.notes.append(note)
@@ -443,6 +550,9 @@ class HydroSession:
 
     # ------------------------------------------------------------------
     # Backward-compat property accessors for the 9 common slots
+    #
+    # Getters call self.get() → returns active or __legacy__ result.
+    # Setters call self.set() → stores under __legacy__ (old tools).
     # ------------------------------------------------------------------
 
     @property
@@ -529,7 +639,7 @@ class HydroSession:
 
     @classmethod
     def load(cls, session_id: str, shard_id: str | None = None) -> HydroSession:
-        """Load an existing session or shard, or return a new empty one."""
+        """Load an existing session or return a new empty one."""
         path = cls._path(session_id, shard_id)
         if not path.exists():
             return cls(session_id, shard_id)
@@ -537,31 +647,43 @@ class HydroSession:
             with open(path) as f:
                 raw = json.load(f)
         except json.JSONDecodeError as exc:
-            # Surface clearly rather than silently returning an empty session
-            # — corruption is the kind of bug we want to know about.
             log.error("Session file at %s is corrupted: %s", path, exc)
             raise RuntimeError(
                 f"Session file '{path}' is corrupted JSON ({exc}). "
-                "Investigate manually; do not blindly overwrite — there may "
-                "be recoverable history. Affected session_id: " + session_id
+                "Affected session_id: " + session_id
             ) from exc
+
         session = cls(session_id, shard_id)
+
+        # Keys that are stored at the top level but are NOT product slots.
         _META_KEYS = {
             "session_id", "site_name", "site_id", "site_type",
             "workspace_dir", "working_geometry_path", "notes", "created_at",
             "updated_at", "interpretation", "interpretation_at", "archived",
             "_citations", "artifact_manifest", "claims", "assumptions",
             "_site_name_history",
-            # legacy keys — kept for loading old session files
-            "gauge_id",
+            "gauge_id",          # legacy key
+            "_hydro_slots_v2",   # C1 schema version marker
+            "_features",         # C1 feature registry
+            "active_feature_id", # C1 active feature
         }
+
+        is_v2 = raw.get("_hydro_slots_v2", False)
+
         for key, val in raw.items():
             if key in _META_KEYS:
                 continue
             if isinstance(val, dict) or val is None:
-                session.set(key, val)
+                if is_v2:
+                    # New format: already a 3-level dict — load directly
+                    session._slots[key] = val if isinstance(val, dict) else {}
+                else:
+                    # Old format: migrate single-value slot → 3-level
+                    # {data, meta} → {__legacy__: {"": {data, meta}}}
+                    session._slots[key] = {_LEGACY_FEATURE_ID: {_LEGACY_PARAMS_KEY: val}}
+
+        # Metadata fields
         session.site_name = raw.get("site_name", "")
-        # Support legacy "gauge_id" key in old session files
         session.site_id = raw.get("site_id", "") or raw.get("gauge_id", "")
         session.site_type = raw.get("site_type", "")
         session.workspace_dir = raw.get("workspace_dir")
@@ -577,29 +699,21 @@ class HydroSession:
         session.claims = raw.get("claims", {})
         session.assumptions = raw.get("assumptions", {})
         session._site_name_history = raw.get("_site_name_history", [])
+
+        # C1: feature registry (absent in old sessions → empty, active → None)
+        session._features = raw.get("_features", {})
+        session.active_feature_id = raw.get("active_feature_id")
+
         return session
 
     def save(self) -> None:
-        """
-        Persist atomically: write to a temp file in the same directory, then
-        rename over the target. POSIX rename is atomic; on Windows it's an
-        unlink-then-rename but the window is microseconds.
-
-        Why this matters: SIGKILL or power loss during a partial write would
-        otherwise leave a truncated JSON file that load() can't parse, and
-        the user would lose the whole study's session.
-        """
-        self.updated_at = datetime.now(timezone.utc).isoformat()
-        # Auto-audit identity on every save — log (not raise) so we don't
-        # break workflows but the warnings show up in server logs + the
-        # next get_session_health call surfaces them too.
+        """Persist atomically (write temp, rename over target)."""
+        self.updated_at = _now()
         try:
             for w in self.validate_identity():
                 if w.get("severity") in ("warn", "error"):
-                    log.warning(
-                        "[session %s] %s: %s",
-                        self.session_id, w.get("code"), w.get("message"),
-                    )
+                    log.warning("[session %s] %s: %s",
+                                self.session_id, w.get("code"), w.get("message"))
         except Exception:
             pass
         _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -608,9 +722,6 @@ class HydroSession:
             f"{target.suffix}.tmp.{os.getpid()}.{int(time.time() * 1000)}"
         )
         payload = json.dumps(self._to_raw(), indent=2)
-        # Write + fsync the data file so the rename is guaranteed durable.
-        # Skip fsync silently on platforms where the file descriptor can't be
-        # fsynced (rare; some networked filesystems).
         with open(tmp, "w") as f:
             f.write(payload)
             try:
@@ -626,7 +737,6 @@ class HydroSession:
                 log.warning("research.md write failed (session saved OK): %s", exc)
 
     def archive(self) -> None:
-        """Mark session as archived — all active context moves to Historical."""
         self.archived = True
         self.save()
 
@@ -649,9 +759,14 @@ class HydroSession:
             "claims": self.claims,
             "assumptions": self.assumptions,
             "_site_name_history": self._site_name_history,
+            # C1 additions
+            "_hydro_slots_v2": True,
+            "_features": self._features,
+            "active_feature_id": self.active_feature_id,
         }
-        for slot, val in self._slots.items():
-            raw[slot] = _lean_slot(val)
+        # Serialize 3-level slots, applying lean to innermost result dicts
+        for slot, by_feature in self._slots.items():
+            raw[slot] = _lean_product_slot(by_feature)
         return raw
 
     # ------------------------------------------------------------------
@@ -675,22 +790,24 @@ class HydroSession:
     # ------------------------------------------------------------------
 
     def computed(self) -> list[str]:
-        return [k for k, v in self._slots.items() if v is not None]
+        """Products that have at least one non-None result across any feature."""
+        result = []
+        for product, by_feature in self._slots.items():
+            if any(
+                v is not None
+                for by_key in by_feature.values()
+                for v in by_key.values()
+            ):
+                result.append(product)
+        return result
 
     def pending(self) -> list[str]:
+        """Common slots not yet computed for the active/legacy feature."""
         return [s for s in _COMMON_SLOTS if self.get(s) is None]
 
     def is_stale(self, field: str) -> bool:
-        """
-        Whether a field should be treated as stale/historical.
-
-        Archived sessions are entirely historical, so every field is treated
-        as stale even if its timestamp is recent.
-        """
         if self.archived:
             return True
-
-        # 1. Computed slots — use the slot's own computed_at
         if field in self._slots:
             result = self.get(field)
             if not result:
@@ -704,31 +821,23 @@ class HydroSession:
                 return delta.days > STALENESS_THRESHOLD["computed"]
             except Exception:
                 return False
-
-        # 2. Interpretation
         if field == "interpretation":
             if not self.interpretation_at:
                 return False
             try:
                 ts = datetime.fromisoformat(self.interpretation_at.replace("Z", "+00:00"))
-                delta = datetime.now(timezone.utc) - ts
-                return delta.days > STALENESS_THRESHOLD["interpretation"]
+                return (datetime.now(timezone.utc) - ts).days > STALENESS_THRESHOLD["interpretation"]
             except Exception:
                 return False
-
-        # 3. Notes — use session updated_at as proxy
         if field == "notes":
             try:
                 ts = datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
-                delta = datetime.now(timezone.utc) - ts
-                return delta.days > STALENESS_THRESHOLD["notes"]
+                return (datetime.now(timezone.utc) - ts).days > STALENESS_THRESHOLD["notes"]
             except Exception:
                 return False
-
         return False
 
     def summary(self) -> dict:
-        """Lean summary used by start_session / get_session_summary."""
         warnings = self.validate_identity()
         out: dict[str, Any] = {
             "session_id": self.session_id,
@@ -744,6 +853,15 @@ class HydroSession:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+        # C1: surface registered features if any exist beyond __legacy__
+        real_features = {k: v for k, v in self._features.items()
+                         if k != _LEGACY_FEATURE_ID}
+        if real_features:
+            out["features"] = [
+                {"feature_id": k, "name": v.get("name", ""), "source": v.get("source", "")}
+                for k, v in real_features.items()
+            ]
+            out["active_feature_id"] = self.active_feature_id
         if warnings:
             out["identity_warnings"] = warnings
         return out
@@ -755,66 +873,55 @@ class HydroSession:
     # Citation management
     # ------------------------------------------------------------------
 
-    def add_citations(self, keys: list[str]) -> None:
-        """Accumulate citation keys (no auto-save — caller must call save())."""
-        self._citations.update(keys)
-
     def get_citations(self) -> set[str]:
-        """Return the set of accumulated Tier 1 citation keys."""
         return set(self._citations)
 
     def export_bibtex(self) -> str:
-        """Build a ready-to-use .bib string (Tier 1 collected + Platform platform)."""
         from ai_hydro.citations import build_bibtex
         return build_bibtex(self._citations)
 
     def cite_all(self) -> str:
-        """Backward-compat alias → export_bibtex()."""
         return self.export_bibtex()
 
-    def synopsis_for_llm(self) -> dict:
-        """
-        Concise per-slot summaries for LLM reasoning — never returns raw arrays.
+    # ------------------------------------------------------------------
+    # Synopsis for LLM
+    #
+    # Single-feature sessions: flat dict (identical to pre-C1 output).
+    # Multi-feature sessions: nested by feature_id per slot.
+    # ------------------------------------------------------------------
 
-        Each slot becomes a flat dict of scalars + short lists only.
-        Large time-series arrays are replaced by their element count so the LLM
-        knows they exist without being overwhelmed by the data.
-        """
+    def synopsis_for_llm(self) -> dict:
+        """Concise per-slot summaries for LLM reasoning."""
         out: dict = {}
         for slot in self.computed():
-            result = self.get(slot)
-            if not result:
-                continue
-            data = result.get("data", {})
-            meta = result.get("meta", {})
-            synopsis: dict = {}
-            for k, v in data.items():
-                if k.startswith("_"):
-                    continue
-                if isinstance(v, list):
-                    if len(v) > _ARRAY_STRIP_THRESHOLD:
-                        synopsis[f"{k}_n"] = len(v)
-                    else:
-                        synopsis[k] = v
-                elif isinstance(v, dict):
-                    synopsis[k] = {
-                        dk: (dv if not (isinstance(dv, list) and
-                                        len(dv) > _ARRAY_STRIP_THRESHOLD)
-                             else f"[{len(dv)} items]")
-                        for dk, dv in v.items()
-                    }
-                else:
-                    synopsis[k] = v
-            computed_at = meta.get("computed_at", "")
-            synopsis["_computed_at"] = computed_at[:10] if computed_at else None
-            synopsis["_tool"] = meta.get("tool", slot)
-            if meta.get("params"):
-                synopsis["_params"] = meta["params"]
-            out[slot] = synopsis
+            by_feature = self._slots.get(slot, {})
+
+            # Separate real features from legacy sentinel
+            real = {k: v for k, v in by_feature.items() if k != _LEGACY_FEATURE_ID}
+            legacy = by_feature.get(_LEGACY_FEATURE_ID, {})
+
+            if real:
+                # Multi-feature: nest by feature_id
+                out[slot] = {}
+                for fid, by_key in real.items():
+                    result = _latest_result_in_feature(by_key)
+                    if result:
+                        name = self._features.get(fid, {}).get("name", fid)
+                        key = name if name else fid
+                        out[slot][key] = _synopsis_from_result(result)
+                # Also include legacy if present
+                result = _latest_result_in_feature(legacy)
+                if result:
+                    out[slot][_LEGACY_FEATURE_ID] = _synopsis_from_result(result)
+            else:
+                # Single-feature (legacy only): flat, same as before
+                result = _latest_result_in_feature(legacy)
+                if result:
+                    out[slot] = _synopsis_from_result(result)
+
         return out
 
     def raw_session_data(self) -> dict:
-        """Backward-compat alias → synopsis_for_llm()."""
         return self.synopsis_for_llm()
 
     # ------------------------------------------------------------------
@@ -822,13 +929,6 @@ class HydroSession:
     # ------------------------------------------------------------------
 
     def write_research_context(self) -> None:
-        """
-        Write research.md to .aihydrorules/ for VS Code context injection.
-
-        Separates ACTIVE context from HISTORICAL (stale/archived) context.
-        Identity warnings (if any) are surfaced at the top so the LLM sees
-        them on every turn.
-        """
         display = self.site_name or self.site_id or self.session_id
         name_str = self._display_name_str()
         computed = self.computed()
@@ -840,15 +940,14 @@ class HydroSession:
             f"**ID**: {self.session_id}",
         ]
         if self.archived:
-            lines.append("> [!IMPORTANT]")
-            lines.append("> **This session is ARCHIVED.** All hypotheses below are historical.")
+            lines += ["> [!IMPORTANT]", "> **This session is ARCHIVED.**", ""]
 
         if self.site_id:
-            lines.append(f"**Site**: {self.site_id}" +
-                         (f" ({self.site_type})" if self.site_type else ""))
+            lines.append(f"**Site**: {self.site_id}"
+                         + (f" ({self.site_type})" if self.site_type else ""))
         lines += [f"**Updated**: {self.updated_at[:10]}", ""]
 
-        # --- Identity warnings (surface at top so LLM acts) ---
+        # Identity warnings
         warnings = self.validate_identity()
         if warnings:
             lines.append("> [!WARNING]")
@@ -857,7 +956,17 @@ class HydroSession:
                 lines.append(f"> - `{w['code']}` ({w['severity']}): {w['message']}")
             lines.append("")
 
-        # --- Active Computations ---
+        # C1: surface registered features
+        real_features = {k: v for k, v in self._features.items()
+                         if k != _LEGACY_FEATURE_ID}
+        if real_features:
+            lines.append("**Registered features** (addressable by id or name):")
+            for fid, fd in real_features.items():
+                active_marker = " ← active" if fid == self.active_feature_id else ""
+                name = fd.get("name", "")
+                lines.append(f"  - `{fid}`" + (f" ({name})" if name else "") + active_marker)
+            lines.append("")
+
         active_computed = [s for s in computed if not self.is_stale(s)]
         stale_computed = [s for s in computed if self.is_stale(s)]
         if active_computed:
@@ -866,14 +975,12 @@ class HydroSession:
             lines.append("**Pending**: " + ", ".join(pending))
         lines.append("")
 
-        # --- Active Scientific Context ---
         interp_stale = self.is_stale("interpretation")
         if self.interpretation and not interp_stale:
             lines.append("## Scientific Context (Active)")
             lines.append(self.interpretation)
             lines.append("")
 
-        # --- Active Researcher Notes ---
         notes_stale = self.is_stale("notes")
         if self.notes and not notes_stale:
             lines.append("## Researcher Notes (Active)")
@@ -881,27 +988,23 @@ class HydroSession:
                 lines.append(f"- {note}")
             lines.append("")
 
-        # --- Historical / Stale Context ---
         if self.archived or stale_computed or (self.interpretation and interp_stale) or (self.notes and notes_stale):
-            lines.append("---")
-            lines.append("## Historical / Stale Context")
-            lines.append("> The following context is older than the staleness threshold. "
-                         "Use with caution.")
-            lines.append("")
+            lines += ["---", "## Historical / Stale Context",
+                      "> The following context is older than the staleness threshold.", ""]
             if stale_computed:
                 lines.append("**Computed (Stale)**: " + ", ".join(stale_computed))
             if self.interpretation and interp_stale:
-                lines.append("### Historical Interpretation")
-                lines.append(f"*(Authored {self.interpretation_at[:10] if self.interpretation_at else 'unknown'})*")
-                lines.append(self.interpretation)
-                lines.append("")
+                lines += [
+                    "### Historical Interpretation",
+                    f"*(Authored {self.interpretation_at[:10] if self.interpretation_at else 'unknown'})*",
+                    self.interpretation, "",
+                ]
             if self.notes and notes_stale:
                 lines.append("### Historical Notes")
                 for note in self.notes:
                     lines.append(f"- {note}")
                 lines.append("")
 
-        # --- Profile ---
         try:
             from ai_hydro.session.persona import ResearcherProfile
             profile = ResearcherProfile.load()
@@ -912,11 +1015,10 @@ class HydroSession:
             pass
 
         if not self.interpretation:
-            lines.append(
+            lines += [
                 "_No scientific interpretation yet — call `get_session_raw_state` "
-                "then `write_research_interpretation` to generate one._"
-            )
-            lines.append("")
+                "then `write_research_interpretation` to generate one._", "",
+            ]
 
         lines.append(
             "> *Skeleton auto-generated by HydroSession. "
@@ -929,9 +1031,22 @@ class HydroSession:
         research_md.write_text("\n".join(lines))
 
     def _display_name_str(self) -> str:
-        """Parenthetical station name from watershed metadata if available."""
         if self.watershed:
             name = self.watershed.get("data", {}).get("gauge_name", "")
             if name and name not in (self.site_name, self.site_id, self.session_id):
                 return f" ({name})"
         return ""
+
+
+# --------------------------------------------------------------------------- #
+# Module-level helpers (used internally and by helpers.py)
+# --------------------------------------------------------------------------- #
+
+def _hash_obj(obj: Any) -> str:
+    """Deterministic SHA-256 hash of a serialisable object (16-char hex)."""
+    import hashlib
+    try:
+        s = json.dumps(obj, sort_keys=True, default=str)
+    except Exception:
+        s = str(obj)
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]

@@ -398,7 +398,11 @@ class TestLeanSession:
         assert "q_cms" not in lean["data"]
 
     def test_session_json_is_lean_after_save(self, tmp_path):
-        """Saved session.json must not contain large list arrays."""
+        """Saved session.json must not contain large list arrays.
+
+        C1 note: old-tool writes go to the __legacy__ sentinel feature id,
+        so the on-disk path is streamflow → __legacy__ → "" → {data, meta}.
+        """
         from ai_hydro.session import HydroSession
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
@@ -409,10 +413,13 @@ class TestLeanSession:
                 "meta": {"tool": "fetch_streamflow_data"},
             }
             s.save()
-            # Read raw JSON — must not contain the big arrays
+            # Read raw JSON — must not contain the big arrays.
+            # C1 v2 structure: slot → feature_id → params_key → result_dict
             raw_json = (tmp_path / "test-lean.json").read_text()
             data = json.loads(raw_json)
-            sf_data = data["streamflow"]["data"]
+            assert data.get("_hydro_slots_v2") is True, "session must be v2 format"
+            sf_result = data["streamflow"]["__legacy__"][""]
+            sf_data = sf_result["data"]
             assert "dates" not in sf_data
             assert "q_cms" not in sf_data
             assert sf_data["dates_n"] == 3652
