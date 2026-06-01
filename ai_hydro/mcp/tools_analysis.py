@@ -150,6 +150,96 @@ def _feature_cache_store(session, product: str, feature_id: str, key: str,
     session.commit()
 
 
+async def _batch_feature_run(
+    tool_fn,
+    feature_list: list,
+    session_id: str,
+    ctx=None,
+    **params,
+) -> dict:
+    """
+    C3 batch fan-out for async MCP tools that cannot use @feature_tool.
+
+    Calls ``tool_fn`` once per feature in ``feature_list`` and joins the
+    results into a feature-keyed dict. Features are dispatched concurrently
+    via ``asyncio.gather`` so independent DEM/NLCD downloads can overlap.
+
+    Parameters
+    ----------
+    tool_fn : async callable
+        The MCP tool coroutine (compute_twi, create_cn_grid, …).
+    feature_list : list
+        List of feature ids / names / GeoJSON dicts.
+    session_id : str
+        Active session id forwarded to each individual call.
+    ctx : Context | None
+        MCP context (passed through; progress is per-child).
+    **params
+        Shared keyword params forwarded to every child call.
+
+    Returns
+    -------
+    dict with keys:
+        batch        : True
+        product      : str  (inferred from first successful result)
+        n_features   : int
+        n_success    : int
+        n_error      : int
+        results      : {feature_id: result_dict, …}
+        errors       : {feature_id: error_message, …}   (absent if none)
+    """
+    import asyncio
+
+    async def _run_one(ref) -> tuple[str, dict]:
+        try:
+            result = await tool_fn(
+                session_id=session_id,
+                feature=ref if not isinstance(ref, dict) else None,
+                geometry_geojson=(
+                    ref if isinstance(ref, str) and ref.startswith("{") else
+                    json.dumps(ref) if isinstance(ref, dict) else None
+                ),
+                ctx=ctx,
+                **params,
+            )
+            fid = result.get("feature_id") or str(ref)
+            return fid, result
+        except Exception as exc:
+            return str(ref), {"error": True, "message": str(exc)}
+
+    # Run sequentially — HydroSession is not concurrency-safe for writes.
+    # Each tool call loads the latest committed state, computes, commits,
+    # so the next iteration always sees all previously stored results.
+    # True concurrent fan-out (C3+) requires a session lock or separate
+    # per-feature sessions; defer until a trigger demands it.
+    pairs = []
+    for ref in feature_list:
+        pair = await _run_one(ref)
+        pairs.append(pair)
+
+    results: dict = {}
+    errors: dict = {}
+    for fid, res in pairs:
+        if res.get("error"):
+            errors[fid] = res.get("message", "unknown error")
+        else:
+            results[fid] = res
+
+    first_product = next(
+        (r.get("meta", {}).get("tool", "").split(".")[-1] for r in results.values()),
+        "unknown",
+    )
+    return {
+        "batch": True,
+        "product": first_product,
+        "n_features": len(feature_list),
+        "n_success": len(results),
+        "n_error": len(errors),
+        "results": results,
+        **({"errors": errors} if errors else {}),
+    }
+
+
 def _bounds_to_wgs84(bounds: list, crs_str: str) -> list:
     """
     Convert [west, south, east, north] bounds to EPSG:4326 if needed.
@@ -1055,7 +1145,7 @@ def extract_hydrological_signatures(
     session_id: str | None = None,
     start_date: str = "1989-10-01",
     end_date: str = "2009-09-30",
-    feature: str | None = None,
+    feature: "str | list | None" = None,
     geometry_geojson: str | None = None,
 ) -> dict:
     """
@@ -1078,6 +1168,23 @@ def extract_hydrological_signatures(
         geometry is wrong or when working directly with a delineated polygon
         from delineate_watershed_from_point (e.g. global basins).
     """
+    # C3: batch fan-out (sync tool — simple sequential loop)
+    if isinstance(feature, list):
+        results: dict = {}
+        errors: dict = {}
+        for ref in feature:
+            r = extract_hydrological_signatures(
+                session_id=session_id, start_date=start_date,
+                end_date=end_date, feature=ref,
+            )
+            fid = r.get("feature_id") or str(ref)
+            (errors if r.get("error") else results)[fid] = r
+        return {
+            "batch": True, "product": "signatures",
+            "n_features": len(feature), "n_success": len(results),
+            "n_error": len(errors), "results": results,
+            **({"errors": errors} if errors else {}),
+        }
     try:
         session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession
@@ -1204,7 +1311,7 @@ def extract_hydrological_signatures(
 def extract_geomorphic_parameters(
     session_id: str | None = None,
     dem_resolution: int = 30,
-    feature: str | None = None,
+    feature: "str | list | None" = None,
     geometry_geojson: str | None = None,
 ) -> dict:
     """
@@ -1229,6 +1336,22 @@ def extract_geomorphic_parameters(
         session_id geometry is wrong (e.g. "map" session mismatch) or for
         globally-delineated pour-point basins.
     """
+    # C3: batch fan-out (sync tool — simple sequential loop)
+    if isinstance(feature, list):
+        results: dict = {}
+        errors: dict = {}
+        for ref in feature:
+            r = extract_geomorphic_parameters(
+                session_id=session_id, dem_resolution=dem_resolution, feature=ref,
+            )
+            fid = r.get("feature_id") or str(ref)
+            (errors if r.get("error") else results)[fid] = r
+        return {
+            "batch": True, "product": "geomorphic",
+            "n_features": len(feature), "n_success": len(results),
+            "n_error": len(errors), "results": results,
+            **({"errors": errors} if errors else {}),
+        }
     try:
         session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession
@@ -1303,7 +1426,7 @@ async def compute_twi(
     session_id: str | None = None,
     resolution: int = 30,
     create_map: bool = True,
-    feature: str | None = None,
+    feature: "str | list | None" = None,
     geometry_geojson: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
@@ -1335,6 +1458,12 @@ async def compute_twi(
         Pass the GeoJSON string from delineate_watershed_from_point's response
         or from a workspace .geojson file.
     """
+    # C3: batch fan-out — feature is a list of refs
+    if isinstance(feature, list):
+        return await _batch_feature_run(
+            compute_twi, feature, _resolve_session(session_id, None),
+            ctx=ctx, resolution=resolution, create_map=create_map,
+        )
     try:
         session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession
@@ -1547,7 +1676,7 @@ async def create_cn_grid(
     year: int = 2019,
     resolution: int = 30,
     create_map: bool = True,
-    feature: str | None = None,
+    feature: "str | list | None" = None,
     geometry_geojson: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
@@ -1575,6 +1704,12 @@ async def create_cn_grid(
     geometry_geojson : str, optional
         Override watershed geometry as a GeoJSON string.
     """
+    # C3: batch fan-out (async tool → asyncio concurrent gather)
+    if isinstance(feature, list):
+        return await _batch_feature_run(
+            create_cn_grid, feature, _resolve_session(session_id, None),
+            ctx=ctx, year=year, resolution=resolution, create_map=create_map,
+        )
     try:
         session_id = _resolve_session(session_id, None)
         session = _ensure_session(session_id)
@@ -1700,7 +1835,7 @@ async def fetch_forcing_data(
     end_date: str,
     session_id: str | None = None,
     variables: list[str] | None = None,
-    feature: str | None = None,
+    feature: "str | list | None" = None,
     geometry_geojson: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
@@ -1728,6 +1863,12 @@ async def fetch_forcing_data(
 
     Returns daily arrays saved to disk; referenced via `_data_file` pointer.
     """
+    # C3: batch fan-out (async tool → asyncio concurrent gather)
+    if isinstance(feature, list):
+        return await _batch_feature_run(
+            fetch_forcing_data, feature, _resolve_session(session_id, None),
+            ctx=ctx, start_date=start_date, end_date=end_date, variables=variables,
+        )
     try:
         session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession as _HS2
