@@ -1862,13 +1862,18 @@ async def fetch_forcing_data(
                 variables=variables,
             )
             d = _result_to_dict(result)
-            # Attach precipitation provenance via aihydro-data shim
-            _precip_result, _ = _legacy_data_shim(
-                "precipitation", watershed_geojson, start_date, end_date
-            )
-            if _precip_result is not None:
-                d["data"]["_aihydro_data_product"] = _precip_result.product
-                d["data"]["_aihydro_data_source"] = _precip_result.source
+            # Best-effort: enrich with aihydro-data provenance product label.
+            # Failure here is non-fatal (GridMET already succeeded); swallow
+            # quietly so transient 404s from shim backends don't surface.
+            try:
+                _precip_result, _ = _legacy_data_shim(
+                    "precipitation", watershed_geojson, start_date, end_date
+                )
+                if _precip_result is not None:
+                    d["data"]["_aihydro_data_product"] = _precip_result.product
+                    d["data"]["_aihydro_data_source"] = _precip_result.source
+            except Exception:
+                pass
 
         if ctx:
             await ctx.report_progress(progress=2, total=2)
@@ -1887,6 +1892,7 @@ async def fetch_forcing_data(
         resp: dict = {
             "data": compact,
             "meta": d.get("meta", {}),
+            "feature_id": _feature_id,
             "_file_saved": saved,
             "_note": (
                 f"Forcing data ({compact.get('n_days', '?')} records, "

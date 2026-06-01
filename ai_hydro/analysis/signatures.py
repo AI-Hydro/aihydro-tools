@@ -178,6 +178,16 @@ def extract_hydrological_signatures(
             sigs = _get_default_hydrology()
         else:
             q_cms = streamflow_result["q_cms"]
+            # _to_mm_per_day expects a pd.Series with a DatetimeIndex.
+            # When q_cms comes from a pre-loaded list (non-USGS path) it is a
+            # plain Python list or numpy array; wrap it in a Series so the
+            # conversion always receives the correct type. Use isinstance
+            # (not hasattr) — plain lists also have .index().
+            import pandas as _pd
+            if not isinstance(q_cms, _pd.Series):
+                _idx = _pd.date_range(start_date or "2000-01-01",
+                                      periods=len(q_cms), freq="D")
+                q_cms = _pd.Series(list(q_cms), index=_idx, dtype=float)
             q_mm_day = _to_mm_per_day(q_cms, area_km2)
             p_mm_day = _fetch_precipitation_data_bygeom(watershed_geom, start_date, end_date)
 
