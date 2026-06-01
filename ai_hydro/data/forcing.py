@@ -623,3 +623,281 @@ def fetch_forcing_data_result(
                 "Install forcing extras: pip install 'ai-hydro[forcing]'"
             ),
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Routing table for fetch_forcing_data_routed
+# ---------------------------------------------------------------------------
+
+# Map aihydro-tools GridMET-style variable names → (aihydro_data variable, output column)
+_ADATA_ROUTES: dict[str, tuple[str, str]] = {
+    "pr":   ("precipitation", "prcp_mm"),
+    "tmmx": ("tmax",          "tmax_C"),
+    "tmmn": ("tmin",          "tmin_C"),
+    "pet":  ("pet",           "pet_mm"),
+}
+
+# Dataset-family prefix → per-variable product IDs in aihydro_data
+_PRODUCT_FAMILIES: dict[str, dict[str, str]] = {
+    "GRIDMET": {
+        "precipitation": "GRIDMET_PRECIP",
+        "tmax":          "GRIDMET_TMAX",
+        "tmin":          "GRIDMET_TMIN",
+        "pet":           "GRIDMET_PET",
+    },
+    "ERA5L": {
+        "precipitation": "ERA5L_PRECIP",
+        "tmax":          "ERA5L_TMAX",
+        "tmin":          "ERA5L_TMIN",
+        "pet":           "ERA5L_PET",
+    },
+    "DAYMET": {
+        "precipitation": "DAYMET_PRECIP",
+        "tmax":          "DAYMET_TMAX",
+        "tmin":          "DAYMET_TMIN",
+    },
+    "CHIRPS": {"precipitation": "CHIRPS"},
+    "IMERG":  {"precipitation": "IMERG_PRECIP"},
+}
+
+# Variables with no aihydro_data equivalent (GridMET/CONUS-only)
+_GRIDMET_ONLY_VARS: frozenset[str] = frozenset({"srad", "vs", "sph", "rmax", "rmin", "erc"})
+
+# GridMET → output column name mapping for CONUS-only variables
+_GRIDMET_ONLY_COL: dict[str, str] = {
+    "srad": "srad_Wm2",
+    "vs":   "wind_ms",
+    "sph":  "sph_kgkg",
+    "rmax": "rmax_pct",
+    "rmin": "rmin_pct",
+    "erc":  "erc",
+}
+
+
+def fetch_forcing_data_routed(
+    watershed_geojson: dict,
+    start_date: str,
+    end_date: str,
+    variables: Optional[list] = None,
+    product: Optional[str] = None,
+) -> "HydroResult":
+    """
+    Fetch basin-averaged forcing via aihydro_data router (globally robust).
+
+    Core variables (pr → precipitation, tmmx → tmax, tmmn → tmin, pet) are
+    fetched through ``aihydro_data.fetch()``, which auto-routes to the best
+    available product for the geometry's region:
+
+    - **CONUS**:         GridMET (4 km, daily)
+    - **North America**: Daymet / ERA5-Land
+    - **Global**:        CHIRPS (precipitation), ERA5-Land (temperature, PET)
+
+    CONUS-specific GridMET variables (srad, vs, sph, rmax, rmin, erc) are
+    fetched via pygridmet directly when the basin is inside CONUS, and silently
+    omitted for global basins.
+
+    Parameters
+    ----------
+    watershed_geojson : dict
+        GeoJSON geometry dict.
+    start_date, end_date : str
+        Date range in YYYY-MM-DD format.
+    variables : list | None
+        GridMET-style variable names to request (e.g. ``["pr","tmmx","tmmn","pet"]``).
+        Defaults to all four core routable variables.
+    product : str | None
+        Optional dataset-family pin:
+        ``"GRIDMET"``, ``"ERA5L"``, ``"DAYMET"``, ``"CHIRPS"``, ``"IMERG"``.
+        A full product ID (e.g. ``"ERA5L_PRECIP"``) pins only precipitation.
+        ``None`` (default) → auto-routing for every variable.
+
+    Returns
+    -------
+    HydroResult
+        data keys: dates (ISO strings), one list per variable (output units),
+        n_days, variables, mean_annual_precip_mm, aridity_index, product, source.
+        ``product`` and ``source`` report the actual backend(s) that served the data.
+    """
+    from shapely.geometry import shape as _shapely_shape
+    from ai_hydro.core import DataSource, HydroMeta, HydroResult, ToolError
+
+    _TOOL_PATH = "ai_hydro.data.forcing.fetch_forcing_data_routed"
+
+    try:
+        from aihydro_data import fetch as _adata_fetch
+    except ImportError as exc:
+        raise ToolError(
+            code="AIHYDRO_DATA_NOT_INSTALLED",
+            message="aihydro-data is required for global-aware forcing fetch.",
+            tool=_TOOL_PATH,
+            recovery="pip install 'aihydro-tools[data]'",
+        ) from exc
+
+    geom = _shapely_shape(watershed_geojson)
+    requested: list[str] = variables or list(_ADATA_ROUTES.keys())
+
+    # ── Resolve product family → per-variable product IDs ──────────────────
+    family_map: dict[str, str] = {}
+    if product:
+        # Try family prefix match first (GRIDMET, ERA5L, DAYMET, CHIRPS, IMERG)
+        prod_upper = product.upper().split("_")[0]
+        if prod_upper in _PRODUCT_FAMILIES:
+            family_map = _PRODUCT_FAMILIES[prod_upper]
+        else:
+            # Treat as a literal product ID → apply to precipitation only
+            family_map = {"precipitation": product}
+
+    # ── Fetch routable variables via aihydro_data ───────────────────────────
+    frames: list[pd.DataFrame] = []
+    products_used: list[str] = []
+    sources_used: list[str] = []
+    warnings_list: list[str] = []
+
+    for var in requested:
+        if var not in _ADATA_ROUTES:
+            continue  # CONUS-only — handled below
+        adata_var, out_col = _ADATA_ROUTES[var]
+
+        pinned = family_map.get(adata_var)
+        fetch_kwargs: dict = {"aggregation": "basin_mean"}
+        if pinned:
+            fetch_kwargs["mode"] = "manual"
+            fetch_kwargs["product"] = pinned
+
+        try:
+            result = _adata_fetch(adata_var, geom, start_date, end_date, **fetch_kwargs)
+            df_var = result.data.copy()
+            # Normalise: rename value column to our output name
+            val_col = next((c for c in df_var.columns if c != "date"), None)
+            if val_col is None:
+                warnings_list.append(f"{var}: empty DataFrame returned")
+                continue
+            df_var = df_var.rename(columns={val_col: out_col})
+            df_var["date"] = pd.to_datetime(df_var["date"])
+
+            # K → °C conversion for temperature variables
+            if out_col in ("tmax_C", "tmin_C"):
+                _convert_needed = False
+                try:
+                    from aihydro_data.products import get_product as _get_prod
+                    spec = _get_prod(result.product)
+                    _convert_needed = (getattr(spec, "units", None) == "K")
+                except Exception:
+                    # Heuristic fallback: GridMET/ERA5L return Kelvin (values > 200)
+                    _convert_needed = bool(df_var[out_col].dropna().mean() > 200)
+                if _convert_needed:
+                    df_var[out_col] = df_var[out_col] - 273.15
+
+            frames.append(df_var)
+            products_used.append(result.product)
+            sources_used.append(str(result.source))
+        except Exception as exc:
+            warnings_list.append(f"{adata_var}: {exc}")
+
+    # ── Supplement: CONUS-only GridMET vars (srad, vs, sph, …) ────────────
+    conus_only_requested = [v for v in requested if v in _GRIDMET_ONLY_VARS]
+    if conus_only_requested:
+        try:
+            from ai_hydro.analysis._dem import _geom_in_conus
+            if _geom_in_conus(geom) and _DEPS_AVAILABLE:
+                ds = gridmet.get_bygeom(
+                    geom, dates=(start_date, end_date),
+                    variables=conus_only_requested,
+                )
+                for var in conus_only_requested:
+                    if var in ds.data_vars:
+                        series = ds[var].mean(dim=["lat", "lon"])
+                        df_var = series.to_frame(name=_GRIDMET_ONLY_COL.get(var, var))
+                        df_var.index = pd.to_datetime(df_var.index).tz_localize(None)
+                        df_var = df_var.reset_index().rename(
+                            columns={"index": "date", "time": "date"}
+                        )
+                        frames.append(df_var)
+                products_used.append("GRIDMET_DIRECT")
+            else:
+                warnings_list.append(
+                    f"CONUS-only variables skipped for non-CONUS basin: {conus_only_requested}"
+                )
+        except Exception as exc:
+            warnings_list.append(f"CONUS-only fetch failed: {exc}")
+
+    # ── Guard ───────────────────────────────────────────────────────────────
+    if not frames:
+        raise ToolError(
+            code="NO_FORCING_DATA",
+            message=(
+                "Could not fetch any forcing variables. "
+                + ("; ".join(warnings_list) if warnings_list else "")
+            ),
+            tool=_TOOL_PATH,
+            recovery=(
+                "Ensure aihydro-data is installed: pip install 'aihydro-tools[data]'. "
+                "For global basins, GEE auth may be required: aihydro-gee status. "
+                "Try product='CHIRPS' for auth-free global precipitation."
+            ),
+        )
+
+    # ── Merge all variable DataFrames on date ───────────────────────────────
+    df = frames[0]
+    for f in frames[1:]:
+        df = df.merge(f, on="date", how="outer")
+    df = df.sort_values("date").reset_index(drop=True)
+
+    # Derived: mean temperature
+    if "tmax_C" in df.columns and "tmin_C" in df.columns:
+        df["tavg_C"] = (df["tmax_C"] + df["tmin_C"]) / 2
+
+    # ── Build JSON-serialisable data dict ───────────────────────────────────
+    clean: dict = {}
+    clean["dates"] = [
+        str(d.date()) if hasattr(d, "date") else str(d)
+        for d in df["date"]
+    ]
+    var_cols = [c for c in df.columns if c != "date"]
+    for col in var_cols:
+        vals = df[col].tolist()
+        clean[col] = [
+            (float(v) if (v is not None and np.isfinite(float(v))) else None)
+            for v in vals
+        ]
+    clean["n_days"] = len(df)
+    clean["variables"] = var_cols
+    clean["product"] = " | ".join(dict.fromkeys(products_used))
+    clean["source"]  = " | ".join(dict.fromkeys(sources_used))
+    if warnings_list:
+        clean["_warnings"] = warnings_list
+
+    # Summary stats
+    if "prcp_mm" in df.columns:
+        clean["mean_annual_precip_mm"] = round(
+            float(df["prcp_mm"].sum() / (len(df) / 365.25)), 2
+        )
+    if "pet_mm" in df.columns:
+        clean["mean_annual_pet_mm"] = round(
+            float(df["pet_mm"].sum() / (len(df) / 365.25)), 2
+        )
+    if clean.get("mean_annual_precip_mm", 0) > 0 and "mean_annual_pet_mm" in clean:
+        clean["aridity_index"] = round(
+            clean["mean_annual_pet_mm"] / clean["mean_annual_precip_mm"], 3
+        )
+    if "tavg_C" in df.columns:
+        clean["mean_annual_temp_C"] = round(float(df["tavg_C"].mean()), 2)
+
+    from ai_hydro import __version__
+    return HydroResult(
+        data=clean,
+        meta=HydroMeta(
+            tool=_TOOL_PATH,
+            version=__version__,
+            sources=[
+                DataSource(name=p, url="")
+                for p in dict.fromkeys(products_used)
+            ],
+            params={
+                "start_date": start_date,
+                "end_date":   end_date,
+                "variables":  variables or "auto",
+                "product":    product,
+            },
+        ),
+    )

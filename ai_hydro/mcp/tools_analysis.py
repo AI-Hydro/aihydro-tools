@@ -1837,37 +1837,51 @@ async def fetch_forcing_data(
     variables: list[str] | None = None,
     feature: "str | list | None" = None,
     geometry_geojson: str | None = None,
+    product: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """
-    [DEPRECATED — prefer data_fetch] Basin-averaged daily forcing data. Globally aware:
-    - **CONUS**: GridMET (pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc).
-    - **Global**: CHIRPS precipitation + ERA5-Land temperature via aihydro-data.
+    Basin-averaged daily forcing data. Globally robust via aihydro-data routing:
 
-    Superseded by the unified data_fetch (aihydro-data). This shim still works and
-    is scheduled for removal in the next minor release.
+    - **CONUS**:         GridMET (pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc)
+    - **North America**: Daymet / ERA5-Land
+    - **Global**:        CHIRPS (precipitation), ERA5-Land (temperature, PET)
 
-    Requires delineate_watershed or delineate_watershed_from_point first.
+    Region routing and product fallback are automatic. Use ``product`` to pin a
+    preferred dataset when you want a specific source regardless of region.
+
+    Requires ``delineate_watershed`` or ``delineate_watershed_from_point`` first,
+    or pass ``geometry_geojson`` directly.
 
     Parameters
     ----------
     start_date : str (required)  YYYY-MM-DD
     end_date   : str (required)  YYYY-MM-DD
-    session_id : str | None (optional from Wave 3)
+    session_id : str | None
         Research session identifier. Auto-resolved from chat context when omitted.
-    variables  : list[str], optional — CONUS only; subset of
-                 [pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc] (default all)
+    variables  : list[str], optional
+        Variables to fetch. Routable: ``[pr, tmmx, tmmn, pet]`` (default, global).
+        CONUS-only: ``[srad, vs, sph, rmax, rmin, erc]`` (added when in CONUS).
+    product : str | None, optional
+        Preferred dataset. Family names (``"GRIDMET"``, ``"ERA5L"``, ``"DAYMET"``,
+        ``"CHIRPS"``, ``"IMERG"``) apply across all variables. A full product ID
+        (e.g. ``"ERA5L_PRECIP"``) applies to precipitation only. Default: auto.
     geometry_geojson : str, optional
-        Override watershed geometry as a GeoJSON string for global basins or
-        when the session geometry doesn't match the intended watershed.
+        Override watershed geometry as a raw GeoJSON string.
+    feature : str | list | None, optional
+        Feature reference (id/name) or list for batch fan-out.
 
-    Returns daily arrays saved to disk; referenced via `_data_file` pointer.
+    Returns
+    -------
+    dict with ``data`` (per-variable mean arrays), ``product``, ``source``
+    (what actually served the data), ``feature_id``, ``_data_file`` pointer.
     """
-    # C3: batch fan-out (async tool → asyncio concurrent gather)
+    # C3: batch fan-out
     if isinstance(feature, list):
         return await _batch_feature_run(
             fetch_forcing_data, feature, _resolve_session(session_id, None),
-            ctx=ctx, start_date=start_date, end_date=end_date, variables=variables,
+            ctx=ctx, start_date=start_date, end_date=end_date,
+            variables=variables, product=product,
         )
     try:
         session_id = _resolve_session(session_id, None)
@@ -1879,6 +1893,7 @@ async def fetch_forcing_data(
             "start_date": start_date,
             "end_date": end_date,
             "variables": sorted(variables) if variables else None,
+            "product": product,
         }
         _feature_id, _key, _cached, _geom = _feature_cache_resolve(
             session, "forcing", _forcing_params, feature, geometry_geojson,
@@ -1890,6 +1905,8 @@ async def fetch_forcing_data(
                 "meta": _cached.get("meta", {}),
                 "_cache_hit": True,
                 "feature_id": _feature_id,
+                "product": _cached.get("data", {}).get("product", "unknown"),
+                "source":  _cached.get("data", {}).get("source",  "unknown"),
                 "_note": "Forcing data already cached. Full daily arrays on disk.",
             }
 
@@ -1898,123 +1915,17 @@ async def fetch_forcing_data(
         if ctx:
             await ctx.report_progress(progress=0, total=2)
 
-        # ── Region detection ────────────────────────────────────────────────
-        from ai_hydro.analysis._dem import _geom_in_conus
-        import pandas as _pd
-        try:
-            from shapely.geometry import shape as _shapely_shape
-            _ws_shapely = _shapely_shape(watershed_geojson)
-        except Exception:
-            _ws_shapely = watershed_geojson  # pass through; backend handles it
-        _is_conus = _geom_in_conus(_ws_shapely)
-
-        if not _is_conus:
-            # ── Global path: CHIRPS precipitation + ERA5-Land temperature ───
-            _pr_result, _pr_err = _legacy_data_shim(
-                "precipitation", _ws_shapely, start_date, end_date
-            )
-            _temp_result, _temp_err = _legacy_data_shim(
-                "temperature", _ws_shapely, start_date, end_date
-            )
-
-            _forcing: dict = {
-                "start_date": start_date,
-                "end_date": end_date,
-                "region": "global",
-            }
-            _sources_used: list[str] = []
-
-            if _pr_result is not None:
-                pr_df = _pr_result.data
-                if isinstance(pr_df, _pd.DataFrame) and not pr_df.empty:
-                    pr_col = next(
-                        (c for c in ["precipitation", "pr", "value"] if c in pr_df.columns),
-                        None,
-                    )
-                    if pr_col:
-                        _forcing["dates"] = pr_df["date"].dt.strftime("%Y-%m-%d").tolist()
-                        _forcing["pr"] = pr_df[pr_col].tolist()
-                        _forcing["n_days"] = len(_forcing["dates"])
-                        _forcing["_aihydro_data_pr_product"] = _pr_result.product
-                        _sources_used.append(f"{_pr_result.product} (precipitation)")
-
-            if _temp_result is not None:
-                temp_df = _temp_result.data
-                if isinstance(temp_df, _pd.DataFrame) and not temp_df.empty:
-                    _col_map = {
-                        "temperature": "tmmean",
-                        "tmax": "tmmx",
-                        "temp_max": "tmmx",
-                        "tmin": "tmmn",
-                        "temp_min": "tmmn",
-                        "value": "tmmean",
-                    }
-                    for in_col, out_key in _col_map.items():
-                        if in_col in temp_df.columns:
-                            _forcing[out_key] = temp_df[in_col].tolist()
-                    _forcing["_aihydro_data_temp_product"] = _temp_result.product
-                    _sources_used.append(f"{_temp_result.product} (temperature)")
-
-            if not _sources_used:
-                pr_detail = (_pr_err or {}).get("detail", "unavailable") if _pr_result is None else "ok"
-                temp_detail = (_temp_err or {}).get("detail", "unavailable") if _temp_result is None else "ok"
-                return {
-                    "error": True,
-                    "code": "GLOBAL_FORCING_UNAVAILABLE",
-                    "message": (
-                        "Could not fetch global forcing data for this watershed. "
-                        f"Precipitation backend: {pr_detail}. "
-                        f"Temperature backend: {temp_detail}."
-                    ),
-                    "recovery": (
-                        "Ensure aihydro-data is installed with GEE support: "
-                        "pip install 'aihydro-data[gee]'. "
-                        "Then authenticate: aihydro-gee status. "
-                        "Or call data_fetch(variable='precipitation', ...) directly."
-                    ),
-                    "next_tools": ["data_doctor", "data_fetch"],
-                    "_deprecated": (
-                        "Use data_fetch(variable='precipitation', ...) and "
-                        "data_fetch(variable='temperature', ...) for robust global forcing."
-                    ),
-                }
-
-            _forcing["n_variables"] = len(_sources_used)
-            _forcing["variables"] = _sources_used
-            _forcing["source"] = " | ".join(_sources_used)
-            d: dict = {
-                "data": _forcing,
-                "meta": {
-                    "tool": "fetch_forcing_data",
-                    "source": _forcing["source"],
-                    "region": "global",
-                    "params": {"start_date": start_date, "end_date": end_date},
-                },
-            }
-
-        else:
-            # ── CONUS path: GridMET via HyRiver ────────────────────────────
-            from ai_hydro.data.forcing import fetch_forcing_data_result as _fn
-            result = await asyncio.to_thread(
-                _fn,
-                watershed_geojson=watershed_geojson,
-                start_date=start_date,
-                end_date=end_date,
-                variables=variables,
-            )
-            d = _result_to_dict(result)
-            # Best-effort: enrich with aihydro-data provenance product label.
-            # Failure here is non-fatal (GridMET already succeeded); swallow
-            # quietly so transient 404s from shim backends don't surface.
-            try:
-                _precip_result, _ = _legacy_data_shim(
-                    "precipitation", watershed_geojson, start_date, end_date
-                )
-                if _precip_result is not None:
-                    d["data"]["_aihydro_data_product"] = _precip_result.product
-                    d["data"]["_aihydro_data_source"] = _precip_result.source
-            except Exception:
-                pass
+        # ── Unified global-aware fetch via aihydro_data router ──────────────
+        from ai_hydro.data.forcing import fetch_forcing_data_routed as _fn
+        result = await asyncio.to_thread(
+            _fn,
+            watershed_geojson=watershed_geojson,
+            start_date=start_date,
+            end_date=end_date,
+            variables=variables,
+            product=product,
+        )
+        d = _result_to_dict(result)
 
         if ctx:
             await ctx.report_progress(progress=2, total=2)
@@ -2026,25 +1937,23 @@ async def fetch_forcing_data(
             d["data"]["_data_file"] = saved
         _feature_cache_store(session, "forcing", _feature_id, _key, d,
                              citations=["gridmet", "chirps", "era5"])
-        d["feature_id"] = _feature_id
+
         compact = _strip_forcing_arrays(d["data"])
         if saved:
             compact["_data_file"] = saved
+
         resp: dict = {
             "data": compact,
             "meta": d.get("meta", {}),
             "feature_id": _feature_id,
+            "product": d["data"].get("product", "unknown"),
+            "source":  d["data"].get("source",  "unknown"),
             "_file_saved": saved,
             "_note": (
                 f"Forcing data ({compact.get('n_days', '?')} records, "
-                f"{compact.get('n_variables', compact.get('n_variables', '?'))} variables) "
-                f"saved to {saved or 'session'}. Raw daily arrays are NOT in the session JSON "
-                "or this response — load from _data_file when needed."
-            ),
-            "_deprecated": (
-                "DEPRECATED: Use data_fetch(variable='precipitation', ...) and "
-                "data_fetch(variable='temperature', ...) for global forcing coverage. "
-                "See data_help(topic='deprecations')."
+                f"{len(compact.get('variables', []))} variables) "
+                f"saved to {saved or 'session'}. Raw daily arrays are NOT in the "
+                "session JSON or this response — load from _data_file when needed."
             ),
         }
         reminder = _sync_reminder(session_id)
