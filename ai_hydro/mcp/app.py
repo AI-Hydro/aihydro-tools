@@ -174,6 +174,10 @@ TOOL_TIERS: dict[str, int] = {
     # ── Spectral indices (v0.2.0 / TorchGeo cherry-pick Day 5) ───────────
     "compute_spectral_index":           2,
     "list_spectral_indices":            3,
+    # ── Feature registry (C2 — aihydro-core multi-geometry) ──────────────
+    "register_feature":                 2,
+    "list_features":                    3,
+    "set_active_feature":               3,
 }
 
 

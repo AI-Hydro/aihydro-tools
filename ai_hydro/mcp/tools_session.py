@@ -735,3 +735,154 @@ def aihydro_chat_status(chat_id: str | None = None) -> dict:
     except Exception as e:
         log.error("aihydro_chat_status failed: %s", e)
         return _tool_error_to_dict(e)
+
+
+# ============================================================================
+# C2: Feature Registry tools — addressable multi-geometry
+# ============================================================================
+
+@mcp.tool()
+def register_feature(
+    geojson: str,
+    name: str = "",
+    source: str = "map_annotation",
+    session_id: str | None = None,
+    set_active: bool = True,
+    feature_id: str | None = None,
+) -> dict:
+    """
+    Register a named geometry in the session's feature registry.
+
+    Use this to give a stable id to any geometry (a map annotation, a
+    delineated sub-basin, an uploaded polygon, etc.) so spatial tools like
+    compute_twi and create_cn_grid can address it by name instead of requiring
+    the raw GeoJSON every time.
+
+    Parameters
+    ----------
+    geojson : str
+        GeoJSON string (Polygon, MultiPolygon, or GeoJSON Feature). Pass the
+        geometry string returned by map tools or from a workspace .geojson file.
+    name : str
+        Human-readable label — e.g. "Upper basin", "Annotation 1". Used as a
+        lookup alias in addition to feature_id.
+    source : str
+        Provenance tag: "map_annotation" | "delineate_watershed" |
+        "upload" | "on-the-fly". Defaults to "map_annotation".
+    session_id : str | None
+        Session to register into. Auto-resolved when omitted.
+    set_active : bool
+        If True (default), mark this as the active feature so subsequent
+        spatial tools use it without an explicit feature= parameter.
+    feature_id : str | None
+        Explicit id to assign. If None, derived from name (slugified) or a
+        random hex string.
+    """
+    try:
+        session_id = _resolve_session(session_id, None)
+        from ai_hydro.session import HydroSession
+        from aihydro_core.features.registry import FeatureRegistry
+        session = HydroSession.load(session_id)
+        registry = FeatureRegistry(session)
+        feat = registry.register(
+            geojson=geojson,
+            name=name,
+            source=source,
+            feature_id=feature_id,
+            set_active=set_active,
+        )
+        return {
+            "feature_id": feat.feature_id,
+            "name": feat.name,
+            "source": feat.source,
+            "active": set_active,
+            "session_id": session_id,
+            "message": (
+                f"Registered feature '{feat.feature_id}'"
+                + (f" ({feat.name})" if feat.name else "")
+                + (f" as active feature." if set_active else ".")
+                + " Pass feature='{feat.feature_id}' to spatial tools to address this geometry."
+            ).replace("'{feat.feature_id}'", f"'{feat.feature_id}'"),
+        }
+    except Exception as e:
+        log.error("register_feature failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def list_features(session_id: str | None = None) -> dict:
+    """
+    List all geometry features registered in the session.
+
+    Returns the id, name, source, and area (if known) for each feature, plus
+    the active feature id. Useful for checking which geometries are addressable
+    before calling compute_twi, create_cn_grid, etc.
+
+    session_id : str | None — session to inspect. Auto-resolved when omitted.
+    """
+    try:
+        session_id = _resolve_session(session_id, None)
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+        feats = session.list_features()
+        return {
+            "session_id": session_id,
+            "active_feature_id": session.get_active_feature_id(),
+            "count": len(feats),
+            "features": [
+                {
+                    "feature_id": f.feature_id,
+                    "name": f.name,
+                    "source": f.source,
+                    "area_km2": f.area_km2,
+                    "created_at": f.created_at[:10] if f.created_at else None,
+                }
+                for f in feats
+            ],
+        }
+    except Exception as e:
+        log.error("list_features failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def set_active_feature(
+    feature_id: str,
+    session_id: str | None = None,
+) -> dict:
+    """
+    Set the active (default) geometry feature in the session.
+
+    After calling this, spatial tools called without an explicit feature=
+    parameter will operate on this geometry. Useful when switching focus
+    between multiple registered features (e.g. comparing two sub-basins).
+
+    Parameters
+    ----------
+    feature_id : str
+        The id of the feature to make active. Must already be registered
+        (call register_feature or list_features to see available ids).
+    session_id : str | None
+        Session to update. Auto-resolved when omitted.
+    """
+    try:
+        session_id = _resolve_session(session_id, None)
+        from ai_hydro.session import HydroSession
+        from aihydro_core.features.registry import FeatureRegistry
+        session = HydroSession.load(session_id)
+        registry = FeatureRegistry(session)
+        registry.set_active(feature_id)
+        feat = session.get_feature(feature_id)
+        return {
+            "feature_id": feature_id,
+            "name": feat.name if feat else "",
+            "session_id": session_id,
+            "message": (
+                f"Active feature set to '{feature_id}'"
+                + (f" ({feat.name})" if feat and feat.name else "")
+                + ". Subsequent spatial tools will use this geometry by default."
+            ),
+        }
+    except Exception as e:
+        log.error("set_active_feature failed: %s", e)
+        return _tool_error_to_dict(e)

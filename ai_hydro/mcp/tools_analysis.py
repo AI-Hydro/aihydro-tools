@@ -32,7 +32,12 @@ import asyncio
 import importlib.util
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 from ai_hydro.mcp.app import mcp, Context
 from ai_hydro.mcp.enforcement import post_run as _post_run
@@ -1208,6 +1213,7 @@ async def compute_twi(
     session_id: str | None = None,
     resolution: int = 30,
     create_map: bool = True,
+    feature: str | None = None,
     geometry_geojson: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
@@ -1228,6 +1234,10 @@ async def compute_twi(
         DEM resolution in metres (10 / 30 / 60, default 30).
     create_map : bool
         Generate PNG + HTML visualisations (default True).
+    feature : str | None, optional
+        Feature id or name to compute TWI for. Use this when working with
+        multiple geometries (e.g. map annotations). If omitted, falls back to
+        the active feature or the session watershed geometry.
     geometry_geojson : str, optional
         Override watershed geometry as a GeoJSON string. Use this when the
         session_id does not correctly resolve to the intended watershed — for
@@ -1239,9 +1249,45 @@ async def compute_twi(
         session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
-        if session.twi is not None:
-            return _cached_response("twi", session)
-        watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
+
+        # ── C2: feature-keyed cache check ─────────────────────────────────
+        # Resolve the feature reference to get a stable feature_id for the
+        # three-level cache.  Falls back gracefully to the legacy single-
+        # geometry path so old sessions (no registered features) still work.
+        from aihydro_core.features.registry import FeatureRegistry
+        from aihydro_core.primitives.errors import FeatureNotFoundError
+        from aihydro_core.primitives.hashing import param_hash as _param_hash
+
+        _registry = FeatureRegistry(session)
+        _twi_params = {"resolution": resolution}
+        _params_key = _param_hash(_twi_params)
+
+        # geometry_geojson override bypasses the registry (explicit raw geom)
+        if geometry_geojson:
+            # Treat as an on-the-fly feature; no cache (geometry has no stable id)
+            _feature_id = "__override__"
+            _cached = None
+        else:
+            try:
+                _feat = _registry.resolve(feature)  # None → active / single feature
+                _feature_id = _feat.feature_id
+                _cached = session.get_result("twi", _feature_id, _params_key)
+            except FeatureNotFoundError:
+                # No registered features yet — use legacy sentinel + watershed geom
+                _feature_id = "__legacy__"
+                _cached = session.get_result("twi", "__legacy__", _params_key)
+
+        if _cached is not None:
+            return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
+
+        # ── Resolve the actual geometry to compute with ────────────────────
+        # Priority: registry feature → geometry_geojson override → session watershed
+        if geometry_geojson:
+            watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
+        elif _feature_id not in ("__override__", "__legacy__"):
+            watershed_geojson = _feat.geojson  # type: ignore[possibly-undefined]
+        else:
+            watershed_geojson = _resolve_session_geometry(session_id, None)
         workspace = session.workspace_dir
         _used_fallback_workspace = False
         # Design A safety net: if still unset (session predates workspace
@@ -1294,10 +1340,16 @@ async def compute_twi(
                     "meta": {
                         "tool": "ai_hydro.analysis.twi.compute_twi",
                         "params": {"resolution": resolution, "create_map": create_map},
+                        "feature_id": _feature_id,
+                        "computed_at": _now_iso(),
                     },
                 }
-                _session_store(session_id, "twi", d, tool_name="compute_twi")
+                # C2: store under feature-keyed three-level slot
+                session.put_result("twi", _feature_id, _params_key, d)
+                session.add_citations(["usgs_3dep", "copernicus_glo30"])
+                session.commit()
                 d["_files_saved"] = files
+                d["feature_id"] = _feature_id
 
                 # Push raster tile to map panel if TWI array + bounds are available
                 try:
@@ -1360,7 +1412,14 @@ async def compute_twi(
             _fn, watershed_geojson=watershed_geojson, resolution=resolution
         )
         d = _result_to_dict(result)
-        _session_store(session_id, "twi", d, tool_name="compute_twi")
+        # Inject computed_at + feature_id into meta
+        d.setdefault("meta", {})["feature_id"] = _feature_id
+        d.setdefault("meta", {})["computed_at"] = _now_iso()
+        # C2: store under feature-keyed three-level slot
+        session.put_result("twi", _feature_id, _params_key, d)
+        session.add_citations(["usgs_3dep", "copernicus_glo30"])
+        session.commit()
+        d["feature_id"] = _feature_id
         saved = _workspace_write(session_id, _canonical_fname(session_id, "twi", "json"), d["data"])
         if saved:
             d["_file_saved"] = saved
