@@ -442,7 +442,7 @@ def _compute_relief_metrics(
     try:
         # Get DEM — auto-routes to 3DEP inside CONUS, GLO-30 globally
         from ai_hydro.analysis._dem import fetch_dem, _geom_in_conus
-        dem = fetch_dem(geom, resolution=resolution, prefer="auto")
+        dem, _dem_product, _dem_source = fetch_dem(geom, resolution=resolution, prefer="auto")
         if _geom_in_conus(geom):
             dem_proj = dem.rio.reproject("EPSG:5070")
         else:
