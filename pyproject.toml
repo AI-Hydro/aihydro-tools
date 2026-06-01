@@ -29,6 +29,10 @@ classifiers = [
 # ── Core dependencies (minimal — always installed) ──────────────────────────
 # fastmcp is required because the console script (aihydro-mcp) needs it.
 dependencies = [
+    # Robustness substrate. Install locally with:
+    #   pip install -e /path/to/aihydro-core
+    # Will become a versioned PyPI dep once aihydro-core cuts its first release.
+    "aihydro-core>=0.1.0",
     "numpy>=1.24.0",
     "pandas>=2.0.0",
     "pydantic>=2.0.0",

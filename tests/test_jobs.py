@@ -1,4 +1,9 @@
-"""Contract tests for the async-job substrate (ai_hydro.mcp.jobs)."""
+"""
+Contract tests for the async-job substrate (aihydro_core.jobs).
+
+The implementation lives in aihydro_core.jobs; ai_hydro.mcp.jobs is a re-export
+shim. Tests import the real module so monkeypatching hits the live module-level vars.
+"""
 from __future__ import annotations
 
 import os
@@ -6,7 +11,8 @@ import time
 
 import pytest
 
-from ai_hydro.mcp import jobs
+import aihydro_core.jobs as jobs  # real module (shim has no module-level vars)
+
 
 # A minimal runner runnable as `python -m dummyrunner <artifact_dir>`: it mirrors
 # the real runner contract (read job_config.json, write status.json).
