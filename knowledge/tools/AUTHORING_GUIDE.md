@@ -193,14 +193,129 @@ detached `subprocess.Popen(..., start_new_session=True)` running a
 return `{job_id, status:"pending", log_path}`. The agent polls; results are read
 from the artifact dir.
 
-> A shared `ai_hydro/mcp/jobs.py` (start/status/result/**cancel**/list + a PID
-> registry) is the planned generalization — see `AGENT_EXECUTION_MODEL.md` §3.
-> Until it lands, copy the modelling pattern **and persist the PID** so the work
-> is cancellable.
+Use `aihydro_core.jobs` (re-exported via `ai_hydro.mcp.jobs`):
+
+```python
+from ai_hydro.mcp.jobs import start_job, get_job_status, get_job_result
+
+job = start_job(kind="my_kind", runner_module="my_pkg.runner",
+                config={"...": "..."}, artifact_dir=artifact_dir)
+return {"job_id": job["job_id"], "status": "pending", "pid": job["pid"]}
+```
+
+The runner writes `status.json` checkpoints; `cancel_job(job_id)` kills the
+process group by stored PID. See `AGENT_EXECUTION_MODEL.md` §3.
 
 ---
 
-## 8. Registration
+## 8. Spatial tools — use @feature_tool for addressable geometry
+
+> **Before C2 (old pattern):** tools stored a single result per product
+> (`session.twi = result`) and used `if session.twi is not None` as the cache
+> check. That caused collision when working with multiple geometries — the
+> second geometry silently overwrote the first.
+
+> **After C2 (new pattern):** results are keyed by
+> `(product, feature_id, params_key)`. Cross-geometry collision is structurally
+> impossible. Use `@feature_tool` or the shared helpers.
+
+### 8.1 The @feature_tool decorator (preferred for pure kernels)
+
+Write a **pure sync kernel** that takes a resolved geometry dict and compute
+params; let the decorator handle everything else:
+
+```python
+from aihydro_core.features.compute import feature_tool
+from ai_hydro.mcp.app import mcp
+from ai_hydro.session import HydroSession
+from ai_hydro.mcp.helpers import _resolve_session
+
+
+@feature_tool(product="ndvi", citations=["sentinel2"])
+def _ndvi_kernel(geom: dict, *, year: int = 2022, cloud_pct: float = 20.0) -> dict:
+    """
+    Pure computation — no session/cache/commit code here.
+    geom is a bare GeoJSON geometry dict (Polygon or MultiPolygon).
+    Return a result envelope: {"data": {...}, "meta": {...}}.
+    """
+    from my_pkg.analysis import compute_ndvi as _fn
+    return _fn(watershed_geojson=geom, year=year, cloud_pct=cloud_pct)
+
+
+@mcp.tool()
+def compute_ndvi(
+    session_id: str | None = None,
+    year: int = 2022,
+    cloud_pct: float = 20.0,
+    feature: str | None = None,
+) -> dict:
+    """Compute NDVI for a registered feature geometry.
+
+    feature : id or name of a registered geometry (see register_feature).
+              Omit to use the active feature or session watershed.
+    """
+    session_id = _resolve_session(session_id, None)
+    session = HydroSession.load(session_id)
+    # @feature_tool handles: resolve → cache check → compute → store → commit
+    return _ndvi_kernel(store=session, feature=feature, year=year, cloud_pct=cloud_pct)
+```
+
+**What the decorator does automatically:**
+1. `FeatureRegistry.resolve(feature)` → a `Feature` with a stable `feature_id`
+2. `param_hash(kwargs)` → deterministic `params_key`
+3. `store.get_result(product, feature_id, params_key)` — return cached if present
+4. Call `_kernel(feature.geojson, **kwargs)` on cache miss
+5. `store.put_result(product, feature_id, params_key, envelope)` + `store.commit()`
+6. `store.add_citations([...])` and record an `Artifact` for provenance
+
+### 8.2 Complex async tools — use the shared helpers directly
+
+For tools with multiple code paths (e.g. viz vs stats-only fallback), use
+`_feature_cache_resolve` and `_feature_cache_store` from `tools_analysis.py`:
+
+```python
+from ai_hydro.mcp.tools_analysis import _feature_cache_resolve, _feature_cache_store
+
+_feature_id, _key, _cached, _geom = _feature_cache_resolve(
+    session, "my_product", {"param_a": param_a}, feature, geometry_geojson,
+)
+if _cached is not None:
+    return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
+
+watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
+# ... compute ...
+_feature_cache_store(session, "my_product", _feature_id, _key, d,
+                     citations=["my_source"])
+d["feature_id"] = _feature_id
+```
+
+### 8.3 Checklist for spatial tools (C2 pattern)
+
+- [ ] Add `feature: str | None = None` parameter.
+- [ ] Use `@feature_tool` (pure kernel) or `_feature_cache_resolve` (complex).
+- [ ] Do **not** use `session.set(slot, val)` or `if session.slot is not None` —
+      these write to the `__legacy__` sentinel and cause collision for multi-geometry.
+- [ ] Register the tool's result product in citations (e.g. `"usgs_3dep"`).
+- [ ] Expose `feature_id` in the return dict so the agent can track which
+      geometry produced the result.
+
+### 8.4 Agent ergonomics — feature registration tools
+
+Three tools handle the feature registry:
+
+```
+register_feature(geojson, name, source, session_id, set_active)
+list_features(session_id)
+set_active_feature(feature_id, session_id)
+```
+
+The agent registers map annotations or delineated sub-basins once; all spatial
+tools then address them by name. Old sessions with no registered features fall
+back to the `__legacy__` path — backward compat is preserved.
+
+---
+
+## 9. Registration
 
 ```python
 # in ai_hydro/mcp/tools_<area>.py
@@ -226,6 +341,8 @@ If Tier-1, also register a post-run validator in `__init__.py` via
 
 ## 9. Copy-paste template
 
+**Non-spatial tool** (session slot, no geometry):
+
 ```python
 from __future__ import annotations
 from ai_hydro.mcp.app import mcp
@@ -243,15 +360,45 @@ def compute_my_metric(
     session = HydroSession.load(session_id)
     _maybe_set_workspace(session)
 
+    # Use get_result / put_result for new tools; session.get/set only for legacy.
     cached = session.get("my_metric")
     if cached:
         return {**cached, "_cached": True}
 
     # ... deterministic computation ...
-    result = {"value": 0.42, "threshold": threshold}
+    result = {"data": {"value": 0.42, "threshold": threshold}, "meta": {}}
 
-    session.set("my_metric", result)
+    session.record_result("my_metric", result["data"])
+    session.commit()
     return result
+```
+
+**Spatial tool** (geometry-addressed, multi-feature safe):
+
+```python
+from aihydro_core.features.compute import feature_tool
+from ai_hydro.mcp.app import mcp
+from ai_hydro.mcp.helpers import _resolve_session
+from ai_hydro.session import HydroSession
+
+
+@feature_tool(product="my_index", citations=["my_data_source"])
+def _my_kernel(geom: dict, *, threshold: float = 0.5) -> dict:
+    """Pure computation — receives resolved geom, returns result envelope."""
+    from my_pkg.analysis import compute as _fn
+    return _fn(watershed_geojson=geom, threshold=threshold)
+
+
+@mcp.tool()
+def compute_my_index(
+    session_id: str | None = None,
+    threshold: float = 0.5,
+    feature: str | None = None,
+) -> dict:
+    """Compute <one-liner>. feature: id or name from register_feature."""
+    session_id = _resolve_session(session_id, None)
+    session = HydroSession.load(session_id)
+    return _my_kernel(store=session, feature=feature, threshold=threshold)
 ```
 
 ---
@@ -262,9 +409,13 @@ def compute_my_metric(
 - [ ] First docstring line is a self-contained one-liner (the summary view).
 - [ ] Every param has a type hint; canonical names used (or alias added).
 - [ ] Required params have no default; optional ones have sensible defaults.
-- [ ] `session_id` resolved via `_resolve_session`; slots via `.get`/`.set`.
-- [ ] Tier set in `TOOL_TIERS` if Tier-1/3; added to `HOT_TOOL_ALLOWLIST`
-      only if truly high-frequency.
+- [ ] `session_id` resolved via `_resolve_session`.
+- [ ] **Spatial tools**: `feature: str | None = None` param; use `@feature_tool`
+      or `_feature_cache_resolve` — never `session.set(slot, val)` or
+      `if session.slot is not None` (those patterns cause multi-geometry collision).
+- [ ] **Non-spatial tools**: use `session.record_result` + `session.commit()`.
+- [ ] Tier set in `TOOL_TIERS`; added to `HOT_TOOL_ALLOWLIST` only if
+      truly high-frequency.
 - [ ] Returns a lean JSON dict; large arrays referenced by file pointer.
 - [ ] Module imported in `__init__.py` (or entry-point declared).
 - [ ] Tier-1 only: post-run validator registered.

@@ -19,14 +19,15 @@ guessed parameter name).
 
 ---
 
-## 1. The four mechanisms (what exists today)
+## 1. The five mechanisms (what exists today)
 
 | # | Mechanism | Purpose | Where it lives | Status |
 |---|-----------|---------|----------------|--------|
 | 1 | Tiered progressive disclosure | Keep the prompt lean across ~100+ tools | `mcp/app.py` (`TOOL_TIERS`, `HOT_TOOL_ALLOWLIST`, `is_hot_tool`), `mcp/__init__.py` (`_tag_tools_with_tier_meta`), extension `system-prompt/components/mcp.ts` | **Solid — keep** |
 | 2 | Discovery protocol | Fetch full schema on demand for the long tail | `mcp/tools_discovery.py` (`aihydro_describe_capability`, `describe_tool`, `describe_tools`, `list_available_tools`) | **Solid — keep** |
 | 3 | Reliability middleware | Turn near-miss calls into successes / teaching turns | `mcp/arg_repair.py` (FastMCP `Middleware`), `mcp/enforcement.py` | **Strongest piece — keep, use as template** |
-| 4 | Async jobs | Run long / parallel / cancellable work without blocking MCP | `mcp/jobs.py` (substrate + PID registry), `mcp/tools_modelling.py` (first adopter) | **Shipped — `jobs.py` substrate + cancel (see §3)** |
+| 4 | Async jobs | Run long / parallel / cancellable work without blocking MCP | `aihydro_core/jobs/` (substrate + PID registry; `ai_hydro/mcp/jobs.py` is a re-export shim), `mcp/tools_modelling.py` (first adopter) | **Shipped — substrate + cancel (see §3)** |
+| 5 | Feature Store (aihydro-core) | Addressable multi-geometry: stable ids, feature-keyed cache, no collision | `aihydro_core.features` (FeatureRegistry, @feature_tool), `ai_hydro/session/store.py` (HydroSession implements Store Protocol) | **Shipped C0–C4 (see §5)** |
 
 ### 1.1 Tiered progressive disclosure
 
@@ -117,8 +118,9 @@ first adopter. The kickoff tool:
 - Still open: orphan/zombie reaping and restart recovery are best-effort (CPython
   subprocess reaps; `_pid_alive` annotates crashed non-terminal jobs).
 
-### Shared module: `ai_hydro/mcp/jobs.py`
+### Shared module: `aihydro_core.jobs` (re-exported via `ai_hydro/mcp/jobs.py`)
 
+`jobs.py` is now a 5-line shim; the real implementation lives in `aihydro-core`.
 The standard any long-running tool adopts:
 
 ```
@@ -145,9 +147,95 @@ list_jobs(kind?)       -> active/recent jobs for this user
 
 ---
 
-## 4. Subagents
+## 5. Feature Store — addressable multi-geometry (aihydro-core)
 
-### 4.1 What exists today (two distinct mechanisms — don't conflate them)
+### Trigger
+
+An agent was computing TWI for a second map annotation and was forced to call
+`clear_session` to overwrite the first result. The root cause: `_slots["twi"]`
+held a single value — there was no place to put a second geometry's result.
+
+### What shipped (C0–C4)
+
+The **Feature Store** is a new cross-cutting block in `aihydro-core` (a
+zero-heavy-dep SDK package). Every spatial tool composes from it via the
+`@feature_tool` decorator (or the `_feature_cache_resolve` helper for complex
+async tools). The result:
+
+- **Stable feature ids** — agents register named geometries once and address
+  them by id/name in all tool calls. Raw GeoJSON blobs are no longer the
+  geometry contract.
+- **Three-level cache** — `_slots[product][feature_id][params_key] = result`.
+  Two features' results for the same product are structurally independent;
+  cross-geometry collision is impossible.
+- **Feature registry MCP tools** — `register_feature`, `list_features`,
+  `set_active_feature`.
+- **All five spatial tools updated** — `compute_twi`, `create_cn_grid`,
+  `extract_hydrological_signatures`, `extract_geomorphic_parameters`,
+  `fetch_forcing_data` each accept `feature: str | None = None`.
+- **Backward compatible** — old sessions and old calling patterns route through
+  a `__legacy__` sentinel feature id; no flag day, no data loss.
+
+### Architecture
+
+```
+aihydro-core (zero heavy deps)
+  primitives/    — Feature, Artifact, param_hash, FeatureNotFoundError
+  store/         — Store Protocol (runtime_checkable), InMemoryStore
+  features/      — FeatureRegistry (resolve + register), @feature_tool decorator
+  jobs/          — async-job substrate (moved from ai_hydro.mcp.jobs)
+
+ai_hydro/session/store.py
+  HydroSession   — implements Store Protocol (structural subtyping)
+                   _slots: dict[product][feature_id][params_key] = result
+```
+
+### The @feature_tool decorator
+
+Wraps pure sync spatial kernels `fn(geom: dict, **params) -> dict` and injects
+the full resolve → cache → compute → store → provenance → commit pipeline:
+
+```python
+from aihydro_core.features.compute import feature_tool
+
+@feature_tool(product="ndvi", citations=["sentinel2"])
+def _ndvi_kernel(geom: dict, *, year: int = 2022) -> dict:
+    # Pure computation. geom is already resolved. No session/cache code here.
+    return {"data": {...}, "meta": {...}}
+
+# MCP tool thin wrapper:
+@mcp.tool()
+def compute_ndvi(session_id=None, feature=None, year=2022):
+    session = HydroSession.load(session_id)
+    return _ndvi_kernel(store=session, feature=feature, year=year)
+```
+
+For complex async tools, use `_feature_cache_resolve` + `_feature_cache_store`
+(see `tools_analysis.py`) instead of the decorator.
+
+### Agent call pattern (new)
+
+```
+register_feature(geojson="<poly>", name="Upper basin", session_id="study-01")
+register_feature(geojson="<poly>", name="Lower basin", session_id="study-01")
+
+compute_twi(session_id="study-01", feature="upper-basin", resolution=30)
+compute_twi(session_id="study-01", feature="lower-basin", resolution=30)
+# → both cached independently; no clear_session needed
+```
+
+### Maturation: C3 (batch) and beyond
+
+- **C3** (deferred): `feature=[list]` → N jobs fan-out via `jobs.py`, join into
+  `{feature_id: result}`. Trigger: documented request to compute TWI for a
+  set of annotations simultaneously.
+- `@feature_tool` authoring: see `knowledge/tools/AUTHORING_GUIDE.md` §8.
+
+---
+
+## 6. Subagents
+
+### 6.1 What exists today (two distinct mechanisms — don't conflate them)
 
 The extension (fork of Cline) ships **two** things that get called "subagent."
 They solve different problems:
@@ -164,7 +252,7 @@ limits in §2 — it is genuinely parallelizable, killable (TerminalManager owns
 process), and cold-isolated (its own context window). It is the bash-process
 answer to "MCP can't fork / can't cancel," reached independently.
 
-### 4.2 Two parallelism needs (the model currently blurs them)
+### 6.2 Two parallelism needs (the model currently blurs them)
 
 - **LLM-reasoning delegation** — fan out *thinking/exploration* (read N files,
   research a codebase) into isolated context windows. Today: CLI subagent.
@@ -176,7 +264,7 @@ different runners. The end state (§4.4) is to unify both under `jobs.py`: a
 subagent and a training run become *the same kind of killable, typed job* — one
 runs an agent loop, the other runs a numerical solver.
 
-### 4.3 Where the CLI subagent is immature
+### 6.3 Where the CLI subagent is immature
 
 1. **macOS-only gate** — `cli_subagents.ts` only surfaces it when subagents are
    enabled + CLI installed, and the flag is macOS-gated. Biggest usefulness cap.
@@ -191,7 +279,7 @@ runs an agent loop, the other runs a numerical solver.
 6. **No fan-out/fan-in or PID registry** — no concurrency cap, no join/aggregate,
    no tracked set of child PIDs for cascade-cancel.
 
-### 4.4 Target state: a subagent is a job that runs its own tool loop
+### 6.4 Target state: a subagent is a job that runs its own tool loop
 
 A subagent is **not** a new transport or framework. It is a §3 job whose runner
 drives a constrained agent loop:
@@ -205,7 +293,7 @@ drives a constrained agent loop:
 This gives parallel subagents (N detached processes), cancellation, profiles, and
 budget control with **zero** new infrastructure beyond §3.
 
-### 4.5 Maturation plan (phased; gated by trigger-based deferral)
+### 6.5 Maturation plan (phased; gated by trigger-based deferral)
 
 | Phase | Goal | Closes gaps | Notes |
 |-------|------|-------------|-------|
@@ -226,7 +314,7 @@ documented trigger before it's built.
 
 ---
 
-## 5. The standard, in one page
+## 7. The standard, in one page
 
 1. **Disclosure**: tier at registration; hot = Tier1 + small allowlist; long tail
    is listed + summarized, schema fetched via `describe_tool`. Keep the allowlist
@@ -236,20 +324,26 @@ documented trigger before it's built.
    all tools. Wrong calls are repaired silently or returned as teaching turns —
    never raw stack traces.
 3. **Execution**: MCP calls return fast. Slow/parallel/cancellable work is a
-   **job** (`jobs.py`): detached process, persisted PID, registry, `cancel_job`.
+   **job** (`aihydro_core.jobs`): detached process, persisted PID, registry, `cancel_job`.
    `run_python` is the open-ended escape hatch.
-4. **Subagents**: two mechanisms exist today — `new_task` (linear handoff, leave
+4. **Feature addressing**: spatial tools receive a `feature` id, not a raw GeoJSON
+   blob. FeatureRegistry resolves the ref; `@feature_tool` (or `_feature_cache_resolve`)
+   handles the cache; results land in a three-level slot keyed by
+   `(product, feature_id, params_key)`. Two geometries never collide. New spatial
+   tools use `@feature_tool` from `aihydro_core.features.compute` — see §5 and
+   `AUTHORING_GUIDE.md` §8.
+5. **Subagents**: two mechanisms exist today — `new_task` (linear handoff, leave
    as-is) and the CLI subagent (real OS-process delegation). Target state folds
    the latter into a job whose runner runs a tier-restricted tool loop — same
-   contract, no new framework. Maturation is phased (§4.5), keystone is `jobs.py`.
-5. **Adding anything** (tool, middleware, job kind): requires a documented
+   contract, no new framework. Maturation is phased (§6.5), keystone is `jobs.py`.
+6. **Adding anything** (tool, middleware, job kind): requires a documented
    failure of the simpler existing layer — a benchmark ID or session trace, per
    DESIGN_PRINCIPLES trigger-based deferral. Tool count already grew 11 → 56 →
    ~100 without this discipline; the rule is what keeps the surface holdable.
 
 ---
 
-## 6. Composition: three primitives
+## 8. Composition: three primitives
 
 This doc covers the *tool* surface. Capability is packaged three ways, and the
 choice is orthogonal to execution tier (see `DESIGN_PRINCIPLES.md` → Three
@@ -270,12 +364,17 @@ of the simpler layer (trigger-based deferral).
 ## Related docs
 
 - `DESIGN_PRINCIPLES.md` — what the agent may do and why (tiers, three primitives, deferral, approval)
-- `knowledge/tools/AUTHORING_GUIDE.md` — how to write a born-compliant tool (the authoring half of this contract)
+- `knowledge/tools/AUTHORING_GUIDE.md` — how to write a born-compliant tool (the authoring half of this contract); §8 covers `@feature_tool`
+- `local-docs/AIHYDRO_CORE_DESIGN.md` — full Feature Store architecture (internal)
 - `docs/guide/tool-discovery.md` (extension repo) — published version of §1
 - `mcp/app.py` — tier + hot source of truth
 - `mcp/tools_discovery.py` — discovery protocol
 - `mcp/arg_repair.py` — reliability middleware
-- `mcp/jobs.py` — async-job substrate (start/status/result/cancel/list + PID registry)
-- `mcp/tools_modelling.py` — first adopter of `jobs.py` (`train_hydro_model` + `cancel_job`/`list_jobs`)
-- extension `integrations/cli-subagents/subagent_command.ts` — CLI subagent spawn/rewrite (§4.1)
-- extension `core/prompts/system-prompt/components/cli_subagents.ts` — subagent prompt + enablement gate (§4.3)
+- `aihydro_core/jobs/` — async-job substrate (start/status/result/cancel/list + PID registry)
+- `mcp/jobs.py` — thin re-export shim for `aihydro_core.jobs`
+- `mcp/tools_modelling.py` — first adopter of the jobs substrate
+- `aihydro_core/features/compute.py` — `@feature_tool` decorator (§5)
+- `aihydro_core/features/registry.py` — FeatureRegistry (resolve/register)
+- `ai_hydro/session/store.py` — HydroSession implements Store Protocol; three-level slots
+- extension `integrations/cli-subagents/subagent_command.ts` — CLI subagent spawn/rewrite (§6.1)
+- extension `core/prompts/system-prompt/components/cli_subagents.ts` — subagent prompt + enablement gate (§6.3)
