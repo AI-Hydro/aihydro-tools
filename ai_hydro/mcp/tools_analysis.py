@@ -82,6 +82,74 @@ def _canonical_prefix(session_id: str, kind: str) -> str:
 log = logging.getLogger("ai_hydro.mcp")
 
 
+# ---------------------------------------------------------------------------
+# C4: Feature-keyed cache helper (shared by all spatial tools)
+# ---------------------------------------------------------------------------
+
+def _feature_cache_resolve(
+    session,
+    product: str,
+    params: dict,
+    feature_ref,          # str | None — the feature= MCP param
+    geometry_geojson: str | None,
+):
+    """
+    Resolve a feature reference and check the three-level cache.
+
+    Returns a tuple ``(feature_id, params_key, cache_hit_result, geojson_dict_or_none)``.
+
+    - ``cache_hit_result`` is the cached result dict if found, else ``None``.
+    - ``geojson_dict_or_none`` is the resolved watershed geometry (or ``None``
+      if a ``geometry_geojson`` override was passed — the caller resolves it).
+
+    The caller pattern::
+
+        _feature_id, _key, _cached, _geom = _feature_cache_resolve(
+            session, "twi", {"resolution": resolution}, feature, geometry_geojson
+        )
+        if _cached is not None:
+            return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
+        watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
+    """
+    from aihydro_core.features.registry import FeatureRegistry
+    from aihydro_core.primitives.errors import FeatureNotFoundError
+    from aihydro_core.primitives.hashing import param_hash as _param_hash
+
+    key = _param_hash(params)
+    registry = FeatureRegistry(session)
+
+    if geometry_geojson:
+        # Explicit raw-geom override → no stable feature_id; skip cache
+        return "__override__", key, None, None
+
+    _feat = None
+    try:
+        _feat = registry.resolve(feature_ref)
+        feature_id = _feat.feature_id
+    except FeatureNotFoundError:
+        feature_id = "__legacy__"
+
+    cached = session.get_result(product, feature_id, key)
+
+    if _feat is not None and feature_id not in ("__override__", "__legacy__"):
+        geom = _feat.geojson
+    else:
+        geom = None  # caller falls back to _resolve_session_geometry
+
+    return feature_id, key, cached, geom
+
+
+def _feature_cache_store(session, product: str, feature_id: str, key: str,
+                          result: dict, citations: list[str] | None = None) -> None:
+    """Store a result in the three-level slot and commit."""
+    result.setdefault("meta", {})["feature_id"] = feature_id
+    result.setdefault("meta", {})["computed_at"] = result["meta"].get("computed_at") or _now_iso()
+    session.put_result(product, feature_id, key, result)
+    if citations:
+        session.add_citations(citations)
+    session.commit()
+
+
 def _bounds_to_wgs84(bounds: list, crs_str: str) -> list:
     """
     Convert [west, south, east, north] bounds to EPSG:4326 if needed.
@@ -987,6 +1055,7 @@ def extract_hydrological_signatures(
     session_id: str | None = None,
     start_date: str = "1989-10-01",
     end_date: str = "2009-09-30",
+    feature: str | None = None,
     geometry_geojson: str | None = None,
 ) -> dict:
     """
@@ -1001,6 +1070,9 @@ def extract_hydrological_signatures(
         Research session identifier. Auto-resolved from chat context when omitted.
     start_date, end_date : str
         Analysis period in YYYY-MM-DD format.
+    feature : str | None, optional
+        Feature id or name to extract signatures for. Omit to use the active
+        feature or session watershed geometry.
     geometry_geojson : str, optional
         Override watershed geometry as a GeoJSON string. Use when the session
         geometry is wrong or when working directly with a delineated polygon
@@ -1010,9 +1082,14 @@ def extract_hydrological_signatures(
         session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
-        if session.signatures is not None:
-            return _cached_response("signatures", session)
-        watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
+
+        _feature_id, _key, _cached, _geom = _feature_cache_resolve(
+            session, "signatures", {"start_date": start_date, "end_date": end_date},
+            feature, geometry_geojson,
+        )
+        if _cached is not None:
+            return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
+        watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
         area_km2 = session.watershed["data"]["area_km2"]
 
         # ── Streamflow source ─────────────────────────────────────────────
@@ -1074,7 +1151,9 @@ def extract_hydrological_signatures(
             q_cms_series=_q_cms,
         )
         d = _result_to_dict(result)
-        _session_store(session_id, "signatures", d, tool_name="extract_hydrological_signatures")
+        _feature_cache_store(session, "signatures", _feature_id, _key, d,
+                             citations=["usgs_nwis"])
+        d["feature_id"] = _feature_id
         files_saved: list[str] = []
         saved = _workspace_write(
             session_id, _canonical_fname(session_id, "signatures", "json"), d["data"]
@@ -1125,6 +1204,7 @@ def extract_hydrological_signatures(
 def extract_geomorphic_parameters(
     session_id: str | None = None,
     dem_resolution: int = 30,
+    feature: str | None = None,
     geometry_geojson: str | None = None,
 ) -> dict:
     """
@@ -1141,6 +1221,9 @@ def extract_geomorphic_parameters(
         Research session identifier. Auto-resolved from chat context when omitted.
     dem_resolution : int
         DEM resolution in metres (default 30).
+    feature : str | None, optional
+        Feature id or name to compute geomorphic parameters for. Omit to use
+        the active feature or session watershed geometry.
     geometry_geojson : str, optional
         Override watershed geometry as a GeoJSON string. Useful when the
         session_id geometry is wrong (e.g. "map" session mismatch) or for
@@ -1150,9 +1233,14 @@ def extract_geomorphic_parameters(
         session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
-        if session.geomorphic is not None:
-            return _cached_response("geomorphic", session)
-        watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
+
+        _feature_id, _key, _cached, _geom = _feature_cache_resolve(
+            session, "geomorphic", {"dem_resolution": dem_resolution},
+            feature, geometry_geojson,
+        )
+        if _cached is not None:
+            return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
+        watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
         ws_data = session.watershed["data"] if session.watershed else {}
 
         # Flexible outlet coordinate resolution:
@@ -1189,7 +1277,9 @@ def extract_geomorphic_parameters(
             dem_resolution=dem_resolution,
         )
         d = _result_to_dict(result)
-        _session_store(session_id, "geomorphic", d, tool_name="extract_geomorphic_parameters")
+        _feature_cache_store(session, "geomorphic", _feature_id, _key, d,
+                             citations=["usgs_3dep", "copernicus_glo30"])
+        d["feature_id"] = _feature_id
         saved = _workspace_write(
             session_id, _canonical_fname(session_id, "geomorphic", "json"), d["data"]
         )
@@ -1457,6 +1547,7 @@ async def create_cn_grid(
     year: int = 2019,
     resolution: int = 30,
     create_map: bool = True,
+    feature: str | None = None,
     geometry_geojson: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
@@ -1478,6 +1569,9 @@ async def create_cn_grid(
         Output resolution in metres (default 30).
     create_map : bool
         Generate PNG + HTML visualisations.
+    feature : str | None, optional
+        Feature id or name to compute the CN grid for. Omit to use the active
+        feature or session watershed geometry.
     geometry_geojson : str, optional
         Override watershed geometry as a GeoJSON string.
     """
@@ -1485,17 +1579,15 @@ async def create_cn_grid(
         session_id = _resolve_session(session_id, None)
         session = _ensure_session(session_id)
 
-        # Cache hit
-        if session.cn is not None:
-            cached = session.cn
-            return {
-                "data": cached.get("data", {}),
-                "meta": cached.get("meta", {}),
-                "_cached": True,
-                "_workspace_dir": session.workspace_dir,
-            }
+        _feature_id, _key, _cached, _geom = _feature_cache_resolve(
+            session, "cn", {"year": year, "resolution": resolution},
+            feature, geometry_geojson,
+        )
+        if _cached is not None:
+            return {**_cached, "_cache_hit": True, "feature_id": _feature_id,
+                    "_workspace_dir": session.workspace_dir}
 
-        watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
+        watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
         workspace = session.workspace_dir or str(Path.home() / ".aihydro" / "cache")
 
         if ctx:
@@ -1549,7 +1641,9 @@ async def create_cn_grid(
                 "params": {"year": year, "resolution": resolution, "create_map": create_map},
             },
         }
-        _session_store(session_id, "cn", d, tool_name="create_cn_grid")
+        _feature_cache_store(session, "cn", _feature_id, _key, d,
+                             citations=["nlcd", "polaris"])
+        d["feature_id"] = _feature_id
         d["_files_saved"] = list(file_paths.values())
 
         # Push CN raster tile to map (non-fatal)
@@ -1606,6 +1700,7 @@ async def fetch_forcing_data(
     end_date: str,
     session_id: str | None = None,
     variables: list[str] | None = None,
+    feature: str | None = None,
     geometry_geojson: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
@@ -1638,20 +1733,26 @@ async def fetch_forcing_data(
         from ai_hydro.session import HydroSession as _HS2
         session = _HS2.load(session_id)
 
-        # Cache-hit check — same session + date range already computed
-        if session.forcing is not None:
-            cached_params = session.forcing.get("meta", {}).get("params", {})
-            if (cached_params.get("start_date") == start_date
-                    and cached_params.get("end_date") == end_date):
-                compact = _strip_forcing_arrays(session.forcing.get("data", {}))
-                return {
-                    "data": compact,
-                    "meta": session.forcing.get("meta", {}),
-                    "_cached": True,
-                    "_note": "Forcing data already cached. Full daily arrays on disk.",
-                }
+        # C4: feature-keyed cache check
+        _forcing_params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "variables": sorted(variables) if variables else None,
+        }
+        _feature_id, _key, _cached, _geom = _feature_cache_resolve(
+            session, "forcing", _forcing_params, feature, geometry_geojson,
+        )
+        if _cached is not None:
+            compact = _strip_forcing_arrays(_cached.get("data", {}))
+            return {
+                "data": compact,
+                "meta": _cached.get("meta", {}),
+                "_cache_hit": True,
+                "feature_id": _feature_id,
+                "_note": "Forcing data already cached. Full daily arrays on disk.",
+            }
 
-        watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
+        watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
 
         if ctx:
             await ctx.report_progress(progress=0, total=2)
@@ -1777,7 +1878,9 @@ async def fetch_forcing_data(
         )
         if saved:
             d["data"]["_data_file"] = saved
-        _session_store(session_id, "forcing", d, tool_name="fetch_forcing_data")
+        _feature_cache_store(session, "forcing", _feature_id, _key, d,
+                             citations=["gridmet", "chirps", "era5"])
+        d["feature_id"] = _feature_id
         compact = _strip_forcing_arrays(d["data"])
         if saved:
             compact["_data_file"] = saved
