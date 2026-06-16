@@ -24,6 +24,7 @@ from ai_hydro.analysis.signatures import (
     compute_event_stats_camels,
     compute_timing_stats_camels,
     compute_slope_fdc_camels,
+    _lyne_hollick_baseflow,
 )
 
 
@@ -78,10 +79,52 @@ class TestFlowStatistics:
         """Test with insufficient data"""
         q = pd.Series([1.0, 2.0, 3.0])  # only 3 days
         result = compute_flow_stats_camels(q)
-        
+
         # Should return NaN for all values
         for key in result:
             assert np.isnan(result[key])
+
+
+class TestBaseflowFilter:
+    """Known-answer tests for the Lyne-Hollick baseflow filter.
+
+    Regression guard for the directionality bug where the filter returned the
+    quick-flow component instead of the baseflow, which inverted the baseflow
+    index (it reported the quick-flow fraction). Reference values computed from
+    the corrected Nathan-McMahon multi-pass implementation.
+    """
+
+    def test_constant_flow_is_all_baseflow(self):
+        # A perfectly steady stream has no quick flow, so BFI must be 1.0.
+        q = np.full(500, 5.0)
+        bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=3)
+        assert np.allclose(bf, q)
+        assert abs(bf.sum() / q.sum() - 1.0) < 1e-9
+
+    def test_baseflow_never_exceeds_total_flow(self):
+        rng = np.random.default_rng(0)
+        q = np.abs(rng.lognormal(0, 1, 2000)) + 0.1
+        bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=3)
+        assert np.all(bf <= q + 1e-9)   # baseflow never exceeds total flow
+        assert np.all(bf >= -1e-9)      # baseflow never negative
+
+    def test_baseflow_dominated_series_has_high_bfi(self):
+        # Steady baseline with four sparse storm spikes: most flow is baseflow,
+        # so BFI must be well above 0.5. The pre-fix code returned the quick-flow
+        # fraction here (~0.13), so this pins the filter direction.
+        q = np.full(300, 2.0)
+        for day in (40, 110, 180, 250):
+            q[day] = 25.0
+        bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=3)
+        bfi = bf.sum() / q.sum()
+        assert bfi == pytest.approx(0.867, abs=0.01), f"got BFI={bfi:.3f}"
+
+    def test_flashy_series_has_low_bfi(self):
+        # Alternating high/low flow is quick-flow dominated: BFI must be low.
+        q = np.tile([1.0, 20.0], 150)
+        bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=3)
+        bfi = bf.sum() / q.sum()
+        assert bfi == pytest.approx(0.203, abs=0.01), f"got BFI={bfi:.3f}"
 
 
 class TestWaterBalance:

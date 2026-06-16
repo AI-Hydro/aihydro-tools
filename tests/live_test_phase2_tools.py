@@ -194,7 +194,12 @@ async def run_tests() -> None:
 
                         # Verify non-collision in session
                         from aihydro_core.primitives.hashing import param_hash
-                        key = param_hash({"year": 2019, "resolution": 30})
+                        # Cache key now also carries the optional product pins
+                        # (None ⇒ auto). Mirror the tool's key shape exactly.
+                        key = param_hash({
+                            "year": 2019, "resolution": 30,
+                            "product": None, "soil_product": None,
+                        })
                         s2 = HydroSession.load(SESSION_ID)
                         cn_a = s2.get_result("cn", "basin-a", key)
                         cn_b = s2.get_result("cn", "basin-b", key)

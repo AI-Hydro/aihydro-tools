@@ -8,6 +8,7 @@ get_model_results   — read cached model results from session.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,11 +134,13 @@ def train_hydro_model(
             "log_path": job["log_path"],
             "started_at": job["started_at"],
             "_note": (
-                f"Training started. Poll with get_training_status('{job['job_id']}'); "
-                f"cancel with cancel_job('{job['job_id']}'). "
-                "Check log_path with 'tail -f' for live progress. "
+                f"Training started. Wait for it with wait_for_job('{job['job_id']}') — "
+                "a single call blocks server-side at zero token cost until the job "
+                "finishes; do NOT poll get_training_status in a loop. "
+                f"Cancel with cancel_job('{job['job_id']}'). "
                 "Typical runtime: 2-15 min (HBV), 15-60 min (LSTM)."
             ),
+            "wait_with": f"wait_for_job('{job['job_id']}')",
         }
 
     except Exception as e:
@@ -178,6 +181,82 @@ def list_jobs(kind: str | None = None) -> dict:
         return jobs.list_jobs(kind)
     except Exception as e:
         log.error("list_jobs failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+# Terminal job states across all native job families (training, data-fetch, …).
+_TERMINAL_JOB_STATES = {"complete", "completed", "done", "failed", "error", "cancelled"}
+
+# Server-side wait budget ceiling. The VS Code MCP client times calls out at
+# DEFAULT_MCP_TIMEOUT_SECONDS = 300 s; staying comfortably under it lets a single
+# wait_for_job call ride out almost any job without tripping the transport timeout.
+_MAX_WAIT_SECONDS = 280
+
+
+def _retrieve_hint(status: dict, job_id: str) -> str:
+    """Best matching result-fetch call for a finished job, keyed off its kind."""
+    kind = str(status.get("kind") or "").lower()
+    if "data" in kind or "fetch" in kind:
+        return f"get_data_fetch_result('{job_id}')"
+    if "train" in kind or "model" in kind:
+        return f"get_model_results(job_id='{job_id}')"
+    # Generic fallback: get_training_status returns the full status.json (incl.
+    # partial_results) for any job_id, regardless of kind.
+    return f"get_training_status('{job_id}')"
+
+
+@mcp.tool()
+def wait_for_job(job_id: str, max_wait_seconds: int = _MAX_WAIT_SECONDS, poll_interval_seconds: float = 3.0) -> dict:
+    """
+    Block until a background job finishes, polling its status server-side so you do
+    NOT spend a turn per poll. Use this once after starting ANY async job
+    (train_hydro_model, data_fetch_background, …) instead of calling
+    get_job_status / get_training_status in a loop.
+
+    The polling happens inside this single call at zero token cost. Most jobs
+    finish within one wait_for_job call. If the job is still running when the wait
+    budget elapses, it returns status "still_running" — just call wait_for_job
+    again with the SAME job_id to keep waiting. Do not wrap this in your own loop,
+    shorten poll_interval_seconds, or fall back to manual polling.
+
+    Returns a TERSE status only (state, progress, elapsed). Fetch full results with
+    the call named in `retrieve_with` once `done` is true.
+    """
+    try:
+        budget = max(1, min(int(max_wait_seconds), _MAX_WAIT_SECONDS))
+        interval = max(0.5, float(poll_interval_seconds))
+        deadline = time.monotonic() + budget
+        polls = 0
+        while True:
+            status = jobs.get_job_status(job_id)
+            polls += 1
+            if status.get("error"):
+                return status  # JOB_NOT_FOUND etc. — surface immediately, no waiting
+            state = str(status.get("status") or "").lower()
+            if state in _TERMINAL_JOB_STATES:
+                return {
+                    "job_id": job_id,
+                    "status": state,
+                    "done": True,
+                    "polls": polls,
+                    "progress": status.get("progress"),
+                    "error": status.get("error"),
+                    "retrieve_with": _retrieve_hint(status, job_id),
+                    "note": "Job finished. Fetch full results with the retrieve_with call.",
+                }
+            if time.monotonic() >= deadline:
+                return {
+                    "job_id": job_id,
+                    "status": "still_running",
+                    "done": False,
+                    "waited_seconds": budget,
+                    "progress": status.get("progress"),
+                    "next_step": f"wait_for_job('{job_id}') again with the same job_id to keep waiting.",
+                    "note": "Polling is server-side and costs no tokens — just call wait_for_job again.",
+                }
+            time.sleep(interval)
+    except Exception as e:
+        log.error("wait_for_job failed: %s", e)
         return _tool_error_to_dict(e)
 
 

@@ -42,13 +42,15 @@ LIVE_TASKS = _load_tasks("bench_live")
 # ---------------------------------------------------------------------------
 
 def _build_session(session_id: str, setup: dict) -> None:
-    """Pre-populate a HydroSession with synthetic slot data for validator tests."""
+    """Pre-populate a HydroSession with synthetic data for bench tasks."""
     from ai_hydro.session.store import HydroSession
     session = HydroSession(session_id)
     for slot_name, slot_data in setup.get("slots", {}).items():
         session.set(slot_name, slot_data)
     for claim_id, claim_data in setup.get("claims", {}).items():
         session.claims[claim_id] = claim_data
+    if "run_log" in setup:
+        session.set("_run_log", setup["run_log"])
     session.save()
 
 
@@ -67,6 +69,9 @@ def _call_mcp_tool(tool_name: str, kwargs: dict) -> dict:
         "ai_hydro.mcp.tools_skills",
         "ai_hydro.mcp.tools_workflows",
         "ai_hydro.mcp.tools_execution",
+        "ai_hydro.mcp.tools_audit",
+        "ai_hydro.mcp.tools_experiments",
+        "ai_hydro.mcp.tools_skeptic",
     ]
     import importlib
     for mod_name in _TOOL_MODULES:
@@ -158,6 +163,9 @@ def test_bench_fixture(task: dict, tmp_path, monkeypatch) -> None:
     if call_style == "session_op":
         session_id = setup["session_id"]
         _build_session(session_id, setup)
+        # Optional pre_call steps (e.g. seed state before the main call)
+        for pre in task.get("pre_call", []):
+            _call_mcp_tool(pre["tool"], pre["kwargs"])
         result = _call_mcp_tool(call["tool"], call["kwargs"])
 
     elif call_style == "mcp_tool":

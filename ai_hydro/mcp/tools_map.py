@@ -21,12 +21,15 @@ from ai_hydro.mcp.helpers import (
     _workspace_write,
 )
 from ai_hydro.mcp.map_commands import (
+    push_add_layer_from_run,
     push_fit_extent,
     push_fit_layer,
+    push_fly_to,
     push_remove_layer,
     push_set_basemap,
     push_set_roi,
     push_set_layer_visibility,
+    push_set_time_range,
     push_show_map,
     push_update_layer,
 )
@@ -331,6 +334,173 @@ def map_fit_layer(layer_id: str) -> dict:
         return _layer_not_found(layer_id)
     ok = push_fit_layer(layer_id)
     return {"ok": ok, "layer_id": layer_id}
+
+
+@mcp.tool()
+def map_fly_to(
+    longitude: float,
+    latitude: float,
+    zoom: float = 9.0,
+    duration_ms: int = 2000,
+) -> dict:
+    """
+    Smoothly navigate the map camera to a point.
+
+    The map panel animates to the given longitude/latitude/zoom over duration_ms
+    milliseconds (deck.gl linear transition). Useful after computing a basin
+    centroid — fly the user's attention to the study area without forcing a fit.
+    """
+    ok = push_fly_to(longitude=longitude, latitude=latitude, zoom=zoom, duration_ms=duration_ms)
+    return {
+        "ok": ok,
+        "longitude": longitude,
+        "latitude": latitude,
+        "zoom": zoom,
+        "duration_ms": duration_ms,
+        "message": "Fly-to command queued for map host" if ok else "Failed to queue fly_to",
+    }
+
+
+@mcp.tool()
+def map_add_layer_from_run(
+    session_id: str,
+    run_id: str,
+    layer_name: str | None = None,
+    auto_zoom: bool = True,
+    geojson_key: str | None = None,
+) -> dict:
+    """
+    Add a GeoJSON result from a tool run directly to the map as a new layer.
+
+    Reads the run log entry for `run_id` in session `session_id`, extracts the
+    first GeoJSON value from `key_outputs` (or the value under `geojson_key`),
+    and pushes it as a provenance-tagged layer. The layer carries `run_id` and
+    `session_id` in its metadata so provenance chips can link back.
+
+    `auto_zoom=True` (default) zooms the map to the new layer's extent.
+    """
+    try:
+        import os
+        from pathlib import Path
+
+        session_id = session_id.strip()
+        run_id = run_id.strip()
+        if not session_id or not run_id:
+            return {"ok": False, "message": "session_id and run_id are required"}
+
+        session_path = Path.home() / ".aihydro" / "sessions" / f"{session_id}.json"
+        if not session_path.exists():
+            return {"ok": False, "message": f"Session '{session_id}' not found at {session_path}"}
+
+        raw = json.loads(session_path.read_text(encoding="utf-8"))
+
+        run_log_slot = raw.get("_run_log")
+        if not run_log_slot:
+            return {"ok": False, "message": "No _run_log in session — ensure aihydro-tools enforcement is running"}
+
+        run_log: dict[str, Any] = (
+            run_log_slot.get("data", run_log_slot)
+            if isinstance(run_log_slot, dict) and "data" in run_log_slot
+            else run_log_slot
+        )
+
+        entry = run_log.get(run_id)
+        if not entry:
+            available = list(run_log.keys())[:10]
+            return {
+                "ok": False,
+                "message": f"run_id '{run_id}' not found. Recent runs: {available}",
+            }
+
+        key_outputs: dict[str, Any] = entry.get("key_outputs") or {}
+
+        # Find GeoJSON: prefer explicit key, then search for geojson-like values
+        geojson_str: str | None = None
+        chosen_key: str | None = None
+
+        if geojson_key and geojson_key in key_outputs:
+            val = key_outputs[geojson_key]
+            geojson_str = val if isinstance(val, str) else json.dumps(val)
+            chosen_key = geojson_key
+        else:
+            for k, v in key_outputs.items():
+                if k.startswith("_"):
+                    continue
+                if isinstance(v, dict) and v.get("type") in (
+                    "Feature", "FeatureCollection", "Point", "LineString",
+                    "Polygon", "MultiPolygon", "MultiPoint", "MultiLineString",
+                    "GeometryCollection",
+                ):
+                    geojson_str = json.dumps(v)
+                    chosen_key = k
+                    break
+                if isinstance(v, str):
+                    try:
+                        parsed = json.loads(v)
+                        if isinstance(parsed, dict) and parsed.get("type") in (
+                            "Feature", "FeatureCollection", "Point", "LineString",
+                            "Polygon", "MultiPolygon",
+                        ):
+                            geojson_str = v
+                            chosen_key = k
+                            break
+                    except Exception:
+                        continue
+
+        if not geojson_str:
+            return {
+                "ok": False,
+                "message": (
+                    f"No GeoJSON found in key_outputs for run '{run_id}'. "
+                    f"Available keys: {list(key_outputs.keys())}. "
+                    "Pass geojson_key=<key> to specify which field contains GeoJSON."
+                ),
+            }
+
+        tool_name: str = entry.get("tool_name", "unknown_tool")
+        name = layer_name or f"{tool_name} / {run_id[:12]}"
+        lid = f"run_{run_id.replace('.', '_').replace('-', '_')[:32]}"
+
+        ok = push_add_layer_from_run(
+            layer_id=lid,
+            layer_name=name,
+            geojson=geojson_str,
+            run_id=run_id,
+            session_id=session_id,
+            auto_zoom=auto_zoom,
+        )
+        return {
+            "ok": ok,
+            "layer_id": lid,
+            "layer_name": name,
+            "geojson_key": chosen_key,
+            "run_id": run_id,
+            "message": "Layer add command queued for map host" if ok else "Failed to queue add_layer_from_run",
+        }
+    except Exception as e:
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def map_set_time_range(start_iso: str, end_iso: str) -> dict:
+    """
+    Set the map time slider to a specific date range.
+
+    Both arguments are ISO 8601 date strings (e.g. "2020-01-01", "2023-12-31").
+    The time slider (Phase 3.4) will filter layers to those whose `time_start` /
+    `time_end` metadata overlaps this range. Layers with no time metadata remain
+    visible. Combine with `map_add_layer_from_run` to focus the map on the
+    study period of a completed analysis run.
+    """
+    if not start_iso or not end_iso:
+        return {"ok": False, "message": "start_iso and end_iso are required"}
+    ok = push_set_time_range(start_iso=start_iso.strip(), end_iso=end_iso.strip())
+    return {
+        "ok": ok,
+        "start_iso": start_iso.strip(),
+        "end_iso": end_iso.strip(),
+        "message": "Time range command queued for map host" if ok else "Failed to queue set_time_range",
+    }
 
 
 @mcp.tool()

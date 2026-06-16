@@ -25,21 +25,29 @@ log = logging.getLogger("ai_hydro.mcp.discovery")
 # multiple domains; tiers are exclusive).
 _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "session":     ("start_session", "get_session", "clear_session", "archive_session",
-                    "merge_session", "add_note", "export_session"),
+                    "merge_session", "add_note", "export_session",
+                    "aihydro_rebind_chat", "aihydro_chat_status"),
     "project":     ("start_project", "get_project", "add_session_to_project"),
     "watershed":   ("delineate_watershed", "delineation_", "merit_", "extract_geomorphic",
-                    "compute_twi", "create_cn_grid"),
-    "streamflow":  ("fetch_streamflow", "separate_baseflow", "extract_hydrological"),
-    "forcing":     ("fetch_forcing",),
+                    "compute_twi", "create_cn_grid", "compute_soil_loss_rusle",
+                    "compute_design_hydrograph"),
+    "streamflow":  ("fetch_streamflow", "separate_baseflow", "extract_hydrological",
+                    "compute_flow_duration_curve", "compute_flood_frequency"),
+    "forcing":     ("fetch_forcing", "compute_drought_index"),
     "camels":      ("fetch_camels",),
     "modelling":   ("train_hydro_model", "get_training_status", "get_model_results"),
     "maps":        ("map_", "show_on_map", "gee."),
     "preview":     ("show_html_preview", "preview_"),
     "course":      ("course_",),
-    "citations":   ("lookup_citation", "search_literature", "index_literature"),
+    "citations":   ("lookup_citation", "search_literature", "index_literature",
+                    "get_citation_by_doi", "list_cached_citations"),
     "claims":      ("add_claim", "list_claims", "promote_claim", "update_claim",
-                    "add_assumption", "list_assumptions", "draft_claim"),
-    "validators":  ("check_water_balance", "check_temporal", "check_unit"),
+                    "add_assumption", "list_assumptions", "draft_claim",
+                    "register_research_plan"),
+    "validators":  ("check_water_balance", "check_temporal", "check_unit",
+                    "audit_interpretation",
+                    "check_record_length", "check_usgs_qualification_codes",
+                    "check_regulated_basin", "check_stationarity"),
     "skills":      ("list_skills", "load_skill", "save_skill"),
     "knowledge":   ("get_variable", "list_known_variables", "get_metric",
                     "list_known_metrics", "get_dataset_info", "list_known_datasets",
@@ -47,15 +55,26 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "workflows":   ("list_available_workflows", "get_workflow_manifest"),
     "discovery":   ("aihydro_describe_capability", "describe_tool", "describe_tools",
                     "list_available_tools"),
-    "execution":   ("run_python", "list_relevant_clis", "get_library_reference"),
-    "persona":     ("get_researcher", "update_researcher", "log_researcher"),
-    "ledger":      ("add_journal", "search_experiments"),
+    "execution":   ("run_python", "list_relevant_clis", "get_library_reference",
+                    "cancel_job", "list_jobs", "wait_for_job"),
+    "persona":     ("get_researcher", "update_researcher", "log_researcher",
+                    "write_research_interpretation"),
+    "ledger":      ("add_journal", "search_experiments",
+                    "add_journal_entry",   # alias present in some versions
+                    "check_registry_staleness", "list_registry_claims"),
+    "experiments": ("define_experiment", "run_experiment", "get_experiment_table"),
+    "skeptic":     ("run_skeptic",),
+    "literature":  ("index_passages", "search_passages_tool", "resolve_passage"),
+    # Feature registry (C2 — multi-geometry)
+    "features":    ("register_feature", "list_features", "set_active_feature",
+                    "bind_map_to_claim"),
     # Wave 2.5 — aihydro-data tools surfaced via the `aihydro.tools` entry-point group.
     # Longest-prefix match means these win over any generic prefixes.
     "data_fetch":  ("data_fetch", "data_batch", "data_list_products",
                     "data_describe_product", "data_validate_request",
                     "data_get_cache_status", "data_invalidate_cache",
-                    "data_doctor", "data_help"),
+                    "data_doctor", "data_help",
+                    "data_fetch_background", "get_data_fetch_result"),
     # v0.2.0 — spectral index tools (TorchGeo cherry-pick Day 5)
     "analysis":    ("compute_spectral_index", "list_spectral_indices"),
 }
@@ -75,7 +94,8 @@ async def aihydro_describe_capability(domain: str | None = None) -> dict:
     domain : str, optional
         One of: session, project, watershed, streamflow, forcing, camels,
         modelling, maps, preview, course, citations, claims, validators,
-        skills, knowledge, workflows, execution, persona, ledger.
+        skills, knowledge, workflows, discovery, execution, persona, ledger,
+        data_fetch, analysis, features.
         If omitted, returns the list of available domains with tool counts.
 
     Returns

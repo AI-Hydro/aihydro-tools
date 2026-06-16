@@ -145,3 +145,152 @@ def get_equation_definition(equation_id: str, workspace_dir: str | None = None) 
         return eq.model_dump()
     except Exception as exc:
         return _tool_error_to_dict(exc)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.4 — Passage-level literature index
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def index_passages(papers_dir: str | None = None) -> dict:
+    """
+    Build a passage-level index of the papers library.
+
+    Splits each .md/.txt/.bib document into ~200-word passages, computes a
+    deterministic passage_hash (SHA-256[:16]) for each, and writes the index
+    to ~/.aihydro/knowledge/passage_index.jsonl.
+
+    passage_hash can be used as EvidenceSpan(source_type="paper",
+    source_id=passage_hash) to create verifiable literature citations, and as
+    [lit:passage_hash] in research interpretations for auditor verification.
+
+    papers_dir: path to the papers/literature directory. Defaults to the
+    platform papers directory at <project_root>/papers/.
+    """
+    try:
+        from pathlib import Path as _Path
+        from ai_hydro.knowledge.embeddings import build_passage_index
+
+        if papers_dir:
+            root = _Path(papers_dir).expanduser().resolve()
+        else:
+            # Default: papers/ next to the aihydro-tools package root
+            root = _Path(__file__).parents[3] / "papers"
+
+        if not root.exists():
+            return {
+                "error": True,
+                "message": (
+                    f"Papers directory not found: {root}. "
+                    "Pass papers_dir explicitly or place documents under papers/."
+                ),
+            }
+
+        exts = {".md", ".txt", ".bib", ".rst", ".pdf"}
+        paths = [p for p in root.rglob("*") if p.suffix.lower() in exts and p.is_file()]
+        if not paths:
+            return {
+                "error": True,
+                "message": f"No indexable documents found under {root}.",
+                "searched_dir": str(root),
+            }
+
+        result = build_passage_index(paths)
+        result["searched_dir"] = str(root)
+        result["n_files_found"] = len(paths)
+        result["_note"] = (
+            f"Indexed {result['n_passages']} passages from {result['n_docs']} documents. "
+            "Use search_passages to query, or resolve_passage to look up by hash. "
+            "Cite as EvidenceSpan(source_type='paper', source_id=passage_hash) "
+            "and inline as [lit:<passage_hash>]."
+        )
+        return result
+    except Exception as exc:
+        return _tool_error_to_dict(exc)
+
+
+@mcp.tool()
+def search_passages_tool(query: str, n: int = 5) -> dict:
+    """
+    Query the passage index by keyword and return the top-n matching passages.
+
+    Each result includes a passage_hash suitable for use in EvidenceSpan
+    (source_type="paper", source_id=passage_hash) and as [lit:passage_hash]
+    in research interpretations.
+
+    Run index_passages first to build the index.
+    """
+    try:
+        from ai_hydro.knowledge.embeddings import search_passages, PASSAGE_INDEX_PATH
+
+        if not PASSAGE_INDEX_PATH.exists():
+            return {
+                "indexed": False,
+                "n_matches": 0,
+                "matches": [],
+                "message": "Passage index not found. Run index_passages first.",
+            }
+
+        results = search_passages(query, n=n)
+        return {
+            "indexed": True,
+            "n_matches": len(results),
+            "matches": [
+                {
+                    "passage_hash": r["passage_hash"],
+                    "doc_name": r["doc_name"],
+                    "chunk_idx": r["chunk_idx"],
+                    "excerpt": r["text"][:300] + ("…" if len(r["text"]) > 300 else ""),
+                    "cite_as": f"[lit:{r['passage_hash']}]",
+                    "evidence_span": {
+                        "source_type": "paper",
+                        "source_id": r["passage_hash"],
+                        "description": f"{r['doc_name']} passage {r['chunk_idx']}",
+                    },
+                }
+                for r in results
+            ],
+        }
+    except Exception as exc:
+        return _tool_error_to_dict(exc)
+
+
+@mcp.tool()
+def resolve_passage(passage_hash: str) -> dict:
+    """
+    Look up a passage by its hash. Returns the full passage text and source.
+
+    Used to verify that a [lit:passage_hash] citation in a research
+    interpretation corresponds to a real indexed passage.
+    """
+    try:
+        from ai_hydro.knowledge.embeddings import resolve_passage_hash, PASSAGE_INDEX_PATH
+
+        if not PASSAGE_INDEX_PATH.exists():
+            return {
+                "found": False,
+                "passage_hash": passage_hash,
+                "message": "Passage index not found. Run index_passages first.",
+            }
+
+        rec = resolve_passage_hash(passage_hash)
+        if rec is None:
+            return {
+                "found": False,
+                "passage_hash": passage_hash,
+                "message": (
+                    f"No passage with hash '{passage_hash}' in the index. "
+                    "The passage may not have been indexed yet — re-run index_passages."
+                ),
+            }
+        return {
+            "found": True,
+            "passage_hash": passage_hash,
+            "doc_name": rec["doc_name"],
+            "chunk_idx": rec["chunk_idx"],
+            "source_path": rec["source_path"],
+            "text": rec["text"],
+            "indexed_at": rec["indexed_at"],
+        }
+    except Exception as exc:
+        return _tool_error_to_dict(exc)

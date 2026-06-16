@@ -28,10 +28,20 @@ jobs:
           cache: pip
 
       - name: Install package + dev deps
-        run: pip install -e ".[all,dev]"
+        run: pip install -e ".[all,dev]" pyyaml
 
       - name: Run bench fixture tasks
         run: pytest tests/test_bench.py -m bench -v --tb=short
+
+      - name: Generate HRB scorecard
+        run: python bench/gen_scorecard.py --run --out hrb_scorecard.html
+
+      - name: Upload scorecard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hrb-scorecard
+          path: hrb_scorecard.html
+          retention-days: 90
 
   bench-live:
     name: Live API tasks (nightly only)

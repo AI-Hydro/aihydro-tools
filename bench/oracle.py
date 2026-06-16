@@ -11,6 +11,7 @@ Supported operators:
   ne        — not equal
   between   — lo <= value <= hi  (bounds: [lo, hi])
   gt        — value > expected
+  ge        — value >= expected
   lt        — value < expected
   approx    — |value - expected| <= tol  (tol: absolute, default 1e-6)
   approx_pct— |value - expected| / |expected| <= pct  (pct: 0-1, default 0.05)
@@ -18,6 +19,8 @@ Supported operators:
   absent    — key is absent or value is None
   contains  — expected in value  (works for str and list)
   startswith— str value starts with expected
+  len_gte   — len(value) >= expected  (path="" = whole result)
+  len_eq    — len(value) == expected  (path="" = whole result)
 """
 from __future__ import annotations
 
@@ -35,14 +38,18 @@ class AssertionResult:
     message: str
 
 
-def _get_nested(d: dict, path: str) -> Any:
+def _get_nested(d: Any, path: str) -> Any:
     """
     Resolve a dot-separated path into a nested dict or list.
 
+    Empty path returns d unchanged (useful when the result IS the value,
+    e.g. a bare list returned by list_claims).
     Integer path segments index into lists: 'quality_flags.0.status'
     resolves as result['quality_flags'][0]['status'].
     Returns None if any step is missing or the index is out of range.
     """
+    if not path:
+        return d
     parts = path.split(".")
     cur: Any = d
     for part in parts:
@@ -92,6 +99,10 @@ def evaluate(result: dict, assertions: list[dict]) -> list[AssertionResult]:
                 passed = actual is not None and actual > expected
                 msg = f"{path} > {expected!r}; got {actual!r}"
 
+            elif op == "ge":
+                passed = actual is not None and actual >= expected
+                msg = f"{path} >= {expected!r}; got {actual!r}"
+
             elif op == "lt":
                 passed = actual is not None and actual < expected
                 msg = f"{path} < {expected!r}; got {actual!r}"
@@ -124,6 +135,22 @@ def evaluate(result: dict, assertions: list[dict]) -> list[AssertionResult]:
             elif op == "startswith":
                 passed = isinstance(actual, str) and actual.startswith(expected)
                 msg = f"{path} starts with {expected!r}; got {actual!r}"
+
+            elif op == "len_gte":
+                try:
+                    passed = actual is not None and len(actual) >= expected
+                    msg = f"len({path}) >= {expected!r}; got len={len(actual) if actual is not None else None!r}"
+                except TypeError:
+                    passed = False
+                    msg = f"len({path}) >= {expected!r}; {actual!r} has no len()"
+
+            elif op == "len_eq":
+                try:
+                    passed = actual is not None and len(actual) == expected
+                    msg = f"len({path}) == {expected!r}; got len={len(actual) if actual is not None else None!r}"
+                except TypeError:
+                    passed = False
+                    msg = f"len({path}) == {expected!r}; {actual!r} has no len()"
 
             else:
                 passed = False

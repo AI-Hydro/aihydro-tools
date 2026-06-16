@@ -113,9 +113,44 @@ def _write_run_log(
     except Exception as exc:
         log.warning("Failed to write run log for %s: %s", run_id, exc)
 
-# Registry: tool_name → list of (validator_fn, kwargs_builder)
+# ---------------------------------------------------------------------------
+# Validator registry
+# tool_name → list of (validator_fn, kwargs_builder)
 # kwargs_builder(session_id: str) -> dict
+# ---------------------------------------------------------------------------
 _REGISTRY: dict[str, list[tuple[Callable, Callable]]] = {}
+
+# ---------------------------------------------------------------------------
+# Next-steps registry
+# tool_name → list of {tool, reason, when} hints injected into every result.
+#
+# Each hint:
+#   tool   : MCP tool name the agent should consider calling next
+#   reason : one-line natural-language rationale (shown directly to the agent)
+#   when   : optional condition string ("if model.nse < 0.5", etc.)
+#
+# Registered in ai_hydro/mcp/__init__.py after all modules are loaded.
+# ---------------------------------------------------------------------------
+_NEXT_STEPS_REGISTRY: dict[str, list[dict]] = {}
+
+
+def register_next_steps(tool_name: str, steps: list[dict]) -> None:
+    """
+    Register a list of next-step hints for a tool.
+
+    After tool_name completes successfully, post_run() injects these hints
+    into result["next_steps"] (using setdefault so a tool's own explicit
+    next_steps list is never overwritten).
+
+    Each step dict should have:
+        tool   (str)  — MCP tool name
+        reason (str)  — one-line rationale for the agent
+        when   (str, optional) — condition that makes this step most relevant
+
+    Registration order matters: earlier steps appear first.  Call this
+    multiple times to append; later calls extend (not replace) the list.
+    """
+    _NEXT_STEPS_REGISTRY.setdefault(tool_name, []).extend(steps)
 
 
 def register_post_validator(
@@ -147,6 +182,12 @@ def post_run(tool_name: str, session_id: str, result: dict) -> dict:
     # Ensure quality_flags key is always present on Tier 1 outputs
     if "quality_flags" not in result:
         result["quality_flags"] = []
+
+    # Inject next_steps hints (tool's own list wins; registry fills the gap)
+    if "next_steps" not in result:
+        hints = _NEXT_STEPS_REGISTRY.get(tool_name)
+        if hints:
+            result["next_steps"] = hints
 
     # Skip validation and run-id on failed tool calls
     if result.get("error"):
@@ -186,6 +227,11 @@ def get_registry_snapshot() -> dict[str, list[str]]:
         tool: [fn.__name__ for fn, _ in entries]
         for tool, entries in _REGISTRY.items()
     }
+
+
+def get_next_steps_snapshot() -> dict[str, list[dict]]:
+    """Return a copy of the next-steps registry for inspection / testing."""
+    return {tool: list(steps) for tool, steps in _NEXT_STEPS_REGISTRY.items()}
 
 
 def _log_flag(tool_name: str, flag: dict) -> None:

@@ -543,9 +543,35 @@ def _sync_reminder(session_id: str) -> str | None:
 
 
 def _tool_error_to_dict(e: Exception) -> dict:
+    """
+    Convert any exception to a structured agent-facing error envelope.
+
+    For ToolError / AihydroDataError: uses their .to_dict() which carries
+    code / message / recovery / next_tools — always fully populated.
+
+    For raw / unexpected exceptions: emits a generic envelope that still
+    includes recovery hints and next_tools so the agent is never stranded.
+    The ``_traceback`` key is included for diagnostics but kept short.
+    """
     if hasattr(e, "to_dict"):
         return e.to_dict()
-    return {"error": True, "code": "UNKNOWN_ERROR", "message": str(e)}
+
+    import traceback as _tb
+    tb_short = _tb.format_exc(limit=5)
+
+    return {
+        "error":      True,
+        "code":       "UNEXPECTED_ERROR",
+        "message":    str(e) or repr(e),
+        "recovery": (
+            "This is an unexpected internal error. Check the tool arguments "
+            "and try again. If it persists, call data_doctor() or check the "
+            "server log."
+        ),
+        "next_tools": ["aihydro_describe_capability", "data_doctor"],
+        "docs_anchor": "",
+        "_traceback":  tb_short[-800:] if tb_short else "",
+    }
 
 
 def _cached_response(slot: str, session, *, extra: dict | None = None) -> dict:

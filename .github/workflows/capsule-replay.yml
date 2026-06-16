@@ -1,0 +1,130 @@
+name: capsule-replay
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Nightly at 03:00 UTC — live replay of locked paper sessions
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      include_live:
+        description: "Include live session replay (requires paper sessions on disk)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fixture job: verifies manifest integrity with no network calls.
+  # Runs on every push to main — should take ~30s.
+  # ---------------------------------------------------------------------------
+  capsule-fixture:
+    name: Capsule integrity (no network)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + dev deps
+        run: pip install -e ".[all,dev]"
+
+      - name: Run capsule unit tests
+        run: pytest tests/test_capsule.py -v --tb=short
+
+      - name: Run bench capsule task (B-035)
+        run: pytest tests/test_bench.py -m bench -k "B-035" -v --tb=short
+
+  # ---------------------------------------------------------------------------
+  # Live job: exports + replays the 12 locked paper sessions from the platform
+  # paper. Runs nightly or on manual trigger. Requires the session JSON files
+  # to be present alongside the workflow (they live in papers/platform/sessions/
+  # in the parent repo, but for CI we check them in under tests/fixtures/sessions/).
+  #
+  # The job:
+  #   1. Exports each session to /tmp/capsule-replay-<session_id>/
+  #   2. Runs python replay.py inside each capsule directory
+  #   3. Fails if any replay.py exits non-zero
+  # ---------------------------------------------------------------------------
+  capsule-live:
+    name: Live capsule replay (locked paper sessions)
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.include_live == 'true')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + dev deps
+        run: pip install -e ".[all,dev]"
+
+      - name: Export + replay locked paper sessions
+        run: |
+          python - <<'PYEOF'
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          SESSIONS_DIR = Path("tests/fixtures/sessions")
+          CAPSULE_ROOT = Path("/tmp/capsule-replay")
+          CAPSULE_ROOT.mkdir(exist_ok=True)
+
+          if not SESSIONS_DIR.exists():
+              print(f"SKIP  {SESSIONS_DIR} not found — no fixture sessions committed yet")
+              sys.exit(0)
+
+          session_files = sorted(SESSIONS_DIR.glob("*.json"))
+          if not session_files:
+              print("SKIP  no *.json files in tests/fixtures/sessions/")
+              sys.exit(0)
+
+          # Patch session storage to the fixture dir so HydroSession.load() works
+          import ai_hydro.session.store as _store
+          _store.SESSIONS_DIR = SESSIONS_DIR
+          _store._SESSIONS_DIR = SESSIONS_DIR
+
+          from ai_hydro.mcp.tools_session import export_session
+
+          failures = []
+          for sf in session_files:
+              sid = sf.stem
+              print(f"\n{'='*60}")
+              print(f"Replaying session: {sid}")
+              capsule_path = str(CAPSULE_ROOT / f"capsule_{sid}")
+              result = export_session(session_id=sid, capsule_path=capsule_path)
+              if result.get("error"):
+                  print(f"FAIL  export_session error: {result['error']}")
+                  failures.append(sid)
+                  continue
+              cap_dir = result["capsule_dir"]
+              print(f"Exported to {cap_dir} ({result['n_manifest_entries']} manifest entries)")
+              proc = subprocess.run(
+                  [sys.executable, f"{cap_dir}/replay.py"],
+                  capture_output=True, text=True,
+              )
+              print(proc.stdout)
+              if proc.returncode != 0:
+                  print(f"FAIL  replay.py exited {proc.returncode}")
+                  print(proc.stderr)
+                  failures.append(sid)
+              else:
+                  print(f"PASS  {sid}")
+
+          if failures:
+              print(f"\n{'='*60}")
+              print(f"FAILED sessions: {', '.join(failures)}")
+              sys.exit(1)
+          print(f"\nAll {len(session_files)} session(s) replayed successfully.")
+          PYEOF
+        timeout-minutes: 15

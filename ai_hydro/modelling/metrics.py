@@ -177,6 +177,83 @@ def _compute_metrics(
     return nse, kge, rmse
 
 
+def bootstrap_compute_metrics(
+    obs: "np.ndarray",
+    pred: "np.ndarray",
+    *,
+    n: int = 500,
+    ci: float = 0.90,
+    random_state: int = 0,
+) -> dict[str, dict]:
+    """
+    Bootstrap confidence intervals for NSE, KGE, RMSE by paired resampling.
+
+    Returns a dict keyed by metric name, each value a dict matching
+    UncertaintyResult: {value, ci_low, ci_high, method, n, ci_level}.
+
+    Returns an empty dict if there are fewer than 20 valid paired points.
+    """
+    import numpy as np
+    valid = ~np.isnan(obs) & ~np.isnan(pred)
+    if valid.sum() < 20:
+        return {}
+    o, p = obs[valid], pred[valid]
+    size = o.size
+
+    def _nse(idx):
+        oo, pp = o[idx], p[idx]
+        ss_res = np.sum((oo - pp) ** 2)
+        ss_tot = np.sum((oo - oo.mean()) ** 2)
+        return float(1.0 - ss_res / (ss_tot + 1e-10))
+
+    def _kge(idx):
+        oo, pp = o[idx], p[idx]
+        r = float(np.corrcoef(oo, pp)[0, 1])
+        alpha = float(np.std(pp) / (np.std(oo) + 1e-10))
+        beta = float(np.mean(pp) / (np.mean(oo) + 1e-10))
+        return float(1.0 - ((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2) ** 0.5)
+
+    def _rmse(idx):
+        oo, pp = o[idx], p[idx]
+        return float(np.sqrt(np.mean((oo - pp) ** 2)))
+
+    nse_pt, kge_pt, rmse_pt = _compute_metrics(o, p)
+
+    rng = np.random.default_rng(random_state)
+    lo_q = (1.0 - ci) / 2.0
+    hi_q = 1.0 - lo_q
+    nse_b, kge_b, rmse_b = [], [], []
+    for _ in range(n):
+        idx = rng.integers(0, size, size=size)
+        try:
+            nse_b.append(_nse(idx))
+            kge_b.append(_kge(idx))
+            rmse_b.append(_rmse(idx))
+        except Exception:
+            continue
+
+    def _ci(pts, pt):
+        if len(pts) < 10:
+            return float("nan"), float("nan")
+        arr = np.asarray(pts)
+        return float(np.quantile(arr, lo_q)), float(np.quantile(arr, hi_q))
+
+    out: dict[str, dict] = {}
+    if nse_pt is not None:
+        lo, hi = _ci(nse_b, nse_pt)
+        out["nse"] = {"value": nse_pt, "ci_low": lo, "ci_high": hi,
+                      "method": "bootstrap_iid", "n": size, "ci_level": ci}
+    if kge_pt is not None:
+        lo, hi = _ci(kge_b, kge_pt)
+        out["kge"] = {"value": kge_pt, "ci_low": lo, "ci_high": hi,
+                      "method": "bootstrap_iid", "n": size, "ci_level": ci}
+    if rmse_pt is not None:
+        lo, hi = _ci(rmse_b, rmse_pt)
+        out["rmse"] = {"value": rmse_pt, "ci_low": lo, "ci_high": hi,
+                       "method": "bootstrap_iid", "n": size, "ci_level": ci}
+    return out
+
+
 def _best_device() -> str:
     """Select GPU, Apple Silicon MPS, or CPU."""
     try:

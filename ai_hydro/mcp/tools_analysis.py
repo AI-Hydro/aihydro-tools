@@ -1678,22 +1678,28 @@ async def create_cn_grid(
     create_map: bool = True,
     feature: "str | list | None" = None,
     geometry_geojson: str | None = None,
+    product: str | None = None,
+    soil_product: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
     """
-    NRCS Curve Number grid: NLCD land cover × Polaris soil → distributed CN.
-    Currently CONUS only (NLCD + POLARIS coverage). Global CN grid (ESA
-    WorldCover + SoilGrids) is planned for a future release.
+    NRCS Curve Number grid: land cover × soil → distributed CN.
+
+    Globally robust via region-routed data acquisition: land cover auto-routes
+    NLCD (CONUS) → ESA WorldCover / Dynamic World (global), and soil auto-routes
+    POLARIS (CONUS) → ISRIC SoilGrids (global). Non-NLCD land cover is remapped
+    onto NLCD classes so a single CN lookup table applies everywhere.
+
     Requires delineate_watershed first. Returns CN stats, zone percentages,
-    LULC + soil breakdowns. Saves GeoTIFF / NetCDF / PNG / HTML.
-    year: NLCD year (default 2019).
+    LULC + soil breakdowns, and the served data products under
+    ``data_provenance``. Saves GeoTIFF / NetCDF / PNG / HTML.
 
     Parameters
     ----------
     session_id : str | None (optional from Wave 3)
         Research session identifier. Auto-resolved from chat context when omitted.
     year : int
-        NLCD land-cover year (default 2019).
+        Land-cover year (default 2019). NLCD snaps to the nearest available epoch.
     resolution : int
         Output resolution in metres (default 30).
     create_map : bool
@@ -1703,19 +1709,28 @@ async def create_cn_grid(
         feature or session watershed geometry.
     geometry_geojson : str, optional
         Override watershed geometry as a GeoJSON string.
+    product : str | None, optional
+        Pin the land-cover product (e.g. ``"NLCD"``, ``"ESA_WORLDCOVER_STAC"``,
+        ``"DYNAMIC_WORLD"``). ``None`` (default) → auto region-routing.
+    soil_product : str | None, optional
+        Pin the soil product (e.g. ``"POLARIS"``, ``"SOILGRIDS"``).
+        ``None`` (default) → auto region-routing.
     """
     # C3: batch fan-out (async tool → asyncio concurrent gather)
     if isinstance(feature, list):
         return await _batch_feature_run(
             create_cn_grid, feature, _resolve_session(session_id, None),
             ctx=ctx, year=year, resolution=resolution, create_map=create_map,
+            product=product, soil_product=soil_product,
         )
     try:
         session_id = _resolve_session(session_id, None)
         session = _ensure_session(session_id)
 
         _feature_id, _key, _cached, _geom = _feature_cache_resolve(
-            session, "cn", {"year": year, "resolution": resolution},
+            session, "cn",
+            {"year": year, "resolution": resolution,
+             "product": product, "soil_product": soil_product},
             feature, geometry_geojson,
         )
         if _cached is not None:
@@ -1748,6 +1763,8 @@ async def create_cn_grid(
             output_dir=output_dir,
             create_visualizations=create_map,
             output_prefix=cn_prefix,
+            product=product,
+            soil_product=soil_product,
         )
 
         if ctx:
@@ -1759,6 +1776,7 @@ async def create_cn_grid(
         soil = result.get("soil_stats", {})
         file_paths = result.get("file_paths", {})
         ws_info = result.get("watershed_info", {})
+        prov = result.get("data_provenance", {})
 
         data = {
             **stats,
@@ -1767,17 +1785,33 @@ async def create_cn_grid(
             "soil_group_percentages": soil.get("soil_group_percentages", {}),
             "area_km2": ws_info.get("area_km2"),
             "files_saved": list(file_paths.values()),
+            # Which products actually served the data (auto-routed or pinned).
+            "landcover_product": prov.get("landcover_product"),
+            "soil_product": prov.get("soil_product"),
+            "region": prov.get("region"),
+            "product": prov.get("landcover_product"),
+            "source": prov.get("landcover_source"),
         }
 
         d = {
             "data": data,
             "meta": {
                 "tool": "ai_hydro.analysis.curve_number.create_curve_number_grid_from_geometry",
-                "params": {"year": year, "resolution": resolution, "create_map": create_map},
+                "params": {"year": year, "resolution": resolution,
+                           "create_map": create_map,
+                           "product": product, "soil_product": soil_product},
+                "data_provenance": prov,
             },
         }
+        # Citation keys reflect the served products where known.
+        _cn_citations = [
+            c for c in [
+                (prov.get("landcover_product") or "nlcd").lower(),
+                (prov.get("soil_product") or "polaris").lower(),
+            ] if c
+        ]
         _feature_cache_store(session, "cn", _feature_id, _key, d,
-                             citations=["nlcd", "polaris"])
+                             citations=_cn_citations)
         d["feature_id"] = _feature_id
         d["_files_saved"] = list(file_paths.values())
 
@@ -1810,7 +1844,9 @@ async def create_cn_grid(
                         colormap="YlOrRd",
                         opacity=0.70,
                         auto_zoom=False,
-                        metadata={"session_id": session_id, "source": "NLCD + POLARIS"},
+                        metadata={"session_id": session_id,
+                                  "source": f"{prov.get('landcover_product') or 'NLCD'} + "
+                                            f"{prov.get('soil_product') or 'POLARIS'}"},
                     )
         except Exception as _map_err:
             log.debug("CN grid map push failed (non-fatal): %s", _map_err)
@@ -2360,6 +2396,867 @@ def separate_baseflow(
     except Exception as e:
         log.error("separate_baseflow failed: %s", e)
         return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def compute_flow_duration_curve(session_id: str | None = None) -> dict:
+    """
+    Compute the flow-duration curve, standard percentile flows, and the 7Q10
+    design low flow from streamflow in the session. Writes session.flow_duration.
+    Requires fetch_streamflow_data (or data_fetch streamflow) first.
+
+    Returns percentile flows under the hydrologic convention (Qxx = discharge
+    equalled or exceeded xx% of the time, so Q95 is a low flow and Q5 a high
+    flow), the log-FDC mid-section slope (flashiness), and 7Q10 when ≥10 years
+    of daily data are present.
+
+    Parameters
+    ----------
+    session_id : str | None (optional)
+        Research session identifier. Auto-resolved from chat context when omitted.
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        from ai_hydro.analysis.flow_duration import flow_duration_curve, seven_q10
+        import numpy as np
+
+        session_id = _resolve_session(session_id, None)
+        session = HydroSession.load(session_id)
+        if not session.streamflow:
+            return {
+                "error": True,
+                "code": "MISSING_PREREQUISITES",
+                "message": "No streamflow data in session. Run fetch_streamflow_data first.",
+                "recovery": "fetch_streamflow_data(session_id, gauge_id)",
+                "next_tools": ["fetch_streamflow_data", "data_fetch"],
+            }
+
+        sf = session.streamflow
+        data = sf.get("data", sf) if isinstance(sf, dict) else sf
+
+        # Reload stripped arrays from disk if the session shed them (>50 elems).
+        if isinstance(data, dict) and "q_cms" not in data:
+            data_file = (data.get("_data_file")
+                         or sf.get("_data_file")
+                         or (sf.get("data", {}) if isinstance(sf, dict) else {}).get("_data_file"))
+            if data_file:
+                try:
+                    import json as _json
+                    with open(data_file) as _f:
+                        data = _json.load(_f)
+                except Exception as _exc:
+                    log.warning("Failed to reload streamflow from %s: %s", data_file, _exc)
+
+        q = None
+        FLOW_KEYS = ("q_cms", "discharge_cms", "flow_cms", "streamflow", "q")
+        for key in FLOW_KEYS:
+            v = data.get(key) if isinstance(data, dict) else None
+            if isinstance(v, (list, tuple)) and len(v) > 1:
+                try:
+                    q = np.asarray(v, dtype=float)
+                    break
+                except (TypeError, ValueError):
+                    continue
+
+        if q is None or len(q) < 2:
+            return {
+                "error": True,
+                "code": "INVALID_STREAMFLOW",
+                "message": "Could not extract a usable flow array from session.streamflow.",
+                "recovery": "Re-run fetch_streamflow_data and confirm a 'q_cms' array is present.",
+                "next_tools": ["fetch_streamflow_data"],
+            }
+
+        dates = data.get("dates") if isinstance(data, dict) else None
+
+        fdc = flow_duration_curve(q)
+        low = seven_q10(q, dates=dates)
+
+        # Persist full curve + summary to the session; return a compact summary.
+        session.set("flow_duration", {
+            "data": {
+                "percentile_flows": fdc["percentile_flows"],
+                "slope_fdc": fdc["slope_fdc"],
+                "seven_q10": low["seven_q10"],
+                "annual_7day_min": low["annual_7day_min"],
+                "exceedance_prob": fdc["exceedance_prob"],
+                "sorted_flows": fdc["sorted_flows"],
+                "n_days": fdc["n_days"],
+            },
+            "meta": {"tool": "compute_flow_duration_curve",
+                     "low_flow_method": low["method"],
+                     "n_years": low["n_years"]},
+        })
+        session.save()
+
+        result = {
+            "percentile_flows": fdc["percentile_flows"],
+            "slope_fdc": round(fdc["slope_fdc"], 4) if fdc["slope_fdc"] == fdc["slope_fdc"] else None,
+            "seven_q10_cms": low["seven_q10"],
+            "n_days": fdc["n_days"],
+            "n_years_for_7q10": low["n_years"],
+            "low_flow_note": low["note"],
+            "_note": "Full FDC (exceedance_prob + sorted_flows) stored in session.flow_duration.",
+            "next_steps": [
+                {"tool": "compute_flood_frequency",
+                 "rationale": "Pair the low-flow FDC with high-flow return periods."},
+                {"tool": "extract_hydrological_signatures",
+                 "rationale": "Place these percentile flows in the full signature set."},
+            ],
+        }
+        return result
+    except Exception as e:
+        log.error("compute_flow_duration_curve failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def compute_flood_frequency(
+    session_id: str | None = None,
+    distribution: str = "gumbel",
+    method: str = "mle",
+) -> dict:
+    """
+    Estimate design floods (return periods) from streamflow in the session via
+    flood frequency analysis. Extracts annual maxima, fits a distribution, and
+    returns return levels for 2–500 yr with bootstrap confidence intervals.
+    Writes session.flood_frequency. Requires fetch_streamflow_data first and
+    ≥10 years of daily data for a meaningful fit.
+
+    Parameters
+    ----------
+    session_id : str | None (optional)
+        Research session identifier. Auto-resolved from chat context when omitted.
+    distribution : str
+        'gumbel' (default, classic EV1 for annual-max floods) | 'gev'
+        (Generalised Extreme Value) | 'lp3' (Log-Pearson III, US Bulletin 17C
+        federal standard).
+    method : str
+        'mle' (default; maximum likelihood) | 'mom' (method of moments).
+        Ignored for lp3 (always method-of-moments on logs).
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        from ai_hydro.analysis.flood_frequency import annual_maxima, flood_frequency
+        import numpy as np
+
+        session_id = _resolve_session(session_id, None)
+        session = HydroSession.load(session_id)
+        if not session.streamflow:
+            return {
+                "error": True,
+                "code": "MISSING_PREREQUISITES",
+                "message": "No streamflow data in session. Run fetch_streamflow_data first.",
+                "recovery": "fetch_streamflow_data(session_id, gauge_id)",
+                "next_tools": ["fetch_streamflow_data", "data_fetch"],
+            }
+
+        sf = session.streamflow
+        data = sf.get("data", sf) if isinstance(sf, dict) else sf
+        if isinstance(data, dict) and "q_cms" not in data:
+            data_file = (data.get("_data_file")
+                         or sf.get("_data_file")
+                         or (sf.get("data", {}) if isinstance(sf, dict) else {}).get("_data_file"))
+            if data_file:
+                try:
+                    import json as _json
+                    with open(data_file) as _f:
+                        data = _json.load(_f)
+                except Exception as _exc:
+                    log.warning("Failed to reload streamflow from %s: %s", data_file, _exc)
+
+        q = None
+        FLOW_KEYS = ("q_cms", "discharge_cms", "flow_cms", "streamflow", "q")
+        for key in FLOW_KEYS:
+            v = data.get(key) if isinstance(data, dict) else None
+            if isinstance(v, (list, tuple)) and len(v) > 1:
+                try:
+                    q = np.asarray(v, dtype=float)
+                    break
+                except (TypeError, ValueError):
+                    continue
+        if q is None or len(q) < 2:
+            return {
+                "error": True,
+                "code": "INVALID_STREAMFLOW",
+                "message": "Could not extract a usable flow array from session.streamflow.",
+                "recovery": "Re-run fetch_streamflow_data and confirm a 'q_cms' array is present.",
+                "next_tools": ["fetch_streamflow_data"],
+            }
+
+        dates = data.get("dates") if isinstance(data, dict) else None
+        am = annual_maxima(q, dates=dates)
+        if am["n_years"] < 5:
+            return {
+                "error": True,
+                "code": "INSUFFICIENT_RECORD",
+                "message": f"Only {am['n_years']} years of annual maxima; need ≥5 (≥10 recommended).",
+                "recovery": "Fetch a longer streamflow record (≥10 years) before flood frequency analysis.",
+                "next_tools": ["fetch_streamflow_data"],
+            }
+
+        ffa = flood_frequency(am["annual_max"], dist=distribution, method=method)
+
+        session.set("flood_frequency", {
+            "data": {
+                "annual_max": am["annual_max"],
+                "years": am["years"],
+                "return_levels": ffa["return_levels"],
+                "params": ffa["params"],
+                "plotting_positions": ffa["plotting_positions"],
+            },
+            "meta": {"tool": "compute_flood_frequency",
+                     "dist": ffa["dist"], "method": ffa["method"],
+                     "n_years": ffa["n_years"]},
+        })
+        session.save()
+
+        # Compact summary: headline return levels, full table in session.
+        headline = {f"Q{int(r['return_period'])}": r["value"]
+                    for r in ffa["return_levels"]
+                    if r["return_period"] in (2, 10, 100)}
+        return {
+            "distribution": ffa["dist"],
+            "method": ffa["method"],
+            "n_years": ffa["n_years"],
+            "headline_return_levels_cms": headline,
+            "params": ffa["params"],
+            "return_levels": ffa["return_levels"],
+            "ci_level": ffa["ci_level"],
+            "_note": ("Annual maxima + full return-level table + plotting positions "
+                      "stored in session.flood_frequency."),
+            "_caveat": ("Modelled return levels for T ≥ record length are extrapolations "
+                        "with wide uncertainty — read the ci_low/ci_high bounds."),
+            "next_steps": [
+                {"tool": "compute_flow_duration_curve",
+                 "rationale": "Pair high-flow return periods with the low-flow FDC / 7Q10."},
+            ],
+        }
+    except Exception as e:
+        log.error("compute_flood_frequency failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def compute_drought_index(
+    session_id: str | None = None,
+    index: str = "spi",
+    scale_months: int = 3,
+) -> dict:
+    """
+    Compute a standardised drought index (SPI or SPEI) from forcing data in the
+    session. Aggregates daily precip (and PET for SPEI) to monthly, accumulates
+    over the scale window, and standardises per calendar month to a unit-normal
+    scale (negative = drier than normal). Writes session.drought. Requires
+    fetch_forcing_data first (with PET for SPEI).
+
+    Parameters
+    ----------
+    session_id : str | None (optional)
+        Research session identifier. Auto-resolved from chat context when omitted.
+    index : str
+        'spi' (precipitation only, default) | 'spei' (precip − PET; needs PET in
+        the forcing data).
+    scale_months : int
+        Accumulation window in months (1, 3, 6, 12). Default 3.
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        from ai_hydro.analysis.drought_indices import spi, spei
+        import numpy as np
+
+        session_id = _resolve_session(session_id, None)
+        session = HydroSession.load(session_id)
+        if not session.forcing:
+            return {
+                "error": True,
+                "code": "MISSING_PREREQUISITES",
+                "message": "No forcing data in session. Run fetch_forcing_data first.",
+                "recovery": "fetch_forcing_data(session_id) or data_fetch('precipitation', ...)",
+                "next_tools": ["fetch_forcing_data", "data_fetch"],
+            }
+
+        fc = session.forcing
+        data = fc.get("data", fc) if isinstance(fc, dict) else fc
+        if isinstance(data, dict) and "dates" not in data:
+            data_file = (data.get("_data_file")
+                         or (fc.get("_data_file") if isinstance(fc, dict) else None))
+            if data_file:
+                try:
+                    import json as _json
+                    with open(data_file) as _f:
+                        data = _json.load(_f)
+                except Exception as _exc:
+                    log.warning("Failed to reload forcing from %s: %s", data_file, _exc)
+
+        def _col(d, names):
+            for nm in names:
+                v = d.get(nm) if isinstance(d, dict) else None
+                if isinstance(v, (list, tuple)) and len(v) > 1:
+                    return np.asarray([x if x is not None else np.nan for x in v], dtype=float)
+            return None
+
+        dates = data.get("dates") if isinstance(data, dict) else None
+        precip = _col(data, ("prcp_mm", "pr", "precipitation", "pr_mm", "precip"))
+        if dates is None or precip is None:
+            return {
+                "error": True,
+                "code": "MISSING_PRECIP",
+                "message": "Could not find a precipitation column + dates in session.forcing.",
+                "recovery": "Re-run fetch_forcing_data ensuring precipitation is included.",
+                "next_tools": ["fetch_forcing_data"],
+            }
+
+        index = index.lower()
+        if index == "spei":
+            pet = _col(data, ("pet_mm", "pet", "pet_hargreaves_mm", "potential_evapotranspiration"))
+            if pet is None:
+                return {
+                    "error": True,
+                    "code": "MISSING_PET",
+                    "message": "SPEI requires PET, but no PET column is present in session.forcing.",
+                    "recovery": "Fetch forcing with PET (fetch_forcing_data includes GRIDMET/ERA5L PET), or use index='spi'.",
+                    "next_tools": ["fetch_forcing_data"],
+                }
+            result = spei(precip, pet, dates, scale_months=scale_months)
+        elif index == "spi":
+            result = spi(precip, dates, scale_months=scale_months)
+        else:
+            return {
+                "error": True,
+                "code": "UNKNOWN_INDEX",
+                "message": f"Unknown index '{index}'. Choose 'spi' or 'spei'.",
+                "recovery": "Call with index='spi' or index='spei'.",
+                "next_tools": [],
+            }
+
+        session.set("drought", {
+            "data": {
+                "index": result["index"],
+                "index_months": result["index_months"],
+                "index_name": result["index_name"],
+                "scale_months": result["scale_months"],
+            },
+            "meta": {"tool": "compute_drought_index",
+                     "index": result["index_name"],
+                     "scale_months": result["scale_months"],
+                     "mean": result["mean"], "std": result["std"]},
+        })
+        session.save()
+
+        # Compact summary: most-recent value + driest/wettest months.
+        import numpy as _np
+        arr = _np.array([x if x is not None else _np.nan for x in result["index"]], dtype=float)
+        months = result["index_months"]
+        finite = _np.where(_np.isfinite(arr))[0]
+        driest = wettest = latest = None
+        if finite.size:
+            driest = {"month": months[int(finite[_np.argmin(arr[finite])])],
+                      "value": round(float(_np.nanmin(arr)), 2)}
+            wettest = {"month": months[int(finite[_np.argmax(arr[finite])])],
+                       "value": round(float(_np.nanmax(arr)), 2)}
+            latest = {"month": months[int(finite[-1])],
+                      "value": round(float(arr[finite[-1]]), 2)}
+        return {
+            "index_name": result["index_name"],
+            "scale_months": result["scale_months"],
+            "n_months": result["n_months"],
+            "calibration_mean": result["mean"],
+            "calibration_std": result["std"],
+            "latest": latest,
+            "driest_month": driest,
+            "wettest_month": wettest,
+            "_note": "Full monthly index series stored in session.drought.",
+            "_severity_bands": "|index| 1–1.5 moderate, 1.5–2 severe, >2 extreme.",
+            "next_steps": [
+                {"tool": "extract_hydrological_signatures",
+                 "rationale": "Relate drought periods to streamflow response."},
+            ],
+        }
+    except Exception as e:
+        log.error("compute_drought_index failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def compute_soil_loss_rusle(
+    session_id: str | None = None,
+    r_factor: float | None = None,
+    k_factor: float | None = None,
+    ls_factor: float | None = None,
+    c_factor: float | None = None,
+    p_factor: float = 1.0,
+    sand_pct: float | None = None,
+    silt_pct: float | None = None,
+    clay_pct: float | None = None,
+    organic_carbon_pct: float = 1.0,
+    slope_pct: float | None = None,
+    slope_length_m: float = 50.0,
+    land_cover: str | None = None,
+) -> dict:
+    """
+    Estimate basin-average annual soil loss with RUSLE (A = R·K·LS·C·P,
+    t·ha⁻¹·yr⁻¹). Each factor is taken from an explicit argument if given,
+    otherwise derived from session forcing (R), soil texture (K), geomorphic
+    slope (LS), and land cover (C) using standard documented formulas. Writes
+    session.soil_loss.
+
+    All inputs are already fetchable through the platform's data layer, so this
+    is compute over data we already retrieve. Factor formulas: Renard-Freimund
+    (R), EPIC/Williams (K), Wischmeier-Smith (LS), a documented land-cover C
+    table — all overridable, mirroring create_cn_grid's standard lookup tables.
+
+    Parameters
+    ----------
+    session_id : str | None (optional)
+        Research session identifier. Auto-resolved from chat context when omitted.
+    r_factor, k_factor, ls_factor, c_factor : float | None
+        Explicit RUSLE factor values; override the auto-derivation.
+    p_factor : float
+        Support-practice factor (default 1.0 = none).
+    sand_pct, silt_pct, clay_pct, organic_carbon_pct : float | None / float
+        Soil texture for the EPIC K factor (used if k_factor not given).
+    slope_pct : float | None
+        Mean slope (%) for the LS factor (used if ls_factor not given).
+    slope_length_m : float
+        Representative slope length for LS (default 50 m).
+    land_cover : str | None
+        Land-cover class name for the C factor (used if c_factor not given).
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        from ai_hydro.analysis.erosion import (
+            rusle, r_factor_renard_freimund, k_factor_epic,
+            ls_factor_wischmeier, c_factor_from_landcover, soil_loss_severity,
+        )
+        import numpy as np
+
+        session_id = _resolve_session(session_id, None)
+        session = HydroSession.load(session_id)
+        notes: list[str] = []
+
+        # ── R: rainfall erosivity ──────────────────────────────────────────
+        R = r_factor
+        if R is None:
+            monthly = _forcing_monthly_precip_climatology(session)
+            if monthly is not None:
+                R = r_factor_renard_freimund(monthly)
+                notes.append("R derived from session forcing (Renard-Freimund).")
+
+        # ── K: soil erodibility ────────────────────────────────────────────
+        K = k_factor
+        if K is None and None not in (sand_pct, silt_pct, clay_pct):
+            K = k_factor_epic(sand_pct, silt_pct, clay_pct, organic_carbon_pct)
+            notes.append("K derived from supplied soil texture (EPIC).")
+        elif K is None:
+            tex = _soil_mean_texture(session)
+            if tex is not None:
+                K = k_factor_epic(tex["sand"], tex["silt"], tex["clay"], organic_carbon_pct)
+                notes.append("K derived from session soil texture (EPIC).")
+
+        # ── LS: slope length-steepness ─────────────────────────────────────
+        LS = ls_factor
+        if LS is None:
+            sp = slope_pct if slope_pct is not None else _geomorphic_mean_slope_pct(session)
+            if sp is not None:
+                LS = ls_factor_wischmeier(sp, slope_length_m)
+                notes.append(f"LS derived from slope {sp:.1f}% (Wischmeier-Smith).")
+
+        # ── C: cover-management ────────────────────────────────────────────
+        C = c_factor
+        if C is None:
+            lc = land_cover or _dominant_landcover(session)
+            if lc is not None:
+                C = c_factor_from_landcover(lc)
+                notes.append(f"C from land cover '{lc}'.")
+
+        missing = [n for n, v in (("R", R), ("K", K), ("LS", LS), ("C", C)) if v is None]
+        if missing:
+            return {
+                "error": True,
+                "code": "MISSING_RUSLE_FACTORS",
+                "message": (f"Could not assemble RUSLE factor(s): {missing}. "
+                            "Supply them explicitly or fetch the source data first."),
+                "recovery": ("Provide the missing factor(s) directly (e.g. r_factor=...), "
+                             "or run fetch_forcing_data (R), fetch_soil/data_fetch('soil') (K), "
+                             "extract_geomorphic_parameters (LS), and ensure land cover is set (C)."),
+                "next_tools": ["fetch_forcing_data", "extract_geomorphic_parameters", "data_fetch"],
+            }
+
+        A = float(rusle(R, K, LS, C, p_factor))
+        severity = soil_loss_severity(A)
+
+        session.set("soil_loss", {
+            "data": {"A_t_ha_yr": round(A, 4),
+                     "R": round(float(R), 4), "K": round(float(K), 5),
+                     "LS": round(float(LS), 4), "C": round(float(C), 5),
+                     "P": round(float(p_factor), 4)},
+            "meta": {"tool": "compute_soil_loss_rusle", "severity": severity,
+                     "scope": "basin_average", "notes": notes},
+        })
+        session.save()
+
+        return {
+            "soil_loss_t_ha_yr": round(A, 3),
+            "severity": severity,
+            "factors": {"R": round(float(R), 3), "K": round(float(K), 5),
+                        "LS": round(float(LS), 4), "C": round(float(C), 5),
+                        "P": round(float(p_factor), 3)},
+            "scope": "basin_average",
+            "derivation_notes": notes,
+            "_severity_bands": "low <2, moderate 2–10, high 10–50, severe >50 t·ha⁻¹·yr⁻¹.",
+            "_caveat": ("Basin-average RUSLE with standard factor formulas; for a "
+                        "spatial soil-loss grid, cell-wise aligned R/K/LS/C rasters "
+                        "are required (future extension). Modelled estimate, not measured."),
+            "next_steps": [
+                {"tool": "create_cn_grid",
+                 "rationale": "Pair erosion risk with runoff potential for land-management context."},
+            ],
+        }
+    except Exception as e:
+        log.error("compute_soil_loss_rusle failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+def _forcing_monthly_precip_climatology(session) -> list | None:
+    """Mean monthly precipitation climatology (12 values, mm) from session.forcing."""
+    try:
+        import numpy as np
+        import pandas as pd
+        fc = session.forcing
+        if not fc:
+            return None
+        data = fc.get("data", fc) if isinstance(fc, dict) else fc
+        dates = data.get("dates") if isinstance(data, dict) else None
+        precip = None
+        for nm in ("prcp_mm", "pr", "precipitation", "pr_mm", "precip"):
+            v = data.get(nm) if isinstance(data, dict) else None
+            if isinstance(v, (list, tuple)) and len(v) > 1:
+                precip = np.asarray([x if x is not None else np.nan for x in v], dtype=float)
+                break
+        if dates is None or precip is None:
+            return None
+        s = pd.Series(precip, index=pd.to_datetime(pd.Series(list(dates)).values)).fillna(0.0)
+        # Monthly totals → mean monthly climatology (Jan..Dec).
+        monthly_tot = s.resample("ME").sum()
+        clim = monthly_tot.groupby(monthly_tot.index.month).mean()
+        if clim.size < 12:
+            return None
+        return [float(clim.get(m, 0.0)) for m in range(1, 13)]
+    except Exception as exc:
+        log.debug("forcing monthly climatology unavailable: %s", exc)
+        return None
+
+
+def _soil_mean_texture(session) -> dict | None:
+    """Best-effort basin-mean sand/silt/clay (%) from session.soil."""
+    try:
+        import numpy as np
+        sl = session.soil
+        if not sl:
+            return None
+        data = sl.get("data", sl) if isinstance(sl, dict) else sl
+        if not isinstance(data, dict):
+            return None
+        out = {}
+        for frac, keys in (("sand", ("sand", "sand_5", "sand_pct")),
+                           ("silt", ("silt", "silt_5", "silt_pct")),
+                           ("clay", ("clay", "clay_5", "clay_pct"))):
+            val = None
+            for k in keys:
+                v = data.get(k)
+                if isinstance(v, (int, float)):
+                    val = float(v)
+                    break
+                if isinstance(v, (list, tuple)) and len(v):
+                    arr = np.asarray([x for x in v if isinstance(x, (int, float))], dtype=float)
+                    if arr.size:
+                        val = float(np.nanmean(arr))
+                        break
+            if val is None:
+                return None
+            out[frac] = val
+        return out
+    except Exception as exc:
+        log.debug("soil mean texture unavailable: %s", exc)
+        return None
+
+
+def _geomorphic_mean_slope_pct(session) -> float | None:
+    """Basin mean slope (%) from session.geomorphic."""
+    try:
+        gm = session.geomorphic
+        if not gm:
+            return None
+        data = gm.get("data", gm) if isinstance(gm, dict) else gm
+        if not isinstance(data, dict):
+            return None
+        for k in ("mean_slope_pct", "slope_pct", "mean_slope"):
+            v = data.get(k)
+            if isinstance(v, (int, float)) and v == v:  # finite
+                return float(v)
+        return None
+    except Exception as exc:
+        log.debug("geomorphic mean slope unavailable: %s", exc)
+        return None
+
+
+def _dominant_landcover(session) -> str | None:
+    """Dominant land-cover class name from a session land-cover slot, if present."""
+    try:
+        for slot in ("landcover", "lulc", "cn"):
+            lc = getattr(session, slot, None)
+            if not lc:
+                continue
+            data = lc.get("data", lc) if isinstance(lc, dict) else lc
+            if isinstance(data, dict):
+                v = data.get("dominant_class") or data.get("dominant_landcover")
+                if isinstance(v, str):
+                    return v
+        return None
+    except Exception:
+        return None
+
+
+@mcp.tool()
+def compute_design_hydrograph(
+    session_id: str | None = None,
+    rainfall_mm: float | None = None,
+    return_period: int = 100,
+    curve_number: float | None = None,
+    area_km2: float | None = None,
+    flow_length_km: float | None = None,
+    channel_slope: float | None = None,
+    tc_hr: float | None = None,
+) -> dict:
+    """
+    Build a design flood hydrograph via SCS Curve-Number runoff + the SCS
+    synthetic (triangular) unit hydrograph. Returns peak discharge, time to peak,
+    and the hydrograph series; writes session.design_hydrograph.
+
+    The design rainfall depth is taken from `rainfall_mm` if given, otherwise
+    derived from a frequency analysis of the basin's own precipitation record
+    (annual-maximum daily precip → Gumbel → depth at `return_period`). Basin area,
+    time of concentration (Kirpich), and curve number are taken from explicit
+    arguments or from the session watershed/geomorphic/cn slots.
+
+    Parameters
+    ----------
+    session_id : str | None (optional)
+        Research session identifier. Auto-resolved from chat context when omitted.
+    rainfall_mm : float | None
+        Design rainfall depth (mm). If None, derived from the precip record at
+        `return_period`.
+    return_period : int
+        Return period (years) for the derived design rainfall (default 100).
+    curve_number : float | None
+        SCS curve number; else taken from session.cn.
+    area_km2 : float | None
+        Basin area; else from session.watershed.
+    flow_length_km, channel_slope : float | None
+        Main flow-path length (km) and slope (m/m) for Kirpich Tc; else from
+        session.geomorphic. Ignored if tc_hr is given.
+    tc_hr : float | None
+        Time of concentration (hours); overrides the Kirpich computation.
+    """
+    try:
+        from ai_hydro.session import HydroSession
+        from ai_hydro.analysis.event_runoff import (
+            design_hydrograph, time_of_concentration_kirpich,
+        )
+        import numpy as np
+
+        session_id = _resolve_session(session_id, None)
+        session = HydroSession.load(session_id)
+        notes: list[str] = []
+
+        # ── Area ────────────────────────────────────────────────────────────
+        A = area_km2 if area_km2 is not None else _watershed_area_km2(session)
+
+        # ── Curve number ────────────────────────────────────────────────────
+        CN = curve_number if curve_number is not None else _session_curve_number(session)
+
+        # ── Time of concentration ───────────────────────────────────────────
+        Tc = tc_hr
+        if Tc is None:
+            L = flow_length_km
+            S = channel_slope
+            if L is None or S is None:
+                gm = _geomorphic_length_slope(session)
+                if gm is not None:
+                    L = L if L is not None else gm.get("length_km")
+                    S = S if S is not None else gm.get("slope")
+            if L is not None and S is not None and L > 0 and S > 0:
+                Tc = time_of_concentration_kirpich(L, S)
+                notes.append(f"Tc={Tc:.2f} h from Kirpich (L={L:.1f} km, S={S:.4f}).")
+
+        # ── Design rainfall ─────────────────────────────────────────────────
+        P = rainfall_mm
+        if P is None:
+            P = _design_rainfall_from_record(session, return_period)
+            if P is not None:
+                notes.append(f"Design rainfall {P:.1f} mm derived from precip FFA "
+                             f"(Gumbel, T={return_period} yr).")
+
+        missing = [n for n, v in (("area_km2", A), ("curve_number", CN),
+                                  ("tc_hr", Tc), ("rainfall_mm", P)) if v is None]
+        if missing:
+            return {
+                "error": True,
+                "code": "MISSING_HYDROGRAPH_INPUTS",
+                "message": (f"Could not assemble design-hydrograph input(s): {missing}. "
+                            "Supply them explicitly or run the prerequisite tools."),
+                "recovery": ("Provide the missing value(s), or run delineate_watershed (area), "
+                             "create_cn_grid (curve number), extract_geomorphic_parameters "
+                             "(flow length + slope for Tc), and fetch_forcing_data (rainfall)."),
+                "next_tools": ["delineate_watershed", "create_cn_grid",
+                               "extract_geomorphic_parameters", "fetch_forcing_data"],
+            }
+
+        hyd = design_hydrograph(A, Tc, CN, P)
+
+        session.set("design_hydrograph", {
+            "data": {
+                "peak_discharge_cms": hyd["peak_discharge_cms"],
+                "time_to_peak_hr": hyd["time_to_peak_hr"],
+                "base_time_hr": hyd["base_time_hr"],
+                "runoff_mm": hyd["runoff_mm"],
+                "rainfall_mm": hyd["rainfall_mm"],
+                "time_hr": hyd["time_hr"],
+                "discharge_cms": hyd["discharge_cms"],
+            },
+            "meta": {"tool": "compute_design_hydrograph", "return_period": return_period,
+                     "area_km2": A, "curve_number": CN, "tc_hr": round(float(Tc), 3),
+                     "notes": notes},
+        })
+        session.save()
+
+        return {
+            "return_period_yr": return_period,
+            "peak_discharge_cms": hyd["peak_discharge_cms"],
+            "time_to_peak_hr": hyd["time_to_peak_hr"],
+            "base_time_hr": hyd["base_time_hr"],
+            "rainfall_mm": hyd["rainfall_mm"],
+            "runoff_mm": hyd["runoff_mm"],
+            "runoff_coefficient": hyd["runoff_coefficient"],
+            "inputs": {"area_km2": round(float(A), 3), "curve_number": round(float(CN), 1),
+                       "tc_hr": round(float(Tc), 3)},
+            "derivation_notes": notes,
+            "_note": "Full hydrograph (time_hr + discharge_cms) stored in session.design_hydrograph.",
+            "_caveat": ("SCS synthetic-UH design hydrograph (modelled). Peak scales with "
+                        "the curve number, Tc, and design rainfall — all approximate for an "
+                        "ungauged basin. For gauged basins, compare against observed floods "
+                        "via compute_flood_frequency."),
+            "next_steps": [
+                {"tool": "compute_flood_frequency",
+                 "rationale": "Cross-check the design peak against observed flood frequency."},
+            ],
+        }
+    except Exception as e:
+        log.error("compute_design_hydrograph failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+def _watershed_area_km2(session) -> float | None:
+    """Basin area (km²) from session.watershed, trying common keys/units."""
+    try:
+        ws = session.watershed
+        if not ws:
+            return None
+        data = ws.get("data", ws) if isinstance(ws, dict) else ws
+        if not isinstance(data, dict):
+            return None
+        for k in ("area_km2", "drainage_area_km2", "basin_area_km2"):
+            v = data.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                return float(v)
+        for k in ("area_m2", "drainage_area_m2"):
+            v = data.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                return float(v) / 1e6
+        return None
+    except Exception:
+        return None
+
+
+def _session_curve_number(session) -> float | None:
+    """Mean curve number from session.cn, if present."""
+    try:
+        cn = session.cn
+        if not cn:
+            return None
+        data = cn.get("data", cn) if isinstance(cn, dict) else cn
+        if not isinstance(data, dict):
+            return None
+        for k in ("mean_cn", "cn_mean", "curve_number", "weighted_cn"):
+            v = data.get(k)
+            if isinstance(v, (int, float)) and 0 < v <= 100:
+                return float(v)
+        return None
+    except Exception:
+        return None
+
+
+def _geomorphic_length_slope(session) -> dict | None:
+    """Main flow-path length (km) and slope (m/m) from session.geomorphic."""
+    try:
+        gm = session.geomorphic
+        if not gm:
+            return None
+        data = gm.get("data", gm) if isinstance(gm, dict) else gm
+        if not isinstance(data, dict):
+            return None
+        length = None
+        for k in ("flow_length_km", "main_channel_length_km", "basin_length_km", "Lb_km"):
+            v = data.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                length = float(v)
+                break
+        slope = None
+        for k in ("channel_slope", "main_channel_slope"):
+            v = data.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                slope = float(v)
+                break
+        if slope is None:
+            v = data.get("mean_slope_pct")
+            if isinstance(v, (int, float)) and v > 0:
+                slope = float(v) / 100.0   # percent → m/m
+        if length is None or slope is None:
+            return None
+        return {"length_km": length, "slope": slope}
+    except Exception:
+        return None
+
+
+def _design_rainfall_from_record(session, return_period: int) -> float | None:
+    """Design daily-rainfall depth (mm) at `return_period` via Gumbel FFA on the
+    annual-maximum daily precipitation in session.forcing."""
+    try:
+        import numpy as np
+        from ai_hydro.analysis.flood_frequency import annual_maxima, flood_frequency
+        fc = session.forcing
+        if not fc:
+            return None
+        data = fc.get("data", fc) if isinstance(fc, dict) else fc
+        dates = data.get("dates") if isinstance(data, dict) else None
+        precip = None
+        for nm in ("prcp_mm", "pr", "precipitation", "pr_mm", "precip"):
+            v = data.get(nm) if isinstance(data, dict) else None
+            if isinstance(v, (list, tuple)) and len(v) > 1:
+                precip = np.asarray([x if x is not None else np.nan for x in v], dtype=float)
+                break
+        if dates is None or precip is None:
+            return None
+        am = annual_maxima(precip, dates=dates)
+        if am["n_years"] < 5:
+            return None
+        ffa = flood_frequency(am["annual_max"], dist="gumbel", return_periods=[return_period],
+                              n_bootstrap=0)
+        return float(ffa["return_levels"][0]["value"])
+    except Exception as exc:
+        log.debug("design rainfall from record unavailable: %s", exc)
+        return None
 
 
 @mcp.tool()

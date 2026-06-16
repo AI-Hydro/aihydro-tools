@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "aihydro-tools: AI-Hydro MCP Server for Hydrological Research"
+version: "1.7.0"
+date-released: "2026-06-13"
+license: Apache-2.0
+repository-code: "https://github.com/AI-Hydro/aihydro-tools"
+abstract: >
+  aihydro-tools is a Model Context Protocol (MCP) server that gives AI agents
+  access to 125+ typed hydrological research tools — watershed delineation,
+  streamflow data retrieval, signature extraction, calibration, uncertainty
+  quantification, and a claims/evidence defensibility layer. Every numeric
+  result is traceable to a run_id, verifiable against session provenance, and
+  exportable as a reproducible capsule.
+authors:
+  - family-names: Galib
+    given-names: Mohammad
+    affiliation: "Purdue University"
+    email: mgalib@purdue.edu
+keywords:
+  - hydrology
+  - watershed
+  - MCP
+  - agentic
+  - CAMELS
+  - FAIR
+  - reproducibility
+  - defensibility
+  - uncertainty-quantification
+  - streamflow
+preferred-citation:
+  type: software
+  title: "aihydro-tools: AI-Hydro MCP Server for Hydrological Research"
+  authors:
+    - family-names: Galib
+      given-names: Mohammad
+      affiliation: "Purdue University"
+      email: mgalib@purdue.edu
+  version: "1.7.0"
+  date-released: "2026-06-13"
+  license: Apache-2.0
+  repository-code: "https://github.com/AI-Hydro/aihydro-tools"

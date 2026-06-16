@@ -24,8 +24,17 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # The TypeScript extension injects ``_chat_id`` and ``_workspace`` into every
 # ai-hydro MCP tool call.  FastMCP rejects unknown parameters via Pydantic
-# validation, so we intercept the raw arguments dict inside ``_call_tool_mcp``
-# BEFORE dispatch, pop both fields, and store them in ContextVars.
+# validation, so we must strip both fields BEFORE that validation runs and
+# stash them in ContextVars for the request's lifetime.
+#
+# We do this with a FastMCP **middleware** (``_ContextInjectionMiddleware``
+# below), registered via ``mcp.add_middleware``.  This is the supported,
+# version-stable extension point: its ``on_call_tool`` hook runs before the
+# tool's argument model is validated.  (A previous implementation monkeypatched
+# ``mcp._call_tool_mcp`` *after* construction; FastMCP's low-level server binds
+# that method during ``__init__``, so the patch became dead code and EVERY tool
+# call failed with "Unexpected keyword argument _chat_id".  See
+# tests/test_context_injection.py for the regression guard.)
 #
 # _resolve_session() in helpers.py reads ACTIVE_CHAT_ID automatically.
 # ACTIVE_WORKSPACE carries the VS Code workspaceFolders[0] path so that
@@ -58,6 +67,11 @@ TOOL_TIERS: dict[str, int] = {
     "compute_twi":                      1,
     "create_cn_grid":                   1,
     "separate_baseflow":                1,
+    "compute_flow_duration_curve":      1,
+    "compute_flood_frequency":          1,
+    "compute_drought_index":            1,
+    "compute_soil_loss_rusle":          1,
+    "compute_design_hydrograph":        1,
     "train_hydro_model":                1,
     "get_model_results":                1,
     "add_claim":                        1,
@@ -67,6 +81,8 @@ TOOL_TIERS: dict[str, int] = {
     "check_water_balance_consistency":  1,
     "check_temporal_alignment":         1,
     "check_unit_consistency":           1,
+    "audit_interpretation":             1,
+    "run_skeptic":                      1,
     # ── Tier 2: Workflow / data ────────────────────────────────────────────
     # Data retrieval, LLM-authored prose, orchestration; no auto-enforcement.
     # fetch_streamflow_data / fetch_forcing_data demoted to tier 3 (Wave 2.5
@@ -89,6 +105,8 @@ TOOL_TIERS: dict[str, int] = {
     "get_citation_by_doi":              2,
     "data_fetch":                       2,
     "data_batch_fetch":                 2,
+    "data_fetch_background":            2,
+    "get_data_fetch_result":            2,
     "data_list_products":               2,
     "data_describe_product":            2,
     "data_validate_request":            2,
@@ -99,6 +117,9 @@ TOOL_TIERS: dict[str, int] = {
     "map_save_roi":                     2,
     "map_update_layer":                 2,
     "map_apply_symbology":              2,
+    "map_fly_to":                       2,
+    "map_add_layer_from_run":           2,
+    "map_set_time_range":               2,
     "preview_revise_section":           2,
     "preview_address_comment":          2,
     # ── Tier 3: Infrastructure ─────────────────────────────────────────────
@@ -114,6 +135,7 @@ TOOL_TIERS: dict[str, int] = {
     "list_claims":                      3,
     "list_assumptions":                 3,
     "get_training_status":              3,
+    "wait_for_job":                     3,
     "cancel_job":                       3,
     "list_jobs":                        3,
     "get_variable_definition":          3,
@@ -178,6 +200,25 @@ TOOL_TIERS: dict[str, int] = {
     "register_feature":                 2,
     "list_features":                    3,
     "set_active_feature":               3,
+    "bind_map_to_claim":                2,
+    # ── Phase 1.7: pre-registration ──────────────────────────────────────
+    "register_research_plan":           2,
+    # ── Phase 1.8: validators ─────────────────────────────────────────────
+    "check_record_length":              3,
+    "check_usgs_qualification_codes":   3,
+    "check_regulated_basin":            3,
+    "check_stationarity":               3,
+    # ── Phase 2.1: experiments ────────────────────────────────────────────
+    "define_experiment":                2,
+    "run_experiment":                   2,
+    "get_experiment_table":             2,
+    # ── Phase 2.2: claim registry ─────────────────────────────────────────
+    "check_registry_staleness":         2,
+    "list_registry_claims":             3,
+    # ── Phase 2.4: passage-level literature index ─────────────────────────
+    "index_passages":                   2,
+    "search_passages_tool":             2,
+    "resolve_passage":                  3,
 }
 
 
@@ -250,10 +291,15 @@ mcp = FastMCP(
 
         "Use tools for deterministic computation and state management; use your "
         "judgment for study design, interpretation, caveats, and next-step "
-        "reasoning. Call tools only when they provide deterministic value — "
-        "never call a tool to look up something you already know or to fulfil "
-        "a procedural checklist. Do not guess tool or library names; if you "
-        "need to verify a name use list_available_tools() once.\n\n"
+        "reasoning. Call tools only when they provide deterministic value, not "
+        "to fulfil a procedural checklist. Do not infer a tool, library, or "
+        "another server's abilities from its name: your own native toolset is "
+        "the primary instrument — verify capabilities with "
+        "aihydro_describe_capability or list_available_tools(), and use another "
+        "connected server only when the task explicitly needs its specialty. "
+        "Prefer the most direct tool that satisfies the request; do not launch "
+        "a long-running or multi-stage pipeline unless the request requires "
+        "it.\n\n"
 
         "TOOL DISCLOSURE PROTOCOL. Tools appear at two levels: common ones show "
         "their full schema inline (call directly); the rest are listed by NAME + "
@@ -263,10 +309,9 @@ mcp = FastMCP(
         "exists? Call aihydro_describe_capability(domain) to browse first.\n\n"
 
         "Check the skill catalog only when the user explicitly asks for a "
-        "reusable workflow, a named report format, or says 'use the skill for'. "
-        "Do NOT check skills before every multi-step analysis — that adds "
-        "unnecessary latency. If a completed workflow is genuinely reusable and "
-        "the user asks you to save it, use save_skill().\n\n"
+        "reusable workflow, a named report format, or says 'use the skill for' "
+        "— not before every analysis. Save a reusable workflow with "
+        "save_skill() only when the user asks.\n\n"
 
         "When a tool reports an error, inspect the message and recover: an error "
         "often inlines the schema and a corrected example_call — use it rather "
@@ -275,15 +320,26 @@ mcp = FastMCP(
         "scientific result as complete when validation, data access, or provenance "
         "failed.\n\n"
 
+        "If several DIFFERENT tools fail with the same structural error "
+        "(identical unexpected-keyword/connection/auth message), the cause is "
+        "the server or its config, not your arguments — stop after two such "
+        "failures and report the blocker plainly (failing tools, shared error, "
+        "what to check). Do not silently switch servers or reimplement a failed "
+        "tool with shell heredocs — use run_python if you must run code.\n\n"
+
         "Preserve research context. Check session summaries before repeating "
         "expensive work. Store outputs through tool-supported workspace paths and "
         "keep provenance, parameters, and quality flags visible. After a "
         "computation completes, summarise results directly in your response — "
         "do not call additional tools solely to record an interpretation.\n\n"
 
-        "For long-running work, prefer asynchronous jobs with a job identifier "
-        "and artifact path. For parallel shards, use separate session shards "
-        "and merge when complete.\n\n"
+        "For long-running work, dispatch an asynchronous job and wait "
+        "efficiently: make ONE server-side wait-for-completion call where one "
+        "exists, or poll only at the tool's recommended cadence — never in a "
+        "tight loop, since each manual check spends a whole turn re-reading the "
+        "context. If nothing needs the result yet, do other useful work or hand "
+        "back with the job id and an ETA. Reference large artifacts by path; "
+        "don't reprint them each turn.\n\n"
 
         "Be transparent about scientific compromises: fallback data, inferred "
         "outlets, synthetic inputs, failed validation, uncertain geometry, or "
@@ -296,74 +352,73 @@ mcp = FastMCP(
         "collaborator.\n\n"
 
         "For spectral indices (NDWI, NDVI, NDBI, NBR, MNDWI, …) use "
-        "compute_spectral_index(index_name, ...) — never write custom GEE "
-        "scripts or call data_fetch with raw band names. It handles band "
-        "fetch, cloud masking, compositing, colormap, GeoTIFF, and map overlay "
-        "in one call. Pass frequency='monthly'/'yearly' for time-series change "
-        "detection (per-period stats + Mann-Kendall trend).\n\n"
+        "compute_spectral_index(index_name, ...) rather than custom GEE scripts "
+        "or raw-band data_fetch: it handles band fetch, cloud masking, "
+        "compositing, colormap, GeoTIFF, and map overlay in one call. Pass "
+        "frequency='monthly'/'yearly' for time-series change detection.\n\n"
 
         "For data retrieval, prefer the variable-centric dataverse interface "
-        "that auto-routes by region, falls back across sources on failure, and "
-        "carries citation and license metadata on every result. Before an "
-        "expensive fetch (large bbox, long window, remote compute backend), "
-        "run a pre-flight validation to catch coverage gaps and estimate "
-        "payload size. Use the bundled onboarding help once per session rather "
-        "than guessing the API; inspect individual product specs on demand "
-        "rather than listing every catalog entry. Older single-source fetch "
-        "wrappers are retained for backward compatibility but routed through "
-        "the new pipeline internally — their responses carry a deprecation "
-        "note. Discover the full data-fetch tool surface via the capability "
-        "discovery tool with the corresponding domain filter.\n\n"
+        "that auto-routes by region, falls back across sources, and carries "
+        "citation and license metadata. Before an expensive fetch (large bbox, "
+        "long window, remote backend), run a pre-flight validation to catch "
+        "coverage gaps and estimate payload size.\n\n"
 
         "Session identity is automatic. Every analysis tool resolves the active "
-        "study from the chat context — do NOT prompt the user to supply a "
-        "session_id or ask them to name the study. The delineation tools "
-        "(delineate_watershed, delineate_watershed_from_point) auto-create a "
-        "study and bind it to the current chat on first call; all subsequent "
-        "tools in the same chat operate on that study automatically. Pass "
-        "session_id explicitly only when you need to switch to a named study. "
-        "Use aihydro_chat_status() to inspect the current binding and "
-        "aihydro_rebind_chat(study_id) to recover when the wrong study was "
-        "selected. Never use 'map' as a session_id — it is a legacy placeholder "
-        "that may collide with other chats."
+        "study from the chat context — do NOT prompt the user for a session_id "
+        "or to name the study. The delineation tools auto-create and bind a "
+        "study on first call; later tools in the same chat reuse it. Pass "
+        "session_id only to switch studies; use aihydro_chat_status() and "
+        "aihydro_rebind_chat(study_id) to inspect or fix the binding."
     ),
 )
 
 
 # ---------------------------------------------------------------------------
-# Wave 3 Axis 3 — intercept raw MCP tool-call arguments to extract _chat_id
+# Wave 3 Axis 3 — strip injected identity params before argument validation
 # ---------------------------------------------------------------------------
 # FastMCP validates tool arguments through a Pydantic model that rejects any
-# key not declared as a function parameter.  We need to strip ``_chat_id``
-# BEFORE that validation runs.  The lowest-level entry point is
-# ``FastMCP._call_tool_mcp(key, arguments)``; we wrap it here so no tool
-# function ever sees ``_chat_id`` while still making it available via the
-# ACTIVE_CHAT_ID ContextVar throughout the request lifetime.
-
-_original_call_tool_mcp = mcp._call_tool_mcp  # type: ignore[attr-defined]
-
-
-async def _patched_call_tool_mcp(key: str, arguments: dict) -> object:  # type: ignore[override]
-    """Strip ``_chat_id`` + ``_workspace`` from ``arguments`` and store in ContextVars."""
-    chat_id: str | None = None
-    workspace: str | None = None
-    if arguments and ("_chat_id" in arguments or "_workspace" in arguments):
-        # Work on a copy so we don't mutate the caller's dict.
-        arguments = dict(arguments)
-        chat_id = arguments.pop("_chat_id", None)
-        workspace = arguments.pop("_workspace", None)
-        if not isinstance(chat_id, str):
-            chat_id = None
-        if not isinstance(workspace, str):
-            workspace = None
-
-    token_chat = ACTIVE_CHAT_ID.set(chat_id)
-    token_ws = ACTIVE_WORKSPACE.set(workspace)
-    try:
-        return await _original_call_tool_mcp(key, arguments)
-    finally:
-        ACTIVE_CHAT_ID.reset(token_chat)
-        ACTIVE_WORKSPACE.reset(token_ws)
+# key not declared as a function parameter.  The extension injects ``_chat_id``
+# and ``_workspace`` into every call, so both must be removed BEFORE that
+# validation runs.  We use a FastMCP middleware whose ``on_call_tool`` hook
+# fires before the tool's argument model is built — the supported, version-
+# stable place to mutate arguments.  The hook also stores the popped values in
+# request-scoped ContextVars and resets them when the call completes.
+from fastmcp.server.middleware import Middleware, MiddlewareContext  # noqa: E402
 
 
-mcp._call_tool_mcp = _patched_call_tool_mcp  # type: ignore[method-assign]
+class _ContextInjectionMiddleware(Middleware):
+    """Pop ``_chat_id`` / ``_workspace`` from tool args into ContextVars.
+
+    Runs for EVERY tool call.  When neither key is present (direct Python
+    calls, tests, CLI) it is a cheap no-op that still binds the ContextVars to
+    ``None`` for the duration of the call.
+    """
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
+        chat_id: str | None = None
+        workspace: str | None = None
+
+        message = context.message
+        args = getattr(message, "arguments", None)
+        if args and ("_chat_id" in args or "_workspace" in args):
+            args = dict(args)
+            chat_id = args.pop("_chat_id", None)
+            workspace = args.pop("_workspace", None)
+            if not isinstance(chat_id, str):
+                chat_id = None
+            if not isinstance(workspace, str):
+                workspace = None
+            # Mutate the request in place so downstream validation never sees
+            # the injected keys.
+            message.arguments = args
+
+        token_chat = ACTIVE_CHAT_ID.set(chat_id)
+        token_ws = ACTIVE_WORKSPACE.set(workspace)
+        try:
+            return await call_next(context)
+        finally:
+            ACTIVE_CHAT_ID.reset(token_chat)
+            ACTIVE_WORKSPACE.reset(token_ws)
+
+
+mcp.add_middleware(_ContextInjectionMiddleware())

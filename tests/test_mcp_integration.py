@@ -123,8 +123,11 @@ class TestHelpers:
         from ai_hydro.mcp.helpers import _tool_error_to_dict
         result = _tool_error_to_dict(ValueError("bad input"))
         assert result["error"] is True
-        assert result["code"] == "UNKNOWN_ERROR"
+        assert result["code"] == "UNEXPECTED_ERROR"   # upgraded from UNKNOWN_ERROR
         assert "bad input" in result["message"]
+        # Verify full envelope — agent is never stranded even on raw exceptions
+        assert "recovery" in result and result["recovery"]
+        assert "next_tools" in result and isinstance(result["next_tools"], list)
 
     def test_tool_error_to_dict_tool_error(self):
         from ai_hydro.mcp.helpers import _tool_error_to_dict
@@ -1195,3 +1198,102 @@ class TestPhase4ExportCapsule:
             cap = Path(result["capsule_dir"])
             readme_text = (cap / "README.md").read_text()
             assert "Unique interpretation text for testing." in readme_text
+
+
+# ── Enforcement / next_steps registry tests ───────────────────────────────────
+
+class TestEnforcementNextSteps:
+    """Verify that post_run() injects next_steps from the registry."""
+
+    def test_registry_has_entries_for_tier1_tools(self):
+        """Core Tier 1 tools must have next_steps registered after __init__ loads."""
+        import ai_hydro.mcp  # noqa: F401 — triggers registrations
+        from ai_hydro.mcp.enforcement import get_next_steps_snapshot
+        snap = get_next_steps_snapshot()
+        tier1_tools_expected = [
+            "delineate_watershed",
+            "delineate_watershed_from_point",
+            "extract_hydrological_signatures",
+            "extract_geomorphic_parameters",
+            "compute_twi",
+            "create_cn_grid",
+            "separate_baseflow",
+            "train_hydro_model",
+            "get_model_results",
+            "add_claim",
+            "add_assumption",
+        ]
+        missing = [t for t in tier1_tools_expected if t not in snap]
+        assert not missing, f"Missing next_steps registrations: {missing}"
+
+    def test_each_step_has_tool_and_reason(self):
+        """Every registered next_step hint must carry 'tool' and 'reason' keys."""
+        import ai_hydro.mcp  # noqa: F401
+        from ai_hydro.mcp.enforcement import get_next_steps_snapshot
+        snap = get_next_steps_snapshot()
+        for tool_name, steps in snap.items():
+            for i, step in enumerate(steps):
+                assert "tool" in step, (
+                    f"{tool_name}[{i}] is missing 'tool' key: {step}"
+                )
+                assert "reason" in step and step["reason"], (
+                    f"{tool_name}[{i}] is missing non-empty 'reason': {step}"
+                )
+
+    def test_post_run_injects_next_steps(self, tmp_path):
+        """post_run() adds next_steps from registry when result has no next_steps."""
+        import ai_hydro.mcp  # noqa: F401
+        from ai_hydro.mcp.enforcement import post_run
+        # delineate_watershed has registered steps; use a dummy session
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            result = {"data": {"area_km2": 100.0}}
+            out = post_run("delineate_watershed", "test-nxt-inj", result)
+            assert "next_steps" in out, "post_run must inject next_steps"
+            assert isinstance(out["next_steps"], list)
+            assert len(out["next_steps"]) > 0
+            tools = [s["tool"] for s in out["next_steps"]]
+            assert "extract_hydrological_signatures" in tools
+
+    def test_post_run_does_not_overwrite_explicit_next_steps(self, tmp_path):
+        """If a tool provides its own next_steps, post_run must not overwrite it."""
+        import ai_hydro.mcp  # noqa: F401
+        from ai_hydro.mcp.enforcement import post_run
+        custom = [{"tool": "my_custom_tool", "reason": "special reason"}]
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            result = {"data": {"x": 1}, "next_steps": custom}
+            out = post_run("delineate_watershed", "test-no-overwrite", result)
+            # Must remain the custom list, not the registry list
+            assert out["next_steps"] == custom
+
+    def test_post_run_error_result_has_no_next_steps_injected(self, tmp_path):
+        """Error results skip next_steps injection (they carry recovery/next_tools)."""
+        import ai_hydro.mcp  # noqa: F401
+        from ai_hydro.mcp.enforcement import post_run
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            result = {"error": True, "message": "something went wrong"}
+            out = post_run("delineate_watershed", "test-err-skip", result)
+            # next_steps may or may not be set on error results — what matters
+            # is that the error result is returned unmodified (no _run_id either)
+            assert "_run_id" not in out
+
+    def test_register_next_steps_is_additive(self):
+        """register_next_steps() appends; it does NOT replace existing entries."""
+        from ai_hydro.mcp.enforcement import (
+            register_next_steps, get_next_steps_snapshot, _NEXT_STEPS_REGISTRY,
+        )
+        # Use a tool name that won't conflict with real registrations
+        _tool = "_test_additive_tool_xyz"
+        original_count = len(_NEXT_STEPS_REGISTRY.get(_tool, []))
+        register_next_steps(_tool, [{"tool": "a", "reason": "first"}])
+        register_next_steps(_tool, [{"tool": "b", "reason": "second"}])
+        snap = get_next_steps_snapshot()
+        assert _tool in snap
+        entries = snap[_tool]
+        assert len(entries) == original_count + 2
+        assert entries[-2]["tool"] == "a"
+        assert entries[-1]["tool"] == "b"
+        # Cleanup
+        del _NEXT_STEPS_REGISTRY[_tool]

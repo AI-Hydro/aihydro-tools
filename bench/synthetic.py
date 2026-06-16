@@ -33,7 +33,10 @@ def humid_daily_q_mm(
     (e.g. CAMELS basin 01031500 Piscataquis River, ME).
     Adjudicated properties:
       q_mean  ≈ 1.2 mm/day    (CAMELS 01031500: ~1.35 mm/day)
-      BFI     ∈ [0.45, 0.70]  (granite/glacial till: moderate-high baseflow)
+      BFI     ∈ [0.20, 0.40]  (Lyne-Hollick alpha=0.925, 3-pass; re-adjudicated
+                               2026-06-13 after correcting filter inversion bug.
+                               CAMELS reports ~0.50-0.70 for same basin type using
+                               Eckhardt filter — that range does NOT apply here.)
     """
     rng = _rng(seed)
     n = n_years * 365

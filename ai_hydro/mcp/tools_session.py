@@ -312,6 +312,30 @@ def write_research_interpretation(
                         "See Rules/CITATION_GRAMMAR.md for the marker syntax."
                     ),
                 }
+        # ── Skeptic advisory pass ─────────────────────────────────────────────
+        # Runs four deterministic checks (stale citations, scope overreach,
+        # unvalidated high-risk assumptions, registry conflicts) after the audit
+        # gate. Findings are ADVISORY: they appear in the return value but do not
+        # block the write. A "flagged" verdict (contains errors) is surfaced as
+        # a teaching advisory in _skeptic_advisory so the agent can self-correct.
+        skeptic_summary: dict = {}
+        if prose_to_audit and not override:
+            try:
+                from ai_hydro.skeptic import run_all_checks
+                from ai_hydro.session.store import HydroSession as _HS
+                _session_pre = _HS.load(session_id)
+                _srep = run_all_checks(_session_pre, prose_to_audit)
+                skeptic_summary = {
+                    "skeptic_verdict": _srep.verdict,
+                    "skeptic_issue_count": len(_srep.issues),
+                }
+                if _srep.issues:
+                    skeptic_summary["skeptic_issues"] = [
+                        i.model_dump() for i in _srep.issues
+                    ]
+                    skeptic_summary["_skeptic_advisory"] = _srep.teaching_advisory()
+            except Exception:
+                pass
         # ─────────────────────────────────────────────────────────────────────
 
         session = HydroSession.load(session_id)
@@ -361,6 +385,7 @@ def write_research_interpretation(
             "citations_bib": citations_path,
             "n_data_source_citations": n_citations,
             **audit_summary,
+            **skeptic_summary,
             "_note": (
                 "Interpretation stored. research.md updated — your scientific "
                 "context will be pre-loaded into every future conversation. "
@@ -1099,4 +1124,56 @@ def set_active_feature(
         }
     except Exception as e:
         log.error("set_active_feature failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def bind_map_to_claim(
+    claim_id: str,
+    session_id: str | None = None,
+) -> dict:
+    """Bind the current map session state to a specific claim in the ledger.
+
+    Records the association in the session so the map UI can show which claim
+    this spatial view is supporting evidence for.  The extension reads
+    ``map_state.claim_id`` and displays a linked chip in the map toolbar.
+
+    Parameters
+    ----------
+    claim_id : str
+        The ``claim_id`` of a claim that already exists in this session.
+    session_id : str | None
+        Session to update. Auto-resolved when omitted.
+    """
+    try:
+        session_id = _resolve_session(session_id, None)
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+        # Validate that the claim exists in this session
+        existing = set(session.claims.keys())
+        if claim_id not in existing:
+            return {
+                "error": f"Claim '{claim_id}' not found in session '{session_id}'. "
+                         f"Available claim IDs: {sorted(existing) or '(none)'}",
+                "code": "CLAIM_NOT_FOUND",
+            }
+        session.extra["map_bound_claim_id"] = claim_id
+        session.save()
+        # Also emit a ledger event so the watcher notifies the webview
+        from ai_hydro.mcp.ledger_commands import write_ledger_event
+        write_ledger_event({
+            "change_type": "map_claim_bound",
+            "session_id": session_id,
+            "claim_id": claim_id,
+        })
+        return {
+            "session_id": session_id,
+            "claim_id": claim_id,
+            "message": (
+                f"Map state bound to claim '{claim_id}'. "
+                "The map toolbar will show a linked claim chip."
+            ),
+        }
+    except Exception as e:
+        log.error("bind_map_to_claim failed: %s", e)
         return _tool_error_to_dict(e)

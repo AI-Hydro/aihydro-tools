@@ -111,3 +111,53 @@ def push_set_basemap(basemap_id: str, basemap_name: str | None = None) -> bool:
 
 def push_fit_layer(layer_id: str) -> bool:
     return write_map_command({"type": "fit_layer", "layer_id": layer_id})
+
+
+def push_fly_to(
+    *,
+    longitude: float,
+    latitude: float,
+    zoom: float = 9.0,
+    duration_ms: int = 2000,
+) -> bool:
+    return write_map_command(
+        {
+            "type": "fly_to",
+            "longitude": longitude,
+            "latitude": latitude,
+            "zoom": zoom,
+            "duration_ms": duration_ms,
+        }
+    )
+
+
+def push_add_layer_from_run(
+    *,
+    layer_id: str,
+    layer_name: str,
+    geojson: str,
+    run_id: str,
+    session_id: str = "",
+    auto_zoom: bool = True,
+) -> bool:
+    return write_map_command(
+        {
+            "type": "add_layer_from_run",
+            "layer_id": layer_id,
+            "layer_name": layer_name,
+            "geojson": geojson,
+            "run_id": run_id,
+            "session_id": session_id,
+            "auto_zoom": auto_zoom,
+        }
+    )
+
+
+def push_set_time_range(start_iso: str, end_iso: str) -> bool:
+    return write_map_command(
+        {
+            "type": "set_time_range",
+            "start_iso": start_iso,
+            "end_iso": end_iso,
+        }
+    )

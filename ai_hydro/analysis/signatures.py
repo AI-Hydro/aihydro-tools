@@ -36,6 +36,7 @@ from ai_hydro.data.streamflow import (
     _fetch_streamflow_internal,
     _to_mm_per_day,
 )
+from ai_hydro.analysis.uncertainty import bootstrap_dict
 
 _SOURCES_NWIS = [
     DataSource(
@@ -173,6 +174,7 @@ def extract_hydrological_signatures(
             )
             streamflow_result = None
 
+        _uncertainty: dict = {}
         if streamflow_result is None or len(streamflow_result.get("q_cms", [])) < 365:
             log.warning("Insufficient streamflow data for gauge %s", gauge_id)
             sigs = _get_default_hydrology()
@@ -204,10 +206,33 @@ def extract_hydrological_signatures(
                 gauge_id or "none",
                 q_cms_series is not None,
             )
+            # Bootstrap CIs for scalar metrics that are IID-bootstrappable.
+            # Uses block bootstrap (temporal autocorrelation in streamflow).
+            try:
+                q_arr = q_mm_day.dropna().values
+                if len(q_arr) >= 30:
+                    def _mean(x): return float(np.mean(x))
+                    def _median(x): return float(np.median(x))
+                    def _q5(x): return float(np.quantile(x, 0.95))
+                    def _q95(x): return float(np.quantile(x, 0.05))
+                    def _cv(x): return float(np.std(x) / np.mean(x)) if np.mean(x) > 0 else float("nan")
+                    _fns = {
+                        "q_mean": _mean,
+                        "q_median": _median,
+                        "q5": _q5,
+                        "q95": _q95,
+                        "flow_variability": _cv,
+                    }
+                    _u = bootstrap_dict(_fns, q_arr, use_block=True, n=500, ci=0.90)
+                    _uncertainty = {k: dict(v) for k, v in _u.items()}
+            except Exception as _ue:
+                log.warning("signatures: uncertainty estimation failed (non-fatal): %s", _ue)
 
         # Ensure all values are JSON-serializable Python floats
         clean = {k: (float(v) if v is not None and np.isfinite(float(v)) else None)
                  for k, v in sigs.items()}
+        if _uncertainty:
+            clean["_uncertainty"] = _uncertainty
 
         _sources = _SOURCES_GRIDMET + (_SOURCES_NWIS if gauge_id else [])
         return HydroResult(
@@ -510,31 +535,45 @@ def _lyne_hollick_baseflow(
     alpha: float = 0.925,
     passes: int = 3,
 ) -> np.ndarray:
-    """Lyne-Hollick digital filter for baseflow separation."""
+    """Lyne-Hollick recursive digital filter for baseflow separation.
+
+    Each sweep estimates the quick-flow (high-frequency) component
+
+        f(t) = alpha * f(t-1) + (1 + alpha) / 2 * (y(t) - y(t-1))
+
+    and the baseflow is the residual ``b(t) = y(t) - f(t)``, clamped to
+    ``0 <= b <= y``. Following Nathan and McMahon (1990) and Ladson et al.
+    (2013, Australian Journal of Water Resources 17(1)), the filter is applied
+    in ``passes`` alternating single-direction sweeps (forward, backward,
+    forward, ...), with the baseflow output of each sweep used as the input to
+    the next. The function returns the BASEFLOW series, so the baseflow index
+    is ``sum(baseflow) / sum(q)``.
+
+    Note: a previous implementation returned the quick-flow component ``f``
+    rather than the baseflow ``q - f``, which inverted the baseflow index
+    (reporting the quick-flow fraction). This version returns baseflow.
+    """
 
     if q.size == 0 or np.all(~np.isfinite(q)):
         return np.full_like(q, np.nan, dtype=float)
 
-    def one_pass_forward(x):
-        y = np.zeros_like(x, dtype=float)
-        y[0] = x[0]
-        for t in range(1, len(x)):
-            y[t] = alpha * y[t-1] + (1 + alpha) / 2 * (x[t] - x[t-1])
-            y[t] = min(max(y[t], 0.0), x[t])
-        return y
-
-    def one_pass_backward(x):
-        y = np.zeros_like(x, dtype=float)
-        y[-1] = x[-1]
-        for t in range(len(x) - 2, -1, -1):
-            y[t] = alpha * y[t+1] + (1 + alpha) / 2 * (x[t] - x[t+1])
-            y[t] = min(max(y[t], 0.0), x[t])
-        return y
+    def _sweep(y: np.ndarray, forward: bool) -> np.ndarray:
+        n = len(y)
+        f = np.zeros(n, dtype=float)        # quick-flow component
+        b = y.copy().astype(float)          # baseflow component (boundary: b = y)
+        order = range(1, n) if forward else range(n - 2, -1, -1)
+        prev = 0 if forward else n - 1
+        for t in order:
+            f[t] = alpha * f[prev] + (1.0 + alpha) / 2.0 * (y[t] - y[prev])
+            b[t] = y[t] - f[t] if f[t] > 0.0 else y[t]
+            # baseflow cannot be negative or exceed total flow
+            b[t] = min(max(b[t], 0.0), y[t])
+            prev = t
+        return b
 
     bf = q.copy().astype(float)
-    for _ in range(passes):
-        bf = one_pass_forward(bf)
-        bf = one_pass_backward(bf)
+    for i in range(passes):
+        bf = _sweep(bf, forward=(i % 2 == 0))
 
     return np.clip(bf, 0, q)
 

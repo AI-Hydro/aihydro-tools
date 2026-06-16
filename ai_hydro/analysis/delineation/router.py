@@ -64,8 +64,8 @@ _SOURCES_MERIT = [
         url="https://www.reachhydro.org/home/params/merit-basins",
     ),
     DataSource(
-        name="Upstream Delineator",
-        url="https://github.com/Upstream-Tech/delineator",
+        name="MERIT Hydro regional flow-direction rasters",
+        url="https://mghydro.com/watersheds/raster/",
     ),
 ]
 
@@ -668,6 +668,42 @@ def delineate_from_point(
             license_note = MERIT_LICENSE
             citation = MERIT_CITATION
             method_used = "merit_gee_pyflwdir"
+
+            # Quality gate on the GEE result. delineate_merit_gee can return a
+            # degenerate basin WITHOUT raising — e.g. for a very large river it
+            # may snap onto a tiny tributary/coastal cell and yield an area
+            # below the minimum (flagged VERY_SMALL_BASIN). With no exception,
+            # escalation_reason/run_fast are never set, so the run would
+            # dead-end at the final "no valid polygon" error with no fallback.
+            # In auto mode, reject it and fall through to the MERIT-Basins
+            # hybrid (vector topology — assembles the full upstream network)
+            # and ultimately raw DEM. Mirrors _should_escalate for the fast
+            # tier. Pinned method="merit_gee" keeps the strict raise downstream.
+            gee_degenerate = (
+                gdf is None
+                or getattr(gdf, "empty", False)
+                or (area is not None and area < _MIN_AREA_KM2)
+            )
+            if gee_degenerate and method == "auto":
+                log.info(
+                    "MERIT GEE result degenerate (area=%.3f km2); escalating "
+                    "to MERIT-Basins hybrid.",
+                    area or 0.0,
+                )
+                fallback_history.append(
+                    {
+                        "method": "merit_gee_pyflwdir",
+                        "outcome": "rejected",
+                        "reason": (
+                            f"area {area or 0.0:.3f} km2 below "
+                            f"{_MIN_AREA_KM2} km2 (likely snap failure)"
+                        ),
+                    }
+                )
+                escalation_reason = escalation_reason or "merit_gee_degenerate_result"
+                gdf = None
+                method_used = None
+                run_fast = True
         except Exception as e:
             log.warning("MERIT GEE tier failed: %s", e)
             escalation_reason = str(e)
@@ -805,6 +841,18 @@ def delineate_from_point(
                     ),
                 ) from e
 
+    # Non-CONUS accurate fallback: prefer the MERIT-Basins hybrid (vector
+    # topology, ~MERIT accuracy) over raw DEM when GEE + local_merit couldn't
+    # serve. This restores the documented tier order
+    # (… → merit_basins → dem_raw_fallback) for the no-expected-area case, where
+    # escalation-from-fast never fires (it requires expected_area_km2). CONUS
+    # deliberately stays on NLDI + raw DEM — no MERIT machinery there.
+    # _try_hybrid_result sets gdf + method_used + run_fast=False on success; on
+    # failure (e.g. basins not staged → MERIT_BASINS_NOT_STAGED) run_fast stays
+    # True so raw DEM remains the final fallback.
+    if method == "auto" and gdf is None and run_fast and not is_conus(lat, lon):
+        _try_hybrid_result(escalation_reason or "merit_gee_unavailable")
+
     if run_fast:
         try:
             from ai_hydro.analysis.delineation.pysheds_pipeline import delineate_fast
@@ -842,37 +890,40 @@ def delineate_from_point(
             escalation_reason = str(e)
 
     if run_merit and gdf is None:
-        try:
-            if not _try_hybrid_result(escalation_reason or "requested_merit_basins"):
-                from ai_hydro.analysis.delineation.delineator_adapter import delineate_merit_basins
-
-                merit = delineate_merit_basins(
-                    lat,
-                    lon,
-                    outlet_id=(name or "outlet").replace(" ", "_")[:32],
-                    verbose=verbose,
-                )
-                gdf = merit.gdf
-                area = merit.area_km2
-                pfaf_code = merit.pfaf_code
-                method_used = "merit_basins"
-                routing_dataset = "MERIT-Basins local flowdir"
-        except Exception as e:
+        if not _try_hybrid_result(escalation_reason or "requested_merit_basins"):
+            # The local MERIT-Basins hybrid (merit_basins_hybrid_delineate) IS the
+            # accurate tier. If it can't run (e.g. basin vectors/flowdir not staged
+            # locally), there is no further MERIT fallback to attempt — surface a
+            # clear, actionable error. (A former second attempt via the optional
+            # `upstream_delineator` GitHub adapter was removed: it depended on the
+            # SAME local staging the hybrid requires, only stricter, so it could
+            # never succeed where the hybrid failed — it only ever produced a
+            # duplicate failure.)
+            hybrid_reason = next(
+                (
+                    h.get("reason")
+                    for h in reversed(fallback_history)
+                    if h.get("method") == "merit_basins_hybrid"
+                    and h.get("outcome") == "failed"
+                ),
+                "MERIT-Basins hybrid unavailable",
+            )
             if method == "merit_basins":
                 raise ToolError(
                     code="DELINEATION_FAILED",
-                    message=str(e),
+                    message=hybrid_reason,
                     tool=_TOOL_PATH,
-                ) from e
+                    recovery="Run merit_ensure_basin to stage MERIT-Basins data, or nudge the outlet onto the main channel.",
+                )
             raise ToolError(
                 code="DELINEATION_FAILED",
                 message=(
                     f"All tiers failed. Fast: {escalation_reason or 'skipped'}. "
-                    f"MERIT-Basins: {e}"
+                    f"MERIT-Basins: {hybrid_reason}"
                 ),
                 tool=_TOOL_PATH,
                 recovery="Run merit_ensure_basin or nudge the outlet onto the main channel.",
-            ) from e
+            )
 
     if gdf is None or gdf.empty or area < _MIN_AREA_KM2:
         raise ToolError(
@@ -882,6 +933,30 @@ def delineate_from_point(
         )
 
     geojson = _gdf_to_geojson(gdf)
+    # Surface the headline delineation stats on the Feature itself so the map's
+    # click popup (FeatureIdentifier reads feature.properties) shows area/method
+    # etc. — same UX as the MERIT-river popups. Keep the 6 most useful first;
+    # the popup caps at 6 and rolls the rest into "+N more properties". Skip
+    # None/empty values so the popup stays clean.
+    _feature_props = {
+        "area_km2": round(area, 1) if area is not None else None,
+        "method": method_used,
+        "pfaf": pfaf_code,
+        "routing": routing_dataset,
+        "snap_quality": snap_quality,
+        "snap_distance_m": (
+            round(snap_distance_m, 1) if snap_distance_m is not None else None
+        ),
+        "outlet": f"{lat:.5f}, {lon:.5f}",
+        "name": name,
+    }
+    # Put curated stats FIRST so they win the popup's 6-property cap, then keep
+    # any geometry-derived columns after them.
+    _existing_props = geojson.get("properties") or {}
+    geojson["properties"] = {
+        **{k: v for k, v in _feature_props.items() if v not in (None, "")},
+        **_existing_props,
+    }
     if method_used in ("merit_gee_pyflwdir", "local_merit_pyflwdir"):
         sources = _SOURCES_MERIT_GEE
     elif method_used in ("merit_basins", "merit_basins_hybrid"):

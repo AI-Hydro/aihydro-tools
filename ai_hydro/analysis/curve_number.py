@@ -72,7 +72,9 @@ def create_curve_number_grid(
     output_dir: Optional[str] = None,
     output_formats: List[str] = None,
     create_visualizations: bool = True,
-    output_prefix: Optional[str] = None
+    output_prefix: Optional[str] = None,
+    product: Optional[str] = None,
+    soil_product: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create comprehensive Curve Number grid for a USGS gauge watershed.
@@ -234,13 +236,17 @@ def create_curve_number_grid(
     print(f"  Centroid: ({watershed_data['gauge_lon']:.4f}, {watershed_data['gauge_lat']:.4f})")
     print()
     
-    # Step 2: Fetch LULC data
-    print("Step 2: Fetch NLCD land cover data")
+    # Step 2: Fetch LULC data (region-routed: NLCD in CONUS, ESA WorldCover /
+    # Dynamic World elsewhere — remapped onto NLCD codes by the data layer).
+    print("Step 2: Fetch land cover data")
     print("-" * 50)
-    lulc_data = fetch_lulc_data(watershed_gdf, resolution=resolution, year=year)
+    lulc_data = fetch_lulc_data(
+        watershed_gdf, resolution=resolution, year=year, product=product,
+    )
     cover_var = f'cover_{year}'
-    print(f"  Retrieved {cover_var} with shape: {lulc_data[cover_var].shape}")
-    
+    print(f"  Retrieved {cover_var} with shape: {lulc_data[cover_var].shape} "
+          f"(product={lulc_data.attrs.get('_adata_product')})")
+
     # Get LULC statistics
     lulc_values = lulc_data[cover_var].values
     unique_classes, class_counts = np.unique(lulc_values[~np.isnan(lulc_values)], return_counts=True)
@@ -249,14 +255,16 @@ def create_curve_number_grid(
         'counts': class_counts.tolist(),
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
-    print(f"  Unique NLCD classes: {len(unique_classes)}")
+    print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
-    
-    # Step 3: Fetch soil data
-    print("Step 3: Fetch soil properties from Polaris")
+
+    # Step 3: Fetch soil data (region-routed: POLARIS in CONUS, SoilGrids
+    # elsewhere — both normalised to POLARIS-style texture variables).
+    print("Step 3: Fetch soil texture data")
     print("-" * 50)
-    soil_data = fetch_soil_data_polaris(watershed_gdf)
-    print(f"  Retrieved soil data variables: {list(soil_data.data_vars)}")
+    soil_data = fetch_soil_data_polaris(watershed_gdf, product=soil_product)
+    print(f"  Retrieved soil data variables: {list(soil_data.data_vars)} "
+          f"(product={soil_data.attrs.get('_adata_product')})")
     print()
     
     # Step 4: Classify soil groups and create CN grid
@@ -397,6 +405,13 @@ def create_curve_number_grid(
         },
         'lulc_stats': lulc_stats,
         'soil_stats': soil_stats,
+        'data_provenance': {
+            'landcover_product': lulc_data.attrs.get('_adata_product'),
+            'landcover_source': lulc_data.attrs.get('_adata_source'),
+            'soil_product': soil_data.attrs.get('_adata_product'),
+            'soil_source': soil_data.attrs.get('_adata_source'),
+            'region': lulc_data.attrs.get('_adata_region'),
+        },
         'file_paths': file_paths,
         'files_saved': list(file_paths.values()),
         'visualizations': visualizations
@@ -411,7 +426,9 @@ def create_curve_number_grid_from_geometry(
     output_dir: Optional[str] = None,
     output_formats: List[str] = None,
     create_visualizations: bool = True,
-    output_prefix: Optional[str] = None
+    output_prefix: Optional[str] = None,
+    product: Optional[str] = None,
+    soil_product: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create comprehensive Curve Number grid from custom watershed geometry.
@@ -586,13 +603,17 @@ def create_curve_number_grid_from_geometry(
     print(f"  Centroid: ({centroid.x:.4f}, {centroid.y:.4f})")
     print()
     
-    # Step 2: Fetch LULC data
-    print("Step 2: Fetch NLCD land cover data")
+    # Step 2: Fetch LULC data (region-routed: NLCD in CONUS, ESA WorldCover /
+    # Dynamic World elsewhere — remapped onto NLCD codes by the data layer).
+    print("Step 2: Fetch land cover data")
     print("-" * 50)
-    lulc_data = fetch_lulc_data(watershed_gdf, resolution=resolution, year=year)
+    lulc_data = fetch_lulc_data(
+        watershed_gdf, resolution=resolution, year=year, product=product,
+    )
     cover_var = f'cover_{year}'
-    print(f"  Retrieved {cover_var} with shape: {lulc_data[cover_var].shape}")
-    
+    print(f"  Retrieved {cover_var} with shape: {lulc_data[cover_var].shape} "
+          f"(product={lulc_data.attrs.get('_adata_product')})")
+
     # Get LULC statistics
     lulc_values = lulc_data[cover_var].values
     unique_classes, class_counts = np.unique(lulc_values[~np.isnan(lulc_values)], return_counts=True)
@@ -601,14 +622,16 @@ def create_curve_number_grid_from_geometry(
         'counts': class_counts.tolist(),
         'percentages': (100 * class_counts / class_counts.sum()).tolist()
     }
-    print(f"  Unique NLCD classes: {len(unique_classes)}")
+    print(f"  Unique land-cover classes: {len(unique_classes)}")
     print()
-    
-    # Step 3: Fetch soil data
-    print("Step 3: Fetch soil properties from Polaris")
+
+    # Step 3: Fetch soil data (region-routed: POLARIS in CONUS, SoilGrids
+    # elsewhere — both normalised to POLARIS-style texture variables).
+    print("Step 3: Fetch soil texture data")
     print("-" * 50)
-    soil_data = fetch_soil_data_polaris(watershed_gdf)
-    print(f"  Retrieved soil data variables: {list(soil_data.data_vars)}")
+    soil_data = fetch_soil_data_polaris(watershed_gdf, product=soil_product)
+    print(f"  Retrieved soil data variables: {list(soil_data.data_vars)} "
+          f"(product={soil_data.attrs.get('_adata_product')})")
     print()
     
     # Step 4: Classify soil groups and create CN grid
@@ -746,6 +769,13 @@ def create_curve_number_grid_from_geometry(
         },
         'lulc_stats': lulc_stats,
         'soil_stats': soil_stats,
+        'data_provenance': {
+            'landcover_product': lulc_data.attrs.get('_adata_product'),
+            'landcover_source': lulc_data.attrs.get('_adata_source'),
+            'soil_product': soil_data.attrs.get('_adata_product'),
+            'soil_source': soil_data.attrs.get('_adata_source'),
+            'region': lulc_data.attrs.get('_adata_region'),
+        },
         'file_paths': file_paths,
         'files_saved': list(file_paths.values()),
         'visualizations': visualizations
@@ -889,6 +919,24 @@ def _create_cn_grid_from_data(
     # Resample soil data to match LULC grid if needed
     if sand_da.shape != lulc.shape:
         print(f"  Resampling soil data from {sand_da.shape} to match LULC grid {lulc.shape}...")
+
+        # reproject_match needs a CRS on both grids. Global products (SoilGrids,
+        # ESA WorldCover) are delivered on an EPSG:4326 grid but the CRS can be
+        # dropped when a single var is pulled out of the Dataset — restore it so
+        # the match never fails with "CRS not found".
+        def _ensure_crs(da, fallback="EPSG:4326"):
+            if da is None:
+                return None
+            if da.rio.crs is None:
+                da = da.rio.write_crs(fallback)
+            return da
+
+        lulc = _ensure_crs(lulc, lulc.rio.crs or "EPSG:4326")
+        sand_da = _ensure_crs(sand_da)
+        silt_da = _ensure_crs(silt_da)
+        clay_da = _ensure_crs(clay_da)
+        ksat_da = _ensure_crs(ksat_da)
+
         sand_da = sand_da.rio.reproject_match(lulc)
         silt_da = silt_da.rio.reproject_match(lulc)
         clay_da = clay_da.rio.reproject_match(lulc)

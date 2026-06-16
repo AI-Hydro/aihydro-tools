@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aihydro-tools"
-version = "1.7.0"
+version = "2.0.0"
 description = "AI-Hydro: hydrological research tools as an MCP server for AI agents"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
@@ -98,15 +98,12 @@ delineation = [
     "earthengine-api>=0.1.390",
 ]
 
-# MERIT-Basins accurate tier — the `upstream-delineator` package is NOT on PyPI
-# (only available as a GitHub repo), so it cannot be declared as a direct
-# dependency on a PyPI-published package. Users who want the MERIT-Basins
-# accurate tier must install it manually after `pip install aihydro-tools[delineation]`:
-#
-#     pip install aihydro-tools[delineation]
-#     pip install git+https://github.com/Upstream-Tech/delineator.git
-#
-# The `delineation-full` extra is intentionally omitted from PyPI metadata.
+# Note: the MERIT-Basins accurate tier is served entirely by the local
+# pyflwdir/pysheds hybrid (merit_basins_hybrid_delineate) included in the
+# `delineation` extra above. The former optional `upstream-delineator` GitHub
+# package was removed — it depended on the same local MERIT-Basins staging the
+# hybrid already uses (only stricter), so it could never succeed where the
+# hybrid failed and added a manual git-install step for no benefit.
 
 # Modelling: HBV-light (PyTorch), NeuralHydrology LSTM
 modelling = [
