@@ -19,11 +19,9 @@ New code should import the contract directly from the substrate:
 This shim will be kept for at least one release; prefer the ``aihydro_core``
 import in new code.
 
-NOTE on ``ToolError``: a richer, tool-facing ``ToolError`` (with ``tool`` /
-``recovery`` / ``alternatives`` fields) historically lived here and is depended
-on across ``aihydro-tools``. It is **kept local** below for now. Unifying it
-with ``aihydro_core.primitives.errors.ToolError`` (which uses a ``details`` dict)
-is a deliberate follow-up — not done here to avoid a behavior change.
+NOTE on ``ToolError``: unified into ``aihydro_core.primitives.errors.ToolError``
+as a superset of both the core (code/message/details) and the tool-facing
+(code/message/tool/recovery/alternatives) signatures. Re-exported here.
 """
 
 from __future__ import annotations
@@ -36,56 +34,8 @@ from aihydro_core.contracts import (  # noqa: F401
     HydroTool,
 )
 
-
-# ---------------------------------------------------------------------------
-# Structured error type (kept local — see module docstring NOTE)
-# ---------------------------------------------------------------------------
-
-class ToolError(Exception):
-    """
-    Structured error from an AI-Hydro tool.
-
-    Provides machine-readable error context so agents can reason
-    about recovery — try an alternative, ask for clarification, etc.
-    """
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        tool: str,
-        recovery: str | None = None,
-        alternatives: list[str] | None = None,
-    ):
-        """
-        Parameters
-        ----------
-        code : str
-            Short error code, e.g. 'GAUGE_NOT_FOUND', 'NETWORK_ERROR'
-        message : str
-            Human-readable error description
-        tool : str
-            Tool that raised the error
-        recovery : str, optional
-            Suggested recovery action for the agent
-        alternatives : list[str], optional
-            Alternative gauge IDs, methods, or approaches to try
-        """
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.tool = tool
-        self.recovery = recovery
-        self.alternatives = alternatives or []
-
-    def to_dict(self) -> dict:
-        return {
-            "error": True,
-            "code": self.code,
-            "message": self.message,
-            "tool": self.tool,
-            "recovery": self.recovery,
-            "alternatives": self.alternatives,
-        }
+# ToolError unified into core — re-export for backward compatibility.
+from aihydro_core.primitives.errors import ToolError  # noqa: F401
 
 
 __all__ = ["DataSource", "HydroMeta", "HydroResult", "HydroTool", "ToolError"]
