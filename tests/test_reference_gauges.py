@@ -228,7 +228,7 @@ class TestGeomorphicTool:
         fake_units = {"DA_km2": "km²", "Lp_km": "km"}
 
         with patch(
-            "ai_hydro.analysis.geomorphic.extract_geomorphic_parameters",
+            "aihydro_watershed.characterize.geomorphic.extract_geomorphic_parameters",
             return_value=(fake_params, fake_units),
         ):
             try:

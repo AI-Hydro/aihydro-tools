@@ -45,6 +45,9 @@ dependencies = [
     # Surfaces 9 `data_*` MCP tools via the `aihydro.tools` entry-point group;
     # also rewires analysis/signatures and analysis/curve_number internally.
     "aihydro-data>=0.1.7",
+    # Wave A3: delineation + characterization carve-out (shims in analysis/ and data/).
+    # Install locally with: pip install -e /path/to/aihydro-watershed
+    "aihydro-watershed>=0.1.0",
 ]
 
 # ── Optional extras (semantic layers) ────────────────────────────────────────

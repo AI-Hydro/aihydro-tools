@@ -290,7 +290,7 @@ def test_local_merit_flowdir_only_does_not_compute_upstream_area(tmp_path):
         official_merit_upa_km2=25.0,
     )
 
-    with patch("ai_hydro.data.merit_manager.MeritDataManager") as MockMgr:
+    with patch("aihydro_watershed.merit.merit_manager.MeritDataManager") as MockMgr:
         inst = MockMgr.return_value
         inst.ensure_basin.return_value = FakeStatus()
         inst.flowdir_path.return_value = flowdir_path
@@ -355,10 +355,10 @@ def test_local_merit_interactive_window_limit_promotes_to_hybrid(tmp_path, monke
         official_merit_upa_km2=25.0,
     )
     monkeypatch.setattr(
-        "ai_hydro.analysis.delineation.merit_flowdir_pipeline.MERIT_INTERACTIVE_MAX_WINDOW_CELLS",
+        "aihydro_watershed.delineation.merit_flowdir_pipeline.MERIT_INTERACTIVE_MAX_WINDOW_CELLS",
         10,
     )
-    with patch("ai_hydro.data.merit_manager.MeritDataManager") as MockMgr:
+    with patch("aihydro_watershed.merit.merit_manager.MeritDataManager") as MockMgr:
         inst = MockMgr.return_value
         inst.ensure_basin.return_value = FakeStatus()
         inst.flowdir_path.return_value = flowdir_path
@@ -411,14 +411,14 @@ def test_local_merit_scientific_mode_allows_caution_band(tmp_path, monkeypatch):
         official_merit_upa_km2=25.0,
     )
     monkeypatch.setattr(
-        "ai_hydro.analysis.delineation.merit_flowdir_pipeline.MERIT_INTERACTIVE_MAX_WINDOW_CELLS",
+        "aihydro_watershed.delineation.merit_flowdir_pipeline.MERIT_INTERACTIVE_MAX_WINDOW_CELLS",
         10,
     )
     monkeypatch.setattr(
-        "ai_hydro.analysis.delineation.merit_flowdir_pipeline.MERIT_SCIENTIFIC_MAX_WINDOW_CELLS",
+        "aihydro_watershed.delineation.merit_flowdir_pipeline.MERIT_SCIENTIFIC_MAX_WINDOW_CELLS",
         100,
     )
-    with patch("ai_hydro.data.merit_manager.MeritDataManager") as MockMgr:
+    with patch("aihydro_watershed.merit.merit_manager.MeritDataManager") as MockMgr:
         inst = MockMgr.return_value
         inst.ensure_basin.return_value = FakeStatus()
         inst.flowdir_path.return_value = flowdir_path
@@ -472,7 +472,7 @@ def test_merit_load_catchment_topology_merges_river_topology(tmp_path):
     catch.to_file(catch_dir / "cat_pfaf_77_MERIT_Hydro_v07_Basins_v01.shp")
     rivers.to_file(river_dir / "riv_pfaf_77_MERIT_Hydro_v07_Basins_v01.shp")
 
-    with patch("ai_hydro.data.merit_manager.MeritDataManager") as MockMgr:
+    with patch("aihydro_watershed.merit.merit_manager.MeritDataManager") as MockMgr:
         inst = MockMgr.return_value
         inst.catchment_shapefile_path.return_value = (
             catch_dir / "cat_pfaf_77_MERIT_Hydro_v07_Basins_v01.shp"
@@ -491,11 +491,11 @@ def test_merit_load_catchment_topology_merges_river_topology(tmp_path):
     assert "uparea" in topology.columns
 
 
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline._refine_terminal_catchment_with_flowdir")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_load_catchment_topology")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_check_basins_region_cache")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline._refine_terminal_catchment_with_flowdir")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_load_catchment_topology")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_basins_region_cache")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
 def test_merit_basins_hybrid_assembles_topology_and_refines_terminal(
     mock_pfaf,
     mock_basins_cache,
@@ -553,8 +553,8 @@ def test_offline_snap_cache_uses_published_accum_by_default_without_deriving_upa
         accum_ready = False
         accum_path = None
 
-    with patch("ai_hydro.data.merit_manager.MeritDataManager") as MockMgr, patch(
-        "ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_build_local_upstream_area_cache",
+    with patch("aihydro_watershed.merit.merit_manager.MeritDataManager") as MockMgr, patch(
+        "aihydro_watershed.delineation.merit_flowdir_pipeline.merit_build_local_upstream_area_cache",
         side_effect=AssertionError("local upstream area must be explicit"),
     ):
         MockMgr.return_value.routing_region_cache.return_value = FakeStatus()
@@ -570,7 +570,7 @@ def test_offline_snap_cache_published_accum_ready_when_explicitly_staged():
         accum_ready = True
         accum_path = "/tmp/accum77.tif"
 
-    with patch("ai_hydro.data.merit_manager.MeritDataManager") as MockMgr:
+    with patch("aihydro_watershed.merit.merit_manager.MeritDataManager") as MockMgr:
         MockMgr.return_value.routing_region_cache.return_value = FakeStatus()
         result = merit_build_offline_snap_cache("77", offline_snap_asset="published_accum")
 
@@ -579,11 +579,11 @@ def test_offline_snap_cache_published_accum_ready_when_explicitly_staged():
     assert result["accum_path"] == "/tmp/accum77.tif"
 
 
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_basins_hybrid_delineate")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.local_merit_flowdir_pyflwdir")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_get_snap_reference")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_basins_hybrid_delineate")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.local_merit_flowdir_pyflwdir")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_get_snap_reference")
 def test_auto_cached_local_overflow_promotes_to_hybrid(
     mock_snap,
     mock_pfaf,
@@ -654,12 +654,12 @@ def test_auto_cached_local_overflow_promotes_to_hybrid(
     assert "HYBRID_ROUTING_USED" in result.data["quality_flags"]
 
 
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_basins_hybrid_delineate")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.local_merit_flowdir_pyflwdir")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.delineate_merit_gee")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_get_snap_reference")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_basins_hybrid_delineate")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.local_merit_flowdir_pyflwdir")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.delineate_merit_gee")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_get_snap_reference")
 def test_gee_memory_failure_recovers_through_hybrid_when_local_overflows(
     mock_snap,
     mock_pfaf,
@@ -732,8 +732,8 @@ def test_gee_memory_failure_recovers_through_hybrid_when_local_overflows(
     assert result.data["fallback_history"][2]["method"] == "merit_basins_hybrid"
 
 
-@patch("ai_hydro.analysis.delineation.pysheds_pipeline.delineate_fast")
-@patch("ai_hydro.analysis.delineation.nldi_point.delineate_nldi_at_point")
+@patch("aihydro_watershed.delineation.pysheds_pipeline.delineate_fast")
+@patch("aihydro_watershed.delineation.nldi_point.delineate_nldi_at_point")
 def test_auto_conus_uses_nldi_quick_when_area_in_range(mock_nldi, mock_fast):
     """CONUS auto without expected_area should use fast NLDI, not cloud DEM."""
     from ai_hydro.core import HydroMeta, HydroResult
@@ -760,10 +760,10 @@ def test_auto_conus_uses_nldi_quick_when_area_in_range(mock_nldi, mock_fast):
     assert result.data["workflow_steps"][0]["step"] == "nldi_comid_lookup"
 
 
-@patch("ai_hydro.analysis.delineation.pysheds_pipeline.delineate_fast")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.delineate_merit_gee")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
-@patch("ai_hydro.analysis.delineation.nldi_point.delineate_nldi_at_point")
+@patch("aihydro_watershed.delineation.pysheds_pipeline.delineate_fast")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.delineate_merit_gee")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
+@patch("aihydro_watershed.delineation.nldi_point.delineate_nldi_at_point")
 def test_auto_conus_falls_back_to_raw_dem_when_nldi_and_merit_fail(
     mock_nldi, mock_cache, mock_merit, mock_fast
 ):
@@ -794,8 +794,8 @@ def test_auto_conus_falls_back_to_raw_dem_when_nldi_and_merit_fail(
     assert result.data["workflow_steps"][-1]["step"] == "fallback_warning"
 
 
-@patch("ai_hydro.analysis.delineation.pysheds_pipeline.delineate_fast")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.delineate_merit_gee")
+@patch("aihydro_watershed.delineation.pysheds_pipeline.delineate_fast")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.delineate_merit_gee")
 def test_auto_global_uses_merit_gee_before_raw_dem(mock_merit, mock_fast):
     geom = box(77.1, 28.2, 77.4, 28.6)
     gdf = gpd.GeoDataFrame(geometry=[geom], crs=4326)
@@ -821,7 +821,7 @@ def test_auto_global_uses_merit_gee_before_raw_dem(mock_merit, mock_fast):
     from ai_hydro.analysis.delineation.router import delineate_from_point
 
     with patch(
-        "ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache",
+        "aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache",
         return_value={"pfaf_region": "45", "flowdir_ready": False},
     ):
         result = delineate_from_point(28.4, 77.2, method="auto")
@@ -874,11 +874,11 @@ def test_merit_bundle_delineation_synthetic():
     assert result.snap_quality == "area_targeted"
 
 
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.delineate_merit_gee")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.local_merit_flowdir_pyflwdir")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_get_snap_reference")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.delineate_merit_gee")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.local_merit_flowdir_pyflwdir")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_get_snap_reference")
 def test_auto_global_cached_flowdir_selects_local_merit(
     mock_snap,
     mock_pfaf,
@@ -942,11 +942,11 @@ def test_auto_global_cached_flowdir_selects_local_merit(
     assert result.data["official_merit_upa_km2"] == 1000.0
 
 
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.local_merit_flowdir_pyflwdir")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.delineate_merit_gee")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
-@patch("ai_hydro.analysis.delineation.merit_flowdir_pipeline.merit_get_snap_reference")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.local_merit_flowdir_pyflwdir")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.delineate_merit_gee")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
+@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_get_snap_reference")
 def test_merit_gee_memory_failure_recovers_with_cached_local_flowdir(
     mock_snap,
     mock_pfaf,
@@ -1027,7 +1027,7 @@ def test_merit_gee_memory_failure_recovers_with_cached_local_flowdir(
     ]
 
 
-@patch("ai_hydro.analysis.delineation.pysheds_pipeline.delineate_fast")
+@patch("aihydro_watershed.delineation.pysheds_pipeline.delineate_fast")
 def test_delineate_from_point_fast_mock(mock_fast):
     geom = box(-86.2, 40.3, -86.0, 40.5)
     gdf = gpd.GeoDataFrame(geometry=[geom], crs=4326)
