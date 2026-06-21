@@ -65,6 +65,11 @@ TOOL_TIERS: dict[str, int] = {
     "extract_hydrological_signatures":  1,
     "extract_geomorphic_parameters":    1,
     "compute_twi":                      1,
+    "map_flood_inundation":             1,
+    "map_flood_inundation_hydrograph":  1,
+    "run_inundation_physics_validation": 1,
+    "export_inundation_surrogate_dataset": 2,
+    "train_inundation_surrogate": 1,
     "create_cn_grid":                   1,
     "separate_baseflow":                1,
     "compute_flow_duration_curve":      1,
@@ -135,6 +140,8 @@ TOOL_TIERS: dict[str, int] = {
     "list_claims":                      3,
     "list_assumptions":                 3,
     "get_training_status":              3,
+    "get_inundation_physics_result":    3,
+    "get_inundation_surrogate_result":  3,
     "wait_for_job":                     3,
     "cancel_job":                       3,
     "list_jobs":                        3,
@@ -219,6 +226,19 @@ TOOL_TIERS: dict[str, int] = {
     "index_passages":                   2,
     "search_passages_tool":             2,
     "resolve_passage":                  3,
+    # ── Wave C: aihydro-lsh community plugin (global CAMELS) ─────────────
+    # Tier 1 → scientific artifact (101 scalar attrs / daily forcing);
+    # Tier 2 → workflow (batch, parity comparison);
+    # Tier 3 → discovery / status (families, attr info, recipe status).
+    "lsh_attributes":                   1,
+    "lsh_forcing":                      1,
+    "lsh_dynamic_attributes":           1,
+    "lsh_events":                       1,
+    "lsh_batch":                        2,
+    "lsh_compare_to_ref":               2,
+    "lsh_families":                     3,
+    "lsh_attribute_info":               3,
+    "lsh_recipe_status":                3,
 }
 
 
