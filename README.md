@@ -62,8 +62,12 @@ The [AI-Hydro VS Code extension](https://github.com/AI-Hydro/AI-Hydro) auto-dete
 | **Curve Number** | `create_cn_grid` | NRCS Curve Number grid from NLCD land cover + Polaris soils |
 | **Forcing** | `fetch_forcing_data` | Basin-averaged GridMET climate data (prcp, tmax, tmin, PET, srad, wind) |
 | **CAMELS** | `extract_camels_attributes` | Full CAMELS-US attribute set (671 gauges) via pygeohydro |
-| **Modelling** | `train_hydro_model` | Differentiable HBV-light (PyTorch) or NeuralHydrology LSTM |
+| **Modelling** | `train_hydro_model` | Differentiable HBV-light or NeuralHydrology zoo (LSTM · EA-LSTM · hybrid · forecast) with bootstrap CI |
 | **Modelling** | `get_model_results` | Retrieve cached model performance (NSE, KGE, RMSE) |
+| **Modelling** | `describe_model_space` | Introspect the full knob schema + per-backend availability |
+| **Modelling** | `propose_and_train` | Validate a `ModelSpec` and train returning provenance-stamped `HydroResult` |
+| **Modelling** | `run_autoresearch` | Run a CI-aware autoresearch episode (propose → train → paired-difference CI → keep/discard) |
+| **Modelling** | `get_leaderboard` | Retrieve the autoresearch leaderboard with defensibility-annotated episode summary |
 | **Session** | `start_session` | Initialize or resume a per-gauge research session |
 | **Session** | `get_session_summary` | Overview of computed and pending analysis slots |
 | **Session** | `clear_session` | Reset cached results to force re-computation |
@@ -264,7 +268,7 @@ Install only what you need:
 |-------|-------------|-----------------|
 | `[data]` | Streamflow, forcing, land cover, soil, CAMELS retrieval | `pip install aihydro-tools[data]` |
 | `[analysis]` | Watershed, signatures, TWI, geomorphic, curve number | `pip install aihydro-tools[analysis]` |
-| `[modelling]` | PyTorch differentiable HBV-light, NeuralHydrology LSTM | `pip install aihydro-tools[modelling]` |
+| `[modelling]` | HBV-light, NeuralHydrology zoo (LSTM · EA-LSTM · hybrid · forecast), CI-aware autoresearch loop, defensibility scoring | `pip install aihydro-tools[modelling]` |
 | `[viz]` | Matplotlib, Plotly, Folium visualisations | `pip install aihydro-tools[viz]` |
 | `[all]` | Everything above | `pip install aihydro-tools[all]` |
 
