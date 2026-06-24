@@ -27,7 +27,7 @@
 
 `aihydro-tools` is the Python backbone of the [AI-Hydro](https://github.com/AI-Hydro/AI-Hydro) platform. It turns a conversation with an AI agent into real hydrological computation — watershed delineation, streamflow retrieval, signature extraction, terrain analysis, and model calibration — with full structured provenance recorded automatically at every step.
 
-Tools are exposed via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), the open standard for agent-tool communication. Any AI model that supports MCP — Claude, GPT, Gemini — can call these tools directly, without writing a single line of processing code. And because `aihydro-tools` is built as a community platform, any researcher can register domain-specific tools (flood frequency, sediment transport, groundwater, remote sensing) via Python entry points, extending the ecosystem without touching the core.
+**144 validated, tiered tools** are exposed via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), the open standard for agent-tool communication. Any AI model that supports MCP — Claude, GPT, Gemini — can call these tools directly, without writing a single line of processing code. And because `aihydro-tools` is built as a community platform, any researcher can register domain-specific tools (flood frequency, sediment transport, groundwater, remote sensing) via Python entry points, extending the ecosystem without touching the core.
 
 ---
 
