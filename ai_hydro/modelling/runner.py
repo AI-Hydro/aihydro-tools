@@ -106,62 +106,121 @@ def run(artifact_dir: Path) -> None:
         session = HydroSession.load(session_id)
 
         usgs_gauge_id = session.site_id or session_id
-        fw = (framework or "hbv").lower().replace("-", "").replace("_", "")
 
-        if fw in ("hbv", "hbvlight", "differentiable", "hydrodl2"):
-            from ai_hydro.modelling.conceptual.hbv import train_hbv_light
-            result = train_hbv_light(
-                gauge_id=usgs_gauge_id,
-                session=session,
-                output_dir=artifact_dir,
-                train_start=train_start,
-                train_end=train_end,
-                test_start=test_start,
-                test_end=test_end,
-                epochs=epochs,
-                n_restarts=n_restarts,
-                learning_rate=learning_rate,
+        # ── M1+ path: ModelSpec-based dispatch ────────────────────────────────
+        # propose_and_train embeds the full validated spec in config["spec"].
+        # This path uses the clean aihydro_modelling.train() contract, attaches
+        # bootstrap CI, and calls post_run() so the result lands in the run-log.
+        spec_dict = cfg.get("spec")
+        run_id_hint: str | None = cfg.get("run_id")
+
+        if spec_dict:
+            from aihydro_modelling.spec import ModelSpec
+            from aihydro_modelling.train import train as _mod_train
+            from ai_hydro.modelling.metrics import extract_basin_data
+
+            spec = ModelSpec.model_validate(spec_dict)
+            n_restarts_total = spec.n_restarts if spec.backend == "hbv" else 1
+
+            _write_status(
+                artifact_dir, job_id, "running",
+                progress={"restarts_done": 0, "restarts_total": n_restarts_total,
+                          "current_nse": None},
             )
-        elif fw in ("neuralhydrology", "nh", "lstm"):
-            from ai_hydro.modelling.neural.lstm import train_neural_hydrology
-            result = train_neural_hydrology(
-                gauge_id=usgs_gauge_id,
-                session=session,
-                output_dir=artifact_dir,
-                model=model,
-                train_start=train_start,
-                train_end=train_end,
-                val_start=val_start,
-                val_end=val_end,
-                test_start=test_start,
-                test_end=test_end,
-                epochs=epochs,
-                hidden_size=hidden_size,
-                learning_rate=learning_rate,
+
+            training_data, _ = extract_basin_data(session, usgs_gauge_id, artifact_dir)
+            hydro_result = _mod_train(spec, training_data)
+            result: dict = dict(hydro_result.data)
+            result["spec"] = spec.model_dump()
+
+            # Inject _run_id and write run-log entry via enforcement.post_run().
+            try:
+                from ai_hydro.mcp.enforcement import post_run as _post_run
+                result = _post_run("propose_and_train", session_id, result)
+            except Exception as exc:
+                log.warning("post_run for propose_and_train failed: %s", exc)
+                if run_id_hint:
+                    result["_run_id"] = run_id_hint
+
+            nse = result.get("nse")
+            result["performance_rating"] = (
+                "excellent" if nse is not None and nse >= 0.75 else
+                "satisfactory" if nse is not None and nse >= 0.50 else
+                "poor" if nse is not None else "unknown"
             )
+
+            session.model = result
+            from ai_hydro.citations import citation_keys_for_tool
+            session.add_citations(citation_keys_for_tool("train_hydro_model"))
+            session.save()
+
+            _write_status(
+                artifact_dir, job_id, "complete",
+                progress={"restarts_done": n_restarts_total,
+                          "restarts_total": n_restarts_total, "current_nse": nse},
+                partial_results=result,
+            )
+            log.info("propose_and_train complete: backend=%s NSE=%.4f",
+                     spec.backend, nse or 0)
+
         else:
-            raise ValueError(f"Unknown framework: {framework!r}")
+            # ── Legacy path: flat-param dispatch (train_hydro_model backward compat)
+            fw = (framework or "hbv").lower().replace("-", "").replace("_", "")
 
-        # Cache result in session
-        session.model = result
-        from ai_hydro.citations import citation_keys_for_tool
-        session.add_citations(citation_keys_for_tool("train_hydro_model"))
-        session.save()
+            if fw in ("hbv", "hbvlight", "differentiable", "hydrodl2"):
+                from ai_hydro.modelling.conceptual.hbv import train_hbv_light
+                result = train_hbv_light(
+                    gauge_id=usgs_gauge_id,
+                    session=session,
+                    output_dir=artifact_dir,
+                    train_start=train_start,
+                    train_end=train_end,
+                    test_start=test_start,
+                    test_end=test_end,
+                    epochs=epochs,
+                    n_restarts=n_restarts,
+                    learning_rate=learning_rate,
+                )
+            elif fw in ("neuralhydrology", "nh", "lstm"):
+                from ai_hydro.modelling.neural.lstm import train_neural_hydrology
+                result = train_neural_hydrology(
+                    gauge_id=usgs_gauge_id,
+                    session=session,
+                    output_dir=artifact_dir,
+                    model=model,
+                    train_start=train_start,
+                    train_end=train_end,
+                    val_start=val_start,
+                    val_end=val_end,
+                    test_start=test_start,
+                    test_end=test_end,
+                    epochs=epochs,
+                    hidden_size=hidden_size,
+                    learning_rate=learning_rate,
+                )
+            else:
+                raise ValueError(f"Unknown framework: {framework!r}")
 
-        nse = result.get("nse")
-        result["performance_rating"] = (
-            "excellent" if nse is not None and nse >= 0.75 else
-            "satisfactory" if nse is not None and nse >= 0.50 else
-            "poor" if nse is not None else "unknown"
-        )
+            # Cache result in session
+            session.model = result
+            from ai_hydro.citations import citation_keys_for_tool
+            session.add_citations(citation_keys_for_tool("train_hydro_model"))
+            session.save()
 
-        _write_status(
-            artifact_dir, job_id, "complete",
-            progress={"restarts_done": n_restarts, "restarts_total": n_restarts,
-                      "current_nse": nse},
-            partial_results=result,
-        )
-        log.info("Training complete: NSE=%.4f", nse or 0)
+            nse = result.get("nse")
+            result["performance_rating"] = (
+                "excellent" if nse is not None and nse >= 0.75 else
+                "satisfactory" if nse is not None and nse >= 0.50 else
+                "poor" if nse is not None else "unknown"
+            )
+
+            _write_status(
+                artifact_dir, job_id, "complete",
+                progress={"restarts_done": n_restarts, "restarts_total": n_restarts,
+                          "current_nse": nse},
+                partial_results=result,
+            )
+            log.info("Training complete: NSE=%.4f", nse or 0)
 
     except Exception:
         tb = traceback.format_exc()

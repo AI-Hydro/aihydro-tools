@@ -24,7 +24,7 @@ Plugin citation support (Plugin)
 Plugin packages can declare citation metadata in pyproject.toml:
 
     [tool.aihydro.citation]
-    doi   = "10.5281/zenodo.XXXXXXX"
+    # doi = "add your released Zenodo DOI here"
     bibtex = '''
     @software{my_plugin,...}
     '''

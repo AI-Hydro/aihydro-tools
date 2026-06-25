@@ -30,17 +30,22 @@ jobs:
       - name: Install package + dev deps
         run: pip install -e ".[all,dev]" pyyaml
 
+      - name: Validate bench catalog schema
+        run: pytest tests/test_bench_schema.py -q
+
       - name: Run bench fixture tasks
         run: pytest tests/test_bench.py -m bench -v --tb=short
 
-      - name: Generate HRB scorecard
-        run: python bench/gen_scorecard.py --run --out hrb_scorecard.html
+      - name: Generate HRB scorecard and certification JSON
+        run: python bench/gen_scorecard.py --run --out hrb_scorecard.html --json-out hrb_certification.json
 
-      - name: Upload scorecard artifact
+      - name: Upload scorecard artifacts
         uses: actions/upload-artifact@v4
         with:
           name: hrb-scorecard
-          path: hrb_scorecard.html
+          path: |
+            hrb_scorecard.html
+            hrb_certification.json
           retention-days: 90
 
   bench-live:

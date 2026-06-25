@@ -66,6 +66,42 @@ STYLES: dict[str, dict[str, Any]] = {
         "weight": 2,
         "opacity": 1.0,
     },
+    "inundation_likely": {
+        "fillColor": "#1e88e5",
+        "fillOpacity": 0.45,
+        "color": "#0d47a1",
+        "strokeColor": "#0d47a1",
+        "strokeWidth": 1,
+        "weight": 1,
+        "opacity": 0.85,
+    },
+    "inundation_low": {
+        "fillColor": "#64b5f6",
+        "fillOpacity": 0.25,
+        "color": "#1565c0",
+        "strokeColor": "#1565c0",
+        "strokeWidth": 1,
+        "weight": 1,
+        "opacity": 0.6,
+    },
+    "inundation_high": {
+        "fillColor": "#0d47a1",
+        "fillOpacity": 0.55,
+        "color": "#002171",
+        "strokeColor": "#002171",
+        "strokeWidth": 1,
+        "weight": 1,
+        "opacity": 0.9,
+    },
+    "gfm_observed": {
+        "fillColor": "#ff6f00",
+        "fillOpacity": 0.35,
+        "color": "#e65100",
+        "strokeColor": "#e65100",
+        "strokeWidth": 2,
+        "weight": 2,
+        "opacity": 0.85,
+    },
 }
 
 
@@ -271,6 +307,50 @@ def push_tile_layer(
 
     except Exception as exc:
         log.warning("push_tile_layer failed (non-fatal): %s", exc)
+        return False
+
+
+def push_inundation_3d_manifest(
+    layer_id: str,
+    name: str,
+    manifest_path: str,
+    bounds_wgs84: list,
+    *,
+    auto_zoom: bool = False,
+    open_map: bool = True,
+    metadata: dict[str, str] | None = None,
+) -> bool:
+    """
+    Push a presentation-tier 3D inundation manifest to the map.
+
+    The VS Code MapEventWatcher reads the manifest and per-frame mesh JSON
+    files from disk and embeds them in layer metadata for the webview.
+    """
+    try:
+        _MAP_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+        event: dict[str, Any] = {
+            "id": layer_id,
+            "name": name,
+            "layerType": "inundation_3d",
+            "inundation3d": {"manifest_path": str(manifest_path)},
+            "geojson": "",
+            "style": {},
+            "autoZoom": auto_zoom,
+            "openMap": open_map,
+            "metadata": {
+                "presentation_tier": "flood_3d",
+                "inundation_3d_manifest_path": str(manifest_path),
+                "inundation_3d_bounds": json.dumps(bounds_wgs84),
+                **(metadata or {}),
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
+        event_file.write_text(json.dumps(event), encoding="utf-8")
+        log.debug("Inundation 3D manifest event written: %s → %s", layer_id, event_file.name)
+        return True
+    except Exception as exc:
+        log.warning("push_inundation_3d_manifest failed (non-fatal): %s", exc)
         return False
 
 

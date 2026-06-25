@@ -1,9 +1,14 @@
 """
-AI Modelling MCP tools (3 tools — 2.0.0).
+AI Modelling MCP tools (M1 — 5 primary tools + 4 infrastructure tools).
 
-train_hydro_model   — kickoff-only; returns {job_id} immediately (R2 compliant).
-get_training_status — poll a running/finished training job.
-get_model_results   — read cached model results from session.
+Primary (Tier 1):
+  describe_model_space  — introspect the full knob SearchSpace + availability.
+  propose_and_train     — validate a ModelSpec then kick off a training job.
+  train_hydro_model     — legacy flat-param kickoff (backward compat).
+  get_model_results     — read cached model results from session.
+
+Infrastructure (Tier 3):
+  get_training_status, wait_for_job, cancel_job, list_jobs
 """
 from __future__ import annotations
 
@@ -198,6 +203,10 @@ def _retrieve_hint(status: dict, job_id: str) -> str:
     kind = str(status.get("kind") or "").lower()
     if "data" in kind or "fetch" in kind:
         return f"get_data_fetch_result('{job_id}')"
+    if "inundation" in kind and "physics" in kind:
+        return f"get_inundation_physics_result('{job_id}')"
+    if "inundation" in kind and "surrogate" in kind:
+        return f"get_inundation_surrogate_result('{job_id}')"
     if "train" in kind or "model" in kind:
         return f"get_model_results(job_id='{job_id}')"
     # Generic fallback: get_training_status returns the full status.json (incl.
@@ -257,6 +266,445 @@ def wait_for_job(job_id: str, max_wait_seconds: int = _MAX_WAIT_SECONDS, poll_in
             time.sleep(interval)
     except Exception as e:
         log.error("wait_for_job failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def describe_model_space() -> str:
+    """
+    Return the full model SearchSpace + per-backend availability as JSON.
+
+    Describes every configurable knob (type, range/choices, default, which
+    backends it applies to, one-line meaning) and reports whether each backend
+    can actually run on this host (deps + device reality check).
+
+    Use this before calling propose_and_train so you know the valid action space
+    and don't waste compute on unavailable backends or out-of-range configs.
+
+    Returns JSON with two keys:
+      "backends": {name: {available, reason}}
+      "knobs":    {name: {type, choices?, min_val?, max_val?, default,
+                          backends?, description}}
+    """
+    try:
+        import json
+        import aihydro_modelling as m
+        return json.dumps(m.describe_space(), indent=2, default=str)
+    except Exception as e:
+        log.error("describe_model_space failed: %s", e)
+        import json
+        return json.dumps(_tool_error_to_dict(e))
+
+
+@mcp.tool()
+def propose_and_train(
+    spec_json: str,
+    session_id: str | None = None,
+    workspace_dir: str | None = None,
+) -> dict:
+    """
+    Validate a ModelSpec then kick off a training job if the spec is valid.
+
+    Unlike train_hydro_model (flat params, no pre-flight gate), this tool:
+      1. Parses spec_json → ModelSpec (typed, with per-backend conditionals).
+      2. Runs static pre-flight validation BEFORE touching the GPU or disk.
+         Invalid science (train/test overlap, seq_length > record, etc.) fails
+         fast with a teaching error explaining WHY and HOW to fix it.
+      3. Checks that the requested backend can run on this host.
+      4. If valid: starts the training job and returns {job_id} immediately.
+         Poll with wait_for_job(job_id); retrieve results with get_model_results.
+
+    spec_json : str
+        JSON string of ModelSpec fields.  Example:
+          {"backend": "hbv", "epochs": 300, "n_restarts": 5, "seed": 42,
+           "train_start": "2000-10-01", "train_end": "2007-09-30",
+           "test_start": "2007-10-01", "test_end": "2010-09-30"}
+
+        Call describe_model_space() first to see all valid fields and ranges.
+
+    session_id : str | None
+        Auto-resolved from chat context if omitted.
+
+    Returns {job_id, status, run_id, validation_passed, ...} or
+            {error: True, code: "VALIDATION_ERROR", errors: [...]} on failure.
+    """
+    import json as _json
+
+    try:
+        session_id = _resolve_session(session_id, None)
+
+        # ── Parse spec ────────────────────────────────────────────────────
+        import aihydro_modelling as m
+        try:
+            raw = _json.loads(spec_json)
+        except _json.JSONDecodeError as je:
+            return {
+                "error": True,
+                "code": "INVALID_JSON",
+                "message": f"spec_json is not valid JSON: {je}",
+                "hint": "Pass a JSON string — e.g. propose_and_train(spec_json='{\"backend\": \"hbv\"}')",
+            }
+
+        try:
+            spec = m.ModelSpec.model_validate(raw)
+        except Exception as ve:
+            return {
+                "error": True,
+                "code": "INVALID_SPEC",
+                "message": str(ve),
+                "hint": "Call describe_model_space() to see valid fields and ranges.",
+            }
+
+        # ── Static pre-flight validation ──────────────────────────────────
+        errors = m.validate(spec)
+        if errors:
+            return {
+                "error": True,
+                "code": "VALIDATION_ERROR",
+                "validation_passed": False,
+                "errors": errors,
+                "hint": (
+                    "Fix the errors listed above then retry. "
+                    "Call describe_model_space() to see valid ranges."
+                ),
+            }
+
+        # ── Backend availability check ─────────────────────────────────────
+        avail = m.availability()
+        backend_status = avail.get(spec.backend)
+        if backend_status is not None and not backend_status.available:
+            return {
+                "error": True,
+                "code": "BACKEND_UNAVAILABLE",
+                "validation_passed": True,  # spec is valid; host just can't run it
+                "backend": spec.backend,
+                "reason": backend_status.reason,
+                "hint": (
+                    "Pick an available backend (call describe_model_space() to see which) "
+                    "or install the required dependency."
+                ),
+            }
+
+        # ── Session prerequisite check ────────────────────────────────────
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+
+        if spec.is_neural:
+            required = ("watershed", "streamflow", "forcing")
+        else:
+            required = ("watershed", "forcing")
+
+        missing = [s for s in required if getattr(session, s) is None]
+        if missing:
+            return {
+                "error": True,
+                "code": "MISSING_PREREQUISITES",
+                "validation_passed": True,
+                "message": (
+                    f"Cannot train — session is missing: {missing}. "
+                    "Run: "
+                    + ", ".join({
+                        "watershed":  "delineate_watershed",
+                        "streamflow": "fetch_streamflow_data",
+                        "forcing":    "fetch_forcing_data",
+                    }[s] for s in missing)
+                ),
+            }
+
+        # ── Kick off job ──────────────────────────────────────────────────
+        job_id = uuid.uuid4().hex[:12]
+
+        ws = workspace_dir or session.workspace_dir
+        base = Path(ws) if ws else Path.home() / ".aihydro" / "models"
+        artifact_dir = base / "runs" / job_id
+
+        config = {
+            "job_id": job_id,
+            "session_id": session_id,
+            # M1 path: runner detects "spec" key and uses ModelSpec dispatch
+            "spec": spec.model_dump(),
+            "run_id": job_id,  # run_id == job_id in M1; distinct in M2 loop
+            # Legacy fields (kept so runner fallback works if spec parse fails)
+            "framework": spec.backend if spec.backend == "hbv" else "neuralhydrology",
+            "epochs": spec.epochs,
+            "n_restarts": spec.n_restarts,
+            "learning_rate": spec.learning_rate,
+            "train_start": spec.train_start,
+            "train_end": spec.train_end,
+            "val_start": spec.val_start,
+            "val_end": spec.val_end,
+            "test_start": spec.test_start,
+            "test_end": spec.test_end,
+            "hidden_size": spec.hidden_size,
+            "model": spec.nh_model or "cudalstm",
+        }
+
+        job = jobs.start_job(
+            kind="training",
+            runner_module="ai_hydro.modelling.runner",
+            config=config,
+            artifact_dir=artifact_dir,
+            log_name="train.log",
+            status_seed=_pending_status(job_id, artifact_dir),
+        )
+
+        return {
+            "job_id": job["job_id"],
+            "run_id": job_id,
+            "status": "pending",
+            "validation_passed": True,
+            "backend": spec.backend,
+            "artifact_dir": job["artifact_dir"],
+            "log_path": job["log_path"],
+            "started_at": job["started_at"],
+            "_note": (
+                f"Training started (backend={spec.backend}). "
+                f"Wait with wait_for_job('{job['job_id']}') — "
+                "a single call blocks server-side at zero token cost until done. "
+                f"Cancel with cancel_job('{job['job_id']}'). "
+                "Typical runtime: 2–15 min (HBV), 15–60 min (neural)."
+            ),
+            "wait_with": f"wait_for_job('{job['job_id']}')",
+        }
+
+    except Exception as e:
+        log.error("propose_and_train failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def run_autoresearch(
+    hypothesis: str,
+    session_id: str | None = None,
+    workspace_dir: str | None = None,
+    backend: str = "hbv",
+    strategy: str = "random",
+    budget_hours: float | None = None,
+    max_experiments: int | None = 20,
+    proxy_epochs: int = 50,
+    space_overrides_json: str | None = None,
+    prereg_id: str | None = None,
+    comparison_metric: str = "nse",
+    full_retrain: bool = True,
+) -> dict:
+    """
+    Launch a CI-aware autoresearch episode.
+
+    Proposes → trains (fast-proxy) → CI-aware keep/discard → repeats until the
+    budget is exhausted.  The champion is re-trained at full epochs if
+    full_retrain=True.  Every run is recorded to leaderboard.json in the job
+    artifact dir; retrieve with get_leaderboard(job_id).
+
+    The keep/discard decision uses a paired-difference bootstrap CI on
+    skill(challenger) − skill(incumbent): the challenger must be statistically
+    better (ci_lower > 0) to replace the incumbent — not merely higher on a
+    point estimate.
+
+    Parameters
+    ----------
+    hypothesis : str
+        One sentence describing what you expect to improve and why.
+        Recorded in the job and passed to register_research_plan if prereg_id
+        is supplied.
+    backend : str
+        "hbv" (default), "nh_lstm", "nh_ealstm", etc.
+        Call describe_model_space() to see available backends.
+    strategy : str
+        "random" (default) or "grid".
+    budget_hours : float | None
+        Wall-clock ceiling in hours (None = no time limit).
+    max_experiments : int | None
+        Max training runs (default 20).  Supply both for a joint cap.
+    proxy_epochs : int
+        Fast-proxy epoch count during search (default 50).  The winner is
+        re-trained at base_spec.epochs if full_retrain=True.
+    space_overrides_json : str | None
+        JSON string of ModelSpec overrides applied to the base spec, e.g.:
+        '{"n_restarts": 5, "epochs": 300}'.
+    prereg_id : str | None
+        Pre-registration ID from register_research_plan (recommended).
+    comparison_metric : str
+        "nse" (default) or "kge".
+    full_retrain : bool
+        Re-train the winning config at base_spec.epochs after search (default True).
+
+    Returns
+    -------
+    {job_id, status: "pending", ...} — poll with wait_for_job(job_id),
+    retrieve with get_leaderboard(job_id).
+    """
+    import json as _json
+
+    try:
+        session_id = _resolve_session(session_id, None)
+
+        # ── Parse overrides ───────────────────────────────────────────────
+        space_overrides: dict = {}
+        if space_overrides_json:
+            try:
+                space_overrides = _json.loads(space_overrides_json)
+            except _json.JSONDecodeError as je:
+                return {
+                    "error": True,
+                    "code": "INVALID_JSON",
+                    "message": f"space_overrides_json is not valid JSON: {je}",
+                }
+
+        # ── Backend availability check ────────────────────────────────────
+        import aihydro_modelling as m
+        avail = m.availability()
+        backend_status = avail.get(backend)
+        if backend_status is not None and not backend_status.available:
+            return {
+                "error": True,
+                "code": "BACKEND_UNAVAILABLE",
+                "backend": backend,
+                "reason": backend_status.reason,
+                "hint": (
+                    "Pick an available backend (call describe_model_space() to see which) "
+                    "or install the required dependency."
+                ),
+            }
+
+        # ── Session prerequisite check ────────────────────────────────────
+        from ai_hydro.session import HydroSession
+        session = HydroSession.load(session_id)
+
+        is_neural = backend.startswith("nh_")
+        required = ("watershed", "streamflow", "forcing") if is_neural else ("watershed", "forcing")
+        missing = [s for s in required if getattr(session, s) is None]
+        if missing:
+            return {
+                "error": True,
+                "code": "MISSING_PREREQUISITES",
+                "message": (
+                    f"Cannot autoresearch — session is missing: {missing}. "
+                    "Run: "
+                    + ", ".join({
+                        "watershed":  "delineate_watershed",
+                        "streamflow": "fetch_streamflow_data",
+                        "forcing":    "fetch_forcing_data",
+                    }[s] for s in missing)
+                ),
+            }
+
+        # ── Kick off job ──────────────────────────────────────────────────
+        job_id = uuid.uuid4().hex[:12]
+
+        ws = workspace_dir or session.workspace_dir
+        base = Path(ws) if ws else Path.home() / ".aihydro" / "models"
+        artifact_dir = base / "runs" / job_id
+
+        # Extract base periods from session forcing if available
+        forcing = getattr(session, "forcing", None) or {}
+        config: dict = {
+            "job_id":          job_id,
+            "session_id":      session_id,
+            "hypothesis":      hypothesis,
+            "backend":         backend,
+            "strategy":        strategy,
+            "budget_hours":    budget_hours,
+            "max_experiments": max_experiments,
+            "proxy_epochs":    proxy_epochs,
+            "space_overrides": space_overrides,
+            "prereg_id":       prereg_id,
+            "comparison_metric": comparison_metric,
+            "full_retrain":    full_retrain,
+            # Base spec periods (runner fills sensible defaults if absent)
+            "train_start":     forcing.get("train_start") or space_overrides.get("train_start"),
+            "train_end":       forcing.get("train_end")   or space_overrides.get("train_end"),
+            "test_start":      forcing.get("test_start")  or space_overrides.get("test_start"),
+            "test_end":        forcing.get("test_end")    or space_overrides.get("test_end"),
+        }
+
+        pending_status = {
+            "job_id": job_id,
+            "status": "pending",
+            "hypothesis": hypothesis,
+            "backend": backend,
+            "n_done": 0,
+            "n_total": max_experiments,
+        }
+
+        job = jobs.start_job(
+            kind="autoresearch",
+            runner_module="ai_hydro.mcp.search_runner",
+            config=config,
+            artifact_dir=artifact_dir,
+            log_name="train.log",
+            status_seed=pending_status,
+        )
+
+        return {
+            "job_id":          job["job_id"],
+            "status":          "pending",
+            "hypothesis":      hypothesis,
+            "backend":         backend,
+            "strategy":        strategy,
+            "max_experiments": max_experiments,
+            "budget_hours":    budget_hours,
+            "proxy_epochs":    proxy_epochs,
+            "comparison_metric": comparison_metric,
+            "prereg_id":       prereg_id,
+            "artifact_dir":    job["artifact_dir"],
+            "started_at":      job["started_at"],
+            "_note": (
+                f"Autoresearch started (backend={backend}, strategy={strategy}, "
+                f"max_experiments={max_experiments}). "
+                f"Wait with wait_for_job('{job['job_id']}'). "
+                f"Retrieve leaderboard with get_leaderboard('{job['job_id']}')."
+            ),
+            "wait_with":     f"wait_for_job('{job['job_id']}')",
+            "retrieve_with": f"get_leaderboard('{job['job_id']}')",
+        }
+
+    except Exception as e:
+        log.error("run_autoresearch kickoff failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def get_leaderboard(job_id: str) -> dict:
+    """
+    Return the autoresearch leaderboard for a completed or running job.
+
+    Reads leaderboard.json written by the search loop after every run.
+    Each entry records the proposed spec, achieved metrics, the CI comparison
+    result, and whether this config became the incumbent.
+
+    Returns the leaderboard entries + a summary (best metric, n_experiments,
+    n_incumbents).  Works on in-progress jobs (partial leaderboard) too.
+
+    job_id : str — from the run_autoresearch response.
+    """
+    try:
+        # Resolve artifact dir from job registry
+        status = jobs.get_job_status(job_id)
+        if status.get("error"):
+            return status
+
+        artifact_dir = Path(status.get("artifact_dir", ""))
+        if not artifact_dir.exists():
+            return {
+                "error": True,
+                "code": "ARTIFACT_DIR_NOT_FOUND",
+                "job_id": job_id,
+                "artifact_dir": str(artifact_dir),
+            }
+
+        from aihydro_modelling.leaderboard import read_leaderboard, leaderboard_summary
+        entries = read_leaderboard(artifact_dir)
+        summary = leaderboard_summary(entries)
+
+        return {
+            "job_id":      job_id,
+            "job_status":  status.get("status"),
+            "summary":     summary,
+            "leaderboard": entries,
+        }
+
+    except Exception as e:
+        log.error("get_leaderboard failed: %s", e)
         return _tool_error_to_dict(e)
 
 

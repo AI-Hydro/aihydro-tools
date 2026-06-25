@@ -6,6 +6,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.1.0] — 2026-06-25
+
+### Added
+
+- Production-hardened HydroResearch-Bench / `aihydro-bench`: packaged benchmark code/data, schema validation, machine-readable certification JSON, installed CLI smoke support, and CI artifacts.
+- Defensible flood inundation and meta-modelling tool surfaces from the `feat/result-contract` branch.
+- `ARCHITECTURE.md` documenting the meta-package boundaries, `aihydro-data`-first live benchmark rule, and optional modelling dependency policy.
+
+### Fixed
+
+- Tightened base install dependency bounds to the compatible published line: `aihydro-core[contracts]>=0.2,<0.3`, `aihydro-data>=0.2.1,<0.3`, and `aihydro-watershed>=0.1,<0.2`.
+- Kept `aihydro-modelling` behind the `modelling` extra until it is published on PyPI, preserving base install resolution.
+
+---
+
 ## [2.0.0] — 2026-06-15
 
 This major release cuts the accumulated Phase 1–5 work (defensibility core, fleet
@@ -16,6 +31,8 @@ down this file (PyPI latest was 1.7.0).
 
 ### Added
 
+- **HydroResearch-Bench production hardening**: `bench/schema.py` validates the benchmark catalog (`schema_version`, suite id, task ids, marks, call styles, required rationale, target package defaults, and oracle assertions); `tests/test_bench_schema.py` makes schema validity a CI gate. `bench/gen_scorecard.py` now validates the catalog before rendering and can emit machine-readable certification JSON via `--json-out`; CI uploads both `hrb_scorecard.html` and `hrb_certification.json`. `aihydro-bench` console entry point exposes the scorecard/certification generator from installed wheels. `bench/BENCHMARK.md` updated to the current B-001–B-079 suite and data-access policy.
+- **Install-resolution hardening**: base dependencies now require the compatible `aihydro-core[contracts]>=0.2,<0.3`, `aihydro-data>=0.2.1,<0.3`, and `aihydro-watershed>=0.1,<0.2` line. `aihydro-modelling` is no longer a base dependency until published on PyPI; it remains behind the `modelling` extra.
 - **Token-efficient long-job waiting — `wait_for_job(job_id)`** (`tools_modelling.py`, Tier 3): blocks server-side, polling the job's `status.json` every few seconds at zero token cost, and returns only when the job reaches a terminal state (or after a ~280 s budget, just under the MCP transport timeout — then the agent calls once more). Replaces the previous pattern of calling `get_job_status` in a loop, where every poll was a full LLM turn re-reading the whole context. Returns a terse status plus a `retrieve_with` hint; `train_hydro_model` and `data_fetch_background` now point at it. Added to the `execution` discovery domain.
 - **Phase 5.2 — HydroResearch-Bench artifact**: `bench/gen_scorecard.py` — self-contained HTML scorecard generator over the 60 benchmark tasks (B-001–B-060). `--run` mode executes pytest with JUnit XML and overlays per-task pass/fail; catalog mode renders the task inventory. Tasks grouped by 16 categories with color-coded status badges and a summary grid (total/passed/failed/skipped/live/pass-rate). CI (`bench.yml`) generates the scorecard after every fixture run and uploads it as the `hrb-scorecard` artifact (90-day retention). `bench/BENCHMARK.md` — standalone benchmark documentation (category table, oracle-operator reference, task format, usage).
 - **Phase 4.4 — Agent-native map control**: three new Tier-2 MCP tools in `tools_map.py` — `map_fly_to` (smooth camera navigation to a lon/lat/zoom via deck.gl `FlyToInterpolator`), `map_add_layer_from_run` (reads a session's `_run_log`, auto-detects GeoJSON in `key_outputs`, pushes it as a provenance-tagged layer with `run_id`/`session_id` metadata), and `map_set_time_range` (drives the map time slider / `BrushContext`). New push helpers in `map_commands.py`: `push_fly_to`, `push_add_layer_from_run`, `push_set_time_range`.

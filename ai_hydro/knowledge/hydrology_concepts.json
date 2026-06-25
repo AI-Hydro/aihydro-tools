@@ -100,5 +100,27 @@
 			"Priestley-Taylor",
 			"Hargreaves"
 		]
+	},
+	"flood_inundation_hand": {
+		"definition": "Terrain-index flood mapping: Height Above Nearest Drainage (HAND) combined with a stage from discharge (synthetic rating curve) to estimate depth = max(0, stage - HAND) and inundation extent.",
+		"scope": [
+			"fluvial",
+			"steady-state",
+			"level-pool",
+			"single DEM resolution"
+		],
+		"limitations": [
+			"Not for pluvial, coastal, or compound flooding",
+			"Synthetic rating curves omit observed channel bathymetry",
+			"Plain HAND fails at confluences — use level-path/GMS",
+			"DEM resolution caps urban and small-stream accuracy"
+		],
+		"uncertainty": "Express via Manning's n and SRC parameter sweep (low/likely/high extent band)",
+		"validation": "Hindcast vs Sentinel-1 GFM SAR for known event date (CSI/POD/FAR)",
+		"references": [
+			"NOAA OWP inundation-mapping (HAND operational FIM)",
+			"Aristizabal et al. (2023) GMS HAND for NWM",
+			"Garousi-Nejad et al. (2019) HAND terrain enhancements"
+		]
 	}
 }

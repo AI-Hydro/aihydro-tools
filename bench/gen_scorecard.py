@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import subprocess
 import sys
 import tempfile
@@ -24,7 +25,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from bench.schema import certification_payload, load_tasks as load_schema_tasks, validate_catalog
 
 BENCH_DIR = Path(__file__).parent
 TASKS_YAML = BENCH_DIR / "tasks.yaml"
@@ -71,8 +76,7 @@ CATEGORY_LABEL = {
 
 
 def load_tasks() -> list[dict[str, Any]]:
-    raw = yaml.safe_load(TASKS_YAML.read_text(encoding="utf-8"))
-    return raw.get("tasks", [])
+    return load_schema_tasks(TASKS_YAML)
 
 
 def run_pytest(extra_args: list[str]) -> dict[str, str]:
@@ -292,11 +296,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate HydroResearch-Bench scorecard")
     parser.add_argument("--run", action="store_true", help="Execute pytest before rendering")
     parser.add_argument("--out", default="hrb_scorecard.html", help="Output HTML path")
+    parser.add_argument("--json-out", default=None, help="Optional certification JSON output path")
     parser.add_argument("pytest_args", nargs="*", help="Extra args forwarded to pytest")
     args = parser.parse_args()
 
     tasks = load_tasks()
     print(f"Loaded {len(tasks)} tasks from {TASKS_YAML}")
+    issues = validate_catalog(TASKS_YAML)
+    if issues:
+        for issue in issues:
+            print(f"schema issue: {issue.task_id} {issue.field}: {issue.message}", file=sys.stderr)
+        raise SystemExit(f"HydroResearch-Bench catalog schema invalid ({len(issues)} issue(s))")
 
     results: dict[str, str] = {}
     if args.run:
@@ -306,6 +316,18 @@ def main() -> None:
     out_path = Path(args.out)
     out_path.write_text(render_html(tasks, results, ran=args.run), encoding="utf-8")
     print(f"Scorecard written → {out_path.resolve()}")
+
+    if args.json_out:
+        try:
+            git_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=BENCH_DIR.parent, text=True, stderr=subprocess.DEVNULL
+            ).strip()
+        except Exception:
+            git_sha = None
+        payload = certification_payload(path=TASKS_YAML, results=results, git_sha=git_sha)
+        json_path = Path(args.json_out)
+        json_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        print(f"Certification JSON written → {json_path.resolve()}")
 
 
 if __name__ == "__main__":

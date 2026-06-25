@@ -1,12 +1,16 @@
-# aihydro-bench task specs — v1 (2026-05-08, Sprint 2 adds B-021 to B-023)
+# aihydro-bench / HydroResearch-Bench task specs
 #
-# 23 frozen, human-adjudicated benchmark tasks.
+# Frozen, human-adjudicated benchmark tasks for AI-Hydro scientific correctness
+# and agent-tool governance. Fixture tasks must not perform network access; live
+# tasks are explicitly marked and should route data through aihydro-data or the
+# installed package under test, never through ad hoc benchmark fetchers.
+#
 # Tasks are split into two pytest marks:
 #   bench       — no network required; runs on every push (CI-safe)
-#   bench_live  — requires USGS / GridMET APIs; runs nightly
+#   bench_live  — requires live APIs; runs nightly/manual only
 #
-# Each task specifies:
-#   id, name, tier, mark, category, call_style, assertions
+# Each task specifies or inherits:
+#   id, name, tier, mark, category, call_style, target_package, assertions
 #
 # call_style:
 #   mcp_tool   — call the named MCP tool function directly with kwargs
@@ -17,6 +21,15 @@
 #   - Addor et al. (2017) CAMELS dataset, HESS 21:5293-5313
 #   - Sawicz et al. (2011) Catchment classification, WRR 47:W11520
 #   - USGS StreamStats published basin attributes
+
+schema_version: 1
+suite_id: hydroresearch-bench
+default_target_package: aihydro-tools
+data_access_policy: >
+  Fixture tasks are offline and deterministic. Live tasks may use network access
+  only when explicitly marked bench_live; live hydrologic data access should be
+  exercised through aihydro-data or the installed package under test rather than
+  direct benchmark-specific fetch logic.
 
 tasks:
 
@@ -1866,3 +1879,329 @@ tasks:
       - {path: error, op: absent}
       - {path: session_id, op: eq, expected: bench-hrb-060}
       - {path: n_warnings, op: eq, expected: 0}
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GROUP H: Flood inundation (HAND + SRC) — Phase 1 HRB
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: B-061
+    name: "Inundation scope metadata declares fluvial HAND single-source limits"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Every inundation output must carry scope metadata so users know the
+      method is fluvial HAND (single-source) and does not cover pluvial or
+      coastal flooding. Missing scope is a defensibility failure.
+    call:
+      module: inundation_validation
+      fn: bench_inundation_scope
+    assertions:
+      - {path: flood_type, op: eq, expected: fluvial}
+      - {path: hand_variant, op: eq, expected: single_source}
+      - {path: not_applicable, op: contains, expected: pluvial}
+
+  - id: B-062
+    name: "Extent validation: perfect overlap yields CSI=1 POD=1 FAR=0"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Contingency metrics must return perfect scores when modeled and
+      reference masks are identical — baseline sanity before GFM hindcasts.
+    call:
+      module: inundation_validation
+      fn: bench_contingency_perfect
+    assertions:
+      - {path: csi, op: eq, expected: 1.0}
+      - {path: pod, op: eq, expected: 1.0}
+      - {path: far, op: eq, expected: 0.0}
+
+  - id: B-063
+    name: "Summary card includes caveat and uncertainty band areas"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      The map/agent summary card must surface the life-safety caveat and
+      low/likely/high inundated areas for UX narration without reading raw JSON.
+    call:
+      module: inundation_validation
+      fn: bench_summary_card_synthetic
+    assertions:
+      - {path: caveat, op: present}
+      - {path: discharge_m3s, op: gt, expected: 0.0}
+      - {path: area_km2.likely, op: gt, expected: 0.0}
+      - {path: area_km2.low, op: present}
+      - {path: area_km2.high, op: present}
+
+  - id: B-064
+    name: "Extent validation: partial overlap CSI in adjudicated range"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Fixed 4×4 masks with 3 hits, 2 misses, 2 false alarms → CSI=3/7≈0.429.
+      Guards against regressions in contingency table arithmetic.
+    call:
+      module: inundation_validation
+      fn: bench_contingency_partial
+    assertions:
+      - {path: hits, op: eq, expected: 3}
+      - {path: csi, op: between, bounds: [0.42, 0.44]}
+      - {path: pod, op: eq, expected: 0.6}
+      - {path: far, op: eq, expected: 0.4}
+
+  - id: B-065
+    name: "Stage extent lookup is monotonic on synthetic HAND spike"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Stage→extent lookup must be monotonic (more stage → equal or larger
+      extent). Non-monotonic lookup breaks discharge scrubber UX.
+    call:
+      module: inundation_validation
+      fn: bench_stage_lookup_monotonic
+    assertions:
+      - {path: monotonic, op: eq, expected: true}
+      - {path: n_stages, op: ge, expected: 2}
+
+  - id: B-066
+    name: "GFM hindcast validation pipeline returns CSI with GFM label"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Hindcast mode must produce contingency metrics labelled GFM so agents
+      can attach skill scores to claims even when live GFM fetch is offline.
+    call:
+      module: inundation_gfm
+      fn: bench_gfm_hindcast_validation
+    assertions:
+      - {path: reference_label, op: eq, expected: GFM}
+      - {path: csi, op: between, bounds: [0.0, 1.0]}
+      - {path: skill_tier, op: present}
+
+  - id: B-067
+    name: "Exposure summary includes population placeholder estimate"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Phase 1 exposure must report order-of-magnitude population at risk using
+      a documented density placeholder until WorldPop zonal stats land.
+    call:
+      module: inundation_validation
+      fn: bench_exposure_with_population
+    assertions:
+      - {path: area_km2, op: gt, expected: 0.0}
+      - {path: population_exposed, op: gt, expected: 0.0}
+      - {path: population_method, op: eq, expected: density_placeholder}
+
+  - id: B-068
+    name: "Hydrograph frames: inundated area monotonic to peak discharge"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Animation frames must grow with discharge up to the hydrograph peak;
+      shrinking before peak indicates a stage/extent regression.
+    call:
+      module: inundation_hydrograph
+      fn: bench_hydrograph_frame_monotonic
+    assertions:
+      - {path: monotonic_to_peak, op: eq, expected: true}
+      - {path: n_frames, op: ge, expected: 3}
+
+  - id: B-069
+    name: "Exposure zonal population sum on synthetic raster"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      When a population raster aligns with the inundated mask, exposed
+      population must equal the zonal sum (not density placeholder).
+    call:
+      module: inundation_exposure
+      fn: bench_zonal_population
+    assertions:
+      - {path: population_exposed, op: eq, expected: 30.0}
+      - {path: population_method, op: eq, expected: zonal_sum}
+
+  - id: B-070
+    name: "HAND vs physics benchmark perfect overlap"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Validate-tier contingency metrics must return perfect skill when
+      reference and model masks are identical (oracle for benchmark wiring).
+    call:
+      module: inundation_physics
+      fn: bench_physics_benchmark_identity
+    assertions:
+      - {path: csi, op: eq, expected: 1.0}
+      - {path: pod, op: eq, expected: 1.0}
+      - {path: far, op: eq, expected: 0.0}
+
+  - id: B-071
+    name: "Physics backend availability probe shape"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Agents need a deterministic backend probe before kicking off validate-tier
+      jobs; missing SFINCS must not crash the probe.
+    call:
+      module: inundation_physics
+      fn: bench_physics_backend_check
+    assertions:
+      - {path: engine, op: eq, expected: sfincs}
+      - {path: has_install_hint, op: eq, expected: true}
+
+  - id: B-072
+    name: "Synthetic physics validation job report contract"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Offline validate-tier jobs must emit HAND + physics/proxy + benchmark
+      fields without network or SFINCS install.
+    call:
+      module: inundation_physics
+      fn: bench_physics_synthetic_job
+    assertions:
+      - {path: validation_tier, op: eq, expected: physics}
+      - {path: physics_method, op: eq, expected: morphological_proxy}
+      - {path: csi, op: between, bounds: [0.3, 1.0]}
+
+  - id: B-073
+    name: "3D water-surface mesh export contract"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Presentation-tier 3D meshes must emit non-empty vertex/triangle counts
+      for inundated cells without network access.
+    call:
+      module: inundation_3d
+      fn: bench_inundation_3d_mesh_contract
+    assertions:
+      - {path: vertex_count, op: gt, expected: 0}
+      - {path: triangle_count, op: gt, expected: 0}
+      - {path: has_bounds, op: eq, expected: true}
+
+  - id: B-074
+    name: "3D cinematic camera path matches frame count"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Hydrograph playback needs one camera keyframe per mesh frame along the
+      major AOI axis (presentation-only traverse).
+    call:
+      module: inundation_3d
+      fn: bench_camera_path_contract
+    assertions:
+      - {path: n_keyframes, op: eq, expected: 5}
+      - {path: monotonic_lon, op: eq, expected: true}
+
+  - id: B-075
+    name: "3D camera path follows D8 main stem when stack has fdir"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Cinematic playback should follow the HAND flow-direction main stem
+      rather than a blind AOI axis when fdir/acc are available.
+    call:
+      module: inundation_3d
+      fn: bench_stem_camera_path
+    assertions:
+      - {path: camera_path_source, op: eq, expected: flowdir_main_stem}
+      - {path: n_keyframes, op: eq, expected: 4}
+      - {path: stem_downstream, op: eq, expected: true}
+
+  - id: B-076
+    name: "3D camera path prefers MERIT flowline when embedded in stack"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      When MERIT river GeoJSON is attached to the HAND stack, cinematic playback
+      should follow the river polyline instead of the D8 stem trace.
+    call:
+      module: inundation_3d
+      fn: bench_merit_flowline_camera_path
+    assertions:
+      - {path: camera_path_source, op: eq, expected: merit_flowline}
+      - {path: n_keyframes, op: eq, expected: 4}
+      - {path: monotonic_lon, op: eq, expected: true}
+
+  - id: B-077
+    name: "3D manifest carries EGM96-lite vertical offset for CONUS 3DEP"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Terrarium terrain uses WGS84 ellipsoid heights; HAND mesh from 3DEP is orthometric.
+      Manifest must publish a presentation-only offset for map alignment.
+    call:
+      module: inundation_3d
+      fn: bench_terrain_vertical_offset
+    assertions:
+      - {path: mesh_vertical_datum, op: eq, expected: orthometric_navd88}
+      - {path: terrain_vertical_datum, op: eq, expected: wgs84_ellipsoid_terrarium}
+      - {path: offset_in_penobscot_range, op: eq, expected: true}
+
+  - id: B-078
+    name: "Surrogate dataset export contract (synthetic RLE round-trip)"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Phase 3 optional substrate must emit feature_schema, target_schema, and
+      lossless mask RLE for offline surrogate experiments.
+    call:
+      module: inundation_surrogate
+      fn: bench_surrogate_dataset_contract
+    assertions:
+      - {path: n_samples, op: eq, expected: 1}
+      - {path: target_schema, op: eq, expected: physics_inundated_mask_rle}
+      - {path: roundtrip_ok, op: eq, expected: true}
+
+  - id: B-079
+    name: "Morphology surrogate trains from exported dataset with CSI gain"
+    tier: 1
+    mark: bench
+    category: hrb
+    call_style: compute_fn
+    rationale: >
+      Phase 3 optional train job must fit a lightweight baseline from the
+      surrogate JSON substrate without torch or network access.
+    call:
+      module: inundation_surrogate
+      fn: bench_surrogate_train_contract
+    assertions:
+      - {path: framework, op: eq, expected: morphology_baseline}
+      - {path: csi_improved, op: eq, expected: true}
+      - {path: train_csi, op: between, bounds: [0.9, 1.0]}
