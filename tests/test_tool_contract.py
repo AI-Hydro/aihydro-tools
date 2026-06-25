@@ -53,6 +53,7 @@ TOOL_MODULES = sorted(TOOLS_DIR.glob("tools_*.py"))
 HEAVY_TOOL_MODULES = {
     "tools_modelling.py":   "train_hydro_model",   # kind=model_train
     "tools_data_async.py":  "data_fetch_background",  # kind=data_fetch
+    "tools_inundation_physics.py": "run_inundation_physics_validation",
 }
 
 

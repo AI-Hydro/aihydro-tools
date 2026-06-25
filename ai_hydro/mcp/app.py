@@ -77,6 +77,10 @@ TOOL_TIERS: dict[str, int] = {
     "compute_drought_index":            1,
     "compute_soil_loss_rusle":          1,
     "compute_design_hydrograph":        1,
+    "describe_model_space":             1,
+    "propose_and_train":                1,
+    "run_autoresearch":                 1,
+    "get_leaderboard":                  3,
     "train_hydro_model":                1,
     "get_model_results":                1,
     "add_claim":                        1,
@@ -231,6 +235,7 @@ TOOL_TIERS: dict[str, int] = {
     # Tier 2 → workflow (batch, parity comparison);
     # Tier 3 → discovery / status (families, attr info, recipe status).
     "lsh_attributes":                   1,
+    "lsh_geomorphic_attributes":        1,
     "lsh_forcing":                      1,
     "lsh_dynamic_attributes":           1,
     "lsh_events":                       1,

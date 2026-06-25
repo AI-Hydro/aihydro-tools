@@ -48,6 +48,11 @@ dependencies = [
     # Wave A3: delineation + characterization carve-out (shims in analysis/ and data/).
     # Install locally with: pip install -e /path/to/aihydro-watershed
     "aihydro-watershed>=0.1.0",
+    # Wave M0: modelling carve-out (HBV/LSTM/metrics live here now; the tools-side
+    # modelling/ modules are thin session→package adapters). Base package is light
+    # (numpy + pydantic + aihydro-core); torch/neuralhydrology come via the
+    # `modelling` extra below. Install locally with: pip install -e /path/to/aihydro-modelling
+    "aihydro-modelling>=0.3.0",
 ]
 
 # ── Optional extras (semantic layers) ────────────────────────────────────────
@@ -108,9 +113,11 @@ delineation = [
 # hybrid already uses (only stricter), so it could never succeed where the
 # hybrid failed and added a manual git-install step for no benefit.
 
-# Modelling: HBV-light (PyTorch), NeuralHydrology LSTM
+# Modelling: HBV-light (PyTorch), NeuralHydrology LSTM.
+# Heavy ML stacks now live behind the aihydro-modelling extras (the package the
+# tools-side modelling/ adapters delegate to).
 modelling = [
-    "torch>=2.0.0",
+    "aihydro-modelling[torch,nh]>=0.1.0",
 ]
 
 # MCP server extras (fastmcp is already a core dep; this group is a no-op placeholder)

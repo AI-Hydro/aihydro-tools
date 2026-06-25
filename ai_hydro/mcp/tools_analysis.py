@@ -1667,6 +1667,675 @@ async def compute_twi(
 
 
 # ============================================================================
+# Tool: Flood inundation mapping (HAND + SRC)
+# ============================================================================
+
+@mcp.tool()
+async def map_flood_inundation(
+    session_id: str | None = None,
+    discharge_m3s: float | None = None,
+    return_period: int | None = None,
+    use_design_peak: bool = False,
+    use_session_peak: bool = False,
+    hindcast_date: str | None = None,
+    validate_gfm: bool = True,
+    use_worldpop: bool = False,
+    manning_n: float = 0.035,
+    resolution: int = 30,
+    create_map: bool = True,
+    reference_extent_geojson: str | None = None,
+    feature: "str | list | None" = None,
+    geometry_geojson: str | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    """
+    Map fluvial flood inundation (HAND + synthetic Manning rating curve).
+
+    Produces depth raster + low/likely/high extent bands with scope metadata
+    and a plain-language caveat chip. Requires delineated watershed geometry.
+
+    Parameters
+    ----------
+    session_id : str | None
+        Research session (auto-resolved from chat when omitted).
+    discharge_m3s : float | None
+        Peak discharge in m³/s. Provide this OR return_period.
+    return_period : int | None
+        Return period in years (e.g. 100). Uses session.flood_frequency if
+        available, otherwise prompts to run compute_flood_frequency first.
+    use_design_peak : bool
+        When True and discharge is omitted, use peak_discharge_cms from
+        session.design_hydrograph (run compute_design_hydrograph first).
+    use_session_peak : bool
+        When True and discharge is omitted, use peak from session.streamflow
+        (fetch_streamflow_data or data_fetch streamflow).
+    hindcast_date : str | None
+        Event date (YYYY-MM-DD) for GFM hindcast validation. Fetches GFM reference
+        extent (fixture when live unavailable) and reports CSI/POD/FAR.
+    validate_gfm : bool
+        When hindcast_date is set, run GFM validation (default True).
+    use_worldpop : bool
+        When True, attempt WorldPop population sum inside likely extent (requires GEE auth).
+    manning_n : float
+        Likely Manning's n for SRC (default 0.035). Low/high band uses ± sweep.
+    reference_extent_geojson : str | None
+        Optional GeoJSON (string) of observed/reference inundation extent for
+        CSI/POD/FAR validation against the likely band.
+    resolution : int
+        DEM resolution in metres (10 / 30 / 60).
+    create_map : bool
+        Push depth raster and extent polygons to the AI-Hydro map panel.
+    feature : str | None
+        Feature id for multi-geometry sessions.
+    geometry_geojson : str | None
+        GeoJSON override when session watershed is wrong.
+    """
+    try:
+        session_id = _resolve_session(session_id, None)
+        from ai_hydro.session import HydroSession
+
+        session = HydroSession.load(session_id)
+
+        from ai_hydro.analysis.inundation_drivers import resolve_inundation_discharge
+
+        if geometry_geojson:
+            watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
+        else:
+            watershed_geojson = _resolve_session_geometry(session_id, None)
+
+        q, discharge_source, discharge_err = resolve_inundation_discharge(
+            session,
+            discharge_m3s=discharge_m3s,
+            return_period=return_period,
+            use_design_peak=use_design_peak,
+            use_session_peak=use_session_peak,
+        )
+        if discharge_err:
+            return discharge_err
+
+        from shapely.geometry import shape
+
+        gtype = watershed_geojson.get("type") if isinstance(watershed_geojson, dict) else None
+        if gtype == "FeatureCollection":
+            watershed_geom = shape(watershed_geojson["features"][0]["geometry"])
+        elif gtype == "Feature":
+            watershed_geom = shape(watershed_geojson["geometry"])
+        else:
+            watershed_geom = shape(watershed_geojson)
+
+        workspace = session.workspace_dir
+        if not workspace:
+            from ai_hydro.mcp.helpers import _maybe_set_workspace
+            _maybe_set_workspace(session)
+            workspace = session.workspace_dir
+        if not workspace:
+            workspace = str(Path.home() / ".aihydro" / "sessions" / session_id / "outputs")
+            Path(workspace).mkdir(parents=True, exist_ok=True)
+
+        prefix = _canonical_prefix(session_id, "inundation")
+
+        if ctx:
+            await ctx.report_progress(progress=0, total=5)
+
+        from ai_hydro.analysis.inundation import (
+            compute_inundation_from_stack,
+            extent_geojson_from_mask,
+            prepare_hand_stack,
+        )
+
+        stack = await asyncio.to_thread(
+            prepare_hand_stack,
+            watershed_geom,
+            resolution=resolution,
+        )
+        result = await asyncio.to_thread(
+            compute_inundation_from_stack,
+            stack,
+            float(q),
+            resolution=resolution,
+            manning_n=float(manning_n),
+        )
+
+        if ctx:
+            await ctx.report_progress(progress=3, total=5)
+
+        likely = result.bands["likely"]
+        data = result.to_dict()
+        data["depth_likely"] = likely.depth  # kept in-process for map push only
+
+        from ai_hydro.analysis.inundation_validation import (
+            build_exposure_summary,
+            build_summary_card,
+            validate_inundation_against_geojson,
+        )
+
+        bounds_wgs84 = _bounds_to_wgs84(result.bounds, result.crs)
+
+        summary_card = build_summary_card(data)
+        exposure = build_exposure_summary(
+            likely.inundated_mask,
+            cell_size_m=result.cell_size_m,
+            bounds=bounds_wgs84,
+        )
+        likely_extent_gj = extent_geojson_from_mask(
+            likely.inundated_mask,
+            transform=_affine_from_bounds(result.bounds, likely.inundated_mask.shape),
+            crs=result.crs,
+        )
+        from ai_hydro.analysis.inundation_exposure import enrich_exposure_summary
+
+        exposure = enrich_exposure_summary(
+            exposure,
+            likely.inundated_mask,
+            extent_geojson_wgs84=likely_extent_gj,
+            use_worldpop_gee=use_worldpop,
+        )
+        data["summary_card"] = summary_card
+        data["exposure"] = exposure
+
+        if reference_extent_geojson:
+            try:
+                ref_gj = (
+                    json.loads(reference_extent_geojson)
+                    if isinstance(reference_extent_geojson, str)
+                    else reference_extent_geojson
+                )
+                data["validation"] = validate_inundation_against_geojson(
+                    likely.inundated_mask,
+                    transform=_affine_from_bounds(result.bounds, likely.inundated_mask.shape),
+                    reference_geojson=ref_gj,
+                    reference_label="reference",
+                )
+            except Exception as val_err:
+                data["validation_error"] = str(val_err)
+
+        gfm_geojson_for_map = None
+        if hindcast_date and validate_gfm:
+            try:
+                from ai_hydro.analysis.inundation_gfm import resolve_gfm_reference
+
+                gfm_ref = resolve_gfm_reference(
+                    bounds_wgs84,
+                    hindcast_date,
+                    use_fixture=False,
+                )
+                gfm_geojson_for_map = gfm_ref.get("geojson")
+                data["gfm_reference"] = {
+                    k: v for k, v in gfm_ref.items() if k != "geojson"
+                }
+                data["validation_gfm"] = validate_inundation_against_geojson(
+                    likely.inundated_mask,
+                    transform=_affine_from_bounds(result.bounds, likely.inundated_mask.shape),
+                    reference_geojson=gfm_ref["geojson"],
+                    reference_label="GFM",
+                )
+                summary_card["validation_gfm"] = data["validation_gfm"]
+            except Exception as gfm_err:
+                data["gfm_validation_error"] = str(gfm_err)
+
+        d = {
+            "data": {k: v for k, v in data.items() if k != "depth_likely"},
+            "meta": {
+                "tool": "ai_hydro.analysis.inundation.compute_inundation",
+                "params": {
+                    "discharge_m3s": float(q),
+                    "discharge_source": discharge_source,
+                    "return_period": return_period,
+                    "use_design_peak": use_design_peak,
+                    "use_session_peak": use_session_peak,
+                    "hindcast_date": hindcast_date,
+                    "use_worldpop": use_worldpop,
+                    "manning_n": manning_n,
+                    "resolution": resolution,
+                },
+                "computed_at": _now_iso(),
+            },
+        }
+        session.put_result("inundation", "__legacy__", str(float(q)), d)
+        session.commit()
+
+        if create_map:
+            try:
+                import numpy as np
+                from ai_hydro.mcp.map_events import push_layer, push_raster_layer
+                from ai_hydro.analysis.plots import export_map_raster_bundle
+
+                depth_arr = likely.depth
+                depth_arr = np.where(np.isfinite(depth_arr) & (depth_arr > 0), depth_arr, np.nan)
+
+                scope_json = json.dumps(result.scope)
+                caveat = data.get("caveat", "")
+                meta_base = {
+                    "session_id": session_id,
+                    "source": "HAND+SRC",
+                    "scope": scope_json,
+                    "caveat": caveat,
+                    "discharge_m3s": str(float(q)),
+                    "discharge_source": discharge_source or "explicit",
+                    "stage_m": str(likely.stage_m),
+                    "stage_lookup_json": json.dumps(result.stage_lookup),
+                    "summary_card_json": json.dumps(summary_card),
+                    "exposure_json": json.dumps(exposure),
+                    "hindcast_date": hindcast_date or "",
+                    "tool": "map_flood_inundation",
+                    "units": "m",
+                }
+                files_saved: list[str] = []
+
+                bundle = export_map_raster_bundle(
+                    array=depth_arr,
+                    bounds=result.bounds,
+                    crs=result.crs,
+                    output_dir=workspace,
+                    name=f"{prefix}_depth",
+                    colormap="Blues",
+                )
+                if bundle:
+                    tile_path, geotiff_path, tile_bounds = bundle
+                    files_saved.extend([tile_path, geotiff_path])
+                    depth_rel = Path(geotiff_path).name
+                    push_raster_layer(
+                        layer_id=f"{prefix}_depth",
+                        name=f"Flood depth (Q={float(q):.0f} m³/s)",
+                        png_path=tile_path,
+                        bounds_wgs84=tile_bounds,
+                        colormap="Blues",
+                        opacity=0.72,
+                        metadata={
+                            **meta_base,
+                            "raster_source_path": geotiff_path,
+                            "workspace_path": depth_rel,
+                            "raster_native_crs": result.crs,
+                        },
+                    )
+
+                grid_affine = _affine_from_bounds(result.bounds, likely.inundated_mask.shape)
+                for band_key, preset in (
+                    ("low", "inundation_low"),
+                    ("likely", "inundation_likely"),
+                    ("high", "inundation_high"),
+                ):
+                    band = result.bands[band_key]
+                    gj = extent_geojson_from_mask(
+                        band.inundated_mask,
+                        transform=grid_affine,
+                        crs=result.crs,
+                    )
+                    extent_fname = f"{prefix}_extent_{band_key}.geojson"
+                    saved_extent = _workspace_write(session_id, extent_fname, gj)
+                    if saved_extent:
+                        files_saved.append(saved_extent)
+                    push_layer(
+                        layer_id=f"{prefix}_extent_{band_key}",
+                        name=f"Inundation extent ({band_key}, stage={band.stage_m:.2f} m)",
+                        geojson=gj,
+                        layer_type="polygon",
+                        style_preset=preset,
+                        auto_zoom=(band_key == "likely"),
+                        metadata={
+                            **meta_base,
+                            "uncertainty_band": band_key,
+                            "manning_n": str(band.manning_n),
+                            "area_km2": str(band.area_km2),
+                            **({"workspace_path": extent_fname} if saved_extent else {}),
+                        },
+                    )
+
+                if gfm_geojson_for_map and hindcast_date:
+                    push_layer(
+                        layer_id=f"{prefix}_gfm_observed",
+                        name=f"GFM observed ({hindcast_date})",
+                        geojson=gfm_geojson_for_map,
+                        layer_type="polygon",
+                        style_preset="gfm_observed",
+                        auto_zoom=False,
+                        metadata={
+                            **meta_base,
+                            "source": "GFM",
+                            "reference_date": hindcast_date,
+                            "swipe_suggest": "true",
+                        },
+                    )
+
+                try:
+                    from ai_hydro.analysis.inundation_3d import (
+                        INUNDATION_3D_CAVEAT,
+                        try_attach_merit_flowline,
+                        write_inundation_3d_manifest,
+                    )
+                    from ai_hydro.mcp.map_events import push_inundation_3d_manifest
+
+                    try_attach_merit_flowline(stack, bounds_wgs84)
+
+                    manifest_path = write_inundation_3d_manifest(
+                        workspace,
+                        prefix,
+                        stack,
+                        [{"index": 0, "depth": likely.depth, "discharge_m3s": float(q)}],
+                        bounds_wgs84=bounds_wgs84,
+                        caveat=INUNDATION_3D_CAVEAT,
+                    )
+                    push_inundation_3d_manifest(
+                        layer_id=f"{prefix}_3d",
+                        name=f"Flood 3D (Q={float(q):.0f} m³/s)",
+                        manifest_path=str(manifest_path),
+                        bounds_wgs84=bounds_wgs84,
+                        auto_zoom=False,
+                        metadata={
+                            **meta_base,
+                            "inundation_3d_caveat": INUNDATION_3D_CAVEAT,
+                        },
+                    )
+                except Exception as mesh_err:
+                    log.warning("Inundation 3D manifest push failed (non-fatal): %s", mesh_err)
+                    d["_3d_warning"] = str(mesh_err)
+
+                if files_saved:
+                    d["_files_saved"] = files_saved
+                    d["_workspace_dir"] = workspace
+            except Exception as map_err:
+                log.warning("Inundation map push failed (non-fatal): %s", map_err)
+                d["_map_warning"] = str(map_err)
+
+        if ctx:
+            await ctx.report_progress(progress=5, total=5)
+
+        reminder = _sync_reminder(session_id)
+        if reminder:
+            d["_sync_required"] = reminder
+        d = _post_run("map_flood_inundation", session_id, d)
+        return d
+    except Exception as e:
+        log.error("map_flood_inundation failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+async def map_flood_inundation_hydrograph(
+    session_id: str | None = None,
+    event_start_iso: str | None = None,
+    max_frames: int = 12,
+    push_extent_polygons: bool = True,
+    manning_n: float = 0.035,
+    resolution: int = 30,
+    create_map: bool = True,
+    geometry_geojson: str | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    """
+    Animate HAND inundation over a design hydrograph (time-slider layers).
+
+    Reads ``session.design_hydrograph`` (from compute_design_hydrograph) and
+    pushes one depth raster per subsampled timestep with ``time_start`` /
+    ``time_end`` metadata for the map time slider.
+
+    Parameters
+    ----------
+    event_start_iso : str | None
+        ISO datetime for hydrograph t=0 (defaults to today UTC midnight).
+    max_frames : int
+        Maximum number of animation frames (default 12).
+    """
+    try:
+        session_id = _resolve_session(session_id, None)
+        from ai_hydro.session import HydroSession
+
+        session = HydroSession.load(session_id)
+
+        if geometry_geojson:
+            watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
+        else:
+            watershed_geojson = _resolve_session_geometry(session_id, None)
+
+        dh = session.get("design_hydrograph") if hasattr(session, "get") else None
+        if not isinstance(dh, dict):
+            return {
+                "error": True,
+                "code": "MISSING_HYDROGRAPH",
+                "message": "No design_hydrograph in session.",
+                "recovery": "compute_design_hydrograph(return_period=100) then retry",
+                "next_tools": ["compute_design_hydrograph"],
+            }
+        dh_data = dh.get("data", dh)
+        time_hr = dh_data.get("time_hr") or []
+        discharge_cms = dh_data.get("discharge_cms") or []
+        if len(time_hr) < 2 or len(discharge_cms) < 2:
+            return {
+                "error": True,
+                "code": "INVALID_HYDROGRAPH",
+                "message": "design_hydrograph must contain time_hr and discharge_cms arrays.",
+            }
+
+        from shapely.geometry import shape
+
+        gtype = watershed_geojson.get("type") if isinstance(watershed_geojson, dict) else None
+        if gtype == "FeatureCollection":
+            watershed_geom = shape(watershed_geojson["features"][0]["geometry"])
+        elif gtype == "Feature":
+            watershed_geom = shape(watershed_geojson["geometry"])
+        else:
+            watershed_geom = shape(watershed_geojson)
+
+        workspace = session.workspace_dir
+        if not workspace:
+            from ai_hydro.mcp.helpers import _maybe_set_workspace
+            _maybe_set_workspace(session)
+            workspace = session.workspace_dir
+        if not workspace:
+            workspace = str(Path.home() / ".aihydro" / "sessions" / session_id / "outputs")
+            Path(workspace).mkdir(parents=True, exist_ok=True)
+
+        prefix = _canonical_prefix(session_id, "inundation_hydro")
+
+        if ctx:
+            await ctx.report_progress(progress=0, total=max_frames + 2)
+
+        from ai_hydro.analysis.inundation import INUNDATION_CAVEAT, INUNDATION_SCOPE
+        from ai_hydro.analysis.inundation_hydrograph import compute_inundation_hydrograph_frames
+
+        frames, stack = await asyncio.to_thread(
+            compute_inundation_hydrograph_frames,
+            watershed_geom,
+            time_hr,
+            discharge_cms,
+            event_start_iso=event_start_iso,
+            max_frames=max(3, int(max_frames)),
+            resolution=resolution,
+            manning_n=float(manning_n),
+        )
+
+        bounds_wgs84 = _bounds_to_wgs84(stack["bounds"], stack["crs"])
+        peak_q = max(float(x) for x in discharge_cms)
+
+        frame_summaries = [
+            {
+                "index": f.index,
+                "time_hr": f.time_hr,
+                "discharge_m3s": f.discharge_m3s,
+                "stage_m": f.stage_m,
+                "area_km2": f.area_km2,
+                "time_start": f.time_start,
+                "time_end": f.time_end,
+            }
+            for f in frames
+        ]
+
+        d = {
+            "data": {
+                "n_frames": len(frames),
+                "peak_discharge_cms": peak_q,
+                "frames": frame_summaries,
+                "caveat": INUNDATION_CAVEAT,
+            },
+            "meta": {
+                "tool": "map_flood_inundation_hydrograph",
+                "params": {
+                    "max_frames": max_frames,
+                    "resolution": resolution,
+                    "manning_n": manning_n,
+                    "event_start_iso": event_start_iso,
+                },
+                "computed_at": _now_iso(),
+            },
+        }
+
+        if create_map:
+            try:
+                import numpy as np
+                from ai_hydro.mcp.map_events import push_layer, push_raster_layer
+                from ai_hydro.analysis.plots import export_map_raster_bundle
+                from ai_hydro.analysis.inundation import extent_geojson_from_mask
+
+                scope_json = json.dumps({**INUNDATION_SCOPE, "dem_resolution_m": resolution})
+                grid_affine = _affine_from_bounds(stack["bounds"], frames[0].depth.shape)
+                for frame in frames:
+                    depth_arr = np.where(
+                        np.isfinite(frame.depth) & (frame.depth > 0),
+                        frame.depth,
+                        np.nan,
+                    )
+                    frame_name = f"{prefix}_f{frame.index:02d}"
+                    bundle = export_map_raster_bundle(
+                        array=depth_arr,
+                        bounds=stack["bounds"],
+                        crs=stack["crs"],
+                        output_dir=workspace,
+                        name=frame_name,
+                        colormap="Blues",
+                    )
+                    if not bundle:
+                        continue
+                    tile_path, geotiff_path, tile_bounds = bundle
+                    push_raster_layer(
+                        layer_id=f"{prefix}_depth_f{frame.index:02d}",
+                        name=f"Flood depth t={frame.time_hr:.1f}h (Q={frame.discharge_m3s:.0f})",
+                        png_path=tile_path,
+                        bounds_wgs84=tile_bounds,
+                        colormap="Blues",
+                        opacity=0.72,
+                        auto_zoom=(frame.index == 0),
+                        metadata={
+                            "session_id": session_id,
+                            "source": "HAND+SRC",
+                            "tool": "map_flood_inundation_hydrograph",
+                            "scope": scope_json,
+                            "caveat": INUNDATION_CAVEAT,
+                            "discharge_m3s": str(frame.discharge_m3s),
+                            "stage_m": str(frame.stage_m),
+                            "time_start": frame.time_start,
+                            "time_end": frame.time_end,
+                            "hydrograph_frame": str(frame.index),
+                            "area_km2": str(frame.area_km2),
+                            "units": "m",
+                            "raster_source_path": geotiff_path,
+                            "workspace_path": Path(geotiff_path).name,
+                            "raster_native_crs": stack["crs"],
+                        },
+                    )
+                    if push_extent_polygons and np.any(frame.inundated_mask):
+                        gj = extent_geojson_from_mask(
+                            frame.inundated_mask,
+                            transform=grid_affine,
+                            crs=stack["crs"],
+                        )
+                        push_layer(
+                            layer_id=f"{prefix}_extent_f{frame.index:02d}",
+                            name=f"Inundation extent t={frame.time_hr:.1f}h",
+                            geojson=gj,
+                            layer_type="polygon",
+                            style_preset="inundation_likely",
+                            auto_zoom=False,
+                            metadata={
+                                "session_id": session_id,
+                                "tool": "map_flood_inundation_hydrograph",
+                                "time_start": frame.time_start,
+                                "time_end": frame.time_end,
+                                "hydrograph_frame": str(frame.index),
+                                "discharge_m3s": str(frame.discharge_m3s),
+                            },
+                        )
+                    if ctx:
+                        await ctx.report_progress(progress=frame.index + 1, total=max_frames + 2)
+
+                try:
+                    from ai_hydro.analysis.inundation_3d import (
+                        INUNDATION_3D_CAVEAT,
+                        try_attach_merit_flowline,
+                        write_inundation_3d_manifest,
+                    )
+                    from ai_hydro.mcp.map_events import push_inundation_3d_manifest
+
+                    frame_payloads = [
+                        {
+                            "index": f.index,
+                            "depth": f.depth,
+                            "time_start": f.time_start,
+                            "time_end": f.time_end,
+                            "time_hr": f.time_hr,
+                            "discharge_m3s": f.discharge_m3s,
+                            "stage_m": f.stage_m,
+                            "hydrograph_frame": f.index,
+                        }
+                        for f in frames
+                    ]
+                    try_attach_merit_flowline(stack, bounds_wgs84)
+                    manifest_path = write_inundation_3d_manifest(
+                        workspace,
+                        prefix,
+                        stack,
+                        frame_payloads,
+                        bounds_wgs84=bounds_wgs84,
+                        caveat=INUNDATION_3D_CAVEAT,
+                    )
+                    push_inundation_3d_manifest(
+                        layer_id=f"{prefix}_3d",
+                        name=f"Flood 3D hydrograph ({len(frames)} frames)",
+                        manifest_path=str(manifest_path),
+                        bounds_wgs84=bounds_wgs84,
+                        auto_zoom=False,
+                        metadata={
+                            "session_id": session_id,
+                            "source": "HAND+SRC",
+                            "tool": "map_flood_inundation_hydrograph",
+                            "scope": scope_json,
+                            "caveat": INUNDATION_CAVEAT,
+                            "inundation_3d_caveat": INUNDATION_3D_CAVEAT,
+                            "n_frames": str(len(frames)),
+                        },
+                    )
+                except Exception as mesh_err:
+                    log.warning("Hydrograph 3D manifest push failed (non-fatal): %s", mesh_err)
+                    d["_3d_warning"] = str(mesh_err)
+            except Exception as map_err:
+                log.warning("Hydrograph map push failed (non-fatal): %s", map_err)
+                d["_map_warning"] = str(map_err)
+
+        session.put_result("inundation_hydrograph", "__legacy__", str(max_frames), d)
+        session.commit()
+
+        if ctx:
+            await ctx.report_progress(progress=max_frames + 2, total=max_frames + 2)
+
+        reminder = _sync_reminder(session_id)
+        if reminder:
+            d["_sync_required"] = reminder
+        d = _post_run("map_flood_inundation_hydrograph", session_id, d)
+        return d
+    except Exception as e:
+        log.error("map_flood_inundation_hydrograph failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+def _affine_from_bounds(bounds: list, shape: tuple[int, int]):
+    """Build rasterio Affine from [west,south,east,north] bounds and array shape."""
+    from rasterio.transform import from_bounds
+
+    west, south, east, north = bounds
+    rows, cols = shape
+    return from_bounds(west, south, east, north, cols, rows)
+
+
+# ============================================================================
 # Tool: Curve Number Grid
 # ============================================================================
 

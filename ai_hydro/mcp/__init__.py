@@ -9,6 +9,7 @@ from ai_hydro.mcp.app import mcp  # noqa: F401 — the FastMCP singleton
 # Import tool modules so their @mcp.tool() decorators execute and
 # register all built-in tools on the shared ``mcp`` instance.
 from ai_hydro.mcp import tools_analysis   # noqa: F401
+from ai_hydro.mcp import tools_inundation_physics  # noqa: F401 — Phase 3 validate-tier
 from ai_hydro.mcp import tools_session    # noqa: F401
 from ai_hydro.mcp import tools_modelling  # noqa: F401
 from ai_hydro.mcp import tools_project    # noqa: F401  — v1.2: project, literature, persona

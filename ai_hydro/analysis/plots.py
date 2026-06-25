@@ -486,3 +486,103 @@ def plot_raster_tile(
 
     log.info("Raster tile saved: %s  bounds=%s", out_path, bounds_wgs84)
     return out_path, bounds_wgs84
+
+
+def export_map_raster_bundle(
+    array: "np.ndarray",
+    bounds: list,
+    crs: str,
+    output_dir: str,
+    name: str,
+    colormap: str = "viridis",
+) -> Optional[tuple[str, str, list]]:
+    """Write native GeoTIFF + WGS84-warped map PNG with aligned geographic bounds.
+
+    The HAND/inundation grids are computed in a projected CRS (e.g. EPSG:5070).
+    Passing projected arrays directly to :func:`plot_raster_tile` with only
+    corner bounds reprojected to WGS84 misaligns the overlay on the map canvas.
+    This helper warps the array to EPSG:4326 before generating the PNG.
+
+    Returns ``(png_path, geotiff_path, bounds_wgs84)`` or ``None`` on failure.
+    """
+    arr = np.asarray(array, dtype=np.float32)
+    valid = arr[np.isfinite(arr)]
+    if len(valid) == 0:
+        log.warning("export_map_raster_bundle: no valid pixels for %s", name)
+        return None
+
+    try:
+        import rasterio
+        from rasterio.transform import from_bounds
+        from rasterio.warp import Resampling, calculate_default_transform, reproject, transform_bounds
+    except ImportError as exc:
+        log.warning("export_map_raster_bundle: rasterio unavailable (%s)", exc)
+        return None
+
+    west, south, east, north = [float(x) for x in bounds[:4]]
+    rows, cols = arr.shape
+    src_crs = crs or "EPSG:4326"
+    src_transform = from_bounds(west, south, east, north, cols, rows)
+
+    os.makedirs(output_dir, exist_ok=True)
+    geotiff_path = os.path.join(output_dir, f"{name}.tif")
+
+    # Native CRS GeoTIFF — analysis source for value probing / colormap editing.
+    with rasterio.open(
+        geotiff_path,
+        "w",
+        driver="GTiff",
+        height=rows,
+        width=cols,
+        count=1,
+        dtype="float32",
+        crs=src_crs,
+        transform=src_transform,
+        nodata=np.nan,
+    ) as dst:
+        dst.write(arr, 1)
+
+    dst_crs = "EPSG:4326"
+    dst_transform, dst_width, dst_height = calculate_default_transform(
+        src_crs,
+        dst_crs,
+        cols,
+        rows,
+        west,
+        south,
+        east,
+        north,
+    )
+    warped = np.full((dst_height, dst_width), np.nan, dtype=np.float32)
+    reproject(
+        source=arr,
+        destination=warped,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        resampling=Resampling.bilinear,
+        src_nodata=np.nan,
+        dst_nodata=np.nan,
+    )
+
+    bounds_wgs84 = list(transform_bounds(src_crs, dst_crs, west, south, east, north))
+    tile = plot_raster_tile(
+        array=warped,
+        bounds_wgs84=bounds_wgs84,
+        output_dir=output_dir,
+        name=name,
+        colormap=colormap,
+    )
+    if not tile:
+        return None
+
+    png_path, tile_bounds = tile
+    log.info(
+        "export_map_raster_bundle: %s → png=%s geotiff=%s bounds=%s",
+        name,
+        png_path,
+        geotiff_path,
+        tile_bounds,
+    )
+    return png_path, geotiff_path, tile_bounds

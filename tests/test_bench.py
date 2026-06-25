@@ -107,9 +107,56 @@ def _call_compute_fn(task: dict) -> dict:
     """
     Call an underlying compute_* function with synthetic data.
 
-    call.fn maps to a function in ai_hydro.analysis.signatures.
+    call.fn maps to a function in ai_hydro.analysis.signatures by default.
+    call.module selects another module (e.g. inundation_validation for HRB B-061+).
     call.data selects the synthetic series (humid or arid).
     """
+    call = task["call"]
+    fn_name = call["fn"]
+    module = call.get("module", "signatures")
+
+    if module == "inundation_validation":
+        from ai_hydro.analysis import inundation_validation as iv_mod
+        fn = getattr(iv_mod, fn_name)
+        kwargs = call.get("kwargs", {})
+        return fn(**kwargs) if kwargs else fn()
+
+    if module == "inundation_gfm":
+        from ai_hydro.analysis import inundation_gfm as gfm_mod
+        fn = getattr(gfm_mod, fn_name)
+        kwargs = call.get("kwargs", {})
+        return fn(**kwargs) if kwargs else fn()
+
+    if module == "inundation_hydrograph":
+        from ai_hydro.analysis import inundation_hydrograph as hg_mod
+        fn = getattr(hg_mod, fn_name)
+        kwargs = call.get("kwargs", {})
+        return fn(**kwargs) if kwargs else fn()
+
+    if module == "inundation_exposure":
+        from ai_hydro.analysis import inundation_exposure as exp_mod
+        fn = getattr(exp_mod, fn_name)
+        kwargs = call.get("kwargs", {})
+        return fn(**kwargs) if kwargs else fn()
+
+    if module == "inundation_physics":
+        from ai_hydro.analysis import inundation_physics as phys_mod
+        fn = getattr(phys_mod, fn_name)
+        kwargs = call.get("kwargs", {})
+        return fn(**kwargs) if kwargs else fn()
+
+    if module == "inundation_3d":
+        from ai_hydro.analysis import inundation_3d as d3_mod
+        fn = getattr(d3_mod, fn_name)
+        kwargs = call.get("kwargs", {})
+        return fn(**kwargs) if kwargs else fn()
+
+    if module == "inundation_surrogate":
+        from ai_hydro.analysis import inundation_surrogate as sur_mod
+        fn = getattr(sur_mod, fn_name)
+        kwargs = call.get("kwargs", {})
+        return fn(**kwargs) if kwargs else fn()
+
     from ai_hydro.analysis import signatures as sig_mod
     from bench.synthetic import (
         humid_daily_q_mm,
@@ -117,8 +164,6 @@ def _call_compute_fn(task: dict) -> dict:
         humid_daily_p_mm,
     )
 
-    call = task["call"]
-    fn_name = call["fn"]
     data_key = call.get("data", "humid")
 
     q = humid_daily_q_mm() if data_key == "humid" else arid_daily_q_mm()

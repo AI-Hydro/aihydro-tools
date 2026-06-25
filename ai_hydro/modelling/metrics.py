@@ -1,73 +1,45 @@
 """
-Shared Modelling Utilities
-==========================
+Shared Modelling Utilities (adapter shim)
+=========================================
 
-Metrics (NSE, KGE, RMSE), unit conversion helpers, device selection,
-and session data loaders used by both HBV and NeuralHydrology backends.
+The pure-compute utilities (metrics, unit conversions, device selection,
+forcing parsing) now live in the standalone ``aihydro_modelling`` package.
+This module re-exports them so existing imports keep working, and retains the
+*session-coupled* helpers that must stay in aihydro-tools (the package is
+data-source agnostic and never reaches into a HydroSession or the network).
+
+Carve-out boundary:
+  • Down in aihydro-modelling : the math + array parsing (re-exported below).
+  • Up here (session/fetch)    : ``_load_full_data``, ``fetch_camels_streamflow``,
+                                 ``extract_basin_data``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import math
 from pathlib import Path
 from typing import Any
 
+# Re-export the pure utilities from the package (single source of truth).
+from aihydro_modelling.metrics import (  # noqa: F401
+    _FORCING_MAP,
+    _USEFUL_STATIC,
+    _best_device,
+    _compute_metrics,
+    _hargreaves_pet,
+    _load_forcing_arrays,
+    _q_cfs_to_mm_day,
+    _q_cms_to_mm_day,
+    _safe_float,
+    bootstrap_compute_metrics,
+)
+
 log = logging.getLogger("ai_hydro.modelling")
 
-# Session forcing variable names → NeuralHydrology generic column names
-_FORCING_MAP: dict[str, str] = {
-    "prcp_mm":  "prcp(mm/day)",
-    "tmax_C":   "tmax(C)",
-    "tmin_C":   "tmin(C)",
-    "pet_mm":   "pet(mm/day)",
-    "srad_Wm2": "srad(W/m2)",
-    "wind_ms":  "wind(m/s)",
-    # fallbacks for older sessions that used raw GridMET keys
-    "pr":   "prcp(mm/day)",
-    "tmmx": "tmax(C)",
-    "tmmn": "tmin(C)",
-    "pet":  "pet(mm/day)",
-    "srad": "srad(W/m2)",
-    "vs":   "wind(m/s)",
-}
-
-# CAMELS attributes most useful as static inputs to LSTM
-_USEFUL_STATIC: list[str] = [
-    "area_gages2", "elev_mean", "slope_mean",
-    "p_mean", "pet_mean", "aridity", "frac_snow",
-    "baseflow_index", "runoff_ratio",
-    "soil_porosity", "soil_depth_pelletier", "max_water_content",
-    "geol_permeability", "carbonate_rocks_frac",
-    "frac_forest", "lai_max", "gvf_max",
-]
-
 
 # ──────────────────────────────────────────────────────────────────────
-# Unit helpers
-# ──────────────────────────────────────────────────────────────────────
-
-def _q_cms_to_mm_day(q_cms: float | None, area_km2: float) -> float | None:
-    """Convert discharge m³/s → basin-averaged runoff mm/day."""
-    if q_cms is None or area_km2 is None or area_km2 <= 0:
-        return None
-    return q_cms * 86400.0 / (area_km2 * 1e6) * 1000.0
-
-
-def _q_cfs_to_mm_day(q_cfs: float, area_km2: float) -> float:
-    """Convert discharge ft³/s → basin-averaged runoff mm/day."""
-    return q_cfs * 0.0283168 * 86400.0 / (area_km2 * 1e6) * 1000.0
-
-
-def _hargreaves_pet(tmean: float, tmax: float, tmin: float) -> float:
-    """Hargreaves (1985) reference ET estimate in mm/day."""
-    tr = max(0.0, tmax - tmin)
-    return max(0.0, 0.0023 * (tmean + 17.8) * tr ** 0.5 * 5.0)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# CAMELS streamflow loader
+# CAMELS streamflow loader (data fetch — stays up)
 # ──────────────────────────────────────────────────────────────────────
 
 def fetch_camels_streamflow(gauge_id: str, area_km2: float) -> dict[str, float]:
@@ -76,9 +48,7 @@ def fetch_camels_streamflow(gauge_id: str, area_km2: float) -> dict[str, float]:
 
     Uses pygeohydro.get_camels() which returns a 35-year (1980-2014)
     continuous record for 671 CONUS stations.  Discharge is in cfs;
-    this function converts to mm/day.
-
-    Returns empty dict if gauge_id is not in CAMELS.
+    converted to mm/day.  Returns empty dict if gauge_id is not in CAMELS.
     """
     try:
         import pygeohydro as gh
@@ -103,16 +73,16 @@ def fetch_camels_streamflow(gauge_id: str, area_km2: float) -> dict[str, float]:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Session data loaders
+# Session data loaders (stay up)
 # ──────────────────────────────────────────────────────────────────────
 
 def _load_full_data(session: Any, slot: str, gauge_id: str) -> dict:
     """
     Return the full data dict for a session slot, including daily arrays.
 
-    The MCP server strips large arrays from responses to save context,
-    but the session JSON on disk always retains them.  Falls back to the
-    workspace JSON file if arrays are missing from the in-memory session.
+    The MCP server strips large arrays from responses to save context, but the
+    session JSON on disk always retains them.  Falls back to the workspace JSON
+    file if arrays are missing from the in-memory session.
     """
     result = getattr(session, slot, None)
     if result is None:
@@ -134,145 +104,55 @@ def _load_full_data(session: Any, slot: str, gauge_id: str) -> dict:
     return data
 
 
-def _load_forcing_arrays(frc_data: dict) -> tuple[list, list, list, list, list]:
-    """
-    Extract prcp, tmax, tmin, pet, dates from forcing data dict.
-    Handles both new-style keys (prcp_mm, tmax_C, …) and legacy GridMET keys.
-    Returns: (dates, prcp, tmax, tmin, pet) — all lists.
-    """
-    dates = frc_data.get("dates", [])
-
-    def _get(new_key: str, old_key: str) -> list:
-        v = frc_data.get(new_key) or frc_data.get(old_key) or []
-        return [float(x) if x is not None else float("nan") for x in v]
-
-    prcp = _get("prcp_mm", "pr")
-    tmax = _get("tmax_C",  "tmmx")
-    tmin = _get("tmin_C",  "tmmn")
-    pet  = _get("pet_mm",  "pet")
-    return dates, prcp, tmax, tmin, pet
-
-
 # ──────────────────────────────────────────────────────────────────────
-# Evaluation metrics
+# Session → TrainingData bridge (the lsh/session→modelling wiring)
 # ──────────────────────────────────────────────────────────────────────
 
-def _compute_metrics(
-    obs: "np.ndarray", pred: "np.ndarray"
-) -> tuple[float | None, float | None, float | None]:
-    """Return (NSE, KGE, RMSE). None for each if obs has < 10 valid points."""
-    import numpy as np
-    valid = ~np.isnan(obs) & ~np.isnan(pred)
-    if valid.sum() < 10:
-        return None, None, None
-    o, p = obs[valid], pred[valid]
-    ss_res = np.sum((o - p) ** 2)
-    ss_tot = np.sum((o - o.mean()) ** 2)
-    nse  = float(1.0 - ss_res / (ss_tot + 1e-10))
-    r    = float(np.corrcoef(o, p)[0, 1])
-    alpha = float(np.std(p) / (np.std(o) + 1e-10))
-    beta  = float(np.mean(p) / (np.mean(o) + 1e-10))
-    kge  = float(1.0 - ((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2) ** 0.5)
-    rmse = float(np.sqrt(np.mean((o - p) ** 2)))
-    return nse, kge, rmse
-
-
-def bootstrap_compute_metrics(
-    obs: "np.ndarray",
-    pred: "np.ndarray",
-    *,
-    n: int = 500,
-    ci: float = 0.90,
-    random_state: int = 0,
-) -> dict[str, dict]:
+def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
     """
-    Bootstrap confidence intervals for NSE, KGE, RMSE by paired resampling.
+    Resolve a HydroSession + gauge into an aihydro_modelling.TrainingData bundle.
 
-    Returns a dict keyed by metric name, each value a dict matching
-    UncertaintyResult: {value, ci_low, ci_high, method, n, ci_level}.
+    This is the single place the data-source decisions live (CAMELS-vs-session,
+    m³/s→mm/day conversion, static-attribute assembly).  The package downstream
+    is data-agnostic and only sees the resolved plain arrays.
 
-    Returns an empty dict if there are fewer than 20 valid paired points.
+    Returns
+    -------
+    (TrainingData, data_source_str)
     """
-    import numpy as np
-    valid = ~np.isnan(obs) & ~np.isnan(pred)
-    if valid.sum() < 20:
-        return {}
-    o, p = obs[valid], pred[valid]
-    size = o.size
+    from aihydro_modelling import TrainingData
 
-    def _nse(idx):
-        oo, pp = o[idx], p[idx]
-        ss_res = np.sum((oo - pp) ** 2)
-        ss_tot = np.sum((oo - oo.mean()) ** 2)
-        return float(1.0 - ss_res / (ss_tot + 1e-10))
+    area_km2 = session.watershed["data"]["area_km2"]
 
-    def _kge(idx):
-        oo, pp = o[idx], p[idx]
-        r = float(np.corrcoef(oo, pp)[0, 1])
-        alpha = float(np.std(pp) / (np.std(oo) + 1e-10))
-        beta = float(np.mean(pp) / (np.mean(oo) + 1e-10))
-        return float(1.0 - ((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2) ** 0.5)
+    # Streamflow: CAMELS first, then session-cached USGS.
+    q_dict = fetch_camels_streamflow(gauge_id, area_km2)
+    using_camels = bool(q_dict)
+    if not using_camels:
+        sf_data = _load_full_data(session, "streamflow", gauge_id)
+        sf_idx = {d[:10]: i for i, d in enumerate(sf_data["dates"])}
+        for d, i in sf_idx.items():
+            q_mm = _q_cms_to_mm_day(sf_data["q_cms"][i], area_km2)
+            if q_mm is not None:
+                q_dict[d] = q_mm
 
-    def _rmse(idx):
-        oo, pp = o[idx], p[idx]
-        return float(np.sqrt(np.mean((oo - pp) ** 2)))
+    forcing = _load_full_data(session, "forcing", gauge_id)
 
-    nse_pt, kge_pt, rmse_pt = _compute_metrics(o, p)
+    # Static attributes for (EA-)LSTM: CAMELS attrs + watershed geo trio.
+    camels_data: dict = (session.camels or {}).get("data", {}) if session.camels else {}
+    ws_data: dict = session.watershed["data"]
+    static_attrs = dict(camels_data)
+    static_attrs.setdefault("area_gages2", ws_data.get("area_km2"))
+    static_attrs.setdefault("gauge_lat", ws_data.get("gauge_lat"))
+    static_attrs.setdefault("gauge_lon", ws_data.get("gauge_lon"))
 
-    rng = np.random.default_rng(random_state)
-    lo_q = (1.0 - ci) / 2.0
-    hi_q = 1.0 - lo_q
-    nse_b, kge_b, rmse_b = [], [], []
-    for _ in range(n):
-        idx = rng.integers(0, size, size=size)
-        try:
-            nse_b.append(_nse(idx))
-            kge_b.append(_kge(idx))
-            rmse_b.append(_rmse(idx))
-        except Exception:
-            continue
+    data_source = "CAMELS+GridMET" if using_camels else "USGS+GridMET"
 
-    def _ci(pts, pt):
-        if len(pts) < 10:
-            return float("nan"), float("nan")
-        arr = np.asarray(pts)
-        return float(np.quantile(arr, lo_q)), float(np.quantile(arr, hi_q))
-
-    out: dict[str, dict] = {}
-    if nse_pt is not None:
-        lo, hi = _ci(nse_b, nse_pt)
-        out["nse"] = {"value": nse_pt, "ci_low": lo, "ci_high": hi,
-                      "method": "bootstrap_iid", "n": size, "ci_level": ci}
-    if kge_pt is not None:
-        lo, hi = _ci(kge_b, kge_pt)
-        out["kge"] = {"value": kge_pt, "ci_low": lo, "ci_high": hi,
-                      "method": "bootstrap_iid", "n": size, "ci_level": ci}
-    if rmse_pt is not None:
-        lo, hi = _ci(rmse_b, rmse_pt)
-        out["rmse"] = {"value": rmse_pt, "ci_low": lo, "ci_high": hi,
-                       "method": "bootstrap_iid", "n": size, "ci_level": ci}
-    return out
-
-
-def _best_device() -> str:
-    """Select GPU, Apple Silicon MPS, or CPU."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            return "cuda:0"
-        # Note: MPS not used — HBV internal state init issues on MPS
-    except Exception:
-        pass
-    return "cpu"
-
-
-def _safe_float(lst: list | None, idx: int, default: float | None) -> float | None:
-    if lst is None or idx >= len(lst):
-        return default
-    v = lst[idx]
-    if v is None or (isinstance(v, float) and v != v):
-        return default
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
+    data = TrainingData(
+        gauge_id=gauge_id,
+        output_dir=Path(output_dir),
+        forcing=forcing,
+        q_by_date=q_dict,
+        static_attrs=static_attrs,
+        data_source=data_source,
+    )
+    return data, data_source
