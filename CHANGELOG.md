@@ -6,6 +6,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.1.0] — 2026-06-25
+
+### Added
+
+- Production-hardened HydroResearch-Bench / `aihydro-bench`: packaged benchmark code/data, schema validation, machine-readable certification JSON, installed CLI smoke support, and CI artifacts.
+- Defensible flood inundation and meta-modelling tool surfaces from the `feat/result-contract` branch.
+- `ARCHITECTURE.md` documenting the meta-package boundaries, `aihydro-data`-first live benchmark rule, and optional modelling dependency policy.
+
+### Fixed
+
+- Tightened base install dependency bounds to the compatible published line: `aihydro-core[contracts]>=0.2,<0.3`, `aihydro-data>=0.2.1,<0.3`, and `aihydro-watershed>=0.1,<0.2`.
+- Kept `aihydro-modelling` behind the `modelling` extra until it is published on PyPI, preserving base install resolution.
+
+---
+
 ## [2.0.0] — 2026-06-15
 
 This major release cuts the accumulated Phase 1–5 work (defensibility core, fleet
