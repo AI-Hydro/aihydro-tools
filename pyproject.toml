@@ -29,10 +29,9 @@ classifiers = [
 # ── Core dependencies (minimal — always installed) ──────────────────────────
 # fastmcp is required because the console script (aihydro-mcp) needs it.
 dependencies = [
-    # Robustness substrate. Install locally with:
-    #   pip install -e /path/to/aihydro-core
-    # Will become a versioned PyPI dep once aihydro-core cuts its first release.
-    "aihydro-core>=0.1.0",
+    # Robustness substrate. Version-bounded because downstream watershed/tools
+    # consume the pydantic-backed HydroResult contract.
+    "aihydro-core[contracts]>=0.2.0,<0.3",
     "numpy>=1.24.0",
     "pandas>=2.0.0",
     "pydantic>=2.0.0",
@@ -44,15 +43,13 @@ dependencies = [
     # Wave 2.5: hard dependency on the variable-centric data layer.
     # Surfaces 9 `data_*` MCP tools via the `aihydro.tools` entry-point group;
     # also rewires analysis/signatures and analysis/curve_number internally.
-    "aihydro-data>=0.1.7",
+    "aihydro-data>=0.2.1,<0.3",
     # Wave A3: delineation + characterization carve-out (shims in analysis/ and data/).
     # Install locally with: pip install -e /path/to/aihydro-watershed
-    "aihydro-watershed>=0.1.0",
-    # Wave M0: modelling carve-out (HBV/LSTM/metrics live here now; the tools-side
-    # modelling/ modules are thin session→package adapters). Base package is light
-    # (numpy + pydantic + aihydro-core); torch/neuralhydrology come via the
-    # `modelling` extra below. Install locally with: pip install -e /path/to/aihydro-modelling
-    "aihydro-modelling>=0.3.0",
+    "aihydro-watershed>=0.1.0,<0.2",
+    # Wave M0 modelling carve-out is optional until aihydro-modelling is published
+    # on PyPI. The tools-side modelling modules are thin adapters and should keep
+    # base `pip install aihydro-tools` resolvable without unpublished packages.
 ]
 
 # ── Optional extras (semantic layers) ────────────────────────────────────────
@@ -117,7 +114,7 @@ delineation = [
 # Heavy ML stacks now live behind the aihydro-modelling extras (the package the
 # tools-side modelling/ adapters delegate to).
 modelling = [
-    "aihydro-modelling[torch,nh]>=0.1.0",
+    "aihydro-modelling[torch,nh]>=0.6.0,<0.7",
 ]
 
 # MCP server extras (fastmcp is already a core dep; this group is a no-op placeholder)
