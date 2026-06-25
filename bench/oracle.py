@@ -13,6 +13,7 @@ Supported operators:
   gt        — value > expected
   ge        — value >= expected
   lt        — value < expected
+  le        — value <= expected
   approx    — |value - expected| <= tol  (tol: absolute, default 1e-6)
   approx_pct— |value - expected| / |expected| <= pct  (pct: 0-1, default 0.05)
   present   — value is not None
@@ -106,6 +107,10 @@ def evaluate(result: dict, assertions: list[dict]) -> list[AssertionResult]:
             elif op == "lt":
                 passed = actual is not None and actual < expected
                 msg = f"{path} < {expected!r}; got {actual!r}"
+
+            elif op == "le":
+                passed = actual is not None and actual <= expected
+                msg = f"{path} <= {expected!r}; got {actual!r}"
 
             elif op == "approx":
                 tol = a.get("tol", 1e-6)

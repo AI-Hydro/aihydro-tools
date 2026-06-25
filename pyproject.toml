@@ -152,6 +152,7 @@ dev = [
 [project.scripts]
 aihydro-mcp = "ai_hydro.mcp:main"
 aihydro-gee = "ai_hydro.gee.cli:main"
+aihydro-bench = "bench.gen_scorecard:main"
 
 # Community plugin tool entry point namespace.
 # Third-party packages add tools in their own pyproject.toml:
@@ -188,12 +189,13 @@ Issues = "https://github.com/AI-Hydro/aihydro-tools/issues"
 # ── Package discovery ─────────────────────────────────────────────────────────
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ai_hydro*"]
+include = ["ai_hydro*", "bench*"]
 
 [tool.setuptools.package-data]
 ai_hydro = []
 "ai_hydro.knowledge" = ["library_refs/*.json"]
 "ai_hydro.data" = ["merit_manifest.yaml"]
+bench = ["tasks.yaml", "BENCHMARK.md"]
 
 # ── Pytest ────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]

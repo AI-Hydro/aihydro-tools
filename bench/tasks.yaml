@@ -1,12 +1,16 @@
-# aihydro-bench task specs — v1 (2026-05-08, Sprint 2 adds B-021 to B-023)
+# aihydro-bench / HydroResearch-Bench task specs
 #
-# 23 frozen, human-adjudicated benchmark tasks.
+# Frozen, human-adjudicated benchmark tasks for AI-Hydro scientific correctness
+# and agent-tool governance. Fixture tasks must not perform network access; live
+# tasks are explicitly marked and should route data through aihydro-data or the
+# installed package under test, never through ad hoc benchmark fetchers.
+#
 # Tasks are split into two pytest marks:
 #   bench       — no network required; runs on every push (CI-safe)
-#   bench_live  — requires USGS / GridMET APIs; runs nightly
+#   bench_live  — requires live APIs; runs nightly/manual only
 #
-# Each task specifies:
-#   id, name, tier, mark, category, call_style, assertions
+# Each task specifies or inherits:
+#   id, name, tier, mark, category, call_style, target_package, assertions
 #
 # call_style:
 #   mcp_tool   — call the named MCP tool function directly with kwargs
@@ -17,6 +21,15 @@
 #   - Addor et al. (2017) CAMELS dataset, HESS 21:5293-5313
 #   - Sawicz et al. (2011) Catchment classification, WRR 47:W11520
 #   - USGS StreamStats published basin attributes
+
+schema_version: 1
+suite_id: hydroresearch-bench
+default_target_package: aihydro-tools
+data_access_policy: >
+  Fixture tasks are offline and deterministic. Live tasks may use network access
+  only when explicitly marked bench_live; live hydrologic data access should be
+  exercised through aihydro-data or the installed package under test rather than
+  direct benchmark-specific fetch logic.
 
 tasks:
 
