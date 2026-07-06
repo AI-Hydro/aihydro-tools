@@ -84,6 +84,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -208,6 +209,120 @@ def _contained_path(candidate: Path) -> Path | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# --------------------------------------------------------------------------- #
+# Run-log store — SQLite (WAL), one row per run_id
+#
+# _run_log used to be a plain dict stored inside the session's JSON slot
+# model, written via whole-session load->mutate->save. Three independent call
+# sites (enforcement.post_run, mcp/helpers._session_store, and put_result()
+# on every Store Protocol write) all did this, so two concurrent writers to
+# the same session could silently drop each other's run record (last save()
+# wins). Each run is now a single atomically-upserted SQLite row instead —
+# concurrent writers race at the row level, not the whole-session-blob level,
+# so no run is ever lost. get("_run_log")/set("_run_log", ...) below present
+# the exact same dict-shaped view every existing reader/writer already uses;
+# this is an internal storage swap, not an API change.
+# --------------------------------------------------------------------------- #
+
+def _run_log_db_path(session_id: str) -> Path:
+    safe = _safe_filename_component(session_id)
+    return _SESSIONS_DIR / f"{safe}.runlog.sqlite3"
+
+
+def _run_log_connect(session_id: str) -> sqlite3.Connection:
+    _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _run_log_db_path(session_id)
+    contained = _contained_path(path)
+    if contained is None:
+        raise ValueError(
+            f"Refusing to resolve run-log db outside SESSIONS_DIR: session_id={session_id!r}"
+        )
+    conn = sqlite3.connect(str(contained), timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, timestamp TEXT, entry_json TEXT)"
+    )
+    return conn
+
+
+def _run_log_record(session_id: str, run_id: str, entry: dict) -> None:
+    """
+    Atomic upsert of one run-log row. Stores `entry` verbatim as JSON — callers
+    (enforcement.py, mcp/helpers.py, put_result(), and test/bench fixtures) use
+    several different entry shapes (some carry tool_name/timestamp/key_outputs,
+    others — e.g. bench fixtures — store bare {metric: value} dicts resolved
+    directly by json-path), so this must round-trip whatever shape it's given
+    rather than assume one schema. Never raises — a logging failure must not
+    invalidate the tool call that triggered it.
+    """
+    if not run_id or not isinstance(entry, dict):
+        return
+    try:
+        conn = _run_log_connect(session_id)
+        try:
+            timestamp = str(entry.get("timestamp", "") or "")
+            conn.execute(
+                "INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?, ?, ?)",
+                (run_id, timestamp, json.dumps(entry, default=str)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("Failed to record run-log entry %s for session %s: %s", run_id, session_id, exc)
+
+
+def _run_log_read_all(session_id: str) -> dict:
+    """Reconstruct the {run_id: entry} dict view every existing reader expects,
+    with each entry exactly as it was written (see _run_log_record)."""
+    path = _run_log_db_path(session_id)
+    if not path.exists():
+        return {}
+    try:
+        conn = _run_log_connect(session_id)
+        try:
+            rows = conn.execute(
+                "SELECT run_id, entry_json FROM runs ORDER BY timestamp"
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("Failed to read run log for session %s: %s", session_id, exc)
+        return {}
+    out: dict[str, dict] = {}
+    for run_id, entry_json in rows:
+        try:
+            out[run_id] = json.loads(entry_json) if entry_json else {}
+        except json.JSONDecodeError:
+            out[run_id] = {}
+    return out
+
+
+def _run_log_migrate_legacy(session_id: str, legacy: dict) -> None:
+    """
+    One-time import of pre-SQLite _run_log entries found in a session's JSON
+    file. Idempotent (INSERT OR IGNORE) — safe to call on every load().
+    """
+    if not legacy:
+        return
+    try:
+        conn = _run_log_connect(session_id)
+        try:
+            for run_id, entry in legacy.items():
+                if not isinstance(entry, dict):
+                    continue
+                timestamp = str(entry.get("timestamp", "") or "")
+                conn.execute(
+                    "INSERT OR IGNORE INTO runs (run_id, timestamp, entry_json) VALUES (?, ?, ?)",
+                    (run_id, timestamp, json.dumps(entry, default=str)),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("Failed to migrate legacy run log for session %s: %s", session_id, exc)
 
 
 def _synopsis_from_result(result: dict | None) -> dict:
@@ -410,8 +525,33 @@ class HydroSession:
     # ------------------------------------------------------------------
 
     def set(self, slot: str, value: dict | None) -> None:
-        """Backward-compat: store a result under the __legacy__ feature."""
+        """Backward-compat: store a result under the __legacy__ feature.
+
+        _run_log is special-cased: it's SQLite-backed (see _run_log_record),
+        not stored in self._slots, so concurrent writers upsert individual
+        rows instead of racing on a whole-session load->mutate->save.
+        """
+        if slot == "_run_log":
+            self._set_run_log(value)
+            return
         self.put_result(slot, _LEGACY_FEATURE_ID, _LEGACY_PARAMS_KEY, value)
+
+    def _set_run_log(self, run_log_dict: dict | None) -> None:
+        """
+        Upsert every entry in run_log_dict into the SQLite run-log store.
+
+        Per-row atomic upsert: even if two processes race (each read a
+        slightly different snapshot via get() then both call set() with
+        their own accumulated dict), neither call ever deletes a row it
+        doesn't know about — the final state is the union of every writer's
+        entries, not whichever writer saved last.
+        """
+        if not isinstance(run_log_dict, dict):
+            return
+        for run_id, entry in run_log_dict.items():
+            if not isinstance(entry, dict):
+                continue
+            _run_log_record(self.session_id, run_id, entry)
 
     def get(self, slot: str) -> dict | None:
         """
@@ -421,7 +561,14 @@ class HydroSession:
         1. active_feature_id's most recent result (new @feature_tool path)
         2. __legacy__ most recent result (old tool path)
         3. None
+
+        _run_log is special-cased: reads go straight to the SQLite store
+        (see _run_log_read_all) and return the full {run_id: {...}} dict,
+        matching what every existing caller already expects.
         """
+        if slot == "_run_log":
+            return _run_log_read_all(self.session_id) or None
+
         by_feature = self._slots.get(slot)
         if not by_feature:
             return None
@@ -564,6 +711,15 @@ class HydroSession:
         return out
 
     def _record_put_result_run(self, product: str, value: dict | None) -> None:
+        """
+        Record a run-log entry for every Store Protocol write.
+
+        Writes a single atomically-upserted SQLite row (see _run_log_record)
+        instead of mutating an in-memory _run_log slot — this call fires on
+        every put_result(), so under the old dict-slot design it was the
+        highest-frequency of the three run-log writers and the most exposed
+        to the whole-session load->mutate->save race.
+        """
         if product == "_run_log" or not isinstance(value, dict):
             return
         raw_meta = value.get("meta")
@@ -577,17 +733,15 @@ class HydroSession:
             default=str,
         )
         run_id = value.get("run_id") or f"{product}.{hashlib.sha1(digest_src.encode('utf-8')).hexdigest()[:12]}"
-        self._slots.setdefault("_run_log", {}).setdefault(_LEGACY_FEATURE_ID, {})[_LEGACY_PARAMS_KEY] = {
-            **(self._slots.get("_run_log", {}).get(_LEGACY_FEATURE_ID, {}).get(_LEGACY_PARAMS_KEY) or {}),
-            run_id: {
-                "run_id": run_id,
-                "tool_name": tool_name,
-                "session_id": self.session_id,
-                "timestamp": timestamp,
-                "key_outputs": key_outputs,
-                "slot": product,
-            },
+        entry = {
+            "run_id": run_id,
+            "tool_name": tool_name,
+            "session_id": self.session_id,
+            "timestamp": timestamp,
+            "key_outputs": key_outputs,
+            "slot": product,
         }
+        _run_log_record(self.session_id, run_id, entry)
 
     def put_result(
         self,
@@ -804,6 +958,20 @@ class HydroSession:
 
         for key, val in raw.items():
             if key in _META_KEYS:
+                continue
+            if key == "_run_log":
+                # _run_log moved to a SQLite-backed store (see
+                # _run_log_migrate_legacy) and is no longer kept in
+                # self._slots / re-serialized into session JSON. Any
+                # pre-migration data found here is imported once, idempotently.
+                if is_v2 and isinstance(val, dict):
+                    legacy_flat = val.get(_LEGACY_FEATURE_ID, {}).get(_LEGACY_PARAMS_KEY, {}) or {}
+                elif isinstance(val, dict):
+                    legacy_flat = val
+                else:
+                    legacy_flat = {}
+                if legacy_flat:
+                    _run_log_migrate_legacy(session_id, legacy_flat)
                 continue
             if isinstance(val, dict) or val is None:
                 if is_v2:
