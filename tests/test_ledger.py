@@ -123,6 +123,29 @@ def test_confidence_rationale_min_length():
         )
 
 
+def test_add_claim_migrates_legacy_evidence_to_evidence_spans():
+    session_id = "test-legacy-evidence-tool"
+    HydroSession(session_id).save()
+
+    res = add_claim(
+        session_id=session_id,
+        claim_id="c-legacy",
+        statement="Legacy evidence should not be dropped.",
+        claim_type="empirical_result",
+        status="tested",
+        confidence="medium",
+        confidence_rationale="This claim checks that legacy evidence survives add_claim storage.",
+        basins=["01031500"],
+        period="2000-2020",
+        evidence=[{"run_id": "r42", "metric": "baseflow_index"}],
+    )
+    assert res["status"] == "recorded"
+
+    session = HydroSession.load(session_id)
+    spans = session.claims["c-legacy"]["evidence_spans"]
+    assert spans == [{"source_type": "run", "source_id": "r42", "metric_ref": "baseflow_index", "page": None, "passage_hash": None}]
+
+
 def test_assumptions_ledger():
     session_id = "test-ledger-assumptions"
     session = HydroSession(session_id)

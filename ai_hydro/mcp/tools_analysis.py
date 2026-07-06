@@ -2595,10 +2595,19 @@ async def fetch_forcing_data(
 
         # ── Geometry: resolve from feature registry or session ─────────────
         # @feature_tool handles feature resolution + cache internally.
-        # For geometry_geojson overrides (no stable feature_id), fall back to
-        # the manual pattern so the override path still works.
+        # If an agent accidentally passes the USGS gauge id as feature= before
+        # any feature is registered, treat it as the session watershed. This is
+        # the common user intent and avoids a confusing FEATURE_NOT_FOUND.
+        _feature_arg = feature
+        try:
+            _site_id = str(getattr(session, "site_id", "") or getattr(session, "gauge_id", ""))
+            _feature_count = len(session.list_features())
+            if isinstance(feature, str) and _site_id and feature.strip() == _site_id and _feature_count == 0:
+                _feature_arg = None
+        except Exception:
+            pass
         from ai_hydro.data.forcing import forcing_kernel as _fk
-        _use_kernel = _fk is not None and not geometry_geojson
+        _use_kernel = _fk is not None and not geometry_geojson and _feature_arg is not None
 
         if _use_kernel:
             # Phase B: @feature_tool handles resolve → cache → store → commit
@@ -2608,7 +2617,7 @@ async def fetch_forcing_data(
             result_envelope: dict = await asyncio.to_thread(
                 _fk,
                 store=session,
-                feature=feature,
+                feature=_feature_arg,
                 start_date=start_date,
                 end_date=end_date,
                 variables=variables,
@@ -2665,7 +2674,7 @@ async def fetch_forcing_data(
                 "product": product,
             }
             _feature_id, _params_key, _cached, _geom = _feature_cache_resolve(
-                session, "forcing", _forcing_params, feature, geometry_geojson,
+                session, "forcing", _forcing_params, _feature_arg, geometry_geojson,
             )
             if _cached is not None:
                 compact = _strip_forcing_arrays(_cached.get("data", {}))

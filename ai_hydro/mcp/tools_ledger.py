@@ -18,6 +18,40 @@ from aihydro_core.primitives.hashing import content_hash
 log = logging.getLogger("ai_hydro.mcp")
 
 
+def _normalize_evidence_spans(evidence_spans: list[dict] | None, evidence: list[dict] | None) -> list[dict]:
+    """Return typed EvidenceSpan-compatible dicts from preferred or legacy evidence inputs."""
+    raw = evidence_spans if evidence_spans is not None else evidence
+    spans: list[dict] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        if "source_id" in item:
+            spans.append({
+                "source_type": item.get("source_type", "run"),
+                "source_id": item.get("source_id"),
+                "metric_ref": item.get("metric_ref") or item.get("metric") or item.get("key") or item.get("json_path"),
+                "page": item.get("page"),
+                "passage_hash": item.get("passage_hash"),
+            })
+            continue
+        run_id = item.get("run_id")
+        if run_id:
+            metric_ref = item.get("metric_ref") or item.get("metric") or item.get("key") or item.get("json_path")
+            if metric_ref is None:
+                metric_ref = next(
+                    (str(k) for k in item.keys() if k not in {"run_id", "source_type", "source_id"}),
+                    None,
+                )
+            spans.append({
+                "source_type": item.get("source_type", "run"),
+                "source_id": run_id,
+                "metric_ref": str(metric_ref) if metric_ref is not None else None,
+                "page": item.get("page"),
+                "passage_hash": item.get("passage_hash"),
+            })
+    return [EvidenceSpan(**span).model_dump() for span in spans]
+
+
 @mcp.tool()
 def add_claim(
     session_id: str,
@@ -50,8 +84,7 @@ def add_claim(
         session = HydroSession.load(session_id)
 
         scope = ClaimScope(basins=basins, period=period, metric=metric)
-        # Prefer evidence_spans; fall back to evidence (triggers migration validator)
-        raw_evidence = evidence_spans or evidence or []
+        normalized_spans = _normalize_evidence_spans(evidence_spans, evidence)
         claim = ScientificClaim(
             id=claim_id,
             claim=statement,
@@ -61,8 +94,7 @@ def add_claim(
             confidence_rationale=confidence_rationale,
             scope=scope,
             limitations=limitations or [],
-            evidence_spans=raw_evidence if evidence_spans else [],
-            evidence=raw_evidence if not evidence_spans else [],
+            evidence_spans=normalized_spans,
         )
 
         claim_dict = claim.model_dump()
@@ -78,7 +110,7 @@ def add_claim(
             status=status,
             claim_type=claim_type,
             confidence=confidence,
-            evidence_spans=evidence_spans or [],
+            evidence_spans=normalized_spans,
             limitations=limitations or [],
         )
         return {"id": claim_id, "status": "recorded"}

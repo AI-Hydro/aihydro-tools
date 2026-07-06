@@ -3,8 +3,10 @@ Shared helper functions for MCP tool implementations.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -333,6 +335,50 @@ def _result_to_dict(result: Any) -> dict:
 # Session management
 # ---------------------------------------------------------------------------
 
+def _lean_key_outputs(result_dict: dict) -> dict:
+    """Extract small, JSON-safe key outputs for replay/provenance panels."""
+    data = result_dict.get("data") if isinstance(result_dict.get("data"), dict) else result_dict
+    out: dict[str, Any] = {}
+    if not isinstance(data, dict):
+        return out
+    for key, value in data.items():
+        if key.startswith("_"):
+            continue
+        if isinstance(value, list):
+            out[f"{key}_n"] = len(value)
+        elif isinstance(value, dict):
+            out[key] = {k: (len(v) if isinstance(v, list) else v) for k, v in list(value.items())[:20]}
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            out[key] = value
+        if len(out) >= 40:
+            break
+    return out
+
+
+def _record_run_log_entry(session: Any, slot: str, result_dict: dict, tool_name: str | None = None) -> None:
+    """Append/replace a deterministic run-log entry for a stored result."""
+    raw_meta = result_dict.get("meta")
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    resolved_tool = tool_name or meta.get("tool") or slot
+    timestamp = meta.get("computed_at") or datetime.now(timezone.utc).isoformat()
+    digest_src = json.dumps(
+        {"slot": slot, "tool": resolved_tool, "timestamp": timestamp, "outputs": _lean_key_outputs(result_dict)},
+        sort_keys=True,
+        default=str,
+    )
+    run_id = result_dict.get("run_id") or f"{slot}.{hashlib.sha1(digest_src.encode('utf-8')).hexdigest()[:12]}"
+    run_log = session.get("_run_log") or {}
+    run_log[run_id] = {
+        "run_id": run_id,
+        "tool_name": resolved_tool,
+        "session_id": session.session_id,
+        "timestamp": timestamp,
+        "key_outputs": _lean_key_outputs(result_dict),
+        "slot": slot,
+    }
+    session.set("_run_log", run_log)
+
+
 def _session_store(
     session_id: str, slot: str, result_dict: dict, *, tool_name: str | None = None
 ) -> None:
@@ -344,7 +390,10 @@ def _session_store(
     try:
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
-        setattr(session, slot, result_dict)
+        if tool_name:
+            result_dict.setdefault("meta", {})["tool"] = tool_name
+        result_dict.setdefault("meta", {}).setdefault("computed_at", datetime.now(timezone.utc).isoformat())
+        session.set(slot, result_dict)
         if tool_name:
             from ai_hydro.citations import citation_keys_for_tool
             keys = citation_keys_for_tool(tool_name)
