@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,59 @@ log = logging.getLogger("ai_hydro.mcp")
 
 _BLOCKED_PATTERNS = ("pip install", "pip3 install", "__import__('ai_hydro")
 
+# Env-var name patterns that look secret-shaped. Matched case-insensitively
+# against the *name*, not the value. This is a scrub, not a security boundary:
+# a script can still read credential *files* under $HOME (e.g. GEE's
+# ~/.config/earthengine/credentials) — see the run_python docstring.
+_SECRET_ENV_PATTERNS = re.compile(
+    r"(_KEY$|_TOKEN$|_SECRET$|CREDENTIAL|_PASSWORD$|^AWS_|^HF_|^HUGGING_FACE|"
+    r"^EARTHENGINE|^GOOGLE_APPLICATION|^GEE_|^ANTHROPIC_|^OPENAI_)",
+    re.IGNORECASE,
+)
+
+
+def _scrub_env(env: dict) -> dict:
+    """
+    Strip secret-shaped variables from a subprocess environment.
+
+    Blocklist (not allowlist): preserves PATH/HOME/PYTHONPATH/CONDA_PREFIX/etc
+    so legitimate scripts (including allow_network=True GEE/HF workflows) keep
+    working, while dropping anything that looks like an API key, token, or
+    credential. Applied unconditionally — stdout/stderr are returned to the
+    calling agent regardless of allow_network, so a leaked secret doesn't need
+    network access to exfiltrate, only a print().
+    """
+    return {k: v for k, v in env.items() if not _SECRET_ENV_PATTERNS.search(k)}
+
+
+def _rlimit_preexec():
+    """
+    Best-effort POSIX resource caps for the run_python subprocess.
+
+    CPU time, output file size, and open-file-count are bounded to contain a
+    runaway script. RLIMIT_AS (address space) is deliberately NOT set: on
+    arm64 macOS it produces spurious ENOMEM/SIGSEGV during numpy/pandas import
+    well below any real memory abuse, making it a false-positive machine
+    rather than a useful control.
+    """
+    import resource
+
+    def _set():
+        try:
+            resource.setrlimit(resource.RLIMIT_CPU, (600, 600))
+        except (ValueError, OSError):
+            pass
+        try:
+            resource.setrlimit(resource.RLIMIT_FSIZE, (200 * 1024 * 1024, 200 * 1024 * 1024))
+        except (ValueError, OSError):
+            pass
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
+        except (ValueError, OSError):
+            pass
+
+    return _set
+
 
 @mcp.tool()
 def run_python(
@@ -30,13 +84,26 @@ def run_python(
     allow_network: bool = False,
 ) -> dict:
     """
-    Execute a Python snippet in a sandboxed subprocess inside workspace_dir.
+    Execute a Python snippet in a workspace-scoped subprocess.
+
+    NOT a security boundary — do not run untrusted code. This is process
+    isolation with best-effort guardrails, not a sandbox or OS jail:
+      - Network: off by default via a socket-class override the child process
+        can defeat with enough effort (allow_network=True opts in cleanly).
+      - Environment: secret-shaped variable NAMES (API keys/tokens/credentials)
+        are stripped before the child starts, but credential *files* readable
+        under $HOME (e.g. GEE's ~/.config/earthengine/credentials) remain
+        readable — this does not stop a script from reading them from disk.
+      - Filesystem: cwd is set to workspace_dir but this is not enforced as a
+        jail; the child can read/write elsewhere the host user can.
+      - Resources: hard wall-clock timeout, plus best-effort POSIX CPU/file-size/
+        open-file caps (not memory — see _rlimit_preexec).
 
     PREFER the bash tool for: shell commands, CLI invocations, file ops,
     package checks, or any task where a subprocess is cleaner. Use
-    run_python when you need: (a) network-disabled isolation, (b) to run
+    run_python when you need: (a) best-effort network-off, (b) to run
     multi-line Python logic that imports ai_hydro internals directly, or
-    (c) a hard timeout guard on untrusted/long-running compute.
+    (c) a hard timeout guard on long-running compute you trust.
 
     Constraints: network off by default (allow_network=True to opt in),
     pip install rejected, hard timeout 120 s (raise to max ~600 s).
@@ -71,20 +138,25 @@ def run_python(
         if not allow_network:
             preamble_parts += [
                 "import socket as _socket",
-                "_orig_socket = _socket.socket",
                 "class _NoNetSocket(_socket.socket):",
                 "    def __init__(self, *a, **kw):",
                 "        raise RuntimeError('Network access is disabled (allow_network=False). Set allow_network=True to enable.')",
                 "_socket.socket = _NoNetSocket",
+                "del _socket",
             ]
         preamble = "\n".join(preamble_parts) + "\n"
         full_script = preamble + script
 
-        # Prepare environment
-        env = os.environ.copy()
+        # Prepare environment: scrub secret-shaped vars unconditionally (stdout
+        # is returned to the caller regardless of allow_network — see docstring)
+        env = _scrub_env(os.environ.copy())
         if not allow_network:
             env["NO_PROXY"] = "*"
             env["no_proxy"] = "*"
+
+        run_kwargs = {}
+        if os.name == "posix":
+            run_kwargs["preexec_fn"] = _rlimit_preexec()
 
         start = time.monotonic()
         result = subprocess.run(
@@ -95,6 +167,7 @@ def run_python(
             cwd=str(ws),
             timeout=timeout_seconds,
             env=env,
+            **run_kwargs,
         )
         duration = time.monotonic() - start
 

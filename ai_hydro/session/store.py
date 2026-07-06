@@ -78,8 +78,10 @@ Plugins can register their own result slots without editing core code:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -166,6 +168,44 @@ def _slugify_for_filename(s: str) -> str:
     return s.lower() or "session"
 
 
+def _safe_filename_component(s: str, default: str = "session") -> str:
+    """
+    Case-preserving, traversal-safe filename component.
+
+    Neutralizes only the characters that enable path traversal or break the
+    filesystem: path separators, NUL, and any run of '..' (which could escape
+    SESSIONS_DIR). Everything else — case, spaces, unicode, punctuation — is
+    preserved unchanged, so existing session files on disk keep resolving to
+    the same path after this function is introduced.
+
+    Deliberately NOT `_slugify_for_filename`: that lowercases and collapses
+    punctuation to a single '-', which would make two distinct legitimate
+    session_ids (e.g. "Foo_Bar" and "foo-bar") collide on the same file.
+    """
+    s = str(s)
+    s = s.replace("/", "_").replace("\\", "_").replace("\x00", "_")
+    s = re.sub(r"\.{2,}", "_", s)  # neutralize '..' runs without touching single dots
+    s = s.strip().strip(".")
+    return s or default
+
+
+def _contained_path(candidate: Path) -> Path | None:
+    """
+    Return `candidate` if it resolves inside SESSIONS_DIR, else None.
+
+    Resolves symlinks in both the candidate and SESSIONS_DIR itself before
+    comparing, so a symlinked sessions directory doesn't defeat the check.
+    """
+    try:
+        resolved = candidate.resolve()
+        sessions_root = _SESSIONS_DIR.resolve()
+        if os.path.commonpath([str(resolved), str(sessions_root)]) != str(sessions_root):
+            return None
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -215,6 +255,17 @@ def _latest_result_in_feature(by_key: dict) -> dict | None:
 # --------------------------------------------------------------------------- #
 # HydroSession
 # --------------------------------------------------------------------------- #
+
+def _json_safe(obj: Any) -> Any:
+    """Return a strict-JSON-safe copy, replacing NaN/Inf with None."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
+
 
 class HydroSession:
     """Persistent research state for a single study across tool calls.
@@ -360,7 +411,7 @@ class HydroSession:
 
     def set(self, slot: str, value: dict | None) -> None:
         """Backward-compat: store a result under the __legacy__ feature."""
-        self._slots.setdefault(slot, {}).setdefault(_LEGACY_FEATURE_ID, {})[_LEGACY_PARAMS_KEY] = value
+        self.put_result(slot, _LEGACY_FEATURE_ID, _LEGACY_PARAMS_KEY, value)
 
     def get(self, slot: str) -> dict | None:
         """
@@ -492,6 +543,52 @@ class HydroSession:
     # Store Protocol — keyed result store
     # ------------------------------------------------------------------
 
+    def _run_key_outputs(self, value: dict | None) -> dict:
+        if not isinstance(value, dict):
+            return {}
+        data = value.get("data") if isinstance(value.get("data"), dict) else value
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, Any] = {}
+        for key, item in data.items():
+            if str(key).startswith("_"):
+                continue
+            if isinstance(item, list):
+                out[f"{key}_n"] = len(item)
+            elif isinstance(item, dict):
+                out[key] = {k: (len(v) if isinstance(v, list) else v) for k, v in list(item.items())[:20]}
+            elif isinstance(item, (str, int, float, bool)) or item is None:
+                out[key] = item
+            if len(out) >= 40:
+                break
+        return out
+
+    def _record_put_result_run(self, product: str, value: dict | None) -> None:
+        if product == "_run_log" or not isinstance(value, dict):
+            return
+        raw_meta = value.get("meta")
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
+        tool_name = meta.get("tool") or value.get("tool_name") or product
+        timestamp = meta.get("computed_at") or value.get("timestamp") or _now()
+        key_outputs = self._run_key_outputs(value)
+        digest_src = json.dumps(
+            {"product": product, "tool": tool_name, "timestamp": timestamp, "outputs": key_outputs},
+            sort_keys=True,
+            default=str,
+        )
+        run_id = value.get("run_id") or f"{product}.{hashlib.sha1(digest_src.encode('utf-8')).hexdigest()[:12]}"
+        self._slots.setdefault("_run_log", {}).setdefault(_LEGACY_FEATURE_ID, {})[_LEGACY_PARAMS_KEY] = {
+            **(self._slots.get("_run_log", {}).get(_LEGACY_FEATURE_ID, {}).get(_LEGACY_PARAMS_KEY) or {}),
+            run_id: {
+                "run_id": run_id,
+                "tool_name": tool_name,
+                "session_id": self.session_id,
+                "timestamp": timestamp,
+                "key_outputs": key_outputs,
+                "slot": product,
+            },
+        }
+
     def put_result(
         self,
         product: str,
@@ -501,6 +598,7 @@ class HydroSession:
     ) -> None:
         """Store a result under (product, feature_id, params_key)."""
         self._slots.setdefault(product, {}).setdefault(feature_id, {})[params_key] = value
+        self._record_put_result_run(product, value)
 
     def get_result(
         self,
@@ -634,16 +732,48 @@ class HydroSession:
 
     @classmethod
     def _path(cls, session_id: str, shard_id: str | None = None) -> Path:
+        safe_session = _safe_filename_component(session_id)
         if shard_id:
-            return _SESSIONS_DIR / f"{session_id}.{shard_id}.shard.json"
-        return _SESSIONS_DIR / f"{session_id}.json"
+            safe_shard = _safe_filename_component(shard_id)
+            candidate = _SESSIONS_DIR / f"{safe_session}.{safe_shard}.shard.json"
+        else:
+            candidate = _SESSIONS_DIR / f"{safe_session}.json"
+        contained = _contained_path(candidate)
+        if contained is None:
+            # Should be unreachable given the sanitizer above, but fail closed
+            # rather than resolve outside SESSIONS_DIR under any edge case.
+            raise ValueError(
+                f"Refusing to resolve session path outside SESSIONS_DIR: "
+                f"session_id={session_id!r} shard_id={shard_id!r}"
+            )
+        return contained
+
+    @classmethod
+    def _legacy_raw_path(cls, session_id: str, shard_id: str | None = None) -> Path | None:
+        """
+        Read-only discovery of a session file written before path
+        sanitization was introduced (raw, un-sanitized session_id/shard_id
+        interpolated directly into the filename). `save()` never writes here
+        — only `load()` falls back to it, and only if it still resolves
+        inside SESSIONS_DIR, so this cannot be used to read outside the
+        sessions directory.
+        """
+        if shard_id:
+            candidate = _SESSIONS_DIR / f"{session_id}.{shard_id}.shard.json"
+        else:
+            candidate = _SESSIONS_DIR / f"{session_id}.json"
+        return _contained_path(candidate)
 
     @classmethod
     def load(cls, session_id: str, shard_id: str | None = None) -> HydroSession:
         """Load an existing session or return a new empty one."""
         path = cls._path(session_id, shard_id)
         if not path.exists():
-            return cls(session_id, shard_id)
+            legacy_path = cls._legacy_raw_path(session_id, shard_id)
+            if legacy_path is not None and legacy_path != path and legacy_path.exists():
+                path = legacy_path
+            else:
+                return cls(session_id, shard_id)
         try:
             with open(path) as f:
                 raw = json.load(f)
@@ -724,7 +854,7 @@ class HydroSession:
         tmp = target.with_suffix(
             f"{target.suffix}.tmp.{os.getpid()}.{int(time.time() * 1000)}"
         )
-        payload = json.dumps(self._to_raw(), indent=2)
+        payload = json.dumps(_json_safe(self._to_raw()), indent=2, allow_nan=False)
         with open(tmp, "w") as f:
             f.write(payload)
             try:

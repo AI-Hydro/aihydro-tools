@@ -186,11 +186,16 @@ class TestSessionWiring:
         from ai_hydro.session import HydroSession
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
-            _session_store("99999999", "watershed", {"data": {"area_km2": 100}})
+            _session_store("99999999", "watershed", {"data": {"area_km2": 100}}, tool_name="delineate_watershed")
             # Verify it was saved
             reloaded = HydroSession.load("99999999")
             assert reloaded.watershed is not None
             assert reloaded.watershed["data"]["area_km2"] == 100
+            run_log = reloaded.get("_run_log") or {}
+            assert len(run_log) == 1
+            entry = next(iter(run_log.values()))
+            assert entry["tool_name"] == "delineate_watershed"
+            assert entry["key_outputs"]["area_km2"] == 100
 
     def test_session_roundtrip(self, tmp_path):
         """Full save/load cycle with multiple slots."""
@@ -209,6 +214,43 @@ class TestSessionWiring:
             assert "test note" in s2.notes
             assert "watershed" in s2.computed()
             assert "streamflow" in s2.computed()
+
+    def test_session_save_sanitizes_non_finite_numbers(self, tmp_path):
+        """Session JSON must stay strict JSON even when tools produce NaN/Infinity."""
+        import json
+        import math
+        from ai_hydro.session import HydroSession
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            s = HydroSession("nonfinite")
+            s.set("inundation", {"data": {"channel_slope_est": math.nan, "width": math.inf}})
+            s.save()
+
+            raw = (tmp_path / "nonfinite.json").read_text()
+            assert "NaN" not in raw
+            assert "Infinity" not in raw
+            loaded = json.loads(raw)
+            assert loaded["inundation"]["__legacy__"][""]["data"]["channel_slope_est"] is None
+            assert loaded["inundation"]["__legacy__"][""]["data"]["width"] is None
+
+    def test_put_result_records_run_log_entry(self, tmp_path):
+        """Store Protocol writes should also be visible in replay provenance."""
+        from ai_hydro.session import HydroSession
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
+             patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            s = HydroSession("put-result-runlog")
+            s.put_result("forcing", "basin", "params", {
+                "data": {"dates_n": 10, "prcp_mm_n": 10},
+                "meta": {"tool": "fetch_forcing_data", "computed_at": "2024-01-01T00:00:00+00:00"},
+            })
+            s.save()
+
+            s2 = HydroSession.load("put-result-runlog")
+            run_log = s2.get("_run_log") or {}
+            assert len(run_log) == 1
+            entry = next(iter(run_log.values()))
+            assert entry["tool_name"] == "fetch_forcing_data"
+            assert entry["key_outputs"]["dates_n"] == 10
 
 
 # ── Tool-level smoke tests (mocked backends) ────────────────────────────────
@@ -999,6 +1041,45 @@ class TestPhase2RunPython:
         )
         assert result.get("error") is True
         assert result.get("code") == "BLOCKED_OPERATION"
+
+    def test_run_python_scrubs_secret_shaped_env_vars(self, tmp_path, monkeypatch):
+        """Negative: secret-shaped env vars must never reach the child process."""
+        from ai_hydro.mcp.tools_execution import run_python
+        monkeypatch.setenv("HF_TOKEN", "fake-hf-secret")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-aws-secret")
+        monkeypatch.setenv("SOME_API_KEY", "fake-key")
+        script = (
+            "import os\n"
+            "leaked = [os.environ.get(v) for v in "
+            "('HF_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'SOME_API_KEY')]\n"
+            "print('LEAKED:', leaked)\n"
+        )
+        result = run_python(script=script, workspace_dir=str(tmp_path), timeout_seconds=10)
+        assert result.get("returncode") == 0
+        assert "fake-hf-secret" not in result.get("stdout", "")
+        assert "fake-aws-secret" not in result.get("stdout", "")
+        assert "fake-key" not in result.get("stdout", "")
+
+    def test_run_python_preserves_legitimate_env_for_network_workflows(self, tmp_path, monkeypatch):
+        """Positive regression: non-secret env vars survive the scrub so a real
+        allow_network=True workflow (e.g. GEE, which auths via a file under
+        $HOME, not an env var) is not broken by the fix."""
+        from ai_hydro.mcp.tools_execution import run_python
+        monkeypatch.setenv("MY_HARMLESS_FLAG", "keep-me")
+        script = "import os\nprint('HOME_SET:', bool(os.environ.get('HOME')))\nprint('FLAG:', os.environ.get('MY_HARMLESS_FLAG'))\n"
+        result = run_python(
+            script=script, workspace_dir=str(tmp_path), timeout_seconds=10, allow_network=True
+        )
+        assert result.get("returncode") == 0
+        assert "HOME_SET: True" in result.get("stdout", "")
+        assert "FLAG: keep-me" in result.get("stdout", "")
+
+    def test_run_python_docstring_does_not_claim_sandbox(self):
+        """Docstring must not overclaim isolation it doesn't provide."""
+        from ai_hydro.mcp.tools_execution import run_python
+        doc = (run_python.fn.__doc__ if hasattr(run_python, "fn") else run_python.__doc__) or ""
+        assert "sandboxed" not in doc.lower()
+        assert "not a security boundary" in doc.lower()
 
 
 class TestPhase2Skills:

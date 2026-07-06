@@ -1,9 +1,19 @@
 """
-Tier 1 post-run enforcement layer.
+Tier 1 post-run audit layer (soft gate — see below for the hard gate).
 
 After any Tier 1 tool completes successfully, post_run() fires all
 registered validators for that tool and injects their results into
-result["quality_flags"].
+result["quality_flags"]. This is advisory: nothing here blocks a tool call or
+a claim from being created. It is the *audit* trail, not *enforcement* in the
+sense of "prevents an action" — the module name predates this distinction and
+is kept for now to avoid an import-path break; read "audit" wherever this
+file says "enforcement".
+
+The one place scientific claims are actually gated is claim promotion
+(`promote_claim_to_registry` in ai_hydro/mcp/tools_ledger.py), which requires
+evidence spans, limitations, and researcher approval before a claim enters the
+global registry. That is the hard gate; quality_flags produced here are input
+to it, not a substitute for it.
 
 Design constraints:
   - Never raises: validator failures are captured in quality_flags, not
