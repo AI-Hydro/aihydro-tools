@@ -44,7 +44,7 @@ def _tmp_registry(tmp_path: Path):
 
 def _make_session(session_id: str, sessions_dir: Path) -> HydroSession:
     import ai_hydro.session.store as _store
-    with patch.object(_store, "SESSIONS_DIR", sessions_dir):
+    with patch.object(_store, "_SESSIONS_DIR", sessions_dir):
         s = HydroSession(session_id=session_id)
         s._storage_dir = sessions_dir
         s.save()
@@ -160,7 +160,7 @@ class TestSnapshotEvidenceVersions(unittest.TestCase):
 
     def _make_session_with_slot(self, session_id, slot_name, slot_data):
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             s = HydroSession(session_id=session_id)
             s._storage_dir = self.sessions_dir
             s.set(slot_name, slot_data)
@@ -172,14 +172,14 @@ class TestSnapshotEvidenceVersions(unittest.TestCase):
             "s-snap-001", "streamflow", {"data": {"q_cms": [1.0, 2.0, 3.0], "gauge_id": "01013500"}}
         )
         spans = [{"source_type": "dataset", "source_id": "streamflow"}]
-        with patch("ai_hydro.session.store.SESSIONS_DIR", self.sessions_dir):
+        with patch("ai_hydro.session.store._SESSIONS_DIR", self.sessions_dir):
             versions = reg.snapshot_evidence_versions(session, spans)
         self.assertIn("streamflow", versions)
         self.assertNotEqual(versions["streamflow"], "")
 
     def test_run_span_uses_source_id_as_version(self):
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             session = HydroSession(session_id="s-snap-002")
             session._storage_dir = self.sessions_dir
             session.save()
@@ -189,7 +189,7 @@ class TestSnapshotEvidenceVersions(unittest.TestCase):
 
     def test_unknown_dataset_gets_empty_string(self):
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             session = HydroSession(session_id="s-snap-003")
             session._storage_dir = self.sessions_dir
             session.save()
@@ -211,7 +211,7 @@ class TestCheckEvidenceStaleness(unittest.TestCase):
 
     def _session_with_data(self, session_id, slot_data):
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             s = HydroSession(session_id=session_id)
             s._storage_dir = self.sessions_dir
             s.set("streamflow", slot_data)
@@ -256,7 +256,7 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
         self.sessions_dir = self.tmp / "sessions"
         self.sessions_dir.mkdir()
         self.reg_dir = self.tmp / "registry"
-        self.p_sessions = patch("ai_hydro.session.store.SESSIONS_DIR", self.sessions_dir)
+        self.p_sessions = patch("ai_hydro.session.store._SESSIONS_DIR", self.sessions_dir)
         self.p_reg_dir = patch.object(reg, "REGISTRY_DIR", self.reg_dir)
         self.p_reg_file = patch.object(reg, "CLAIMS_FILE", self.reg_dir / "claims.jsonl")
         self.p_sessions.start()
@@ -265,7 +265,7 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
 
         # Build a session with a promotable claim
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             self.session = HydroSession(session_id="s-promo-001")
             self.session._storage_dir = self.sessions_dir
             self.session.claims["c-001"] = _promoted_claim_dict("c-001")
@@ -296,7 +296,7 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
     def test_promote_updates_session_claim(self):
         promote_claim_to_registry("s-promo-001", "c-001", researcher_approved=True)
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             session2 = HydroSession.load("s-promo-001")
         self.assertTrue(session2.claims["c-001"].get("promoted"))
         self.assertIn("registry_id", session2.claims["c-001"])
@@ -307,7 +307,7 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
 
     def test_promote_gate_rejects_missing_evidence(self):
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             s = HydroSession.load("s-promo-001")
             # Build a valid claim dict but with empty evidence_spans
             cd = {**_promoted_claim_dict("c-002"), "evidence_spans": [], "evidence": []}
@@ -318,12 +318,61 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
 
     def test_promote_gate_rejects_wrong_status(self):
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             s = HydroSession.load("s-promo-001")
             s.claims["c-003"] = {**_promoted_claim_dict("c-003"), "status": "proposed"}
             s.save()
         r = promote_claim_to_registry("s-promo-001", "c-003", researcher_approved=True)
         self.assertIn("error", r)
+
+    def test_promote_gate_rejects_hydrology_metric_without_modelled_limitation(self):
+        """A claim about baseflow_index scoped to a non-gauge basin (global/
+        gauge-less — the case GEOGLOWS modelled streamflow covers) must not
+        promote without a limitation acknowledging the modelled-streamflow
+        risk. See item 2.2 / N-12 in audits/STATUS.md for why this is a
+        metric-name heuristic rather than a true evidence-provenance lookup."""
+        import ai_hydro.session.store as _store
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
+            s = HydroSession.load("s-promo-001")
+            cd = {
+                **_promoted_claim_dict("c-hydro-modelled"),
+                "claim": "baseflow_index for the Amazon headwaters basin is 0.31",
+                "scope": {"basins": ["amazon-headwaters"], "period": "1990-2020"},
+                "limitations": ["Single basin only"],  # no modelled/geoglows acknowledgement
+            }
+            s.claims["c-hydro-modelled"] = cd
+            s.save()
+        r = promote_claim_to_registry("s-promo-001", "c-hydro-modelled", researcher_approved=True)
+        self.assertIn("error", r)
+        self.assertIn("modelled", str(r).lower())
+
+    def test_promote_gate_accepts_hydrology_metric_with_modelled_limitation(self):
+        """Same claim as above, but with a limitation that acknowledges the
+        modelled-streamflow risk — must be allowed to promote."""
+        import ai_hydro.session.store as _store
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
+            s = HydroSession.load("s-promo-001")
+            cd = {
+                **_promoted_claim_dict("c-hydro-acked"),
+                "claim": "baseflow_index for the Amazon headwaters basin is 0.31",
+                "scope": {"basins": ["amazon-headwaters"], "period": "1990-2020"},
+                "limitations": [
+                    "Signature computed from modelled GEOGLOWS discharge, not gauge observations."
+                ],
+            }
+            s.claims["c-hydro-acked"] = cd
+            s.save()
+        r = promote_claim_to_registry("s-promo-001", "c-hydro-acked", researcher_approved=True)
+        self.assertNotIn("error", r)
+        self.assertIn("registry_id", r)
+
+    def test_promote_gate_does_not_flag_usgs_gauge_scoped_hydrology_claim(self):
+        """The default fixture claim ('Q_mean for 01013500...', scoped to a
+        USGS-gauge-shaped basin ID) must promote without a modelled-streamflow
+        limitation — this is the common, legitimate CONUS-observed case, and
+        the gate must not create false-positive friction for it."""
+        r = promote_claim_to_registry("s-promo-001", "c-001", researcher_approved=True)
+        self.assertNotIn("error", r)
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +386,7 @@ class TestCheckRegistryStaleness(unittest.TestCase):
         self.sessions_dir = self.tmp / "sessions"
         self.sessions_dir.mkdir()
         self.reg_dir = self.tmp / "registry"
-        self.p_sessions = patch("ai_hydro.session.store.SESSIONS_DIR", self.sessions_dir)
+        self.p_sessions = patch("ai_hydro.session.store._SESSIONS_DIR", self.sessions_dir)
         self.p_reg_dir = patch.object(reg, "REGISTRY_DIR", self.reg_dir)
         self.p_reg_file = patch.object(reg, "CLAIMS_FILE", self.reg_dir / "claims.jsonl")
         self.p_sessions.start()
@@ -351,7 +400,7 @@ class TestCheckRegistryStaleness(unittest.TestCase):
 
     def _promote_claim(self, session_id, claim_id, data=None):
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             s = HydroSession(session_id=session_id)
             s._storage_dir = self.sessions_dir
             s.claims[claim_id] = _promoted_claim_dict(claim_id)
@@ -362,7 +411,7 @@ class TestCheckRegistryStaleness(unittest.TestCase):
 
     def test_no_promoted_claims_returns_zero(self):
         import ai_hydro.session.store as _store
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             s = HydroSession(session_id="s-check-empty")
             s._storage_dir = self.sessions_dir
             s.save()
@@ -388,7 +437,7 @@ class TestCheckRegistryStaleness(unittest.TestCase):
         self._promote_claim("s-check-002", "c-001", data=data_v1)
 
         # Update session slot to v2 (simulates new data fetch)
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             s = HydroSession.load("s-check-002")
             s.set("streamflow", data_v2)
             s.save()
@@ -406,14 +455,14 @@ class TestCheckRegistryStaleness(unittest.TestCase):
 
         self._promote_claim("s-check-003", "c-001", data=data_v1)
 
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             s = HydroSession.load("s-check-003")
             s.set("streamflow", data_v2)
             s.save()
 
         check_registry_staleness("s-check-003")
 
-        with patch.object(_store, "SESSIONS_DIR", self.sessions_dir):
+        with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             s2 = HydroSession.load("s-check-003")
         self.assertEqual(s2.claims["c-001"].get("status"), "stale")
 
@@ -429,7 +478,7 @@ class TestListRegistryClaims(unittest.TestCase):
         self.sessions_dir = self.tmp / "sessions"
         self.sessions_dir.mkdir()
         self.reg_dir = self.tmp / "registry"
-        self.p_sessions = patch("ai_hydro.session.store.SESSIONS_DIR", self.sessions_dir)
+        self.p_sessions = patch("ai_hydro.session.store._SESSIONS_DIR", self.sessions_dir)
         self.p_reg_dir = patch.object(reg, "REGISTRY_DIR", self.reg_dir)
         self.p_reg_file = patch.object(reg, "CLAIMS_FILE", self.reg_dir / "claims.jsonl")
         self.p_sessions.start()

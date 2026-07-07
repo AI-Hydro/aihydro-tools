@@ -32,7 +32,7 @@ def _make_session(tmp_path: Path) -> HydroSession:
     import ai_hydro.session.store as _store
 
     session_id = "test-exp-session-001"
-    with _patch.object(_store, "SESSIONS_DIR", tmp_path):
+    with _patch.object(_store, "_SESSIONS_DIR", tmp_path):
         s = HydroSession(session_id=session_id)
         s._storage_dir = tmp_path
         s.save()
@@ -44,7 +44,7 @@ def _session_with_patch(tmp_path: Path):
     import ai_hydro.session.store as _store
     from unittest.mock import patch as _patch
 
-    patcher = _patch.object(_store, "SESSIONS_DIR", tmp_path)
+    patcher = _patch.object(_store, "_SESSIONS_DIR", tmp_path)
     patcher.start()
     session_id = "test-exp-session-001"
     s = HydroSession(session_id=session_id)
@@ -59,7 +59,7 @@ def _define_with_patch(tmp_path: Path, *, name="Test Exp", tool="extract_hydrolo
     import ai_hydro.session.store as _store
     from unittest.mock import patch as _patch
 
-    with _patch.object(_store, "SESSIONS_DIR", tmp_path):
+    with _patch.object(_store, "_SESSIONS_DIR", tmp_path):
         s = HydroSession(session_id="test-exp-session-001")
         s._storage_dir = tmp_path
         s.save()
@@ -82,7 +82,7 @@ class TestDefineExperiment(unittest.TestCase):
     def setUp(self):
         import tempfile, ai_hydro.session.store as _store
         self.tmp = Path(tempfile.mkdtemp())
-        self._patcher = patch.object(_store, "SESSIONS_DIR", self.tmp)
+        self._patcher = patch.object(_store, "_SESSIONS_DIR", self.tmp)
         self._patcher.start()
         self._sess = HydroSession(session_id="test-exp-session-001")
         self._sess._storage_dir = self.tmp
@@ -181,7 +181,7 @@ class TestRunExperiment(unittest.TestCase):
     def setUp(self):
         import tempfile, ai_hydro.session.store as _store
         self.tmp = Path(tempfile.mkdtemp())
-        self._patcher = patch.object(_store, "SESSIONS_DIR", self.tmp)
+        self._patcher = patch.object(_store, "_SESSIONS_DIR", self.tmp)
         self._patcher.start()
         self._sess = HydroSession(session_id="test-exp-session-001")
         self._sess._storage_dir = self.tmp
@@ -251,7 +251,7 @@ class TestGetExperimentTable(unittest.TestCase):
     def setUp(self):
         import tempfile, ai_hydro.session.store as _store
         self.tmp = Path(tempfile.mkdtemp())
-        self._patcher = patch.object(_store, "SESSIONS_DIR", self.tmp)
+        self._patcher = patch.object(_store, "_SESSIONS_DIR", self.tmp)
         self._patcher.start()
         self._sess = HydroSession(session_id="test-exp-session-001")
         self._sess._storage_dir = self.tmp

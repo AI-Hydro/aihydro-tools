@@ -7,6 +7,7 @@ within a research session.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from ai_hydro.mcp.app import mcp
 from ai_hydro.session import HydroSession
@@ -16,6 +17,57 @@ from ai_hydro.mcp.ledger_commands import push_claim_event
 from aihydro_core.primitives.hashing import content_hash
 
 log = logging.getLogger("ai_hydro.mcp")
+
+# Metric/keyword markers for hydrology signatures that MAY derive from
+# modelled (not observed) streamflow — e.g. GEOGLOWS-routed BFI, flood
+# frequency, or flow-duration-curve slope on a gauge-less basin. See
+# _claim_touches_hydrology_signature_metric() docstring for why this is a
+# name-based heuristic rather than a true evidence-provenance lookup.
+_MODELLED_HYDROLOGY_METRIC_MARKERS = (
+    "baseflow_index", "bfi", "flood_freq", "flood frequency", "fdc_slope",
+    "flow duration", "q_mean", "q5", "q95", "high_flow", "low_flow",
+    "runoff_ratio", "stream_elas", "hfd", "half_flow_date", "flow timing",
+)
+_MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS = (
+    "model", "geoglows", "ungauged", "simulat", "unobserved", "no gauge",
+)
+# USGS gauge IDs are 8-15 digit numeric strings. A claim scoped entirely to
+# basins that look like USGS gauge IDs is very likely CONUS observed
+# streamflow — the common, legitimate case — and should not be flagged.
+_USGS_GAUGE_ID_RE = re.compile(r"^\d{8,15}$")
+
+
+def _claim_touches_hydrology_signature_metric(claim_dict: dict) -> bool:
+    """
+    Heuristic: does this claim's scope.metric or statement reference a
+    hydrology-signature metric that may be computed from modelled (not
+    observed) streamflow?
+
+    This is a name-based heuristic, not a true evidence-provenance lookup.
+    aihydro-lsh's AttributeResult.provenance[family].is_observed and
+    value_provenance already record the real answer per attribute value —
+    but the lsh_attributes MCP tool does not take a session_id or write to
+    the session run log, so a promoted claim's EvidenceSpan cannot currently
+    be resolved back to that provenance. Wiring the lsh MCP tool surface into
+    the session/run-log system so promotion can do a real lookup is a
+    separate, larger architectural task (tracked in audits/STATUS.md as N-12).
+    Until then, this keyword gate is the safety net.
+
+    Deliberately does NOT flag a claim whose scope.basins are all
+    USGS-gauge-shaped IDs (8-15 digits) — that is the common, legitimate
+    CONUS-observed case (e.g. "Q_mean for 01013500"), and flagging it would
+    make the gate noise researchers learn to route around rather than a
+    signal they act on.
+    """
+    scope = claim_dict.get("scope") or {}
+    basins = scope.get("basins") or []
+    if basins and all(_USGS_GAUGE_ID_RE.match(str(b)) for b in basins):
+        return False
+    haystack = " ".join([
+        str(scope.get("metric") or ""),
+        str(claim_dict.get("claim", claim_dict.get("statement", "")) or ""),
+    ]).lower()
+    return any(marker in haystack for marker in _MODELLED_HYDROLOGY_METRIC_MARKERS)
 
 
 def _normalize_evidence_spans(evidence_spans: list[dict] | None, evidence: list[dict] | None) -> list[dict]:
@@ -262,7 +314,8 @@ def promote_claim_to_registry(
 
     Passes through a strict validation gate (evidence_spans, limitations,
     status ∈ {supported, weakly_supported}, uncertainty_verified for
-    quantitative claims) then writes a real entry to
+    quantitative claims, a modelled-streamflow limitation when the claim
+    touches a hydrology-signature metric) then writes a real entry to
     ~/.aihydro/registry/claims.jsonl with evidence version hashes captured
     at this moment.  The registry_id is returned for future staleness checks.
 
@@ -295,6 +348,18 @@ def promote_claim_to_registry(
                 "Call update_claim_status(uncertainty_verified=True) after confirming "
                 "that uncertainty bounds (CIs) are available for all numeric values."
             )
+        if _claim_touches_hydrology_signature_metric(claim_dict):
+            limitations_text = " ".join(claim.limitations).lower()
+            if not any(w in limitations_text for w in _MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS):
+                raise ValueError(
+                    "Claim references a hydrology-signature metric (e.g. baseflow index, "
+                    "flood frequency, flow-duration-curve slope) that may be computed from "
+                    "modelled streamflow (e.g. GEOGLOWS routing on a gauge-less basin) rather "
+                    "than gauge observations. Promotion requires a limitation that acknowledges "
+                    "this — e.g. 'Signature computed from modelled GEOGLOWS discharge, not gauge "
+                    "observations.' If the underlying data is confirmed gauge-observed, add a "
+                    "limitation stating that explicitly instead."
+                )
 
         # ── Snapshot evidence versions ────────────────────────────────────────
         from ai_hydro.registry.store import (

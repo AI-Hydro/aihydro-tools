@@ -169,7 +169,7 @@ class TestSessionSummaryResource(unittest.TestCase):
     def test_missing_session_returns_error(self):
         from ai_hydro.mcp.resources import session_summary
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("ai_hydro.session.store.SESSIONS_DIR", Path(tmp)):
+            with patch("ai_hydro.session.store._SESSIONS_DIR", Path(tmp)):
                 result = json.loads(session_summary("nonexistent-session-xyz"))
         self.assertTrue(result.get("error"))
         self.assertEqual(result.get("code"), "SESSION_NOT_FOUND")
@@ -222,7 +222,7 @@ class TestSessionClaimsResource(unittest.TestCase):
     def test_missing_session_error(self):
         from ai_hydro.mcp.resources import session_claims
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("ai_hydro.session.store.SESSIONS_DIR", Path(tmp)):
+            with patch("ai_hydro.session.store._SESSIONS_DIR", Path(tmp)):
                 result = json.loads(session_claims("no-such-session"))
         self.assertTrue(result.get("error"))
 
@@ -280,7 +280,7 @@ class TestSessionEvidenceBoardResource(unittest.TestCase):
     def test_missing_session_error(self):
         from ai_hydro.mcp.resources import session_evidence_board
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("ai_hydro.session.store.SESSIONS_DIR", Path(tmp)):
+            with patch("ai_hydro.session.store._SESSIONS_DIR", Path(tmp)):
                 result = json.loads(session_evidence_board("no-session"))
         self.assertTrue(result.get("error"))
 
@@ -359,7 +359,7 @@ class TestSessionExperimentsResource(unittest.TestCase):
     def test_missing_session_error(self):
         from ai_hydro.mcp.resources import session_experiments
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("ai_hydro.session.store.SESSIONS_DIR", Path(tmp)):
+            with patch("ai_hydro.session.store._SESSIONS_DIR", Path(tmp)):
                 result = json.loads(session_experiments("no-session"))
         self.assertTrue(result.get("error"))
 
