@@ -202,6 +202,21 @@ markers = [
     "bench_live: aihydro-bench live tasks — requires USGS/GridMET APIs, runs nightly",
 ]
 
+# ── Layering contract — aihydro-tools sits at the top of the graph and is
+# allowed to import every sibling package; the one thing it must never do is
+# reach into the stale _archive/ subprojects. Declarative counterpart to the
+# _archive half of tests/test_layering.py (the private-submodule-reach-through
+# check has no natural import-linter contract type and stays AST-only there).
+[tool.importlinter]
+root_package = "ai_hydro"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "ai_hydro must never import from the stale _archive subprojects"
+type = "forbidden"
+source_modules = ["ai_hydro"]
+forbidden_modules = ["AIHydro_SDK", "AIHydro_paper"]
+
 # ── Ruff linting ──────────────────────────────────────────────────────────────
 [tool.ruff]
 line-length = 100
