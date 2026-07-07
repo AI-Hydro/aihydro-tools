@@ -244,6 +244,7 @@ TOOL_TIERS: dict[str, int] = {
     "lsh_families":                     3,
     "lsh_attribute_info":               3,
     "lsh_recipe_status":                3,
+    "lsh_reliability_matrix":           3,
 }
 
 
