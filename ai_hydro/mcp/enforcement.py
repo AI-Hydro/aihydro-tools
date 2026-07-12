@@ -37,11 +37,45 @@ Usage from a Tier 1 tool:
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from datetime import date, datetime, timezone
 from typing import Callable
 
 log = logging.getLogger("ai_hydro.enforcement")
+
+# Same secret-shaped-name blocklist family as tools_execution.py::_scrub_env —
+# defence in depth in case a tool's kwargs ever carry an API key/token.
+_SECRET_INPUT_KEY_PATTERN = re.compile(r"(_key$|_token$|_secret$|credential|_password$)", re.IGNORECASE)
+_MAX_INPUT_STR_LEN = 500
+
+
+def _scrub_tool_inputs(inputs: dict | None) -> dict:
+    """
+    Reduce a tool call's kwargs to the small, JSON-safe scalar subset worth
+    recording in the run log for replay/lineage.
+
+    Mirrors _write_run_log's existing key_outputs philosophy (scalars only,
+    no arrays) rather than inventing a new rule: session_id/ctx/private keys
+    are dropped (session_id is already a top-level run-log field; ctx is an
+    MCP framework object, not data), secret-shaped names are dropped, and
+    long strings (e.g. an inline geometry_geojson blob) are recorded by
+    length only rather than included or silently truncated mid-value.
+    """
+    if not inputs:
+        return {}
+    scrubbed: dict = {}
+    for key, value in inputs.items():
+        if not key or key.startswith("_") or key in ("ctx", "session", "session_id"):
+            continue
+        if _SECRET_INPUT_KEY_PATTERN.search(key):
+            continue
+        if value is None or isinstance(value, (bool, int, float)):
+            scrubbed[key] = value
+        elif isinstance(value, str):
+            scrubbed[key] = value if len(value) <= _MAX_INPUT_STR_LEN else f"<{len(value)} chars, omitted>"
+        # lists/dicts/other complex types are omitted, same as key_outputs.
+    return scrubbed
 
 # Short abbreviations for run_id readability
 _TOOL_ABBREVS: dict[str, str] = {
@@ -89,12 +123,16 @@ def _write_run_log(
     run_id: str,
     tool_name: str,
     result: dict,
+    inputs: dict | None = None,
 ) -> None:
     """
     Write a run record to the session's _run_log slot.
 
     Never raises — a logging failure must not invalidate a successful tool call.
-    Captures key_outputs from result['data'] (small scalars only, no arrays).
+    Captures key_outputs from result['data'] (small scalars only, no arrays)
+    and, when the caller supplies them, scrubbed tool inputs (see
+    _scrub_tool_inputs) — this is what lets Session Replay/Experiment Table
+    show what a run was actually called with, not just what it produced.
     """
     try:
         from ai_hydro.session.store import HydroSession
@@ -114,13 +152,17 @@ def _write_run_log(
                 for f in result["quality_flags"]
             ]
 
-        run_log[run_id] = {
+        entry = {
             "run_id":    run_id,
             "tool_name": tool_name,
             "session_id": session_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "key_outputs": key_outputs,
         }
+        scrubbed_inputs = _scrub_tool_inputs(inputs)
+        if scrubbed_inputs:
+            entry["inputs"] = scrubbed_inputs
+        run_log[run_id] = entry
         session.set("_run_log", run_log)
         session.save()
     except Exception as exc:
@@ -181,7 +223,7 @@ def register_post_validator(
     _REGISTRY.setdefault(tool_name, []).append((validator_fn, kwargs_builder))
 
 
-def post_run(tool_name: str, session_id: str, result: dict) -> dict:
+def post_run(tool_name: str, session_id: str, result: dict, inputs: dict | None = None) -> dict:
     """
     Inject quality_flags and _run_id into result; fire registered validators.
 
@@ -191,6 +233,13 @@ def post_run(tool_name: str, session_id: str, result: dict) -> dict:
     Injected fields (always present on successful Tier 1 outputs):
         quality_flags : list  — validator results (may be empty)
         _run_id       : str   — stable evidence-binding key for add_claim()
+
+    inputs : optional dict of the tool's own call kwargs (e.g. {"gauge_id":
+        gauge_id, "start_date": start_date}), built by the caller — post_run
+        has no access to the caller's arguments otherwise. Scrubbed via
+        _scrub_tool_inputs before being written to the run log. Omit for
+        tools where recording inputs isn't worth the caller-side plumbing;
+        the run log simply won't have an "inputs" key for that entry.
     """
     # Ensure quality_flags key is always present on Tier 1 outputs
     if "quality_flags" not in result:
@@ -229,7 +278,7 @@ def post_run(tool_name: str, session_id: str, result: dict) -> dict:
     # Generate run_id and persist to session run log for evidence binding
     run_id = _generate_run_id(tool_name, session_id)
     result["_run_id"] = run_id
-    _write_run_log(session_id, run_id, tool_name, result)
+    _write_run_log(session_id, run_id, tool_name, result, inputs)
 
     return result
 

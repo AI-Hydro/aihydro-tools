@@ -1103,7 +1103,17 @@ def fetch_streamflow_data(
         reminder = _sync_reminder(session_id)
         if reminder:
             resp["_sync_required"] = reminder
-        resp = _post_run("fetch_streamflow_data", session_id, resp)
+        resp = _post_run(
+            "fetch_streamflow_data",
+            session_id,
+            resp,
+            inputs={
+                "gauge_id": resolved_gauge_id,
+                "start_date": start_date,
+                "end_date": end_date,
+                "interval": interval,
+            },
+        )
         return resp
     except Exception as e:
         log.error("fetch_streamflow_data failed: %s", e)
@@ -1296,7 +1306,17 @@ def extract_hydrological_signatures(
         reminder = _sync_reminder(session_id)
         if reminder:
             d["_sync_required"] = reminder
-        d = _post_run("extract_hydrological_signatures", session_id, d)
+        d = _post_run(
+            "extract_hydrological_signatures",
+            session_id,
+            d,
+            inputs={
+                "start_date": start_date,
+                "end_date": end_date,
+                "feature": feature,
+                "geometry_geojson": geometry_geojson,
+            },
+        )
         return d
     except Exception as e:
         log.error("extract_hydrological_signatures failed: %s", e)
@@ -2043,7 +2063,23 @@ async def map_flood_inundation(
         reminder = _sync_reminder(session_id)
         if reminder:
             d["_sync_required"] = reminder
-        d = _post_run("map_flood_inundation", session_id, d)
+        d = _post_run(
+            "map_flood_inundation",
+            session_id,
+            d,
+            inputs={
+                "discharge_m3s": discharge_m3s,
+                "return_period": return_period,
+                "use_design_peak": use_design_peak,
+                "use_session_peak": use_session_peak,
+                "hindcast_date": hindcast_date,
+                "validate_gfm": validate_gfm,
+                "use_worldpop": use_worldpop,
+                "manning_n": manning_n,
+                "resolution": resolution,
+                "feature": feature,
+            },
+        )
         return d
     except Exception as e:
         log.error("map_flood_inundation failed: %s", e)
@@ -2319,7 +2355,18 @@ async def map_flood_inundation_hydrograph(
         reminder = _sync_reminder(session_id)
         if reminder:
             d["_sync_required"] = reminder
-        d = _post_run("map_flood_inundation_hydrograph", session_id, d)
+        d = _post_run(
+            "map_flood_inundation_hydrograph",
+            session_id,
+            d,
+            inputs={
+                "event_start_iso": event_start_iso,
+                "max_frames": max_frames,
+                "push_extent_polygons": push_extent_polygons,
+                "manning_n": manning_n,
+                "resolution": resolution,
+            },
+        )
         return d
     except Exception as e:
         log.error("map_flood_inundation_hydrograph failed: %s", e)
