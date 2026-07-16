@@ -37,6 +37,26 @@ _MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS = (
 _USGS_GAUGE_ID_RE = re.compile(r"^\d{8,15}$")
 
 
+def _claim_requires_uncertainty(claim_dict: dict) -> bool:
+    """Return whether an empirical claim is explicitly tied to a metric.
+
+    ``ScientificClaim.claim_type`` has no ``quantitative`` value. Quantitative
+    intent is instead made explicit by ``scope.metric`` or an evidence span's
+    ``metric_ref``. Keeping the rule tied to those structured fields avoids
+    guessing from numbers in prose (which may be dates, gauge IDs, or sample
+    counts) and makes the gate reachable through the public schema.
+    """
+    if claim_dict.get("claim_type") != "empirical_result":
+        return False
+    scope = claim_dict.get("scope") or {}
+    if scope.get("metric"):
+        return True
+    return any(
+        isinstance(span, dict) and bool(span.get("metric_ref"))
+        for span in claim_dict.get("evidence_spans", [])
+    )
+
+
 def _claim_touches_hydrology_signature_metric(claim_dict: dict) -> bool:
     """
     Heuristic: does this claim's scope.metric or statement reference a
@@ -182,10 +202,10 @@ def update_claim_status(
     """
     Update the status and confidence of an existing claim.
 
-    uncertainty_verified : set True to confirm that all numeric values in
-        this claim have associated uncertainty estimates (CI bounds). Required
-        when status='supported' and claim_type='quantitative'; the tool
-        returns a teaching error otherwise.
+    uncertainty_verified : set True to confirm that the metric estimate in an
+        empirical claim has an associated uncertainty estimate. Required when
+        status='supported' and the claim has scope.metric or an evidence-span
+        metric_ref; the tool returns a teaching error otherwise.
     """
     try:
         session = HydroSession.load(session_id)
@@ -195,10 +215,10 @@ def update_claim_status(
         claim_dict = session.claims[claim_id]
         claim_type = claim_dict.get("claim_type", "")
 
-        # Promotion gate: quantitative claims need verified uncertainty to
-        # reach 'supported'. Prevents bare scalar values from being promoted
-        # without CI bounds — enforces Phase 1.3 design contract.
-        if status == "supported" and claim_type == "quantitative" and not uncertainty_verified:
+        # Metric-scoped empirical claims need verified uncertainty to reach
+        # 'supported'. The structured metric fields make this rule reachable
+        # without inferring quantitative intent from prose.
+        if status == "supported" and _claim_requires_uncertainty(claim_dict) and not uncertainty_verified:
             return {
                 "error": "uncertainty_gate",
                 "claim_id": claim_id,
@@ -207,8 +227,8 @@ def update_claim_status(
                 "teaching_error": {
                     "rule": "quantitative_claims_require_uncertainty",
                     "explanation": (
-                        "A quantitative claim cannot reach 'supported' status "
-                        "without verified uncertainty estimates (confidence intervals). "
+                        "A metric-scoped empirical claim cannot reach 'supported' status "
+                        "without a verified uncertainty estimate. "
                         "Confirm that the underlying run results include bootstrap CIs "
                         "(check result._uncertainty or run the analysis with "
                         "uncertainty output enabled), then re-call with "
@@ -314,7 +334,7 @@ def promote_claim_to_registry(
 
     Passes through a strict validation gate (evidence_spans, limitations,
     status ∈ {supported, weakly_supported}, uncertainty_verified for
-    quantitative claims, a modelled-streamflow limitation when the claim
+    metric-scoped empirical claims, a modelled-streamflow limitation when the claim
     touches a hydrology-signature metric) then writes a real entry to
     ~/.aihydro/registry/claims.jsonl with evidence version hashes captured
     at this moment.  The registry_id is returned for future staleness checks.
@@ -342,11 +362,11 @@ def promote_claim_to_registry(
             raise ValueError("Promotion requires at least one limitation to be listed.")
         if claim.status not in ["supported", "weakly_supported"]:
             raise ValueError(f"Claim status '{claim.status}' is not eligible for promotion.")
-        if claim_dict.get("claim_type") == "quantitative" and not claim_dict.get("uncertainty_verified"):
+        if _claim_requires_uncertainty(claim_dict) and not claim_dict.get("uncertainty_verified"):
             raise ValueError(
-                "Quantitative claim cannot be promoted without uncertainty_verified=True. "
+                "Metric-scoped empirical claim cannot be promoted without uncertainty_verified=True. "
                 "Call update_claim_status(uncertainty_verified=True) after confirming "
-                "that uncertainty bounds (CIs) are available for all numeric values."
+                "that an uncertainty estimate is available for the referenced metric."
             )
         if _claim_touches_hydrology_signature_metric(claim_dict):
             limitations_text = " ".join(claim.limitations).lower()

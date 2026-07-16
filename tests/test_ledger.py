@@ -4,7 +4,8 @@ from ai_hydro.session.models import EvidenceSpan, ScientificClaim
 from ai_hydro.mcp.tools_ledger import (
     add_claim,
     add_assumption,
-    promote_claim_to_registry
+    promote_claim_to_registry,
+    update_claim_status,
 )
 
 def test_claims_ledger():
@@ -68,8 +69,108 @@ def test_promotion_gate():
         limitations=["Only tested on one basin"],
         evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "kge"}],
     )
+    update = update_claim_status(
+        session_id=session_id,
+        claim_id="c2",
+        status="supported",
+        confidence="high",
+        rationale="Bootstrap uncertainty was verified for the recorded KGE estimate.",
+        uncertainty_verified=True,
+    )
+    assert update["status"] == "updated"
     res = promote_claim_to_registry(session_id, "c2", researcher_approved=True)
     assert res["status"] == "promoted"
+
+
+def test_metric_scoped_empirical_claim_requires_uncertainty():
+    session_id = "test-metric-uncertainty-gate"
+    HydroSession(session_id).save()
+    add_claim(
+        session_id=session_id,
+        claim_id="c-metric",
+        statement="The evaluated run has a recorded KGE estimate.",
+        claim_type="empirical_result",
+        status="tested",
+        confidence="medium",
+        confidence_rationale="The estimate comes from a stored evaluation run for one basin.",
+        basins=["01031500"],
+        period="2000-2010",
+        metric="kge",
+        evidence_spans=[{"source_type": "run", "source_id": "run-1", "metric_ref": "kge"}],
+    )
+
+    blocked = update_claim_status(
+        session_id=session_id,
+        claim_id="c-metric",
+        status="supported",
+        confidence="medium",
+        rationale="The point estimate is present but uncertainty has not been verified.",
+    )
+    assert blocked["error"] == "uncertainty_gate"
+
+    allowed = update_claim_status(
+        session_id=session_id,
+        claim_id="c-metric",
+        status="supported",
+        confidence="medium",
+        rationale="Bootstrap uncertainty was verified for the recorded KGE estimate.",
+        uncertainty_verified=True,
+    )
+    assert allowed["status"] == "updated"
+    assert HydroSession.load(session_id).claims["c-metric"]["uncertainty_verified"] is True
+
+
+def test_metric_scoped_empirical_claim_cannot_be_promoted_without_uncertainty():
+    session_id = "test-metric-promotion-uncertainty"
+    HydroSession(session_id).save()
+    add_claim(
+        session_id=session_id,
+        claim_id="c-promote-metric",
+        statement="The evaluation produced a metric-scoped empirical result.",
+        claim_type="empirical_result",
+        status="supported",
+        confidence="medium",
+        confidence_rationale="The point estimate is recorded but its uncertainty is not verified.",
+        basins=["01031500"],
+        period="2000-2010",
+        metric="kge",
+        limitations=["Synthetic regression case for one basin."],
+        evidence_spans=[{"source_type": "run", "source_id": "run-2", "metric_ref": "kge"}],
+    )
+
+    result = promote_claim_to_registry(
+        session_id=session_id,
+        claim_id="c-promote-metric",
+        researcher_approved=True,
+    )
+    assert result["error"] is True
+    assert "cannot be promoted without uncertainty_verified=True" in result["message"]
+
+
+def test_non_empirical_claim_is_not_misclassified_as_quantitative():
+    session_id = "test-methodological-claim-uncertainty"
+    HydroSession(session_id).save()
+    add_claim(
+        session_id=session_id,
+        claim_id="c-method",
+        statement="The workflow uses KGE as one evaluation criterion.",
+        claim_type="methodological",
+        status="tested",
+        confidence="high",
+        confidence_rationale="The criterion is declared directly in the stored workflow specification.",
+        basins=["01031500"],
+        period="2000-2010",
+        metric="kge",
+    )
+
+    result = update_claim_status(
+        session_id=session_id,
+        claim_id="c-method",
+        status="supported",
+        confidence="high",
+        rationale="The stored workflow specification directly records this design choice.",
+    )
+    assert result["status"] == "updated"
 
 def test_evidence_span_schema():
     """EvidenceSpan validates source_type and rejects unknown types."""

@@ -5,9 +5,14 @@ All tool modules import ``mcp`` from here so every ``@mcp.tool()``
 decorator registers on the same singleton.
 
 Tool tiers (see DESIGN_PRINCIPLES.md §Tool tiering):
-  1 — Scientific output: validators fire automatically, uncertainty mandatory.
-  2 — Workflow / data: validators optional, uncertainty best-effort.
+  1 — Scientific output: eligible for registered post-run validators.
+  2 — Workflow / data: lighter audit expectations.
   3 — Infrastructure: no validation requirement.
+
+Tier assignment does not itself guarantee that a validator is registered or
+that uncertainty is available. Post-run validators are advisory; the separate
+claim-promotion gate enforces evidence, limitations, researcher approval, and
+uncertainty for metric-scoped empirical claims.
 """
 from __future__ import annotations
 
@@ -53,7 +58,7 @@ ACTIVE_WORKSPACE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 # ---------------------------------------------------------------------------
 TOOL_TIERS: dict[str, int] = {
     # ── Tier 1: Scientific output ──────────────────────────────────────────
-    # Validators fire automatically; uncertainty fields mandatory.
+    # Higher-consequence outputs; registered validators run where instrumented.
     "delineate_watershed":              1,
     "delineate_watershed_from_point":   1,
     "merit_ensure_basin":               2,

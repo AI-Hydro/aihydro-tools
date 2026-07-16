@@ -464,6 +464,7 @@ tasks:
           limitations:
             - "Calibrated on humid temperate basin only — not validated for semi-arid"
             - "HBV-light does not simulate glacier dynamics"
+          uncertainty_verified: true
     call:
       tool: promote_claim_to_registry
       kwargs:
@@ -955,22 +956,23 @@ tasks:
       - {path: "metadata.quality_flag", op: eq, expected: uncertainty_missing}
 
   - id: B-033
-    name: "Promotion gate: quantitative claim without uncertainty_verified is refused"
+    name: "Promotion gate: metric-scoped empirical claim without uncertainty_verified is refused"
     tier: 1
     mark: bench
     category: uncertainty
     call_style: session_op
     rationale: >
-      update_claim_status must refuse to promote a quantitative claim to
-      'supported' without uncertainty_verified=True. The teaching_error
-      explains the uncertainty gate. This enforces Phase 1.3 design contract.
+      update_claim_status must refuse to promote a metric-scoped empirical
+      claim to 'supported' without uncertainty_verified=True. The structured
+      scope.metric and evidence metric_ref make the gate reachable through the
+      public ScientificClaim schema.
     setup:
       session_id: bench-uncert-033
       claims:
         claim-q01:
           id: claim-q01
           claim: "The mean runoff ratio is 0.42."
-          claim_type: quantitative
+          claim_type: empirical_result
           status: tested
           confidence: medium
           confidence_rationale: "Tested against CAMELS benchmark."
@@ -993,27 +995,28 @@ tasks:
       - {path: claim_id, op: eq, expected: claim-q01}
 
   - id: B-034
-    name: "Promotion gate: qualitative claim reaches supported without uncertainty_verified"
+    name: "Promotion gate: non-metric empirical claim reaches supported without uncertainty_verified"
     tier: 1
     mark: bench
     category: uncertainty
     call_style: session_op
     rationale: >
-      The uncertainty gate only blocks quantitative claims. Qualitative claims
-      should be promotable to 'supported' without uncertainty_verified=True.
-      This ensures the gate is targeted and does not over-block.
+      The uncertainty gate applies to empirical claims that explicitly refer
+      to a metric. A qualitative empirical claim without scope.metric or an
+      evidence metric_ref should reach 'supported' without uncertainty_verified.
+      This ensures the structured gate is targeted and does not over-block.
     setup:
       session_id: bench-uncert-034
       claims:
         claim-q02:
           id: claim-q02
           claim: "The basin exhibits perennial flow throughout the study period."
-          claim_type: qualitative
+          claim_type: empirical_result
           status: tested
           confidence: medium
           confidence_rationale: "Visual inspection of hydrograph."
           scope: {basins: ["test"], period: "1990-2000"}
-          evidence_spans: [{source_type: run, source_id: "run-abc", metric_ref: hydrograph}]
+          evidence_spans: [{source_type: run, source_id: "run-abc", metric_ref: null}]
           limitations: ["Single observation period."]
     call:
       tool: update_claim_status
