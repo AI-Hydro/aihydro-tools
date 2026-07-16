@@ -154,7 +154,13 @@ def test_merit_basins_region_uses_google_drive_catchment_fallback(tmp_path):
         (dest_dir / "cat_pfaf_46_MERIT_Hydro_v07_Basins_v01.shp").write_bytes(b"catchment")
         return True
 
-    with patch("ai_hydro.data.merit_download.download_catchment_shapefile", side_effect=fake_download):
+    # MeritDataManager is re-exported through ai_hydro for compatibility, but its
+    # implementation imports the downloader from the watershed package. Patch the
+    # implementation namespace so this offline unit test can never touch the network.
+    with patch(
+        "aihydro_watershed.merit.merit_download.download_catchment_shapefile",
+        side_effect=fake_download,
+    ):
         status = mgr.ensure_basins_region("46", acquisition_policy="download_if_missing")
 
     assert status.catchments_ready
