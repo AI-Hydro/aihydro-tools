@@ -81,6 +81,7 @@ TOOL_TIERS: dict[str, int] = {
     "compute_flood_frequency":          1,
     "compute_drought_index":            1,
     "compute_soil_loss_rusle":          1,
+    "fetch_soil_attributes_ssurgo":     2,
     "compute_design_hydrograph":        1,
     "describe_model_space":             1,
     "propose_and_train":                1,

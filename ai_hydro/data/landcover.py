@@ -70,6 +70,12 @@ _DYNAMIC_WORLD_TO_NLCD: dict[int, int] = {
 }
 
 
+# Latest NLCD land-cover release served by pygeohydro.nlcd_bygeom (its valid
+# years are 2001-2021). Used as the default so callers get current land cover
+# unless they ask for an older epoch.
+NLCD_LATEST_YEAR = 2021
+
+
 def _remap_codes(arr: "np.ndarray", table: dict[int, int]) -> "np.ndarray":
     """Vectorised class-code remap; codes absent from the table become NaN."""
     out = np.full(arr.shape, np.nan, dtype=np.float32)
@@ -111,7 +117,7 @@ def _to_single_geom(geometry):
 def fetch_lulc_data(
     geometry,
     resolution: int = 30,
-    year: int = 2019,
+    year: int = NLCD_LATEST_YEAR,
     product: Optional[str] = None,
 ) -> "xr.Dataset":
     """
@@ -134,7 +140,7 @@ def fetch_lulc_data(
         resolution may differ for global products — the actual value is
         reported in ``Dataset.attrs['_adata_resolution_m']``.
     year : int, optional
-        Year of land-cover data (default 2019).  For NLCD the nearest available
+        Year of land-cover data (default 2021, the latest NLCD release).  For NLCD the nearest available
         epoch is used; for ESA WorldCover (2020–2021) and Dynamic World the
         product's available period applies.
     product : str, optional
@@ -250,7 +256,7 @@ def _adapt_landcover_result(result, year: int) -> "xr.Dataset":
     )
 
 
-def _fetch_nlcd_direct(geometry, resolution: int = 30, year: int = 2019) -> "xr.Dataset":
+def _fetch_nlcd_direct(geometry, resolution: int = 30, year: int = NLCD_LATEST_YEAR) -> "xr.Dataset":
     """Direct NLCD fetch via pygeohydro — CONUS-only hard fallback."""
     import pygeohydro as gh
 

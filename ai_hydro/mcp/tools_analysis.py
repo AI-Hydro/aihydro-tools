@@ -781,6 +781,12 @@ def merit_add_map_layers(
         return _tool_error_to_dict(e)
 
 
+def _round_area(area_km2: float) -> float:
+    """One decimal for river basins, three for culvert-scale catchments."""
+    a = float(area_km2 or 0)
+    return round(a, 1) if a >= 10 else round(a, 3)
+
+
 @mcp.tool()
 def delineate_watershed_from_point(
     lat: float,
@@ -796,8 +802,15 @@ def delineate_watershed_from_point(
     NLDI in CONUS, MERIT Hydro via GEE + pyflwdir globally, local MERIT
     rasters if requested, then raw DEM fallback / MERIT-Basins expert tiers.
 
-    method: auto | nldi | merit_gee | local_merit | merit_basins | dem_raw_fallback
-    expected_area_km2: enables validation + adaptive snapping
+    method: auto | nldi | merit_gee | local_merit | merit_basins |
+        dem_raw_fallback | small_catchment (alias 3dep)
+    small_catchment: CONUS catchments under ~5 km2 such as road culverts.
+        USGS 3DEP 10 m bare-earth DEM, a notch carved through the road
+        embankment at the pour point, snap to the largest drainage within
+        40 m. Flags LIKELY_DITCH_SNAP under 0.05 km2. NLDI and MERIT cannot
+        resolve these: they return whole NHDPlus catchments or 90 m cells.
+    expected_area_km2: enables validation + adaptive snapping. In CONUS a
+        value under 5 km2 makes auto use small_catchment first.
     session_id: optional — auto-generated from coordinates/name if not supplied.
     Returns area_km2, method_used, routing metadata, snap quality, and quality flags.
     """
@@ -811,6 +824,8 @@ def delineate_watershed_from_point(
         method_norm = method.strip().lower()
         if method_norm == "fast":
             method_norm = "dem_raw_fallback"
+        if method_norm == "3dep":
+            method_norm = "small_catchment"
         allowed_methods = (
             "auto",
             "nldi",
@@ -818,10 +833,12 @@ def delineate_watershed_from_point(
             "local_merit",
             "merit_basins",
             "dem_raw_fallback",
+            "small_catchment",
         )
         if method_norm not in allowed_methods:
             raise ValueError(
-                "method must be auto, nldi, merit_gee, local_merit, merit_basins, or dem_raw_fallback"
+                "method must be auto, nldi, merit_gee, local_merit, merit_basins, "
+                "dem_raw_fallback, or small_catchment"
             )
 
         from ai_hydro.analysis.delineation import delineate_from_point
@@ -860,7 +877,7 @@ def delineate_watershed_from_point(
             auto_zoom=True,
             open_map=True,
             metadata={
-                "area_km2": str(round(d["data"].get("area_km2", 0), 1)),
+                "area_km2": str(_round_area(d["data"].get("area_km2", 0))),
                 "method_used": d["data"].get("method_used", method_norm),
                 "source": "delineation",
                 "pfaf_code": d["data"].get("pfaf_code") or "",
@@ -2389,22 +2406,26 @@ def _affine_from_bounds(bounds: list, shape: tuple[int, int]):
 @mcp.tool()
 async def create_cn_grid(
     session_id: str | None = None,
-    year: int = 2019,
+    year: int = 2021,
     resolution: int = 30,
     create_map: bool = True,
     feature: "str | list | None" = None,
     geometry_geojson: str | None = None,
     product: str | None = None,
     soil_product: str | None = None,
+    dual_hsg: str = "drained",
     ctx: Context | None = None,
 ) -> dict:
     """
     NRCS Curve Number grid: land cover × soil → distributed CN.
 
     Globally robust via region-routed data acquisition: land cover auto-routes
-    NLCD (CONUS) → ESA WorldCover / Dynamic World (global), and soil auto-routes
-    POLARIS (CONUS) → ISRIC SoilGrids (global). Non-NLCD land cover is remapped
-    onto NLCD classes so a single CN lookup table applies everywhere.
+    NLCD (CONUS) → ESA WorldCover / Dynamic World (global). Soil auto-routes
+    SSURGO (CONUS: gNATSGO map units + USDA Soil Data Access, hydrologic
+    soil group as recorded per component) → POLARIS if SSURGO is unreachable
+    → ISRIC SoilGrids outside CONUS (group inferred from texture). Non-NLCD
+    land cover is remapped onto NLCD classes so one TR-55 table applies.
+    ``hsg_method`` in the output says whether groups were recorded or inferred.
 
     Requires delineate_watershed first. Returns CN stats, zone percentages,
     LULC + soil breakdowns, and the served data products under
@@ -2415,7 +2436,8 @@ async def create_cn_grid(
     session_id : str | None (optional from Wave 3)
         Research session identifier. Auto-resolved from chat context when omitted.
     year : int
-        Land-cover year (default 2019). NLCD snaps to the nearest available epoch.
+        Land-cover year (default 2021, the latest NLCD release). NLCD snaps to
+        the nearest available epoch.
     resolution : int
         Output resolution in metres (default 30).
     create_map : bool
@@ -2429,15 +2451,19 @@ async def create_cn_grid(
         Pin the land-cover product (e.g. ``"NLCD"``, ``"ESA_WORLDCOVER_STAC"``,
         ``"DYNAMIC_WORLD"``). ``None`` (default) → auto region-routing.
     soil_product : str | None, optional
-        Pin the soil product (e.g. ``"POLARIS"``, ``"SOILGRIDS"``).
-        ``None`` (default) → auto region-routing.
+        Pin the soil product (``"SSURGO"``, ``"POLARIS"``, ``"SOILGRIDS"``).
+        ``None`` (default) → auto region-routing (SSURGO in CONUS).
+    dual_hsg : str
+        ``"drained"`` (default) or ``"undrained"``: which condition of a
+        SSURGO dual group (A/D, B/D, C/D) to map. The CN mean for the other
+        condition is returned too. Ignored for texture-based soil products.
     """
     # C3: batch fan-out (async tool → asyncio concurrent gather)
     if isinstance(feature, list):
         return await _batch_feature_run(
             create_cn_grid, feature, _resolve_session(session_id, None),
             ctx=ctx, year=year, resolution=resolution, create_map=create_map,
-            product=product, soil_product=soil_product,
+            product=product, soil_product=soil_product, dual_hsg=dual_hsg,
         )
     try:
         session_id = _resolve_session(session_id, None)
@@ -2446,7 +2472,8 @@ async def create_cn_grid(
         _feature_id, _key, _cached, _geom = _feature_cache_resolve(
             session, "cn",
             {"year": year, "resolution": resolution,
-             "product": product, "soil_product": soil_product},
+             "product": product, "soil_product": soil_product,
+             "dual_hsg": dual_hsg},
             feature, geometry_geojson,
         )
         if _cached is not None:
@@ -2481,6 +2508,7 @@ async def create_cn_grid(
             output_prefix=cn_prefix,
             product=product,
             soil_product=soil_product,
+            dual_hsg=dual_hsg,
         )
 
         if ctx:
@@ -2499,6 +2527,17 @@ async def create_cn_grid(
             **zones,
             "lulc_classes": lulc.get("classes", []),
             "soil_group_percentages": soil.get("soil_group_percentages", {}),
+            # How the hydrologic group was obtained: "ssurgo_recorded" or
+            # "texture_thresholds". SSURGO-only fields are None otherwise.
+            "hsg_method": soil.get("hsg_method"),
+            "dual_hsg_condition": soil.get("dual_hsg_condition"),
+            "pct_dual_hsg": soil.get("pct_dual_hsg"),
+            "cn_mean_undrained": soil.get("cn_mean_undrained"),
+            "cn_mean_drained": soil.get("cn_mean_drained"),
+            "hsg_coverage": soil.get("hsg_coverage"),
+            "kw_mean": soil.get("kw_mean"),
+            "soil_fallback_reason": prov.get("soil_fallback_reason"),
+            "lulc_year": prov.get("lulc_year", year),
             "area_km2": ws_info.get("area_km2"),
             "files_saved": list(file_paths.values()),
             # Which products actually served the data (auto-routed or pinned).
@@ -2515,7 +2554,8 @@ async def create_cn_grid(
                 "tool": "ai_hydro.analysis.curve_number.create_curve_number_grid_from_geometry",
                 "params": {"year": year, "resolution": resolution,
                            "create_map": create_map,
-                           "product": product, "soil_product": soil_product},
+                           "product": product, "soil_product": soil_product,
+                           "dual_hsg": dual_hsg},
                 "data_provenance": prov,
             },
         }
@@ -3504,6 +3544,106 @@ def compute_drought_index(
 
 
 @mcp.tool()
+async def fetch_soil_attributes_ssurgo(
+    session_id: str | None = None,
+    feature: str | None = None,
+    geometry_geojson: str | None = None,
+) -> dict:
+    """
+    SSURGO soil attributes for a CONUS watershed: recorded hydrologic soil
+    group, surface-horizon erodibility Kw, and sand/silt/clay, area-weighted
+    over the watershed polygon.
+
+    Source: gNATSGO map-unit raster (10 m, Planetary Computer) joined to USDA
+    Soil Data Access tables (component.hydgrp, chorizon.kwfact at the surface
+    horizon). SSURGO is the mapped survey of record, so group and Kw are read
+    as recorded rather than inferred from texture (POLARIS/SoilGrids).
+
+    Dual groups (A/D, B/D, C/D) are reported both ways: ``hsg_drained_pct``
+    uses the first letter, ``hsg_undrained_pct`` uses D. Kw is in US customary
+    units; ``kw_si_mean`` = Kw x 0.1317 (t ha h / (ha MJ mm)). Writes the
+    session ``soil`` slot, which compute_soil_loss_rusle reads for K.
+
+    Parameters
+    ----------
+    session_id : str | None (optional)
+        Research session identifier. Auto-resolved from chat context when omitted.
+    feature : str | None, optional
+        Feature id or name. Omit to use the active feature / session watershed.
+    geometry_geojson : str, optional
+        Override geometry as a GeoJSON string (WGS84).
+    """
+    try:
+        session_id = _resolve_session(session_id, None)
+        session = _ensure_session(session_id)
+        _feature_id, _key, _cached, _geom = _feature_cache_resolve(
+            session, "ssurgo", {}, feature, geometry_geojson,
+        )
+        if _cached is not None:
+            return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
+        geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
+
+        from shapely.geometry import shape as _shape
+        from aihydro_watershed.delineation.nldi_point import is_conus
+        from aihydro_watershed.terrain.ssurgo import (
+            SSURGO_CITATION, ssurgo_catchment_attributes,
+        )
+
+        geom = _shape(geojson)
+        c = geom.centroid
+        if not is_conus(c.y, c.x):
+            return {
+                "error": True,
+                "code": "OUTSIDE_SSURGO_COVERAGE",
+                "message": "SSURGO / gNATSGO covers the conterminous United States only.",
+                "recovery": "Use data_fetch(variable='soil') for SoilGrids texture outside CONUS.",
+                "next_tools": ["data_fetch"],
+            }
+
+        res = await asyncio.to_thread(ssurgo_catchment_attributes, geom)
+        summary = res["summary"]
+        data = {k: v for k, v in summary.items() if k not in ("product", "source")}
+        d = {
+            "data": data,
+            "meta": {
+                "tool": "aihydro_watershed.terrain.ssurgo.ssurgo_catchment_attributes",
+                "product": summary.get("product"),
+                "source": summary.get("source"),
+                "citation": SSURGO_CITATION,
+            },
+        }
+        _feature_cache_store(session, "ssurgo", _feature_id, _key, d,
+                             citations=["ssurgo_gnatsgo"])
+        # Basin-mean values in the shape compute_soil_loss_rusle reads.
+        session = _ensure_session(session_id)
+        session.set("soil", {
+            "data": {
+                "sand": summary.get("sand_pct_mean"),
+                "silt": summary.get("silt_pct_mean"),
+                "clay": summary.get("clay_pct_mean"),
+                "kw": summary.get("kw_mean"),
+                "kw_si": summary.get("kw_si_mean"),
+                "hsg_drained_pct": summary.get("hsg_drained_pct"),
+                "hsg_undrained_pct": summary.get("hsg_undrained_pct"),
+            },
+            "meta": {"tool": "fetch_soil_attributes_ssurgo",
+                     "product": summary.get("product")},
+        })
+        session.save()
+        d["feature_id"] = _feature_id
+        d["next_steps"] = [
+            {"tool": "create_cn_grid",
+             "rationale": "Curve numbers from the same recorded hydrologic groups."},
+            {"tool": "compute_soil_loss_rusle",
+             "rationale": "Uses the recorded Kw (SI) as the RUSLE K factor."},
+        ]
+        return d
+    except Exception as e:
+        log.error("fetch_soil_attributes_ssurgo failed: %s", e)
+        return _tool_error_to_dict(e)
+
+
+@mcp.tool()
 def compute_soil_loss_rusle(
     session_id: str | None = None,
     r_factor: float | None = None,
@@ -3522,9 +3662,10 @@ def compute_soil_loss_rusle(
     """
     Estimate basin-average annual soil loss with RUSLE (A = R·K·LS·C·P,
     t·ha⁻¹·yr⁻¹). Each factor is taken from an explicit argument if given,
-    otherwise derived from session forcing (R), soil texture (K), geomorphic
-    slope (LS), and land cover (C) using standard documented formulas. Writes
-    session.soil_loss.
+    otherwise derived from session forcing (R), soil (K: SSURGO recorded Kw
+    from fetch_soil_attributes_ssurgo if present, else EPIC from texture),
+    geomorphic slope (LS), and land cover (C) using standard documented
+    formulas. Writes session.soil_loss.
 
     All inputs are already fetchable through the platform's data layer, so this
     is compute over data we already retrieve. Factor formulas: Renard-Freimund
@@ -3570,6 +3711,12 @@ def compute_soil_loss_rusle(
 
         # ── K: soil erodibility ────────────────────────────────────────────
         K = k_factor
+        if K is None and None in (sand_pct, silt_pct, clay_pct):
+            kw_si = _soil_recorded_kw_si(session)
+            if kw_si is not None:
+                K = kw_si
+                notes.append("K = SSURGO recorded surface Kw (x 0.1317 to SI), "
+                             "from fetch_soil_attributes_ssurgo.")
         if K is None and None not in (sand_pct, silt_pct, clay_pct):
             K = k_factor_epic(sand_pct, silt_pct, clay_pct, organic_carbon_pct)
             notes.append("K derived from supplied soil texture (EPIC).")
@@ -3673,11 +3820,23 @@ def _forcing_monthly_precip_climatology(session) -> list | None:
         return None
 
 
+def _soil_recorded_kw_si(session) -> float | None:
+    """Recorded SSURGO Kw in SI units from the session soil slot, if present."""
+    try:
+        sl = session.get("soil")
+        data = sl.get("data", sl) if isinstance(sl, dict) else None
+        v = data.get("kw_si") if isinstance(data, dict) else None
+        return float(v) if isinstance(v, (int, float)) else None
+    except Exception as exc:
+        log.debug("recorded Kw unavailable: %s", exc)
+        return None
+
+
 def _soil_mean_texture(session) -> dict | None:
-    """Best-effort basin-mean sand/silt/clay (%) from session.soil."""
+    """Best-effort basin-mean sand/silt/clay (%) from the session soil slot."""
     try:
         import numpy as np
-        sl = session.soil
+        sl = session.get("soil")
         if not sl:
             return None
         data = sl.get("data", sl) if isinstance(sl, dict) else sl

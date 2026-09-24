@@ -93,6 +93,18 @@ BIBTEX_ENTRIES: dict[str, str] = {
   note   = {Accessed via pygeohydro and aihydro-tools}
 }""",
 
+    "ssurgo_gnatsgo": """\
+@misc{ssurgo_gnatsgo,
+  author = {{Soil Survey Staff}},
+  title  = {Gridded National Soil Survey Geographic ({gNATSGO}) Database for
+            the Conterminous {United States}},
+  howpublished = {United States Department of Agriculture, Natural Resources
+                  Conservation Service},
+  url    = {https://planetarycomputer.microsoft.com/dataset/gnatsgo-rasters},
+  note   = {Map units via Microsoft Planetary Computer; component and horizon
+            tables via USDA Soil Data Access (https://sdmdataaccess.nrcs.usda.gov/)}
+}""",
+
     "chaney2019polaris": """\
 @article{chaney2019polaris,
   author  = {Chaney, Nathaniel W. and Minasny, Budiman and Herman, Jonathan D.
@@ -179,6 +191,7 @@ TOOL_CITATIONS: dict[str, list[str]] = {
     "fetch_forcing_data":              ["abatzoglou2013gridmet"],
     "fetch_lulc_data":                 ["nlcd2021"],
     "fetch_soil_data":                 ["chaney2019polaris"],
+    "fetch_soil_attributes_ssurgo":    ["ssurgo_gnatsgo"],
     "fetch_camels_us":                 ["addor2017camels"],
     "train_hydro_model":               ["seibert2012hbv"],
 }

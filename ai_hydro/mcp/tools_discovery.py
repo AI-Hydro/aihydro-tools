@@ -30,6 +30,7 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "project":     ("start_project", "get_project", "add_session_to_project"),
     "watershed":   ("delineate_watershed", "delineation_", "merit_", "extract_geomorphic",
                     "compute_twi", "create_cn_grid", "compute_soil_loss_rusle",
+                    "fetch_soil_attributes_ssurgo",
                     "compute_design_hydrograph", "map_flood_inundation",
                     "map_flood_inundation_hydrograph",
                     "run_inundation_physics_validation", "get_inundation_physics_result",

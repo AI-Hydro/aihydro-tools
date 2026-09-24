@@ -6,6 +6,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Curve number: NLCD 81 (Pasture/Hay) now uses TR-55 pasture, good condition (39/61/74/80 for groups A-D). It previously used the row-crop values (67/78/85/89), which overstated CN on pasture by 9 to 28 points. (Fix lives in `aihydro-watershed`.)
+- `create_cn_grid` and `fetch_lulc_data` default to NLCD 2021, the latest release `pygeohydro` serves (was 2019).
+- `compute_soil_loss_rusle` read the session soil slot through an attribute that does not exist, so the "K from session soil texture" branch never ran. It now reads the slot correctly.
+
+### Added
+
+- `fetch_soil_attributes_ssurgo` tool (CONUS): SSURGO hydrologic soil group as recorded per component, surface-horizon erodibility Kw (US customary and SI), and sand/silt/clay, area-weighted over the watershed. Data: gNATSGO map units (Planetary Computer) + USDA Soil Data Access. `compute_soil_loss_rusle` uses the recorded Kw as K when present.
+- `create_cn_grid` uses SSURGO recorded hydrologic groups by default in CONUS (POLARIS/SoilGrids texture inference remains the fallback and the route elsewhere). New `dual_hsg` parameter picks the drained or undrained condition for A/D, B/D, C/D soils; the CN mean for the other condition, `hsg_method`, and `kw_mean` are returned.
+- `delineate_watershed_from_point(method="small_catchment")` (alias `3dep`) for CONUS catchments under ~5 km2 such as road culverts: USGS 3DEP 10 m, road-embankment notch, 40 m snap. `auto` uses it first when `expected_area_km2 < 5`.
+
+---
+
 ## [2.1.0] — 2026-06-25
 
 ### Added
