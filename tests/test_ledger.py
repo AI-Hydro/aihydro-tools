@@ -8,6 +8,17 @@ from ai_hydro.mcp.tools_ledger import (
     update_claim_status,
 )
 
+
+@pytest.fixture(autouse=True)
+def isolated_ledger(tmp_path, monkeypatch):
+    from ai_hydro.session import store
+    from ai_hydro.registry import store as registry
+    monkeypatch.setattr(store, "_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(store, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(registry, "REGISTRY_DIR", tmp_path / "registry")
+    monkeypatch.setattr(registry, "CLAIMS_FILE", tmp_path / "registry" / "claims.jsonl")
+    monkeypatch.setattr("ai_hydro.mcp.tools_ledger.push_claim_event", lambda **kwargs: None)
+
 def test_claims_ledger():
     session_id = "test-ledger-claims"
     session = HydroSession(session_id)
@@ -55,7 +66,11 @@ def test_promotion_gate():
     assert "error" in res
     assert "evidence" in res["message"]
 
-    # Success: with typed evidence_spans and limitations
+    # Success: typed references backed by an actual retained synthetic run.
+    session.set("_run_log", {"r1": {"run_id": "r1", "session_id": session_id,
+        "key_outputs": {"kge": 0.8, "_uncertainty": {"kge": {
+            "value": 0.8, "ci_low": 0.7, "ci_high": 0.9, "ci_level": 0.95,
+            "n": 30, "method": "synthetic_fixture"}}}}})
     add_claim(
         session_id=session_id,
         claim_id="c2",

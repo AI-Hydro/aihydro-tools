@@ -70,6 +70,14 @@ def _promoted_claim_dict(claim_id: str = "c-001") -> dict:
     }
 
 
+def _backed_result(extra=None):
+    """Synthetic retained measurement and uncertainty, not a real USGS result."""
+    return {"data": {**(extra or {}).get("data", {}), "q_mean": 0.45,
+                     "_uncertainty": {"q_mean": {"value": 0.45, "ci_low": 0.3,
+                         "ci_high": 0.6, "ci_level": 0.95, "n": 30,
+                         "method": "synthetic_fixture"}}}}
+
+
 # ---------------------------------------------------------------------------
 # TestRegistryStore
 # ---------------------------------------------------------------------------
@@ -177,25 +185,25 @@ class TestSnapshotEvidenceVersions(unittest.TestCase):
         self.assertIn("streamflow", versions)
         self.assertNotEqual(versions["streamflow"], "")
 
-    def test_run_span_uses_source_id_as_version(self):
+    def test_missing_run_cannot_be_fingerprinted(self):
         import ai_hydro.session.store as _store
         with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             session = HydroSession(session_id="s-snap-002")
             session._storage_dir = self.sessions_dir
             session.save()
         spans = [{"source_type": "run", "source_id": "sig.2024.abc.1234"}]
-        versions = reg.snapshot_evidence_versions(session, spans)
-        self.assertEqual(versions["sig.2024.abc.1234"], "sig.2024.abc.1234")
+        with self.assertRaisesRegex(ValueError, "not retained"):
+            reg.snapshot_evidence_versions(session, spans)
 
-    def test_unknown_dataset_gets_empty_string(self):
+    def test_unknown_dataset_cannot_be_fingerprinted(self):
         import ai_hydro.session.store as _store
         with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             session = HydroSession(session_id="s-snap-003")
             session._storage_dir = self.sessions_dir
             session.save()
         spans = [{"source_type": "dataset", "source_id": "nonexistent_source"}]
-        versions = reg.snapshot_evidence_versions(session, spans)
-        self.assertEqual(versions.get("nonexistent_source", ""), "")
+        with self.assertRaisesRegex(ValueError, "no retained"):
+            reg.snapshot_evidence_versions(session, spans)
 
 
 # ---------------------------------------------------------------------------
@@ -222,8 +230,7 @@ class TestCheckEvidenceStaleness(unittest.TestCase):
         data = {"data": {"q_cms": [1.0, 2.0], "gauge_id": "01013500"}}
         session = self._session_with_data("s-stale-001", data)
         spans = [{"source_type": "dataset", "source_id": "streamflow"}]
-        from ai_hydro.session.store import _hash_obj
-        ev_versions = {"streamflow": _hash_obj(data)}
+        ev_versions = reg.snapshot_evidence_versions(session, spans)
         stale = reg.check_evidence_staleness(session, ev_versions, spans)
         self.assertEqual(stale, [])
 
@@ -232,17 +239,17 @@ class TestCheckEvidenceStaleness(unittest.TestCase):
         data_v2 = {"data": {"q_cms": [1.0, 2.0, 3.0], "gauge_id": "01013500"}}
         session = self._session_with_data("s-stale-002", data_v2)
         spans = [{"source_type": "dataset", "source_id": "streamflow"}]
-        from ai_hydro.session.store import _hash_obj
-        ev_versions = {"streamflow": _hash_obj(data_v1)}
+        from ai_hydro.registry.evidence import fingerprint
+        ev_versions = {"streamflow": fingerprint(data_v1)}
         stale = reg.check_evidence_staleness(session, ev_versions, spans)
         self.assertIn("streamflow", stale)
 
-    def test_empty_stored_hash_skipped(self):
+    def test_empty_stored_hash_needs_review(self):
         session = self._session_with_data("s-stale-003", {"data": {}})
         spans = [{"source_type": "dataset", "source_id": "streamflow"}]
         ev_versions = {"streamflow": ""}  # not snapshotted
         stale = reg.check_evidence_staleness(session, ev_versions, spans)
-        self.assertEqual(stale, [])
+        self.assertEqual(stale, ["streamflow"])
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +275,7 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
         with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
             self.session = HydroSession(session_id="s-promo-001")
             self.session._storage_dir = self.sessions_dir
+            self.session.set("streamflow", _backed_result())
             self.session.claims["c-001"] = _promoted_claim_dict("c-001")
             self.session.save()
 
@@ -404,8 +412,7 @@ class TestCheckRegistryStaleness(unittest.TestCase):
             s = HydroSession(session_id=session_id)
             s._storage_dir = self.sessions_dir
             s.claims[claim_id] = _promoted_claim_dict(claim_id)
-            if data:
-                s.set("streamflow", data)
+            s.set("streamflow", _backed_result(data))
             s.save()
         return promote_claim_to_registry(session_id, claim_id, researcher_approved=True)
 

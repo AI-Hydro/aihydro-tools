@@ -741,6 +741,8 @@ class HydroSession:
             "key_outputs": key_outputs,
             "slot": product,
         }
+        from ai_hydro.session.evidence import capture_result_evidence
+        entry["evidence"] = capture_result_evidence(value)
         _run_log_record(self.session_id, run_id, entry)
 
     def put_result(

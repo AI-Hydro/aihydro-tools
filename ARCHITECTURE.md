@@ -162,36 +162,38 @@ tests that patch the actual implementation use `aihydro_watershed.*` paths.
 
 ## Defensibility stack
 
+The implemented path (updated 2026-09-07) is:
+
+```text
+Tool result → session Store Protocol / enforcement run writer
+            → SQLite run log (key_outputs + compact evidence schema 1)
+            → typed EvidenceSpan in a session ScientificClaim
+            → promote_claim_to_registry
+              • resolve exact retained run / dataset result / indexed passage
+              • reject unavailable metrics, failed checks, absent/mismatched CI
+              • preserve researcher approval and limitations gates
+            → ~/.aihydro/registry/claims.jsonl
+              • evidence schema 2, retained-content fingerprints, claim scope
+              • explicit unverified scope/method/text alignment
+            → check_registry_staleness
+              • changed/deleted/unverifiable evidence needs review
 ```
-User claim: "NRMSE = 0.84 for the Potomac basin"
-       │
-       ▼
-audit/grammar.py       parse claim → Claim(metric="NRMSE", value=0.84, basin="Potomac")
-       │
-       ▼
-audit/resolver.py      resolve citations ([lit:hash] → passage text + source)
-       │
-       ▼
-ClaimStore.put(claim)  JSONL claim registry (~/.aihydro/claims.jsonl)
-       │
-       ▼
-Auditor.audit(claim)   4 deterministic checks:
-                         range check (NRMSE ∈ [0, 1])
-                         unit check  (dimensionless)
-                         basin match (Potomac gauge exists in registry)
-                         staleness   (within 30-day window)
-       │
-       ▼
-UncertaintyProvider    bootstrap CI on the metric
-  .bootstrap_ci(data)  → UncertaintyResult(estimate=0.84, lower=0.79, upper=0.88)
-       │
-       ▼
-capsule/manifest.py    bundle: run_log + code + data hash + replay.py
-       │
-       ▼
-DefensibilityReport    6-section Markdown: metadata, claims, audit, uncertainty,
-                       experiment table, pre-registration
-```
+
+`audit/grammar.py` parses inline evidence markers and numeric prose;
+`audit/resolver.py` resolves those markers and compares cited numbers. It does
+not universally validate physical ranges, units or basin identity. Registry
+promotion is a separate retained-evidence gate, documented in
+[the evidence contract](docs/evidence-integrity.md).
+
+Core bootstrap outputs can be retained alongside metrics. Their presence and
+structural consistency do not prove the resampling design is appropriate.
+Capsule manifest verification checks retained content and some live values;
+it is not general scientific recomputation. The Defensibility Report presents
+metadata, claims, audits, uncertainty, experiments and pre-registration.
+
+SQLite run rows remain replaceable and JSONL registry writes are not
+transactional across concurrent read/modify/write operations. Full input
+lineage, period/population/units alignment and recomputation remain open.
 
 ---
 

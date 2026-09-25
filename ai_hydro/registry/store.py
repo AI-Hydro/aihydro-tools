@@ -1,5 +1,5 @@
 """
-Global claim registry — append-only JSONL store.
+Global claim registry — JSONL store with status updates.
 
 File layout:
     ~/.aihydro/registry/claims.jsonl     ← one JSON object per line
@@ -16,8 +16,8 @@ Each entry is a dict with at minimum:
     staleness       — None or {reason, detected_at, stale_sources: [source_id, ...]}
 
 The file is rewritten atomically via write-then-rename so readers always see
-a consistent snapshot.  Concurrent writers are serialised by the OS rename
-atomicity guarantee (POSIX) — the same pattern used by HydroSession.save().
+a consistent snapshot.  Rename does not serialize concurrent read/modify/write operations. Multi-writer
+transaction safety is separate outstanding work; this store is not append-only.
 """
 from __future__ import annotations
 
@@ -144,62 +144,25 @@ def mark_retracted(registry_id: str, reason: str = "") -> bool:
     return updated
 
 
-def build_registry_id(session_id: str, claim_id: str) -> str:
-    """Build a deterministic registry_id from session + claim identifiers."""
+def build_registry_id(session_id: str, claim_id: str, revision: str = "") -> str:
+    """Build an ID; content revisions use a longer digest than legacy IDs."""
     import hashlib
     session_frag = session_id[:8] if session_id else "unknown"
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    raw = f"{session_id}:{claim_id}"
-    hash6 = hashlib.sha256(raw.encode()).hexdigest()[:6]
-    return f"reg.{session_frag}.{date_str}.{hash6}"
+    raw = f"{session_id}:{claim_id}" + (f":{revision}" if revision else "")
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:24 if revision else 6]
+    return f"reg.{session_frag}.{date_str}.{digest}"
 
 
 def snapshot_evidence_versions(session: Any, evidence_spans: list[dict]) -> dict[str, str]:
+    """Fingerprint exact retained sources; raise on unresolved evidence.
+
+    The v2 prefix distinguishes real content fingerprints from legacy run-ID
+    self-hashes and dataset hashes that could have come from metadata alone.
     """
-    Compute a content_hash for each dataset-type evidence span.
-
-    For each span with source_type == "dataset":
-      1. Check session.artifact_manifest for a matching source entry.
-      2. Fall back to hashing the session slot data for the source_id.
-      3. If neither found, record an empty string (evidence not snapshotted).
-
-    For run-type spans: the run_id IS the immutable version anchor — stored
-    as-is so staleness checks can detect run replacement.
-    """
-    from ai_hydro.session.store import _hash_obj
-
-    versions: dict[str, str] = {}
-    for span in evidence_spans:
-        src_type = span.get("source_type", span.get("type", ""))
-        src_id = span.get("source_id", span.get("id", ""))
-        if not src_id:
-            continue
-
-        if src_type == "dataset":
-            # Check artifact_manifest first
-            manifest: dict = getattr(session, "artifact_manifest", {}) or {}
-            match = next(
-                (v for v in manifest.values() if v.get("source") == src_id or src_id in str(v.get("source", ""))),
-                None,
-            )
-            if match and match.get("content_hash"):
-                versions[src_id] = match["content_hash"]
-            else:
-                # Hash slot data as fallback
-                slot_names = [src_id, src_id.split("_")[-1], src_id.replace("_", "").lower()]
-                for sname in slot_names:
-                    slot_data = session.get(sname)
-                    if slot_data is not None:
-                        versions[src_id] = _hash_obj(slot_data)
-                        break
-                else:
-                    versions[src_id] = ""  # not found — can't snapshot
-
-        elif src_type == "run":
-            # run_id is the immutable version anchor
-            versions[src_id] = src_id  # self-referential: run IS its own hash
-
-    return versions
+    from .evidence import resolve_source, fingerprint
+    return {span["source_id"]: fingerprint(resolve_source(session, span))
+            for span in evidence_spans}
 
 
 def check_evidence_staleness(
@@ -207,18 +170,26 @@ def check_evidence_staleness(
     evidence_versions: dict[str, str],
     evidence_spans: list[dict],
 ) -> list[str]:
-    """
-    Return source_ids whose current data differs from the stored version hash.
+    """Changed, deleted, unresolvable and legacy evidence all need review.
 
-    Recomputes hashes for dataset spans using the same logic as
-    snapshot_evidence_versions.  Returns a list of stale source_ids.
+    Never upgrade a legacy snapshot by hashing the current result: that would
+    invent evidence of what was present at the time of original promotion.
     """
-    current = snapshot_evidence_versions(session, evidence_spans)
+    from .evidence import EvidenceError, resolve_source, fingerprint
     stale: list[str] = []
-    for src_id, stored_hash in evidence_versions.items():
-        if not stored_hash:
-            continue  # was not snapshotted — skip
-        cur_hash = current.get(src_id, "")
-        if cur_hash and cur_hash != stored_hash:
-            stale.append(src_id)
+    for span in evidence_spans:
+        sid = span.get("source_id", "")
+        stored = evidence_versions.get(sid, "")
+        try:
+            current = fingerprint(resolve_source(session, span))
+        except (EvidenceError, TypeError, ValueError, OSError):
+            current = None
+        if not str(stored).startswith("sha256-v2:") or current != stored:
+            if sid not in stale:
+                stale.append(sid)
+    for sid in evidence_versions:
+        if not any(span.get("source_id") == sid for span in evidence_spans) and sid not in stale:
+            stale.append(sid)
+    if not evidence_spans and not stale:
+        stale.append("<missing-evidence-spans>")
     return stale

@@ -159,6 +159,8 @@ def _write_run_log(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "key_outputs": key_outputs,
         }
+        from ai_hydro.session.evidence import capture_result_evidence
+        entry["evidence"] = capture_result_evidence(result)
         scrubbed_inputs = _scrub_tool_inputs(inputs)
         if scrubbed_inputs:
             entry["inputs"] = scrubbed_inputs

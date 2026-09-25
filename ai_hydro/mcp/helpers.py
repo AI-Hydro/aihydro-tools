@@ -376,6 +376,8 @@ def _record_run_log_entry(session: Any, slot: str, result_dict: dict, tool_name:
         "key_outputs": _lean_key_outputs(result_dict),
         "slot": slot,
     }
+    from ai_hydro.session.evidence import capture_result_evidence
+    run_log[run_id]["evidence"] = capture_result_evidence(result_dict)
     session.set("_run_log", run_log)
 
 

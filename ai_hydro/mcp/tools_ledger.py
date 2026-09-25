@@ -46,7 +46,7 @@ def _claim_requires_uncertainty(claim_dict: dict) -> bool:
     guessing from numbers in prose (which may be dates, gauge IDs, or sample
     counts) and makes the gate reachable through the public schema.
     """
-    if claim_dict.get("claim_type") != "empirical_result":
+    if claim_dict.get("claim_type") not in {"empirical_result", "negative_result"}:
         return False
     scope = claim_dict.get("scope") or {}
     if scope.get("metric"):
@@ -333,7 +333,8 @@ def promote_claim_to_registry(
     Promote a session claim to the global knowledge registry.
 
     Passes through a strict validation gate (evidence_spans, limitations,
-    status ∈ {supported, weakly_supported}, uncertainty_verified for
+    status ∈ {supported, weakly_supported}, persisted metric/uncertainty checks and
+    uncertainty_verified for
     metric-scoped empirical claims, a modelled-streamflow limitation when the claim
     touches a hydrology-signature metric) then writes a real entry to
     ~/.aihydro/registry/claims.jsonl with evidence version hashes captured
@@ -385,14 +386,48 @@ def promote_claim_to_registry(
         from ai_hydro.registry.store import (
             append as _reg_append,
             build_registry_id,
-            snapshot_evidence_versions,
+            find_by_session,
         )
 
         spans = [s if isinstance(s, dict) else s.model_dump() for s in claim.evidence_spans]
-        evidence_versions = snapshot_evidence_versions(session, spans)
+        from ai_hydro.registry.evidence import EvidenceError, verified_versions, fingerprint
+        requires_uncertainty = _claim_requires_uncertainty(claim_dict)
+        metric_spans = [span for span in spans if span.get("metric_ref")]
+        if requires_uncertainty and not metric_spans:
+            raise EvidenceError("EVIDENCE_METRIC_UNAVAILABLE", claim_id,
+                                "Metric-scoped claims require an explicit metric_ref on their evidence.")
+        if claim.scope.metric:
+            def metric_name(name):
+                for prefix in ("metric.", "key_outputs.", "data."):
+                    if name.startswith(prefix):
+                        return name[len(prefix):]
+                return name
+            if not any(metric_name(span["metric_ref"]) == metric_name(claim.scope.metric)
+                       for span in metric_spans):
+                raise EvidenceError("EVIDENCE_METRIC_MISMATCH", claim_id,
+                                    "The scope metric does not match any referenced evidence metric.")
+        evidence_versions = verified_versions(session, spans, require_uncertainty=requires_uncertainty)
 
         promoted_at = datetime.now(timezone.utc).isoformat()
-        registry_id = build_registry_id(session_id, claim_id)
+        revision = fingerprint({"statement": claim.claim, "scope": claim.scope.model_dump(),
+                                "claim_type": claim.claim_type, "confidence": claim.confidence,
+                                "limitations": claim.limitations, "evidence_spans": spans,
+                                "evidence_versions": evidence_versions})
+        registry_id = build_registry_id(session_id, claim_id, revision)
+        # A fresh approval must not silently reuse a stale/retracted entry.
+        # Preserve that history even if restored evidence has identical bytes.
+        prior = {e["registry_id"]: e.get("status") for e in find_by_session(session_id)}
+        base_id, attempt = registry_id, 0
+        while registry_id in prior and prior[registry_id] != "promoted":
+            attempt += 1
+            registry_id = f"{base_id}.r{attempt}"
+
+        verification = {
+            "level": "retained_record_integrity",
+            "scope_alignment": "not_verified",
+            "method_validity": "not_verified",
+            "claim_text_alignment": "not_verified",
+        }
 
         registry_entry = {
             "registry_id": registry_id,
@@ -407,6 +442,9 @@ def promote_claim_to_registry(
             "prereg_id": claim_dict.get("prereg_id"),
             "promoted_at": promoted_at,
             "evidence_versions": evidence_versions,
+            "evidence_schema_version": 2,
+            "scope": claim.scope.model_dump(),
+            "evidence_verification": verification,
             "staleness": None,
         }
         _reg_append(registry_entry)
@@ -422,6 +460,7 @@ def promote_claim_to_registry(
             "registry_id": registry_id,
             "status": "promoted",
             "n_evidence_versions": len(evidence_versions),
+            "evidence_verification": verification,
             "note": (
                 f"Claim '{claim_id}' written to global registry as '{registry_id}'. "
                 "Call check_registry_staleness to detect when underlying data changes."
@@ -437,8 +476,8 @@ def check_registry_staleness(session_id: str) -> dict:
     Check all promoted claims from this session for staleness.
 
     For each claim with a registry entry, recomputes content hashes of
-    dataset-type evidence and compares against the hashes captured at
-    promotion time.  If a hash differs, the claim is marked stale in the
+    retained evidence and compares against hashes captured at promotion.
+    Missing or legacy unverifiable evidence also needs review. If evidence differs, the claim is marked stale in the
     registry and its status is updated to 'stale' in the session.
 
     Returns:
@@ -473,16 +512,19 @@ def check_registry_staleness(session_id: str) -> dict:
             stale_sources = check_evidence_staleness(session, ev_versions, spans)
 
             if stale_sources:
-                _reg_mark_stale(rid, stale_sources, reason="evidence_changed")
+                legacy = entry.get("evidence_schema_version") != 2
+                reason = "legacy_evidence_unverifiable" if legacy else "evidence_changed_missing_or_unverifiable"
+                _reg_mark_stale(rid, stale_sources, reason=reason)
                 # Update session claim status
                 claim_dict = session.claims.get(cid)
-                if claim_dict:
+                if claim_dict and claim_dict.get("registry_id", rid) == rid:
                     claim_dict["status"] = "stale"
                     claim_dict["staleness_detected_at"] = datetime.now(timezone.utc).isoformat()
                 stale_results.append({
                     "claim_id": cid,
                     "registry_id": rid,
                     "stale_sources": stale_sources,
+                    "reason": reason,
                 })
             else:
                 fresh_results.append(cid)

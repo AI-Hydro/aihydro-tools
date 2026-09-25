@@ -166,7 +166,14 @@ Results become actionable knowledge through the ledger:
 
 1. **`draft_claim_from_run(session_id, run_id, metric_ref)`** — reads the run log for any Tier 1 tool call and returns a claim template with `evidence_spans` pre-populated. The agent authors only the scientific interpretation.
 2. **`add_claim(..., evidence_spans=[...])`** — records the claim. `EvidenceSpan` ties the claim to a run, paper, or dataset with typed attribution (`source_type`, `source_id`, `metric_ref`).
-3. **`promote_claim_to_registry(..., researcher_approved=True)`** — passes a promotion gate: at least one `evidence_span`, at least one `limitation`, and status `supported` or `weakly_supported`. Researcher approval is required.
+3. **`promote_claim_to_registry(..., researcher_approved=True)`** — resolves retained evidence before promotion. It requires an eligible status, limitations, researcher approval, finite referenced metrics, no recorded failed checks, and matching persisted uncertainty for metric-scoped empirical or negative-result claims. An agent's uncertainty acknowledgement alone is insufficient.
+
+New registry entries fingerprint retained records. Missing/changed evidence and
+unverifiable legacy snapshots are flagged for review by
+`check_registry_staleness`. Promotion reports record integrity separately from
+unverified scope alignment, method validity and claim-text alignment. See the
+[evidence contract](docs/evidence-integrity.md) for supported references,
+uncertainty fields, migration behavior and remaining scientific limits.
 
 ### Verified Knowledge
 

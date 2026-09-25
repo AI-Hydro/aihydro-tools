@@ -51,7 +51,7 @@ class ScientificClaim(BaseModel):
     claim_type: Literal["empirical_result", "methodological", "hypothesis", "negative_result"]
     status: Literal[
         "proposed", "tested", "supported", "weakly_supported",
-        "contradicted", "inconclusive", "superseded", "retracted"
+        "contradicted", "inconclusive", "superseded", "retracted", "stale"
     ]
     confidence: Literal["high", "medium", "low", "speculative"]
     confidence_rationale: str
