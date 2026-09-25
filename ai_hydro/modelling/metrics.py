@@ -145,7 +145,11 @@ def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
     static_attrs.setdefault("gauge_lat", ws_data.get("gauge_lat"))
     static_attrs.setdefault("gauge_lon", ws_data.get("gauge_lon"))
 
-    data_source = "CAMELS+GridMET" if using_camels else "USGS+GridMET"
+    # Label the forcing with the product(s) the forcing tool actually served
+    # (its "product" field joins each variable's served product), not an
+    # assumed "GridMET" — routing may have served DAYMET, ERA5-Land, CHIRPS…
+    forcing_product = str(forcing.get("product") or "").strip() or "unknown-forcing"
+    data_source = f"{'CAMELS' if using_camels else 'USGS'}+{forcing_product}"
 
     data = TrainingData(
         gauge_id=gauge_id,
