@@ -1889,7 +1889,7 @@ async def map_flood_inundation(
         gfm_geojson_for_map = None
         if hindcast_date and validate_gfm:
             try:
-                from ai_hydro.analysis.inundation_gfm import resolve_gfm_reference
+                from ai_hydro.analysis.inundation_gfm import gfm_validation_readiness, resolve_gfm_reference
 
                 gfm_ref = resolve_gfm_reference(
                     bounds_wgs84,
@@ -1900,15 +1900,14 @@ async def map_flood_inundation(
                 data["gfm_reference"] = {
                     k: v for k, v in gfm_ref.items() if k != "geojson"
                 }
-                data["validation_gfm"] = validate_inundation_against_geojson(
-                    likely.inundated_mask,
-                    transform=_affine_from_bounds(result.bounds, likely.inundated_mask.shape),
-                    reference_geojson=gfm_ref["geojson"],
-                    reference_label="GFM",
-                )
+                data["validation_gfm"] = gfm_validation_readiness(gfm_ref)
                 summary_card["validation_gfm"] = data["validation_gfm"]
             except Exception as gfm_err:
                 data["gfm_validation_error"] = str(gfm_err)
+                if hasattr(gfm_err, "to_dict"):
+                    data["gfm_error_details"] = gfm_err.to_dict()
+                data["validation_gfm"] = {"status": "unavailable", "reason": str(gfm_err)}
+                summary_card["validation_gfm"] = data["validation_gfm"]
 
         d = {
             "data": {k: v for k, v in data.items() if k != "depth_likely"},

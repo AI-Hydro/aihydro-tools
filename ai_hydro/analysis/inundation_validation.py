@@ -38,45 +38,53 @@ def _as_bool_mask(arr: np.ndarray) -> np.ndarray:
     return np.asarray(arr, dtype=bool)
 
 
+def _binary_support(values, validity, name):
+    arr = np.ma.asarray(values)
+    if arr.dtype.kind not in "biuf":
+        raise ValueError(f"{name} must contain binary numeric values")
+    raw = np.asarray(arr.data)
+    valid = ~np.ma.getmaskarray(arr) & np.isfinite(raw)
+    if validity is not None:
+        if np.ma.getmaskarray(validity).any():
+            raise ValueError(f"{name} validity cannot itself contain masked values")
+        supplied = np.asarray(validity)
+        if supplied.shape != raw.shape or supplied.dtype.kind != "b":
+            raise ValueError(f"{name} validity must be a boolean array of matching shape")
+        valid &= supplied
+    if np.any(valid & ~np.isin(raw, [0, 1])):
+        raise ValueError(f"{name} contains nonbinary codes; supply an explicit validity mask for nodata")
+    return raw == 1, valid
+
+
 def contingency_metrics(
     model_mask: np.ndarray,
     reference_mask: np.ndarray,
-) -> dict[str, float | int]:
-    """
-    Binary contingency table for modeled vs reference inundation extent.
-
-    Returns CSI (critical success index), POD (probability of detection),
-    FAR (false alarm ratio), plus raw cell counts.
-    """
-    model = _as_bool_mask(model_mask)
-    ref = _as_bool_mask(reference_mask)
+    *,
+    model_valid_mask: np.ndarray | None = None,
+    reference_valid_mask: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Cell-count ratios on the jointly valid domain of caller-aligned grids."""
+    model, model_valid = _binary_support(model_mask, model_valid_mask, "model")
+    ref, ref_valid = _binary_support(reference_mask, reference_valid_mask, "reference")
     if model.shape != ref.shape:
-        raise ValueError(
-            f"Mask shape mismatch: model {model.shape} vs reference {ref.shape}"
-        )
-
-    hits = int(np.logical_and(model, ref).sum())
-    misses = int(np.logical_and(~model, ref).sum())
-    false_alarms = int(np.logical_and(model, ~ref).sum())
-    correct_negatives = int(np.logical_and(~model, ~ref).sum())
-
-    ref_positive = hits + misses
-    model_positive = hits + false_alarms
-
-    csi = hits / (hits + misses + false_alarms) if (hits + misses + false_alarms) else 1.0
-    pod = hits / ref_positive if ref_positive else 1.0
-    far = false_alarms / model_positive if model_positive else 0.0
-    bias = model_positive / ref_positive if ref_positive else 1.0
-
+        raise ValueError(f"Mask shape mismatch: model {model.shape} vs reference {ref.shape}")
+    joint = model_valid & ref_valid
+    hits = int((joint & model & ref).sum())
+    misses = int((joint & ~model & ref).sum())
+    false_alarms = int((joint & model & ~ref).sum())
+    correct_negatives = int((joint & ~model & ~ref).sum())
+    numerators = {"csi": hits, "pod": hits, "far": false_alarms, "bias": hits + false_alarms}
+    denominators = {"csi": hits + misses + false_alarms, "pod": hits + misses,
+                    "far": hits + false_alarms, "bias": hits + misses}
     return {
-        "hits": hits,
-        "misses": misses,
-        "false_alarms": false_alarms,
+        "hits": hits, "misses": misses, "false_alarms": false_alarms,
         "correct_negatives": correct_negatives,
-        "csi": float(csi),
-        "pod": float(pod),
-        "far": float(far),
-        "bias": float(bias),
+        **{key: numerators[key] / count if count else None for key, count in denominators.items()},
+        "undefined_metrics": {key: "zero_denominator" for key, count in denominators.items() if not count},
+        "valid_cells": int(joint.sum()), "excluded_cells": int(joint.size - joint.sum()),
+        "total_cells": int(joint.size),
+        "status": "computed" if joint.any() else "not_assessed",
+        "support_basis": "caller_aligned_grid; cell_counts; finite_binary_joint_support",
     }
 
 
@@ -85,25 +93,20 @@ def validate_extent_masks(
     reference_mask: np.ndarray,
     *,
     reference_label: str = "observed",
+    model_valid_mask: np.ndarray | None = None,
+    reference_valid_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    """Wrap contingency metrics with interpretation for tool responses."""
-    metrics = contingency_metrics(model_mask, reference_mask)
-    csi = metrics["csi"]
-    if csi >= 0.7:
-        skill = "good"
-    elif csi >= 0.4:
-        skill = "moderate"
-    else:
-        skill = "poor"
-    return {
-        **metrics,
-        "reference_label": reference_label,
-        "skill_tier": skill,
-        "interpretation": (
-            f"CSI={csi:.2f} vs {reference_label} "
-            f"(POD={metrics['pod']:.2f}, FAR={metrics['far']:.2f})"
-        ),
-    }
+    """Report overlap without universal skill thresholds or undefined perfect scores."""
+    metrics = contingency_metrics(model_mask, reference_mask,
+                                  model_valid_mask=model_valid_mask,
+                                  reference_valid_mask=reference_valid_mask)
+    def display(key):
+        return "undefined" if metrics[key] is None else f"{metrics[key]:.2f}"
+    return {**metrics, "reference_label": reference_label, "skill_tier": "not_assessed",
+            "interpretation": f"CSI={display('csi')} vs {reference_label} "
+                              f"(POD={display('pod')}, FAR={display('far')}); "
+                              f"{metrics['valid_cells']} jointly valid cells. "
+                              "Scientific adequacy requires study-specific acceptance criteria."}
 
 
 def build_summary_card(inundation_data: dict[str, Any]) -> dict[str, Any]:
@@ -234,14 +237,33 @@ def validate_inundation_against_geojson(
     transform,
     reference_geojson: dict[str, Any],
     reference_label: str = "observed",
+    reference_valid_mask: np.ndarray | None = None,
+    model_valid_mask: np.ndarray | None = None,
+    model_crs: str | None = None,
 ) -> dict[str, Any]:
-    """Compare modeled extent mask to a reference GeoJSON polygon."""
-    ref_mask = rasterize_geojson_to_mask(
-        reference_geojson,
-        out_shape=model_mask.shape,
-        transform=transform,
-    )
-    return validate_extent_masks(model_mask, ref_mask, reference_label=reference_label)
+    """Score WGS84 extent only with explicitly supplied observation support."""
+    if reference_valid_mask is None or model_crs is None:
+        return {"status": "not_assessed", "reference_label": reference_label,
+                "reason": "Observation validity footprint and model CRS must be supplied; polygons alone do not establish observed dry cells."}
+    from pyproj import CRS
+    if CRS.from_user_input(model_crs) != CRS.from_epsg(4326) or reference_geojson.get("crs"):
+        raise ValueError("Reference must be WGS84 GeoJSON without a legacy CRS; reproject the comparison grid to EPSG:4326 explicitly")
+    from rasterio.transform import Affine
+    affine = transform if isinstance(transform, Affine) else Affine(*transform[:6])
+    if not np.isfinite(tuple(affine)).all() or affine.determinant == 0:
+        raise ValueError("Comparison transform must be finite and invertible")
+    if np.ndim(model_mask) != 2 or not all(model_mask.shape):
+        raise ValueError("GeoJSON comparison requires a nonempty two-dimensional grid")
+    if reference_geojson.get("type") not in {"FeatureCollection", "Feature", "Polygon", "MultiPolygon"}:
+        raise ValueError("Reference must contain GeoJSON polygon features")
+    ref_mask = rasterize_geojson_to_mask(reference_geojson, out_shape=model_mask.shape,
+                                       transform=transform, all_touched=False)
+    result = validate_extent_masks(model_mask, ref_mask, reference_label=reference_label,
+                                   model_valid_mask=model_valid_mask,
+                                   reference_valid_mask=reference_valid_mask)
+    result["rasterization"] = "pixel_center"
+    result["model_crs"] = "EPSG:4326"
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,7 @@
 """
 GFM (Global Flood Monitoring) reference extent for hindcast validation.
 
-Live fetch is optional (network + future aihydro-data product). Fixture mode
-supports bench and offline agent workflows.
+Live observations require aihydro-data. Explicit fixture mode is for synthetic tests only.
 """
 from __future__ import annotations
 
@@ -41,14 +40,12 @@ def fixture_gfm_extent_geojson(
     """
     Synthetic GFM-like reference polygon inside bounds (WGS84).
 
-    Used for bench/offline hindcast validation when live GFM is unavailable.
+    Used only for explicitly requested synthetic tests.
     """
     if len(bounds) < 4:
         raise ValueError("bounds must be [west, south, east, north]")
     west, south, east, north = [float(v) for v in bounds[:4]]
     _parse_date(event_date)
-    dx = (east - west) * inset
-    dy = (north - south) * inset
     cx = (west + east) / 2.0
     cy = (south + north) / 2.0
     hw = (east - west) * (0.5 - inset)
@@ -69,7 +66,8 @@ def fixture_gfm_extent_geojson(
                 "properties": {
                     "source": "gfm_fixture",
                     "event_date": event_date,
-                    "citation": GFM_CITATION,
+                    "synthetic": True,
+                    "evidence_kind": "synthetic_fixture",
                 },
             }
         ],
@@ -83,63 +81,28 @@ def fetch_gfm_extent(
     allow_network: bool = True,
     use_fixture: bool = False,
 ) -> dict[str, Any]:
-    """
-    Fetch GFM inundation extent GeoJSON for an event date and bounding box.
-
-    When live fetch is unavailable, returns a documented fixture polygon.
-    """
+    """Fetch observations, or explicitly requested synthetic test geometry."""
+    if use_fixture:
+        return {"geojson": fixture_gfm_extent_geojson(bounds, event_date),
+                "source": "gfm_fixture", "event_date": event_date, "live": False,
+                "synthetic": True, "evidence_kind": "synthetic_fixture",
+                "status": "synthetic", "validation_ready": False, "citation": ""}
     try:
-        from aihydro_data.flood.gfm import fetch_gfm_extent as _ad_fetch
-
-        return _ad_fetch(
-            bounds,
-            event_date,
-            allow_network=allow_network,
-            use_fixture=use_fixture,
-        )
-    except ImportError:
-        pass
-
-    _parse_date(event_date)
-    if use_fixture or not allow_network:
-        gj = fixture_gfm_extent_geojson(bounds, event_date)
-        return {
-            "geojson": gj,
-            "source": "gfm_fixture",
-            "event_date": event_date,
-            "live": False,
-            "citation": GFM_CITATION,
-            "note": "Synthetic GFM reference for offline/bench validation.",
-        }
-
-    # Live path placeholder — wire to aihydro-data GFM product when available.
-    try:
-        _attempt_live_gfm(bounds, event_date)
-    except NotImplementedError as exc:
-        log.info("GFM live fetch not available: %s — using fixture", exc)
-    except Exception as exc:
-        log.warning("GFM live fetch failed: %s — using fixture", exc)
-
-    gj = fixture_gfm_extent_geojson(bounds, event_date)
-    return {
-        "geojson": gj,
-        "source": "gfm_fixture_fallback",
-        "event_date": event_date,
-        "live": False,
-        "citation": GFM_CITATION,
-        "note": (
-            "Live GFM fetch not yet wired (Phase 2 aihydro-data). "
-            "Fixture reference used; pass reference_extent_geojson for observed extent."
-        ),
-        "recovery": "Provide reference_extent_geojson from GFM portal export.",
-    }
+        from aihydro_data.flood.gfm import fetch_gfm_extent as data_fetch
+    except ImportError as exc:
+        raise RuntimeError("GFM observations require aihydro-data; install the data package or supply an observed reference export.") from exc
+    result = data_fetch(bounds, event_date, allow_network=allow_network, use_fixture=False)
+    # Older installed data packages may still silently return a fixture.
+    if result.get("live") is not True or result.get("synthetic") is True or "fixture" in result.get("source", ""):
+        raise RuntimeError("GFM observation request returned non-observational data; upgrade aihydro-data or supply an observed reference.")
+    return result
 
 
-def _attempt_live_gfm(bounds: list[float], event_date: str) -> dict[str, Any]:
-    """Raise until aihydro-data exposes a GFM inundation product."""
-    raise NotImplementedError(
-        "GFM live fetch pending aihydro-data product registration (Phase 2)."
-    )
+def gfm_validation_readiness(reference: dict[str, Any]) -> dict[str, Any]:
+    """Extent geometry alone cannot establish a jointly valid comparison grid."""
+    return {"status": "not_assessed", "reference_label": reference.get("reference_label", "GFM"),
+            "reason": "GFM extent alone does not establish the joint valid observation footprint, model-grid alignment or acquisition-time suitability. No skill metrics calculated.",
+            "source_status": reference.get("status", "unknown")}
 
 
 def resolve_gfm_reference(
@@ -156,7 +119,7 @@ def resolve_gfm_reference(
         allow_network=allow_network,
         use_fixture=use_fixture,
     )
-    out["reference_label"] = "GFM"
+    out["reference_label"] = "Synthetic GFM-like fixture" if out.get("synthetic") else "GFM"
     return out
 
 
@@ -188,9 +151,11 @@ def bench_gfm_hindcast_validation() -> dict[str, Any]:
         ],
         dtype=bool,
     )
-    metrics = validate_extent_masks(model, ref, reference_label="GFM")
+    metrics = validate_extent_masks(model, ref, reference_label="Synthetic GFM-like fixture")
     return {
         **metrics,
         "event_date": "2023-07-15",
         "gfm_source": "gfm_fixture",
+        "synthetic": True,
+        "evidence_kind": "synthetic_fixture",
     }

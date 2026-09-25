@@ -274,12 +274,14 @@ def _tune_morphology_iterations(
 ) -> dict[str, Any]:
     hand = np.asarray(hand_mask, dtype=bool)
     target = np.asarray(target_mask, dtype=bool)
+    if not target.any():
+        raise ValueError("Morphology calibration requires observed target flood cells; no-event CSI is not a calibration objective")
     baseline = contingency_metrics(hand, target)
     best = {
         "iterations": 0,
         "csi": float(baseline["csi"]),
         "pod": float(baseline["pod"]),
-        "far": float(baseline["far"]),
+        "far": baseline["far"],
     }
     for it in range(1, max(int(max_iterations), 1) + 1):
         pred = apply_morphology_surrogate(hand, iterations=it)
@@ -289,7 +291,7 @@ def _tune_morphology_iterations(
                 "iterations": it,
                 "csi": float(metrics["csi"]),
                 "pod": float(metrics["pod"]),
-                "far": float(metrics["far"]),
+                "far": metrics["far"],
             }
     return best
 

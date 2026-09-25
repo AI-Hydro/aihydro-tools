@@ -36,7 +36,7 @@ def test_validate_extent_masks_skill_tier():
     perfect = bench_contingency_perfect()
     model = np.array([[1, 1], [1, 0]], dtype=bool)
     v = validate_extent_masks(model, model, reference_label="GFM")
-    assert v["skill_tier"] == "good"
+    assert v["skill_tier"] == "not_assessed"
     assert "GFM" in v["interpretation"]
 
 
