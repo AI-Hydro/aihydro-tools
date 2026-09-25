@@ -175,6 +175,8 @@ unverified scope alignment, method validity and claim-text alignment. See the
 [evidence contract](docs/evidence-integrity.md) for supported references,
 uncertainty fields, migration behavior and remaining scientific limits.
 
+The extension's research panels consume the [versioned persisted snapshot](docs/research-snapshots.md) through the connected MCP backend.
+
 ### Verified Knowledge
 
 Built-in knowledge entries can be marked `verified: true` in the YAML registry (e.g., `metric.kge`, `variable.streamflow`, `dataset.usgs_nwis`). Verified entries require `scientific_justification` — not just `overrides` + `override_reason` — in workspace override files, ensuring overrides of peer-reviewed conventions are deliberate and documented.

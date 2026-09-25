@@ -27,8 +27,15 @@ from pathlib import Path
 
 from ai_hydro.mcp.app import mcp
 from ai_hydro.session.store import SESSIONS_DIR
+from ai_hydro.session.surfaces import RESOURCE_TEMPLATE, snapshot_resource
 
 log = logging.getLogger("ai_hydro.mcp")
+
+
+@mcp.resource(RESOURCE_TEMPLATE)
+def research_snapshot(reference: str) -> str:
+    """Version 1 research snapshot; reference is an unpadded base64url session ID or path."""
+    return snapshot_resource(reference)
 
 
 def _load_card(name: str) -> dict | None:
