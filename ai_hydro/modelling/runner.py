@@ -74,9 +74,10 @@ def run(artifact_dir: Path) -> None:
     n_restarts: int = cfg.get("n_restarts", 3)
     learning_rate: float = cfg.get("learning_rate", 0.05)
     train_start: str = cfg.get("train_start", "2000-10-01")
-    train_end: str = cfg.get("train_end", "2007-09-30")
-    val_start: str = cfg.get("val_start", "2000-10-01")
-    val_end: str = cfg.get("val_end", "2005-09-30")
+    # Fit / select / report defaults are disjoint (match aihydro_modelling.ModelSpec).
+    train_end: str = cfg.get("train_end", "2005-09-30")
+    val_start: str = cfg.get("val_start", "2005-10-01")
+    val_end: str = cfg.get("val_end", "2007-09-30")
     test_start: str = cfg.get("test_start", "2007-10-01")
     test_end: str = cfg.get("test_end", "2010-09-30")
     hidden_size: int = cfg.get("hidden_size", 64)

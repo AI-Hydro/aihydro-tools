@@ -53,9 +53,9 @@ def train_hydro_model(
     framework: str = "hbv",
     model: str = "cudalstm",
     train_start: str = "2000-10-01",
-    train_end: str = "2007-09-30",
-    val_start: str = "2000-10-01",
-    val_end: str = "2005-09-30",
+    train_end: str = "2005-09-30",
+    val_start: str = "2005-10-01",
+    val_end: str = "2007-09-30",
     test_start: str = "2007-10-01",
     test_end: str = "2010-09-30",
     epochs: int = 500,
@@ -317,8 +317,11 @@ def propose_and_train(
     spec_json : str
         JSON string of ModelSpec fields.  Example:
           {"backend": "hbv", "epochs": 300, "n_restarts": 5, "seed": 42,
-           "train_start": "2000-10-01", "train_end": "2007-09-30",
+           "train_start": "2000-10-01", "train_end": "2005-09-30",
+           "val_start": "2005-10-01",   "val_end": "2007-09-30",
            "test_start": "2007-10-01", "test_end": "2010-09-30"}
+        Fit (train), select (val) and report (test) periods must be disjoint
+        (endpoints inclusive); validation rejects overlaps.
 
         Call describe_model_space() first to see all valid fields and ranges.
 

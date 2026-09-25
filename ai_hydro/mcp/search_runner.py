@@ -106,8 +106,13 @@ def _run_inner(config: dict, artifact_dir: Path, job_id: str) -> None:
 
     base_spec_dict = {
         "backend": backend,
+        # Fit / select / report defaults are disjoint (inclusive endpoints) and
+        # match aihydro_modelling.ModelSpec. Selection uses val_* for every
+        # backend; the test period is reported for the final incumbent only.
         "train_start": config.get("train_start") or "2000-10-01",
-        "train_end":   config.get("train_end")   or "2007-09-30",
+        "train_end":   config.get("train_end")   or "2005-09-30",
+        "val_start":   config.get("val_start")   or "2005-10-01",
+        "val_end":     config.get("val_end")     or "2007-09-30",
         "test_start":  config.get("test_start")  or "2007-10-01",
         "test_end":    config.get("test_end")    or "2010-09-30",
         "epochs":      int(config.get("epochs", 300)),
@@ -122,13 +127,20 @@ def _run_inner(config: dict, artifact_dir: Path, job_id: str) -> None:
     base_spec_dict.update(overrides)
 
     if backend.startswith("nh_"):
-        base_spec_dict.setdefault("val_start", config.get("val_start") or "2007-10-01")
-        base_spec_dict.setdefault("val_end",   config.get("val_end")   or "2009-09-30")
         base_spec_dict.setdefault("hidden_size", int(config.get("hidden_size", 64)))
         base_spec_dict.setdefault("seq_length",  int(config.get("seq_length", 365)))
         base_spec_dict.setdefault("batch_size",  int(config.get("batch_size", 256)))
 
     base_spec = ModelSpec.model_validate(base_spec_dict)
+
+    # Refuse leaky period configurations before any compute: the search
+    # selects on val_*, so it must be disjoint from train_* and test_*.
+    from aihydro_modelling.validate import validate as _validate_spec
+    spec_errors = _validate_spec(base_spec)
+    if spec_errors:
+        raise ValueError(
+            "Autoresearch refused an invalid base spec: " + " | ".join(spec_errors)
+        )
 
     # ── Build Budget ──────────────────────────────────────────────────────────
     from aihydro_modelling.search.budget import Budget
