@@ -28,7 +28,12 @@ from ai_hydro.gee.contracts import (
 )
 from ai_hydro.gee.presets import find_preset, get_preset
 from ai_hydro.mcp.app import mcp
-from ai_hydro.mcp.helpers import _get_session_geometry, _normalize_session_id, _tool_error_to_dict
+from ai_hydro.mcp.helpers import (
+    ActiveRoiResolutionError,
+    _normalize_session_id,
+    _resolve_active_roi_geojson,
+    _tool_error_to_dict,
+)
 from ai_hydro.mcp.map_events import push_layer
 
 try:
@@ -169,13 +174,26 @@ def _resolve_roi_contract(roi: str | dict[str, Any], session_id: str | None) -> 
             if not session_id:
                 raise ValueError(_MISSING_BASIN_MSG)
             try:
-                return ROIContract.from_geojson(
-                    _get_session_geometry(session_id),
-                    source="hydro_session",
-                    name=f"HydroSession {session_id} basin",
-                )
+                geojson, resolved_source = _resolve_active_roi_geojson(session_id)
+            except ActiveRoiResolutionError as exc:
+                raise ValueError(str(exc)) from exc
             except Exception:
-                raise ValueError(_MISSING_BASIN_MSG)
+                raise ValueError(_MISSING_BASIN_MSG) from None
+            contract_source = {
+                "working_geometry": "loaded_geojson",
+                "workspace_roi": "loaded_geojson",
+                "map_session": "geojson",
+                "session_watershed": "hydro_session",
+            }[resolved_source]
+            try:
+                return ROIContract.from_geojson(
+                    geojson,
+                    source=contract_source,  # type: ignore[arg-type]
+                    selection_source=resolved_source,
+                    name=f"HydroSession {session_id} basin ({resolved_source})",
+                )
+            except Exception as exc:
+                raise ValueError(f"Resolved {resolved_source} ROI is invalid: {exc}") from exc
         try:
             parsed = json.loads(roi)
             if isinstance(parsed, dict):

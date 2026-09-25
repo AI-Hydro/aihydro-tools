@@ -15,6 +15,7 @@ from typing import Any
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
     _ensure_session,
+    _map_session_workspace_ownership,
     _normalize_session_id,
     _resolve_active_roi_geojson,
     _tool_error_to_dict,
@@ -78,9 +79,22 @@ def map_get_state(session_id: str | None = None, event_limit: int = 10) -> dict:
     try:
         session_id = _normalize_session_id(session_id) if session_id else None
         persisted = _read_map_session_file()
+        requested_workspace = None
+        if session_id:
+            try:
+                from ai_hydro.session import HydroSession
+
+                requested_workspace = HydroSession.load(session_id).workspace_dir
+            except Exception:
+                requested_workspace = None
+        host_ownership = _map_session_workspace_ownership(
+            persisted,
+            requested_workspace if session_id else None,
+            requested=bool(session_id),
+        )
         active_roi = persisted.get("activeRoi") or persisted.get("active_roi")
         roi_summary = None
-        if active_roi:
+        if isinstance(active_roi, dict):
             roi_summary = {
                 "id": active_roi.get("id"),
                 "name": active_roi.get("name"),
@@ -89,13 +103,24 @@ def map_get_state(session_id: str | None = None, event_limit: int = 10) -> dict:
                 "area_ha": active_roi.get("areaHa") or active_roi.get("area_ha"),
                 "has_geometry": bool(active_roi.get("geojson")),
             }
+        elif active_roi:
+            roi_summary = {"malformed": True, "has_geometry": False}
         resolved = None
         if session_id:
             try:
                 geojson, source = _resolve_active_roi_geojson(session_id)
-                resolved = {"source": source, "geometry_type": geojson.get("type")}
+                resolved = {
+                    "scope": "requested_session",
+                    "session_id": session_id,
+                    "source": source,
+                    "geometry_type": geojson.get("type"),
+                }
             except Exception as exc:
-                resolved = {"error": str(exc)}
+                resolved = {
+                    "scope": "requested_session",
+                    "session_id": session_id,
+                    "error": str(exc),
+                }
 
         basemap_id = persisted.get("basemapId") or persisted.get("basemap_id")
         basemap_name = persisted.get("basemapName") or persisted.get("basemap_name")
@@ -103,7 +128,17 @@ def map_get_state(session_id: str | None = None, event_limit: int = 10) -> dict:
         catalog = read_layer_catalog()
 
         return {
+            "display_state_scope": "global_host",
             "active_roi": roi_summary,
+            "active_roi_scope": "global_host",
+            "host_workspace_ownership": {
+                **host_ownership,
+                "active_roi_eligible_for_session": bool(
+                    session_id
+                    and isinstance(active_roi, dict)
+                    and host_ownership["status"] == "matching"
+                ),
+            },
             "basemap": (
                 {"id": basemap_id, "name": basemap_name or basemap_id}
                 if basemap_id
@@ -116,8 +151,10 @@ def map_get_state(session_id: str | None = None, event_limit: int = 10) -> dict:
             "updated_at_ms": persisted.get("updatedAtMs") or persisted.get("updated_at_ms"),
             "layer_order": catalog.get("layer_order") or [],
             "layers": catalog.get("layers") or [],
+            "layer_catalog_scope": "global_host",
             "resolved_roi_for_session": resolved,
             "recent_events": _recent_outbound_events(max(1, min(event_limit, 50))),
+            "recent_events_scope": "global_host",
         }
     except Exception as e:
         return _tool_error_to_dict(e)

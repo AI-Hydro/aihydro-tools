@@ -454,6 +454,88 @@ def _get_session_geometry(session_id: str) -> dict:
         raise RuntimeError(f"Could not load session geometry: {exc}") from exc
 
 
+class ActiveRoiResolutionError(RuntimeError):
+    """Raised when an explicitly selected ROI cannot be loaded safely."""
+
+
+_GEOJSON_TYPES = {
+    "Feature",
+    "FeatureCollection",
+    "Point",
+    "MultiPoint",
+    "LineString",
+    "MultiLineString",
+    "Polygon",
+    "MultiPolygon",
+    "GeometryCollection",
+}
+
+
+def _normalize_workspace_path(value: Any) -> str | None:
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        return None
+    try:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            return None
+        return str(path.resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _map_session_workspace_ownership(
+    map_session: dict[str, Any],
+    requested_workspace: str | Path | None,
+    *,
+    requested: bool = True,
+) -> dict[str, Any]:
+    """Classify whether global host state belongs to a requested workspace."""
+    host_raw = map_session.get("workspaceRoot") or map_session.get("workspace_root")
+    host_workspace = _normalize_workspace_path(host_raw)
+    session_workspace = _normalize_workspace_path(requested_workspace)
+    if not requested:
+        status = "not_requested"
+    elif host_workspace is None or session_workspace is None:
+        status = "unknown"
+    elif host_workspace == session_workspace:
+        status = "matching"
+    else:
+        status = "conflicting"
+    return {
+        "status": status,
+        "host_workspace_root": host_workspace,
+        "requested_workspace_dir": session_workspace,
+    }
+
+
+def _validate_basic_geojson(value: Any, *, selection: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or value.get("type") not in _GEOJSON_TYPES:
+        raise ActiveRoiResolutionError(
+            f"Selected {selection} is not a GeoJSON Feature, FeatureCollection, or geometry."
+        )
+    geojson_type = value["type"]
+    if geojson_type == "FeatureCollection" and not isinstance(value.get("features"), list):
+        raise ActiveRoiResolutionError(f"Selected {selection} has an invalid GeoJSON features array.")
+    if geojson_type == "Feature" and not isinstance(value.get("geometry"), dict):
+        raise ActiveRoiResolutionError(f"Selected {selection} has no valid GeoJSON geometry.")
+    if geojson_type == "GeometryCollection" and not isinstance(value.get("geometries"), list):
+        raise ActiveRoiResolutionError(f"Selected {selection} has an invalid GeoJSON geometries array.")
+    if geojson_type not in {"Feature", "FeatureCollection", "GeometryCollection"} and "coordinates" not in value:
+        raise ActiveRoiResolutionError(f"Selected {selection} has no GeoJSON coordinates.")
+    return value
+
+
+def _load_selected_geojson(path: Path, *, selection: str) -> dict[str, Any]:
+    if not path.exists():
+        raise ActiveRoiResolutionError(f"Selected {selection} does not exist: {path}")
+    try:
+        with path.open(encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ActiveRoiResolutionError(f"Selected {selection} could not be read as GeoJSON: {path}: {exc}") from exc
+    return _validate_basic_geojson(value, selection=selection)
+
+
 def _resolve_active_roi_geojson(session_id: str) -> tuple[dict, str]:
     """
     Resolve study-basin geometry for map / GEE tools.
@@ -464,41 +546,59 @@ def _resolve_active_roi_geojson(session_id: str) -> tuple[dict, str]:
     3. Host map session ~/.aihydro/map_session.json active_roi
     4. HydroSession watershed (delineation)
     """
-    try:
-        from ai_hydro.session import HydroSession
-        session = HydroSession.load(session_id)
-        working = getattr(session, "working_geometry_path", None)
-        if working and session.workspace_dir:
-            geo_path = Path(session.workspace_dir) / working
-            if geo_path.exists():
-                with open(geo_path, encoding="utf-8") as gf:
-                    return json.load(gf), "working_geometry"
-        ws_dir = session.workspace_dir
-        if ws_dir:
-            pointer_path = Path(ws_dir) / "roi" / "active.json"
-            if pointer_path.exists():
-                with open(pointer_path, encoding="utf-8") as f:
-                    pointer = json.load(f)
-                rel = pointer.get("path")
-                if rel:
-                    geo_path = Path(ws_dir) / rel
-                    if geo_path.exists():
-                        with open(geo_path, encoding="utf-8") as gf:
-                            return json.load(gf), "workspace_roi"
-    except Exception as exc:
-        log.debug("Workspace ROI resolution skipped: %s", exc)
+    from ai_hydro.session import HydroSession
+    session = HydroSession.load(session_id)
+    working = getattr(session, "working_geometry_path", None)
+    ws_dir = session.workspace_dir
+    if working:
+        if not ws_dir:
+            raise ActiveRoiResolutionError(
+                "A working geometry is selected, but the session has no workspace_dir."
+            )
+        return _load_selected_geojson(
+            Path(ws_dir) / working,
+            selection="working geometry",
+        ), "working_geometry"
+
+    if ws_dir:
+        pointer_path = Path(ws_dir) / "roi" / "active.json"
+        if pointer_path.exists():
+            try:
+                pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise ActiveRoiResolutionError(
+                    f"Selected workspace ROI pointer could not be read: {pointer_path}: {exc}"
+                ) from exc
+            if not isinstance(pointer, dict) or not isinstance(pointer.get("path"), str) or not pointer["path"].strip():
+                raise ActiveRoiResolutionError(
+                    f"Selected workspace ROI pointer has no valid path: {pointer_path}"
+                )
+            return _load_selected_geojson(
+                Path(ws_dir) / pointer["path"],
+                selection="workspace ROI",
+            ), "workspace_roi"
 
     map_session_path = Path.home() / ".aihydro" / "map_session.json"
     try:
         if map_session_path.exists():
             data = json.loads(map_session_path.read_text(encoding="utf-8"))
             active = data.get("activeRoi") or data.get("active_roi")
-            if active:
+            ownership = _map_session_workspace_ownership(data, ws_dir, requested=True)
+            if active and ownership["status"] == "matching":
+                if not isinstance(active, dict):
+                    raise ActiveRoiResolutionError("The matching host ROI record is malformed.")
                 raw = active.get("geojson")
-                if raw:
+                if not raw:
+                    raise ActiveRoiResolutionError("The matching host ROI has no GeoJSON geometry.")
+                try:
                     parsed = json.loads(raw) if isinstance(raw, str) else raw
-                    if isinstance(parsed, dict):
-                        return parsed, "map_session"
+                except json.JSONDecodeError as exc:
+                    raise ActiveRoiResolutionError(
+                        f"The matching host ROI contains malformed GeoJSON: {exc}"
+                    ) from exc
+                return _validate_basic_geojson(parsed, selection="host ROI"), "map_session"
+    except ActiveRoiResolutionError:
+        raise
     except Exception as exc:
         log.debug("Map session ROI resolution skipped: %s", exc)
 

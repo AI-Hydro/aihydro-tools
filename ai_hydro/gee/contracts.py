@@ -98,6 +98,7 @@ class ROIContract(AIHydroContract):
     type: Literal["roi"] = "roi"
     roi_id: str
     source: Literal["map_drawn", "loaded_geojson", "hydro_session", "delineated_basin", "geojson"]
+    selection_source: str | None = None
     name: str = "Selected basin"
     geometry: dict[str, Any]
     crs: str = "EPSG:4326"
@@ -113,6 +114,7 @@ class ROIContract(AIHydroContract):
         geometry: dict[str, Any],
         *,
         source: Literal["map_drawn", "loaded_geojson", "hydro_session", "delineated_basin", "geojson"],
+        selection_source: str | None = None,
         name: str = "Selected basin",
         area_km2: float | None = None,
     ) -> "ROIContract":
@@ -121,6 +123,7 @@ class ROIContract(AIHydroContract):
         return cls(
             roi_id=f"roi_{geometry_hash[:16]}",
             source=source,
+            selection_source=selection_source,
             name=name,
             geometry=geometry,
             bbox=bbox,
