@@ -444,9 +444,31 @@ tasks:
     rationale: >
       A claim with all required fields (evidence_spans, limitations, supported
       status, researcher_approved) must pass all gate checks and return
-      status=promoted. This is the golden path test.
+      status=promoted. This is the golden path test. Its evidence must be
+      RETAINED: the cited run exists in the session run log with the cited
+      metric and a matching persisted uncertainty record, and the cited
+      dataset is a retained session product (evidence-integrity gate, R01).
     setup:
       session_id: bench-lg-016
+      # Synthetic fixture values; shaped exactly as capture_result_evidence()
+      # writes them, so the gate resolves a real retained record.
+      run_log:
+        hbv-run-01031500-v1:
+          run_id: hbv-run-01031500-v1
+          session_id: bench-lg-016
+          tool_name: train_hydro_model
+          key_outputs: {kge: 0.75}
+          evidence:
+            schema_version: 1
+            data: {kge: 0.75}
+            uncertainty:
+              kge: {value: 0.75, ci_low: 0.71, ci_high: 0.79, ci_level: 0.9, n: 500, method: bootstrap_block}
+            quality_flags: null
+            error: false
+            status: null
+      slots:
+        usgs_nwis_01031500:
+          data: {gauge_id: "01031500", start: "2000-10-01", end: "2010-09-30", n_days: 3652}
       claims:
         c-016:
           id: c-016
@@ -1364,11 +1386,15 @@ tasks:
       ~/.aihydro/registry/claims.jsonl and return a deterministic registry_id
       (reg.<session>.<date>.<hash>) with status='promoted'. The gate must pass
       for an empirical claim that has at least one evidence_span, at least one
-      limitation, and status in {supported, weakly_supported}.
+      limitation, and status in {supported, weakly_supported}. The cited
+      dataset must be a retained session product (evidence-integrity gate).
     call_style: session_op
     setup:
       session_id: bench-reg-045
-      slots: {}
+      # Synthetic retained product for the cited dataset span.
+      slots:
+        streamflow:
+          data: {gauge_id: "01013500", start: "1990-10-01", end: "2010-09-30", n_days: 7305}
       claims:
         bench-claim-001:
           id: bench-claim-001
@@ -1976,21 +2002,26 @@ tasks:
       - {path: n_stages, op: ge, expected: 2}
 
   - id: B-066
-    name: "GFM hindcast validation pipeline returns CSI with GFM label"
+    name: "GFM hindcast pipeline on a synthetic fixture is labelled synthetic"
     tier: 1
     mark: bench
     category: hrb
     call_style: compute_fn
     rationale: >
-      Hindcast mode must produce contingency metrics labelled GFM so agents
-      can attach skill scores to claims even when live GFM fetch is offline.
+      The hindcast contingency pipeline must compute bounded metrics on its
+      offline fixture AND label that fixture as synthetic, so its scores can
+      never be attached to claims as GFM validation. Universal CSI skill bands
+      are removed; skill is not assessed without study-specific criteria
+      (flood-validity decision 2026-09-08).
     call:
       module: inundation_gfm
       fn: bench_gfm_hindcast_validation
     assertions:
-      - {path: reference_label, op: eq, expected: GFM}
+      - {path: reference_label, op: eq, expected: "Synthetic GFM-like fixture"}
+      - {path: synthetic, op: eq, expected: true}
+      - {path: evidence_kind, op: eq, expected: synthetic_fixture}
       - {path: csi, op: between, bounds: [0.0, 1.0]}
-      - {path: skill_tier, op: present}
+      - {path: skill_tier, op: eq, expected: not_assessed}
 
   - id: B-067
     name: "Exposure summary includes population placeholder estimate"

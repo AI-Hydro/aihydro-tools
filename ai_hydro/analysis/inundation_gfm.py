@@ -127,7 +127,8 @@ def bench_gfm_hindcast_validation() -> dict[str, Any]:
     """
     End-to-end hindcast metrics on synthetic model vs GFM fixture masks.
 
-    HRB B-066: pipeline returns CSI/POD/FAR with GFM label.
+    HRB B-066: pipeline returns bounded CSI/POD/FAR on a fixture explicitly
+    labelled synthetic (never as GFM validation evidence).
     """
     import numpy as np
 
