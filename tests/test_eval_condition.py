@@ -22,7 +22,7 @@ from ai_hydro.session.store import HydroSession
 SID = "evalsess"
 NONCE = "nonce-for-tests-123"
 META = "aihydro/context"
-ALL_TOOLS = ["probe", "add_claim", "write_research_interpretation",
+ALL_TOOLS = ["probe", "probe_list", "add_claim", "write_research_interpretation",
              "promote_claim_to_registry", "list_registry_claims", "check_registry_staleness",
              "check_unit_consistency", "check_record_length", "run_skeptic", "audit_interpretation",
              "register_research_plan"]
@@ -72,8 +72,12 @@ def server(home):
         srv.tool(tool)
 
     for n in ALL_TOOLS:
-        if n != "probe":
+        if n not in ("probe", "probe_list"):
             make(n)
+
+    @srv.tool()
+    def probe_list(session_id: str | None = None) -> list[dict]:
+        return [{"n": 1}]          # array output: FastMCP derives a {result: [...]} outputSchema
 
     @srv.tool()
     def probe(session_id: str | None = None) -> dict:
@@ -105,6 +109,12 @@ def call(srv, name="probe", client=None, **extra_ctx):
     return asyncio.run(run())
 
 
+def refusal(res):
+    """The refusal envelope of an MCP-error result (the text is the JSON envelope)."""
+    assert res.is_error
+    return json.loads("".join(getattr(b, "text", "") for b in res.content))
+
+
 def rows():
     return HydroSession.load(SID).get("_run_log") or {}
 
@@ -121,7 +131,7 @@ def test_tool_lists_per_arm(server, home, monkeypatch):
     assert c2 == c3 - REGISTRY
     arm(home, monkeypatch, "C1")
     c1 = names(server)
-    assert c1 == c2 - C1_EXTRA == {"probe", "add_claim"}
+    assert c1 == c2 - C1_EXTRA == {"probe", "probe_list", "add_claim"}
     assert c1 < c2 < c3 < set(ALL_TOOLS)
 
 
@@ -206,16 +216,16 @@ def test_env_nonce_set_with_bad_marker_fails_closed(server, home, monkeypatch, v
     assert names(server) == set()
     for client in (None, label("C1"), label("C3")):
         res = call(server, client=client)
-        assert res.structured_content["code"] == ec.CONTEXT_MISMATCH
+        assert refusal(res)["code"] == ec.CONTEXT_MISMATCH
     assert rows() == {}
 
 
 def test_marker_deleted_mid_run_fails_closed(server, home, monkeypatch):
     arm(home, monkeypatch, "C1")
-    assert names(server) == {"probe", "add_claim"}
+    assert names(server) == {"probe", "probe_list", "add_claim"}
     (home / ec.MARKER_FILE).unlink()
     assert names(server) == set()
-    assert call(server, client=label("C1")).structured_content["code"] == ec.CONTEXT_MISMATCH
+    assert refusal(call(server, client=label("C1")))["code"] == ec.CONTEXT_MISMATCH
 
 
 def test_arm_comes_from_marker_not_env(server, home, monkeypatch):
@@ -229,7 +239,7 @@ def test_matching_nonce_with_invalid_condition_fails_closed(server, home, monkey
     arm(home, monkeypatch, "C9")
     assert names(server) == set()
     res = call(server, client=label("C9"))
-    assert res.structured_content["code"] == ec.CONTEXT_MISMATCH
+    assert refusal(res)["code"] == ec.CONTEXT_MISMATCH
     assert rows() == {}
 
 
@@ -394,9 +404,43 @@ def test_real_discovery_tools_do_not_name_hidden_tools(home, monkeypatch):
                                     "p1eval/C1/0000000000000000", "vscode/1"])
 def test_wrong_or_missing_client_label_is_refused_and_not_recorded(server, home, monkeypatch, client):
     arm(home, monkeypatch, "C1")
-    res = call(server, client=client)
-    assert res.structured_content["code"] == ec.CONTEXT_MISMATCH and res.structured_content["error"] is True
+    env = refusal(call(server, client=client))
+    assert env["code"] == ec.CONTEXT_MISMATCH and env["error"] is True
     assert rows() == {}
+
+
+# Refusals raised by the condition layer are MCP errors, so a ``-> list[dict]`` tool's
+# output schema cannot replace the envelope with "Output validation error".
+
+def _expect_code_survives(res, code):
+    text = "".join(getattr(b, "text", "") for b in res.content)
+    assert res.is_error and "Output validation error" not in text, text
+    assert json.loads(text)["code"] == code
+
+
+def test_list_tool_refusals_keep_their_code_on_every_path(server, home, monkeypatch):
+    # context mismatch
+    arm(home, monkeypatch, "C3")
+    _expect_code_survives(call(server, "probe_list", client="wrong"), ec.CONTEXT_MISMATCH)
+    _expect_code_survives(call(server, "probe_list"), ec.CONTEXT_MISMATCH)
+    # the same tool is fine with the right label (array output still validates)
+    ok = call(server, "probe_list", client=label("C3"))
+    assert not ok.is_error and ok.structured_content == {"result": [{"n": 1}]}
+    # invalid marker
+    (home / ec.MARKER_FILE).unlink()
+    _expect_code_survives(call(server, "probe_list", client=label("C3")), ec.CONTEXT_MISMATCH)
+    # sanitise failure
+    arm(home, monkeypatch, "C3")
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    with monkeypatch.context() as m:
+        m.setattr(ec, "_sanitize_tool_result", boom)
+        _expect_code_survives(call(server, "probe_list", client=label("C3")), ec.CONTEXT_MISMATCH)
+    # hidden tool: an MCP error as well (and not an output-validation error)
+    arm(home, monkeypatch, "C1")
+    res = call(server, "run_skeptic", client=label("C1"))
+    assert res.is_error and "Unknown tool" in str(res.content)
 
 
 # ---------------------------------------------------------------- locality

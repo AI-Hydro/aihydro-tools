@@ -232,11 +232,18 @@ def _sanitize_tool_result(tool_result: ToolResult, state: EvalState) -> ToolResu
                       meta=getattr(tool_result, "meta", None))
 
 
-def _refusal(message: str) -> ToolResult:
-    return ToolResult(structured_content={
+def _refusal(message: str) -> ToolError:
+    """The refusal for a fault the condition layer itself detects.
+
+    It is an MCP *error*, not a shaped success: error results skip output-schema
+    validation, so a ``-> list[...]`` tool cannot turn the envelope into a generic
+    "Output validation error". The error text is the JSON envelope (``code`` readable
+    by the runner).
+    """
+    return ToolError(json.dumps({
         "error": True, "code": CONTEXT_MISMATCH, "message": message,
         "recovery": "This is an evaluation harness fault, not something the agent can fix.",
-        "next_tools": []})
+        "next_tools": []}))
 
 
 class EvalConditionMiddleware(Middleware):
@@ -258,7 +265,7 @@ class EvalConditionMiddleware(Middleware):
         try:
             state = active_state()
         except _InvalidMarker as exc:
-            return _refusal(str(exc))
+            raise _refusal(str(exc)) from exc
         if state is None:
             return await call_next(context)
 
@@ -269,7 +276,7 @@ class EvalConditionMiddleware(Middleware):
         from ai_hydro.mcp.app import _request_context_meta   # lazy: app registers this module
         client = _request_context_meta(context).get("client")
         if client != state.client_label:
-            return _refusal(
+            raise _refusal(
                 f"request context client {client!r} does not match the evaluation marker "
                 f"(expected {state.client_label!r}).")
 
@@ -278,4 +285,4 @@ class EvalConditionMiddleware(Middleware):
             return _sanitize_tool_result(result, state)
         except Exception as exc:   # never hand back a half-sanitised result
             log.warning("eval sanitise failed for %s: %s", name, exc)
-            return _refusal(f"could not sanitise the result: {exc}")
+            raise _refusal(f"could not sanitise the result: {exc}") from exc
