@@ -340,17 +340,20 @@ def promote_claim_to_registry(
     $AIHYDRO_HOME/registry/claims.jsonl (default ~/.aihydro/registry/claims.jsonl)
     with evidence version hashes captured at this moment.  The registry_id is returned for future staleness checks.
 
-    Authority (ADR-002a): promotion also needs a HUMAN approval record bound to the
-    claim's current revision (text, scope, status, confidence, evidence spans and
-    limitations). The researcher creates it in their own interactive terminal with
-    `aihydro-approve <session_id> <claim_id>`; no tool can create it. Without a
-    matching record this refuses with code APPROVAL_REQUIRED and names that
-    command. Editing the claim afterwards invalidates the approval.
-    `researcher_approved=True` is only a request flag: it is required for
-    compatibility but never sufficient on its own.
+    Authority (ADR-002a): promotion also needs a human approval record bound to the
+    claim's current revision (claim fields that land in the registry row, plus the
+    fingerprints of the retained evidence it cites). The researcher creates it in
+    their own terminal with `aihydro-approve <session_id> <claim_id>`; no tool can
+    create it. Without a matching, unused record this refuses with code
+    APPROVAL_REQUIRED and names that command. Editing the claim or mutating its
+    retained evidence invalidates the approval, and one approval authorises one
+    promotion. `researcher_approved=True` is only a request flag: required for
+    compatibility but never sufficient. The approval channel is `cli_same_user`:
+    it stops unintended self-approval, not a same-OS-user process that forges it.
     """
     try:
         from ai_hydro.approval.records import (
+            CHANNEL,
             ApprovalRequiredError,
             claim_revision_digest,
             find_approval,
@@ -362,11 +365,10 @@ def promote_claim_to_registry(
             raise ValueError(f"Claim '{claim_id}' not found.")
 
         claim = ScientificClaim(**claim_dict)
-        claim_rev = claim_revision_digest(claim)
 
         if not researcher_approved:
             raise ApprovalRequiredError(
-                session_id, claim_id, claim_rev,
+                session_id, claim_id, None,
                 "Researcher approval is required to promote a claim to global knowledge. "
                 "researcher_approved=False: promotion was not requested, and a human approval "
                 "record is also required (see approval_command).")
@@ -402,6 +404,7 @@ def promote_claim_to_registry(
 
         # ── Snapshot evidence versions ────────────────────────────────────────
         from ai_hydro.registry.store import (
+            ApprovalAlreadyConsumed,
             append as _reg_append,
             build_registry_id,
             find_by_session,
@@ -428,15 +431,23 @@ def promote_claim_to_registry(
 
         # ── Human approval (ADR-002a) ─────────────────────────────────────────
         # Checked last so the researcher is only asked to approve a claim that
-        # already passes every other gate. The record must match the claim's
-        # CURRENT revision; a tool argument can request but never confer this.
-        approval = find_approval(session_id, claim_id, claim_rev)
+        # already passes every other gate. The record must match the CURRENT
+        # revision: claim fields that land in the registry row plus the
+        # retained-evidence fingerprints just computed above. It must also be
+        # unconsumed (single use). A tool argument can request but never confer
+        # this.
+        claim_rev = claim_revision_digest(claim_dict, evidence_versions)
+        approval = find_approval(session_id, claim_id, claim_rev, unconsumed_only=True)
         if approval is None:
+            already = find_approval(session_id, claim_id, claim_rev) is not None
             raise ApprovalRequiredError(
                 session_id, claim_id, claim_rev,
-                "No human approval record exists for the current revision of this claim "
-                "(it was never approved, or it was edited after approval). "
-                "researcher_approved=True does not substitute for one.")
+                ("The approval for this claim revision was already used for an earlier promotion; "
+                 "an approval authorises one promotion, so a fresh approval is required."
+                 if already else
+                 "No human approval record exists for the current revision of this claim or its "
+                 "retained evidence (never approved, or the claim or evidence changed after "
+                 "approval). researcher_approved=True does not substitute for one."))
 
         promoted_at = datetime.now(timezone.utc).isoformat()
         revision = fingerprint({"statement": claim.claim, "scope": claim.scope.model_dump(),
@@ -475,10 +486,13 @@ def promote_claim_to_registry(
             "evidence_schema_version": 2,
             "scope": claim.scope.model_dump(),
             "evidence_verification": verification,
-            "approval": {"record_digest": approval["record_digest"]},
+            "approval": {"record_digest": approval["record_digest"], "channel": CHANNEL},
             "staleness": None,
         }
-        _reg_append(registry_entry)
+        try:
+            _reg_append(registry_entry)
+        except ApprovalAlreadyConsumed as exc:   # lost a race for the same approval
+            raise ApprovalRequiredError(session_id, claim_id, claim_rev, str(exc)) from exc
 
         # ── Update session claim to reflect promotion ─────────────────────────
         claim_dict["promoted"] = True
@@ -493,7 +507,8 @@ def promote_claim_to_registry(
             "n_evidence_versions": len(evidence_versions),
             "evidence_verification": verification,
             "approval": {"record_digest": approval["record_digest"],
-                         "approver": approval["approver"]["id"]},
+                         "approver": approval["approver"]["id"],
+                         "channel": CHANNEL},
             "note": (
                 f"Claim '{claim_id}' written to global registry as '{registry_id}'. "
                 "Call check_registry_staleness to detect when underlying data changes."

@@ -15,8 +15,9 @@ Each entry is a dict with at minimum:
     promoted_at     — ISO-8601 UTC
     evidence_versions  — {source_id: content_hash_hex} captured at promotion time
     staleness       — None or {reason, detected_at, stale_sources: [source_id, ...]}
-    approval        — {record_digest}: the human approval record (ADR-002a) the
-                      promotion was bound to. Rows written before approval
+    approval        — {record_digest, channel}: the human approval record
+                      (ADR-002a) the promotion was bound to. Single use: a
+                      second row citing the same record_digest is refused. Rows written before approval
                       records existed have no ``approval`` key; listings label
                       them ``approval: self_asserted`` at read time (rows are
                       never rewritten to add the label).
@@ -57,6 +58,15 @@ def registry_dir() -> Path:
 def claims_file() -> Path:
     """Registry claims file: explicit override, else ``<registry_dir>/claims.jsonl``."""
     return CLAIMS_FILE if CLAIMS_FILE is not None else registry_dir() / "claims.jsonl"
+
+
+class ApprovalAlreadyConsumed(ValueError):
+    """A different registry row already cites this approval record."""
+
+    def __init__(self, record_digest: str, registry_id: str):
+        self.record_digest, self.registry_id = record_digest, registry_id
+        super().__init__(f"Approval {record_digest} already authorised promotion {registry_id}; "
+                         "an approval is single-use, so a fresh approval is required.")
 
 
 def _lock():
@@ -118,6 +128,14 @@ def append(entry: dict) -> None:
         entries = _read_all()
         if any(e.get("registry_id") == entry.get("registry_id") for e in entries):
             return  # idempotent: same registry_id already present
+        # Single-use approvals, enforced under the same lock as the write so
+        # two concurrent promotions cannot both consume one record.
+        approval = entry.get("approval")
+        if isinstance(approval, dict) and approval.get("record_digest"):
+            for existing in entries:
+                other = existing.get("approval")
+                if isinstance(other, dict) and other.get("record_digest") == approval["record_digest"]:
+                    raise ApprovalAlreadyConsumed(approval["record_digest"], existing.get("registry_id", "?"))
         entries.append(entry)
         _write_all(entries)
 

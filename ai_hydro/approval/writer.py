@@ -7,7 +7,9 @@ enforces that both statically and by importing ``ai_hydro.mcp`` in a clean
 interpreter.
 
 Records are appended under a cross-process lock. Existing lines are never
-rewritten or removed.
+rewritten or removed. The seal is an unkeyed digest: a same-OS-user process
+can import this module or append a sealed line itself, which is why records
+carry ``channel: "cli_same_user"`` (see ``records.py``).
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ from aihydro_core.records import Actor, utc_now
 from ai_hydro.registry.locking import file_lock
 from ai_hydro.approval.records import (
     APPROVAL_SCHEMA,
+    CHANNEL,
     approvals_dir,
     approvals_file,
     approvals_lock_file,
@@ -47,6 +50,7 @@ def write_approval(
         "session_id": session_id,
         "claim_revision_digest": claim_revision_digest,
         "approver": approver.to_dict(),
+        "channel": CHANNEL,
         "approved_at": utc_now(),
         "statement": statement,
     })

@@ -172,8 +172,10 @@ Tool result → session Store Protocol / enforcement run writer
               • resolve exact retained run / dataset result / indexed passage
               • reject unavailable metrics, failed checks, absent/mismatched CI
               • preserve limitations gates
-              • require a human approval record for the claim's current
-                revision (created only by `aihydro-approve`, never by a tool)
+              • require a single-use human approval record for the claim's
+                current revision and retained-evidence fingerprints (created
+                only by `aihydro-approve`, never by a tool; channel
+                `cli_same_user`, not proof against a same-user forger)
             → $AIHYDRO_HOME/registry/claims.jsonl (default ~/.aihydro)
               • evidence schema 2, retained-content fingerprints, claim scope
               • explicit unverified scope/method/text alignment

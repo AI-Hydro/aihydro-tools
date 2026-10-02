@@ -1,4 +1,8 @@
-"""Human claim approval (ADR-002a): authority that the model cannot mint.
+"""Human claim approval (ADR-002a): authority that cannot be conferred by tool arguments.
+
+Channel ``cli_same_user``: this blocks unintended or naive self-approval, not a
+process running as the same OS user (it can forge a sealed record or drive the
+CLI through a pty). See ``records.py`` and docs/evidence-integrity.md.
 
 This package ``__init__`` exposes only the *read* side. The writer
 (``ai_hydro.approval.writer``) and the CLI (``ai_hydro.approval.cli``,

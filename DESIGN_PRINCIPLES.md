@@ -107,7 +107,7 @@ if approval is None:
     raise ApprovalRequiredError(...)   # code APPROVAL_REQUIRED, names `aihydro-approve`
 ```
 
-The record is written only by the `aihydro-approve` CLI after the human types the claim's revision digest in a terminal; no MCP tool can write it, and editing the claim invalidates it. `researcher_approved` remains as a request flag and is never sufficient. Residual limit: a process running as the same OS user can still write the approvals file (see `docs/evidence-integrity.md`, "Human approval"). Use this model for destructive or irreversible operations.
+The record is written only by the `aihydro-approve` CLI after the human types the claim's revision digest in a terminal; no MCP tool can write it, editing the claim or its retained evidence invalidates it, and it authorises one promotion. `researcher_approved` remains as a request flag and is never sufficient. This blocks unintended self-approval, not a process running as the same OS user: that can forge a sealed record or drive the CLI through a pty, so records are labelled `channel: "cli_same_user"` (see `docs/evidence-integrity.md`, "Human approval"). Use this model for destructive or irreversible operations.
 
 ---
 

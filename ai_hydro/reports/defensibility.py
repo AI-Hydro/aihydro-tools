@@ -85,7 +85,8 @@ def _promotion_approvals(
         else:
             approval = entry.get("approval")
             if isinstance(approval, dict) and approval.get("record_digest"):
-                label = f"approved, record {approval['record_digest']}"
+                channel = approval.get("channel", "unspecified")
+                label = f"approved (channel {channel}), record {approval['record_digest']}"
             else:
                 label = "self_asserted"
         rows.append({"claim_id": cid, "registry_id": rid or "—", "approval": label})

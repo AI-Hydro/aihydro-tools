@@ -23,9 +23,11 @@ from ai_hydro.approval import records
 from ai_hydro.approval.cli import main as approve_cli
 from ai_hydro.approval.records import (
     APPROVAL_REQUIRED,
+    CHANNEL,
     claim_revision_digest,
     claim_revision_fields,
     find_approval,
+    session_claim_revision,
     verify_record,
 )
 from ai_hydro.approval.writer import write_approval
@@ -58,6 +60,18 @@ def _claim(**over):
     return base
 
 
+EV = {"r1": "sha256-v2:" + "a" * 64}
+
+
+def _rev(claim, ev=None):
+    """Revision digest of a claim dict with fixed evidence fingerprints."""
+    return claim_revision_digest(claim, EV if ev is None else ev)
+
+
+def _session_rev(session_id="appr", claim_id="c1"):
+    return session_claim_revision(HydroSession.load(session_id), claim_id)[-1]
+
+
 def _run_record(session_id):
     from ai_hydro.session.evidence import capture_result_evidence
     result = {"data": {"nse": 0.8, "_uncertainty": {"nse": {
@@ -86,18 +100,23 @@ def _promote():
 # --------------------------------------------------------------------------
 
 def test_revision_digest_is_stable_and_normalised():
-    d = claim_revision_digest(_claim())
+    d = _rev(_claim())
     assert d.startswith("sha256:") and len(d) == len("sha256:") + 64
-    assert claim_revision_digest(_claim()) == d
+    assert _rev(_claim()) == d
     # Storage spelling/defaults do not matter: omitting defaulted fields is the same revision.
     spelled = _claim(scope={"basins": ["synthetic"], "period": "2000-2001", "metric": "nse",
                             "forcing": None, "model_versions": {}})
-    assert claim_revision_digest(spelled) == d
-    assert claim_revision_fields(_claim())["schema"] == "aihydro.claim_revision/1"
+    assert _rev(spelled) == d
+    assert claim_revision_fields(_claim(), EV)["schema"] == "aihydro.claim_revision/2"
 
 
 @pytest.mark.parametrize("change", [
     {"claim": "Synthetic evaluation NSE is 0.9"},
+    {"claim_type": "negative_result"},
+    {"claim_type": "hypothesis"},
+    {"prereg_id": "prereg-forged"},
+    {"uncertainty_verified": False},
+    {"confidence_rationale": "A different rationale, long enough to be valid."},
     {"scope": {"basins": ["other"], "period": "2000-2001", "metric": "nse"}},
     {"scope": {"basins": ["synthetic"], "period": "2000-2002", "metric": "nse"}},
     {"scope": {"basins": ["synthetic"], "period": "2000-2001", "metric": "kge"}},
@@ -110,17 +129,36 @@ def test_revision_digest_is_stable_and_normalised():
     {"limitations": []},
 ])
 def test_each_authority_field_changes_the_digest(change):
-    assert claim_revision_digest(_claim(**change)) != claim_revision_digest(_claim())
+    assert _rev(_claim(**change)) != _rev(_claim())
+
+
+def test_retained_evidence_fingerprints_change_the_digest():
+    assert _rev(_claim(), {"r1": "sha256-v2:" + "b" * 64}) != _rev(_claim())
+    assert _rev(_claim(), {}) != _rev(_claim())
+
+
+def test_every_field_copied_into_the_registry_row_is_bound(session, ):
+    """Rule: anything that lands in the registry entry and carries authority is in the digest."""
+    approve("appr", "c1")
+    assert _promote()["status"] == "promoted"
+    entry, = registry.all_entries()
+    bound = claim_revision_fields(HydroSession.load("appr").claims["c1"], entry["evidence_versions"])
+    assert entry["statement"] == bound["text"]
+    for row_key, field in [("claim_type", "claim_type"), ("confidence", "confidence"),
+                           ("evidence_spans", "evidence_spans"), ("limitations", "limitations"),
+                           ("scope", "scope"), ("prereg_id", "prereg_id"),
+                           ("evidence_versions", "evidence_versions")]:
+        assert entry[row_key] == bound[field], row_key
 
 
 @pytest.mark.parametrize("change", [
-    {"confidence_rationale": "A longer, reworded rationale text."},
     {"promoted": True, "registry_id": "reg.x", "promoted_at": "2026-01-01T00:00:00Z"},
     {"updated_at": "2030-01-01T00:00:00+00:00"},
-    {"prereg_id": "prereg-1"},
+    {"citations": ["doi:10.0/x"]},
+    {"contradictions": ["c9"]},
 ])
 def test_bookkeeping_fields_do_not_change_the_digest(change):
-    assert claim_revision_digest(_claim(**change)) == claim_revision_digest(_claim())
+    assert _rev(_claim(**change)) == _rev(_claim())
 
 
 # --------------------------------------------------------------------------
@@ -128,10 +166,11 @@ def test_bookkeeping_fields_do_not_change_the_digest(change):
 # --------------------------------------------------------------------------
 
 def test_record_shape_and_seal():
-    rev = claim_revision_digest(_claim())
+    rev = _rev(_claim())
     rec = write_approval("s", "c", rev, Actor(kind="human", id="alice"), "looks right")
     assert set(rec) == {"schema", "claim_id", "session_id", "claim_revision_digest",
-                        "approver", "approved_at", "statement", "record_digest"}
+                        "approver", "channel", "approved_at", "statement", "record_digest"}
+    assert rec["channel"] == CHANNEL == "cli_same_user"
     assert rec["approver"] == {"kind": "human", "id": "alice"}
     assert rec["approved_at"].endswith("Z")
     assert rec["record_digest"] == digest({k: v for k, v in rec.items() if k != "record_digest"})
@@ -147,7 +186,7 @@ def test_writer_refuses_non_human_actor(kind):
 
 
 def test_store_is_append_only():
-    rev = claim_revision_digest(_claim())
+    rev = _rev(_claim())
     write_approval("s", "c1", rev, Actor(kind="human", id="alice"), "one")
     first = records.approvals_file().read_bytes()
     write_approval("s", "c2", rev, Actor(kind="human", id="alice"), "two")
@@ -156,7 +195,7 @@ def test_store_is_append_only():
 
 
 def test_tampered_or_forged_records_are_ignored():
-    rev = claim_revision_digest(_claim())
+    rev = _rev(_claim())
     rec = write_approval("s", "c", rev, Actor(kind="human", id="alice"), "ok")
     path = records.approvals_file()
     # edit a field in place without resealing
@@ -176,7 +215,7 @@ def test_approval_path_honours_aihydro_home_at_call_time(tmp_path, monkeypatch):
     a, b = tmp_path / "home_a", tmp_path / "home_b"
     monkeypatch.setenv("AIHYDRO_HOME", str(a))
     assert records.approvals_dir() == a / "approvals"
-    rev = claim_revision_digest(_claim())
+    rev = _rev(_claim())
     write_approval("s", "c", rev, Actor(kind="human", id="alice"), "ok")
     monkeypatch.setenv("AIHYDRO_HOME", str(b))
     assert records.approvals_dir() == b / "approvals"
@@ -194,7 +233,8 @@ def test_promotion_without_approval_is_refused(session):
     assert res["code"] == APPROVAL_REQUIRED == "APPROVAL_REQUIRED"
     assert res["approval_command"] == "aihydro-approve appr c1"
     assert "aihydro-approve appr c1" in res["recovery"]
-    assert res["claim_revision_digest"] == claim_revision_digest(session.claims["c1"])
+    assert "claim_revision_digest" not in res        # the refusal does not hand the digest to the agent
+    assert _session_rev() not in json.dumps(res)
     assert registry.all_entries() == []
     assert not HydroSession.load("appr").claims["c1"].get("promoted")
 
@@ -217,9 +257,10 @@ def test_promotion_with_matching_approval_succeeds_and_stamps_the_entry(session)
     rec = approve("appr", "c1", approver="alice")
     res = _promote()
     assert res["status"] == "promoted", res
-    assert res["approval"] == {"record_digest": rec["record_digest"], "approver": "alice"}
+    assert res["approval"] == {"record_digest": rec["record_digest"], "approver": "alice",
+                               "channel": "cli_same_user"}
     entry, = registry.all_entries()
-    assert entry["approval"] == {"record_digest": rec["record_digest"]}
+    assert entry["approval"] == {"record_digest": rec["record_digest"], "channel": "cli_same_user"}
 
 
 @pytest.mark.parametrize("edit", [
@@ -229,7 +270,11 @@ def test_promotion_with_matching_approval_succeeds_and_stamps_the_entry(session)
     lambda c: c["limitations"].append("An added limitation."),
     lambda c: c["scope"].update(period="2000-2002"),
     lambda c: c["evidence_spans"][0].update(metric_ref="data.nse"),
-], ids=["text", "confidence", "status", "limitations", "scope", "evidence"])
+    lambda c: c.update(claim_type="negative_result"),
+    lambda c: c.update(prereg_id="prereg-forged"),
+    lambda c: c.update(confidence_rationale="A rewritten rationale that is long enough."),
+], ids=["text", "confidence", "status", "limitations", "scope", "evidence",
+        "claim_type", "prereg_id", "confidence_rationale"])
 def test_editing_the_claim_invalidates_the_approval(session, edit):
     approve("appr", "c1")
     s = HydroSession.load("appr")
@@ -243,8 +288,103 @@ def test_editing_the_claim_invalidates_the_approval(session, edit):
     assert _promote()["status"] == "promoted"
 
 
+def _mutate_run(mutator):
+    s = HydroSession.load("appr")
+    rec = _run_record("appr")
+    mutator(rec)
+    s.set("_run_log", {"r1": rec})
+    s.save()
+
+
+def test_mutating_retained_evidence_after_approval_invalidates_it(session):
+    """B2: the approval binds the fingerprints of the retained runs, not just the claim text."""
+    approve("appr", "c1")
+
+    def worse(rec):
+        rec["evidence"]["data"]["nse"] = 0.3
+        rec["evidence"]["uncertainty"]["nse"].update(value=0.3, ci_low=0.2, ci_high=0.4)
+    _mutate_run(worse)
+    res = _promote()
+    assert res["code"] == APPROVAL_REQUIRED, res
+    assert registry.all_entries() == []
+    approve("appr", "c1")                       # approving what is now retained works
+    assert _promote()["status"] == "promoted"
+
+
+def test_cli_shows_and_binds_the_same_evidence_fingerprints(session):
+    expected = session_claim_revision(HydroSession.load("appr"), "c1")
+    fingerprint = expected[1]["r1"]
+    assert fingerprint.startswith("sha256-v2:")
+    code, out, err = _run_cli(["appr", "c1", "--approver", "alice"], typed=expected[3].split(":")[1][:12] + "\n")
+    assert code == 0, err
+    assert fingerprint in out and expected[3] in out
+    # what the CLI approved is exactly what promotion computes from verified_versions
+    assert _promote()["status"] == "promoted"
+    assert registry.all_entries()[0]["evidence_versions"] == expected[1]
+
+
+def test_cli_approval_goes_stale_when_evidence_changes(session):
+    rev = _session_rev()
+    assert _run_cli(["appr", "c1", "--approver", "a"], typed=rev.split(":")[1][:12] + "\n")[0] == 0
+    _mutate_run(lambda rec: rec["evidence"]["data"].update(nse=0.8, extra=1))
+    assert _session_rev() != rev
+    assert _promote()["code"] == APPROVAL_REQUIRED
+
+
+def test_an_approval_authorises_exactly_one_promotion(session):
+    """B4: one approval, one promotion; a second row needs a fresh approval."""
+    rec = approve("appr", "c1")
+    first = _promote()
+    assert first["status"] == "promoted"
+    # same approval, same claim, same evidence: refused (re-promotion needs re-approval)
+    again = _promote()
+    assert again["code"] == APPROVAL_REQUIRED and "already used" in again["message"]
+    assert len(registry.all_entries()) == 1
+    # a fresh approval of the same revision is accepted (idempotent registry id)
+    rec2 = approve("appr", "c1")
+    assert rec2["record_digest"] != rec["record_digest"]
+    assert _promote()["registry_id"] == first["registry_id"]
+
+
+def test_registry_refuses_a_second_row_citing_the_same_approval():
+    row = {"claim_id": "c", "session_id": "s", "status": "promoted",
+           "approval": {"record_digest": "sha256:" + "1" * 64}}
+    registry.append({**row, "registry_id": "reg.a"})
+    registry.append({**row, "registry_id": "reg.a"})           # same id: idempotent no-op
+    with pytest.raises(registry.ApprovalAlreadyConsumed):
+        registry.append({**row, "registry_id": "reg.b"})
+    assert [e["registry_id"] for e in registry.all_entries()] == ["reg.a"]
+
+
+def test_cli_issues_a_fresh_approval_when_the_previous_one_was_consumed(session):
+    approve("appr", "c1")
+    assert _promote()["status"] == "promoted"
+    code, out, _ = _run_cli(["appr", "c1", "--approver", "a"], typed=_session_rev().split(":")[1][:12] + "\n")
+    assert code == 0 and "Already approved" not in out
+
+
+def test_a_correctly_sealed_forged_record_is_accepted_by_design(session):
+    """Documents a NEGATIVE capability: the store does not resist a same-user forger.
+
+    The seal is an unkeyed digest, so any process that can write the approvals
+    file (or drive the CLI through a pty) can mint a record that verifies. This
+    test exists so nobody cites the tamper tests above as forgery resistance.
+    ADR-002b (client-held signing key) is the planned fix; until then records
+    are labelled channel ``cli_same_user``.
+    """
+    forged = records.seal_record({
+        "schema": records.APPROVAL_SCHEMA, "claim_id": "c1", "session_id": "appr",
+        "claim_revision_digest": _session_rev(), "approver": {"kind": "human", "id": "forged"},
+        "channel": CHANNEL, "approved_at": "2026-01-01T00:00:00Z", "statement": "forged"})
+    records.approvals_dir().mkdir(parents=True, exist_ok=True)
+    records.approvals_file().write_text(json.dumps(forged) + "\n")
+    res = _promote()
+    assert res["status"] == "promoted"
+    assert res["approval"]["channel"] == "cli_same_user"      # the label is the honest part
+
+
 def test_approval_is_bound_to_session_and_claim(session):
-    rev = claim_revision_digest(session.claims["c1"])
+    rev = _session_rev()
     write_approval("other-session", "c1", rev, Actor(kind="human", id="alice"), "wrong session")
     write_approval("appr", "c-other", rev, Actor(kind="human", id="alice"), "wrong claim")
     assert _promote()["code"] == APPROVAL_REQUIRED
@@ -287,7 +427,7 @@ def test_defensibility_report_labels_promotions(session):
     assert _promote()["status"] == "promoted"
     s = HydroSession.load("appr")
     md, summary = build_defensibility_report(s, "appr", "2026-10-02")
-    assert "approved, record sha256:" in md and "self_asserted" not in md
+    assert "approved (channel cli_same_user), record sha256:" in md and "self_asserted" not in md
     assert summary["n_promoted_claims"] == 1 and summary["n_self_asserted_promotions"] == 0
 
     # a legacy (unstamped) registry row for the same claim shows self_asserted
@@ -315,15 +455,14 @@ class _Stream(io.StringIO):
         return self._tty
 
 
-def _run_cli(argv, typed="", tty=True, claims=None):
+def _run_cli(argv, typed="", tty=True):
     out, err = _Stream(tty=tty), _Stream(tty=tty)
-    code = approve_cli(argv, stdin=_Stream(typed, tty=tty), stdout=out, stderr=err,
-                       load_claim=(lambda sid, cid: (claims or {}).get(cid)) if claims is not None else None)
+    code = approve_cli(argv, stdin=_Stream(typed, tty=tty), stdout=out, stderr=err)
     return code, out.getvalue(), err.getvalue()
 
 
 def test_cli_refuses_when_not_a_tty(session):
-    rev = claim_revision_digest(session.claims["c1"])
+    rev = _session_rev()
     code, out, err = _run_cli(["appr", "c1"], typed=rev.split(":")[1][:12] + "\n", tty=False)
     assert code == 3 and "non-interactively" in err
     assert not records.approvals_file().exists()
@@ -332,7 +471,7 @@ def test_cli_refuses_when_not_a_tty(session):
 def test_cli_real_subprocess_without_a_terminal_cannot_approve(session, tmp_path):
     env = {**os.environ, "AIHYDRO_HOME": str(tmp_path / "h"), "HOME": str(tmp_path),
            "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH", "")]))}
-    rev = claim_revision_digest(session.claims["c1"])
+    rev = _session_rev()
     proc = subprocess.run([sys.executable, "-m", "ai_hydro.approval.cli", "appr", "c1"],
                           input=rev.split(":")[1][:12] + "\n", capture_output=True, text=True,
                           env=env, cwd=str(REPO), timeout=120)
@@ -351,7 +490,7 @@ def test_cli_real_subprocess_on_a_pseudo_terminal_records_the_approval(tmp_path,
     s = HydroSession("appr-pty")
     s.claims["c1"] = _claim()
     s.save()
-    rev = claim_revision_digest(s.claims["c1"])
+    rev = _session_rev("appr-pty")
 
     env = {**os.environ, "AIHYDRO_HOME": str(home / "state"), "HOME": str(home),
            "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH", "")]))}
@@ -388,7 +527,7 @@ def test_cli_rejects_a_yes_flag(session):
 
 
 def test_cli_shows_the_claim_and_records_the_approval_on_typed_confirmation(session):
-    rev = claim_revision_digest(session.claims["c1"])
+    rev = _session_rev()
     code, out, err = _run_cli(["appr", "c1", "--approver", "alice"],
                               typed=rev.split(":")[1][:12] + "\n")
     assert code == 0, err
@@ -401,7 +540,7 @@ def test_cli_shows_the_claim_and_records_the_approval_on_typed_confirmation(sess
 
 
 def test_cli_accepts_the_sha256_prefixed_form(session):
-    rev = claim_revision_digest(session.claims["c1"])
+    rev = _session_rev()
     code, _, _ = _run_cli(["appr", "c1", "--approver", "a"], typed=rev[:7 + 12] + "\n")
     assert code == 0
 
@@ -420,7 +559,7 @@ def test_cli_missing_claim_or_session(session):
 
 def test_cli_default_approver_is_the_os_user(session, monkeypatch):
     monkeypatch.setattr("getpass.getuser", lambda: "osuser")
-    rev = claim_revision_digest(session.claims["c1"])
+    rev = _session_rev()
     assert _run_cli(["appr", "c1"], typed=rev.split(":")[1][:12] + "\n")[0] == 0
     assert find_approval("appr", "c1", rev)["approver"]["id"] == "osuser"
 
@@ -436,7 +575,7 @@ def test_cli_is_idempotent_for_an_already_approved_revision(session):
 def test_cli_does_not_modify_the_session(session):
     path = store._SESSIONS_DIR
     snapshot = {p: p.read_bytes() for p in path.rglob("*") if p.is_file()}
-    rev = claim_revision_digest(session.claims["c1"])
+    rev = _session_rev()
     _run_cli(["appr", "c1", "--approver", "a"], typed=rev.split(":")[1][:12] + "\n")
     assert {p: p.read_bytes() for p in path.rglob("*") if p.is_file()} == snapshot
 

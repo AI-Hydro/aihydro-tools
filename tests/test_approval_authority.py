@@ -95,24 +95,37 @@ def test_importing_the_mcp_server_never_loads_the_writer_or_cli():
     assert proc.returncode == 0 and proc.stdout.strip().endswith("ok"), proc.stderr[-2000:]
 
 
-def test_no_registered_tool_holds_the_writer():
+def test_no_loaded_module_holds_the_writer():
     import ai_hydro.mcp  # noqa: F401  (registers every tool)
     from ai_hydro.approval import writer
-    from ai_hydro.mcp.app import mcp
 
-    # Every loaded ai_hydro module global: none may hold the writer function or module.
+    checked = 0
     for name, mod in list(sys.modules.items()):
-        if not name.startswith("ai_hydro") or mod is None or mod is writer:
+        if not name.startswith("ai_hydro") or mod is None:
             continue
         if name in {"ai_hydro.approval", "ai_hydro.approval.writer", "ai_hydro.approval.cli"}:
             continue      # the package itself gains a `writer` attribute once imported
         for attr, value in vars(mod).items():
             assert value is not writer and value is not writer.write_approval, f"{name}.{attr}"
+        checked += 1
+    assert checked > 50, "expected to inspect the whole loaded ai_hydro package"
+
+
+def test_no_registered_tool_holds_the_writer():
+    """Layer 3. Needs the server to enumerate its tools; skip loudly when it cannot."""
+    import pytest
+
+    import ai_hydro.mcp  # noqa: F401
+    from ai_hydro.approval import writer
+    from ai_hydro.mcp.app import mcp
 
     try:
         tools = asyncio.run(mcp.list_tools())
-    except AttributeError:      # FastMCP major-version drift in the test environment
-        tools = []
+    except AttributeError as exc:     # e.g. FastMCP 3.x lacks the 2.x internals ai_hydro.mcp.app uses
+        pytest.skip(f"cannot enumerate registered MCP tools in this environment ({exc}); "
+                    "layers 1, 2 and the module-globals check still ran")
+    assert len(tools) > 100, f"enumerated only {len(tools)} tools"
+    inspected = 0
     for tool in tools:
         fn = getattr(tool, "fn", None)
         if fn is None:
@@ -120,3 +133,5 @@ def test_no_registered_tool_holds_the_writer():
         held = list(getattr(fn, "__globals__", {}).values())
         held += [c.cell_contents for c in (fn.__closure__ or ())]
         assert all(v is not writer.write_approval and v is not writer for v in held), tool.name
+        inspected += 1
+    assert inspected > 100, f"inspected only {inspected} tool functions"

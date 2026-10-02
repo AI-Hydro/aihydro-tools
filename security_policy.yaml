@@ -5,7 +5,8 @@
 #   There is no human in the MCP tool-call path at inference time.
 #   For promote_claim_to_registry, "approval" means a human approval record
 #   bound to the claim's current revision, created only by the
-#   `aihydro-approve` CLI in a terminal (ADR-002a). researcher_approved=True
+#   `aihydro-approve` CLI in a terminal (ADR-002a; channel cli_same_user:
+#   blocks unintended self-approval, not a same-OS-user forger). researcher_approved=True
 #   is a request flag; it is required but never sufficient, because the agent
 #   sets every tool argument. Without the record the tool returns
 #   APPROVAL_REQUIRED. Other tools in this tier still use the flag only.
