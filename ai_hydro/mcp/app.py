@@ -420,6 +420,34 @@ mcp.tool = _preserve_callable_registration(mcp.tool)
 mcp.resource = _preserve_callable_registration(mcp.resource)
 
 
+async def _list_registered_tools():
+    """Return registered tool components through FastMCP's public accessor."""
+    return list((await mcp.get_tools()).values())
+
+
+async def _call_registered_tool(name, arguments=None):
+    """Compatibility facade for the former FastMCP ``call_tool`` helper."""
+    return await mcp._tool_manager.call_tool(name, arguments or {})
+
+
+async def _read_registered_resource(uri):
+    """Preserve the small legacy ``read_resource`` result shape used internally."""
+    from types import SimpleNamespace
+
+    content = mcp._resource_manager.read_resource(uri)
+    if hasattr(content, "__await__"):
+        content = await content
+    return SimpleNamespace(contents=[SimpleNamespace(content=content)])
+
+
+# FastMCP 2.14 removed these convenience methods from the server object. Keep
+# the package's existing internal call sites stable while using its current
+# managers/accessors underneath.
+mcp.list_tools = _list_registered_tools
+mcp.call_tool = _call_registered_tool
+mcp.read_resource = _read_registered_resource
+
+
 # ---------------------------------------------------------------------------
 # Wave 3 Axis 3 — strip injected identity params before argument validation
 # ---------------------------------------------------------------------------
