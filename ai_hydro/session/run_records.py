@@ -521,10 +521,12 @@ _URL_QUERY = re.compile(r"\?[^\s\"']*")
 _SECRET_ASSIGN = re.compile(r"(\b[\w-]*(?:key|token|secret|credential|password)[\w-]*\s*[=:]\s*)[^\s,;\"']+", re.IGNORECASE)
 
 
-def scrub_error_text(text: Any, limit: int = 200) -> str:
-    """Error text safe to keep in a row: URL query strings and secret-shaped
-    assignments redacted, truncated."""
-    out = _URL_QUERY.sub("?<redacted>", str(text))
+def scrub_error_text(text: Any, limit: int = 200, workspace_dir: Any = None) -> str:
+    """Error text safe to keep in a row: absolute paths replaced by refs,
+    URL query strings and secret-shaped assignments redacted, truncated."""
+    from ai_hydro.session.refs import scrub_paths
+
+    out = _URL_QUERY.sub("?<redacted>", scrub_paths(str(text), workspace_dir))
     out = _SECRET_ASSIGN.sub(r"\1<redacted>", out)
     return out[:limit]
 
@@ -581,7 +583,12 @@ def _minimal_entry(run_id: str, tool: str, session_id: str, result: Any, failure
             detail = ""
         if failure is not None:
             detail = f"{type(failure).__name__}: {failure}"
-        entry["error_summary"] = scrub_error_text(detail)
+        try:
+            from ai_hydro.session.store import HydroSession
+            _ws = HydroSession.load(session_id).workspace_dir
+        except Exception:
+            _ws = None
+        entry["error_summary"] = scrub_error_text(detail, workspace_dir=_ws)
     return entry
 
 

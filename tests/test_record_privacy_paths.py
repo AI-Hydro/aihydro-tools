@@ -79,3 +79,29 @@ def test_run_log_and_capsule_contain_no_absolute_paths(world, tmp_path):
     # Retained file still bound to its sealed digest by name.
     manifest = json.loads((cap / "capsule_manifest.json").read_text())
     assert manifest["data_artifacts"][0]["binding"] == "producer_sealed"
+
+
+def test_error_text_paths_are_scrubbed_before_sealing(tmp_path, monkeypatch):
+    from ai_hydro.session import store
+    from ai_hydro.session.run_records import _minimal_entry, scrub_error_text
+    monkeypatch.setattr(store, "_SESSIONS_DIR", tmp_path / "sess")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    home = Path.home()
+    e = _minimal_entry("r", "t", "no-such-session", None, FileNotFoundError(
+        f"[Errno 2] No such file: '/Users/bob/Secret Project/data.csv' and {home}/x.json "
+        f"and {tmp_path}/sess/s.data.q.json and C:\\Users\\bob\\p\\a.csv and \\\\srv\\share\\b.csv"))
+    s = e["error_summary"]
+    for leak in ("/Users/bob", "Secret Project", str(home), str(tmp_path), "C:\\Users", "\\\\srv"):
+        assert leak not in s, (leak, s)
+    assert "~/x.json" in s and "session-data:s.data.q.json" in s and "<abs>/data.csv" in s
+    assert "<abs>/a.csv" in s and "<abs>/b.csv" in s
+    assert scrub_error_text("HTTP 404 from https://x.org/a/b and and/or ratio 3/4") .startswith("HTTP 404 from https://x.org/a/b")
+
+
+def test_portable_handles_windows_paths():
+    h = Path(r"C:\Users\bob")
+    assert refs._portable_str(r"C:\Users\bob\proj\x.csv", Path("/s"), None, h) == "~/proj/x.csv"
+    assert refs._portable_str(r"c:\users\BOB\x.csv", Path("/s"), None, h) == "~/x.csv"
+    assert refs._portable_str(r"C:\ws\a\b.json", Path("/s"), Path(r"C:\ws"), h) == "workspace:a/b.json"
+    assert refs._portable_str(r"C:\Users\bob\.aihydro\sessions\x.data.y.json", Path(r"C:\Users\bob\.aihydro\sessions"), None, h) == "session-data:x.data.y.json"
+    assert refs._portable_str("not a path", Path("/s"), None, h) == "not a path"
