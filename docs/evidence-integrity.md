@@ -269,6 +269,32 @@ If the producer has no record (written outside the middleware) the edge has a
 reference and no digest. Other tools declare lineage with
 `run_records.declare_lineage`.
 
+**Served data in the capsule.** Session slots strip arrays longer than 50
+elements on save, so `session.json` does not hold the discharge series a
+signature was computed from. `fetch_streamflow_data` retains the series it served
+(in the workspace, or beside the session file when there is none) and points the
+slot's `_data_file` at it. `export_session` consumes exactly that artifact: it is
+copied verbatim into `data/` (`retained_artifact`, with sha256) and a
+stdlib-readable `data/served_streamflow_<gauge>.csv` (`date,q_cms`; missing days
+as empty cells; floats written with `repr` so they round-trip exactly) is derived
+from it. `capsule_manifest.json` lists both under `data_artifacts` and in `files`
+(so `replay.py` verifies the hashes), with `n_rows`, `n_missing`, the request, the
+`produced_by_run_id` (the slot's `meta.run_id`) and that run's
+`producer_record_digest`. Sessions written before the fetch tool retained its
+series fall back to `aihydro_data.fetch` for the recorded request;
+`retrieval.mechanism` says which path was used and `retrieval.cache_hit` whether
+the aihydro-data disk cache answered (the bytes the run saw) or the provider was
+queried again (a re-query, to be weighed by the reader). If no source yields the
+series the entry has `status: "unavailable"` and a reason; it is never omitted
+silently. `consistency_checks` are export-time comparisons: `n_rows` against the
+slot's recorded `n_days`; the exported series' digest against the
+`<run_id>#q_cms` `served_data` ref a consuming run recorded (so the CSV is the
+series that run actually read); and, when a `baseflow_index` signature exists, a
+stdlib Lyne-Hollick (alpha 0.925, 3 passes) on the exported series against the
+recorded value. A mismatch sets `status: "exported_with_inconsistency"`. These are
+not a replay: `replay_status` stays `archive_integrity` and `recomputation` stays
+`not_performed`. A reader recomputes from the CSV with their own code.
+
 **Replay.** The `replay.py` written into a capsule verifies file hashes and every
 v2 record (the seal, and the binding to its run-log row), prints
 `replay_status`, and never claims recomputation. `--live` additionally
