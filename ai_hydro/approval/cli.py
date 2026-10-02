@@ -190,8 +190,14 @@ def _enroll(argv: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
     except (OSError, SigningError, ValueError) as exc:
         print(f"aihydro-approve enroll: {exc}", file=stderr)
         return EXIT_USAGE
-    line = enrol_line(pub, args.principal or getpass.getuser() or "researcher",
-                      args.valid_after, args.valid_before)
+    principal = args.principal or getpass.getuser() or "researcher"
+    from ai_hydro.approval.trust import is_eval_principal
+    if is_eval_principal(principal):
+        print("aihydro-approve enroll: refusing to emit an enrolment line for the evaluation-only "
+              "principal 'eval-approver@' (ADR-007). It is valid only in an evaluation trust file.",
+              file=stderr)
+        return EXIT_USAGE
+    line = enrol_line(pub, principal, args.valid_after, args.valid_before)
     print(f"Key {pub['key_type']}  {pub['fingerprint']}", file=stdout)
     print("\nallowed_signers line:\n  " + line, file=stdout)
     print("\nTo enrol it system-wide (root-owned trust root; this tool never runs sudo):\n"

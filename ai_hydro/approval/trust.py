@@ -289,6 +289,20 @@ class Verdict:
                 "principal": self.principal, "policy": self.policy}
 
 
+# ADR-007: the P1 evaluation harness signs approvals with an evaluation-only key under
+# this principal namespace, against a user-writable evaluation trust file. It must never
+# count as a production approval, so the verifier refuses it under a `system` trust root
+# and `aihydro-approve enroll` refuses to emit an enrolment line for it.
+EVAL_PRINCIPAL_PREFIX = "eval-approver@"
+
+
+def is_eval_principal(principal: Any) -> bool:
+    """True for ``eval-approver@...`` (also inside a comma-separated principal list)."""
+    if not isinstance(principal, str):
+        return False
+    return any(part.strip().lower().startswith(EVAL_PRINCIPAL_PREFIX) for part in principal.split(","))
+
+
 def _channel(key_type: str, options: list, label: str) -> str:
     sk = key_type in SK_KEY_TYPES and "no-touch-required" not in options
     root = {"system": "system_trust", "user_writable": "user_trust"}.get(label, label)
@@ -337,6 +351,10 @@ def verify_signature(record: dict, *, allowed_signers: Optional[Any] = None) -> 
     line = _matching_line(trust_path, parsed["pubkey_blob"])
     if line is None:
         return Verdict(False, reason="signing key is not in allowed_signers", **base)
+    approver_id = (record.get("approver") or {}).get("id")
+    if label == "system" and (is_eval_principal(approver_id) or is_eval_principal(line.get("principals"))):
+        return Verdict(False, reason="evaluation-only principal (eval-approver@) is refused under a "
+                       "system trust root (ADR-007)", **base)
     exe = _ssh_keygen()
     if exe is None:
         return Verdict(False, reason="ssh-keygen not found", **base)
@@ -351,6 +369,9 @@ def verify_signature(record: dict, *, allowed_signers: Optional[Any] = None) -> 
                 if found.returncode == 0 else []
             if not principals:
                 return Verdict(False, reason="no allowed signer matches this signature", **base)
+            if label == "system" and any(is_eval_principal(p) for p in principals):
+                return Verdict(False, reason="evaluation-only principal (eval-approver@) is refused "
+                               "under a system trust root (ADR-007)", **base)
             approver = (record.get("approver") or {}).get("id")
             order = ([approver] if approver else []) + [p for p in principals if p != approver]
             last = None
