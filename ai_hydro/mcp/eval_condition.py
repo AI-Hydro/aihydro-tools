@@ -251,6 +251,27 @@ def _refusal(message: str) -> ToolError:
         "next_tools": []})
 
 
+def _scrub_exception(exc: Exception, pattern: "re.Pattern[str]") -> Exception:
+    """``exc`` with hidden tool names removed from its text; ``exc`` itself if nothing changed.
+
+    A ``StructuredToolError`` keeps its type and gets a scrubbed ``.envelope`` (``str()`` is
+    the scrubbed JSON); any other exception is rebuilt as the same type from the scrubbed
+    message when that type accepts one string, else as a plain ``ToolError``.
+    """
+    from ai_hydro.mcp.errors import StructuredToolError
+    if isinstance(exc, StructuredToolError):
+        scrubbed = scrub_hidden_names(copy.deepcopy(exc.envelope), pattern)
+        return exc if scrubbed == exc.envelope else StructuredToolError(scrubbed)
+    text = str(exc)
+    new_text = pattern.sub(UNAVAILABLE, text)
+    if new_text == text:
+        return exc
+    try:
+        return type(exc)(new_text)
+    except Exception:
+        return ToolError(new_text)
+
+
 class EvalConditionMiddleware(Middleware):
     """Hide tools, verify the sealed condition label, and strip advisory fields per arm."""
 
@@ -265,6 +286,16 @@ class EvalConditionMiddleware(Middleware):
         names = [t.name for t in tools]
         hidden = hidden_tools(state.condition, names)
         return [t for t in tools if t.name not in hidden]
+
+    @staticmethod
+    async def _scrubbed_exception(context, state, exc: Exception) -> Exception:
+        try:
+            live = await context.fastmcp_context.fastmcp.get_tools()
+            pattern = hidden_name_pattern(state.condition, live.keys())
+            return _scrub_exception(exc, pattern)
+        except Exception as inner:   # never let an unscrubbed message through
+            log.warning("eval exception scrub failed: %s", inner)
+            return _refusal(f"could not sanitise the error: {inner}")
 
     async def on_call_tool(self, context, call_next):  # type: ignore[override]
         try:
@@ -285,7 +316,12 @@ class EvalConditionMiddleware(Middleware):
                 f"request context client {client!r} does not match the evaluation marker "
                 f"(expected {state.client_label!r}).")
 
-        result = await call_next(context)
+        try:
+            result = await call_next(context)
+        except Exception as exc:
+            # Exceptions raised inside the tool skip the result sanitiser below; scrub their
+            # text too so an error message cannot name a tool this arm cannot call.
+            raise await self._scrubbed_exception(context, state, exc) from None
         try:
             live = await context.fastmcp_context.fastmcp.get_tools()
             pattern = hidden_name_pattern(state.condition, live.keys())

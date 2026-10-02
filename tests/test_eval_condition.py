@@ -482,6 +482,58 @@ def test_list_tool_refusals_keep_their_code_on_every_path(server, home, monkeypa
     assert res.is_error and "Unknown tool" in str(res.content)
 
 
+def _raising_server(server):
+    from fastmcp.exceptions import ToolError
+    from ai_hydro.mcp.errors import StructuredToolError
+
+    @server.tool()
+    def raise_plain() -> dict:
+        raise ToolError("failed; try run_skeptic or promote_claim_to_registry next")
+
+    @server.tool()
+    def raise_structured() -> dict:
+        raise StructuredToolError({"error": True, "code": "SESSION_NOT_FOUND", "message": "see run_skeptic",
+                                   "next_tools": ["start_session", "run_skeptic"]})
+
+    @server.tool()
+    def raise_value() -> dict:
+        raise ValueError("bad value, call write_research_interpretation")
+
+    return server
+
+
+def test_exception_text_is_scrubbed_of_hidden_names(server, home, monkeypatch):
+    srv = _raising_server(server)
+    arm(home, monkeypatch, "C1")
+    plain = call(srv, "raise_plain", client=label("C1"))
+    text = "".join(getattr(b, "text", "") for b in plain.content)
+    assert plain.is_error and "run_skeptic" not in text and "promote_claim_to_registry" not in text
+    assert ec.UNAVAILABLE in text
+    structured = call(srv, "raise_structured", client=label("C1"))
+    env = refusal(structured)                      # type and envelope survive: still parseable JSON
+    assert env["code"] == "SESSION_NOT_FOUND" and env["next_tools"] == ["start_session"]
+    assert "run_skeptic" not in json.dumps(env)
+    other = call(srv, "raise_value", client=label("C1"))
+    assert other.is_error and "write_research_interpretation" not in str(other.content)
+
+
+def test_exception_text_untouched_without_nonce_and_for_clean_messages(server, home, monkeypatch):
+    srv = _raising_server(server)
+    res = call(srv, "raise_plain")                 # env nonce unset: complete no-op
+    assert "run_skeptic" in "".join(getattr(b, "text", "") for b in res.content)
+    arm(home, monkeypatch, "C3")                   # C3 hides only all-arm tools: C1-only names stay
+    res = call(srv, "raise_plain", client=label("C3"))
+    assert "run_skeptic" in "".join(getattr(b, "text", "") for b in res.content)
+
+
+def test_scrub_exception_keeps_type_and_identity_when_clean():
+    from fastmcp.exceptions import ToolError
+    pat = ec.hidden_name_pattern("C1", LIVE)
+    clean = ToolError("nothing to hide")
+    assert ec._scrub_exception(clean, pat) is clean
+    assert type(ec._scrub_exception(ValueError("run_skeptic"), pat)) is ValueError
+
+
 def test_refusal_is_a_structured_tool_error():
     from ai_hydro.mcp.errors import StructuredToolError
     err = ec._refusal("nope")
