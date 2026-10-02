@@ -1,6 +1,8 @@
 """``aihydro-approve`` — the human approval channel for claim promotion (ADR-002a).
 
-    aihydro-approve <session_id> <claim_id> [--approver NAME] [--statement TEXT]
+    aihydro-approve <session_id> <claim_id> [--approver NAME] [--statement TEXT] [--key PATH]
+    aihydro-approve enroll <pubkey-file> [--principal NAME] [--valid-after D] [--valid-before D] [--user-trust]
+    aihydro-approve revoke <fingerprint> [--reason TEXT]
 
 Loads the claim read-only through the public session API, prints the fields
 the approval binds (text, type, status, confidence and rationale, scope,
@@ -19,13 +21,25 @@ can drive this CLI through a pseudo-terminal or append a sealed record itself
 ``channel: "cli_same_user"`` for that reason (docs/evidence-integrity.md,
 "Human approval").
 
+Signing (ADR-002b). This CLI is the canonical approval channel. When an
+``allowed_signers`` trust root exists (system ``/etc/aihydro/allowed_signers``
+or ``$AIHYDRO_HOME/trust/allowed_signers``), the confirmed approval is signed
+with an enrolled SSH key (``--key``, else ``~/.ssh/id_*``, else an enrolled
+ssh-agent key) via ``ssh-keygen -Y sign`` and stored as ``aihydro.approval/2``;
+a hardware (``sk-``) key makes the human touch the authenticator for each
+approval. With no trust root the CLI writes the legacy unsigned v1 record and
+says so. It never stores private keys and ``enroll`` never runs sudo: it prints
+the line and command for the owner to apply.
+
 Exit codes: 0 approved (or already approved); 1 claim/session problem;
-2 usage error; 3 not interactive; 4 confirmation not given.
+2 usage error; 3 not interactive; 4 confirmation not given; 5 signing needed
+but unavailable (no key, key not enrolled, signing refused).
 """
 from __future__ import annotations
 
 import argparse
 import getpass
+import shlex
 import sys
 from typing import Optional, Sequence, TextIO
 
@@ -36,9 +50,17 @@ from ai_hydro.approval.records import (
     find_approval,
     session_claim_revision,
 )
-from ai_hydro.approval.writer import write_approval
+from ai_hydro.approval.signing import (
+    SigningError,
+    append_user_trust,
+    enrol_line,
+    read_pubkey_file,
+    write_revocation,
+)
+from ai_hydro.approval.trust import SYSTEM_TRUST_FILE, require_signed, trust_root
+from ai_hydro.approval.writer import write_approval, write_signed_approval
 
-EXIT_OK, EXIT_CLAIM, EXIT_USAGE, EXIT_NOT_TTY, EXIT_DECLINED = 0, 1, 2, 3, 4
+EXIT_OK, EXIT_CLAIM, EXIT_USAGE, EXIT_NOT_TTY, EXIT_DECLINED, EXIT_SIGNING = 0, 1, 2, 3, 4, 5
 _CONFIRM_HEX = 12
 _ELIGIBLE = ("supported", "weakly_supported")
 
@@ -91,6 +113,65 @@ def _render(session_id: str, claim_id: str, fields: dict, rev: str) -> str:
     return "\n".join(lines)
 
 
+def _enroll(argv: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
+    parser = argparse.ArgumentParser(prog="aihydro-approve enroll",
+                                     description="Print the allowed_signers line (and command) that enrols a public key.")
+    parser.add_argument("pubkey_file")
+    parser.add_argument("--principal", default=None, help="identity in allowed_signers (default: the OS user)")
+    parser.add_argument("--valid-after", default=None, help="YYYYMMDD[Z] or YYYYMMDDHHMM[SS][Z]")
+    parser.add_argument("--valid-before", default=None, help="expiry, same format (use for key rotation)")
+    parser.add_argument("--user-trust", action="store_true",
+                        help="append to $AIHYDRO_HOME/trust/allowed_signers (user-writable, weaker) "
+                             "instead of only printing the system command")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code) if isinstance(exc.code, int) else EXIT_USAGE
+    try:
+        pub = read_pubkey_file(args.pubkey_file)
+    except (OSError, SigningError, ValueError) as exc:
+        print(f"aihydro-approve enroll: {exc}", file=stderr)
+        return EXIT_USAGE
+    line = enrol_line(pub, args.principal or getpass.getuser() or "researcher",
+                      args.valid_after, args.valid_before)
+    print(f"Key {pub['key_type']}  {pub['fingerprint']}", file=stdout)
+    print("\nallowed_signers line:\n  " + line, file=stdout)
+    print("\nTo enrol it system-wide (root-owned trust root; this tool never runs sudo):\n"
+          f"  sudo mkdir -p {shlex.quote(str(trust_root_dir()))} && echo {shlex.quote(line)} | "
+          f"sudo tee -a {shlex.quote(SYSTEM_TRUST_FILE)} >/dev/null", file=stdout)
+    if args.user_trust:
+        path = append_user_trust(line)
+        print(f"\nAppended to {path} (trust_root: user_writable; a process running as you can edit it).",
+              file=stdout)
+    else:
+        print("\nOr pass --user-trust to append it to the user-writable fallback instead.", file=stdout)
+    return EXIT_OK
+
+
+def trust_root_dir():
+    from pathlib import Path
+    return Path(SYSTEM_TRUST_FILE).parent
+
+
+def _revoke(argv: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
+    parser = argparse.ArgumentParser(prog="aihydro-approve revoke",
+                                     description="Revoke a signing key: every approval it signed stops verifying.")
+    parser.add_argument("fingerprint", help="SHA256:... as printed by enroll / ssh-keygen -lf")
+    parser.add_argument("--reason", default="")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code) if isinstance(exc.code, int) else EXIT_USAGE
+    try:
+        rec = write_revocation(args.fingerprint, args.reason)
+    except ValueError as exc:
+        print(f"aihydro-approve revoke: {exc}", file=stderr)
+        return EXIT_USAGE
+    print(f"Revoked {args.fingerprint} (record {rec['record_digest']}). Also remove its line from "
+          "allowed_signers so it cannot be re-used.", file=stdout)
+    return EXIT_OK
+
+
 def main(
     argv: Optional[Sequence[str]] = None,
     *,
@@ -101,6 +182,11 @@ def main(
     stdin = stdin if stdin is not None else sys.stdin
     stdout = stdout if stdout is not None else sys.stdout
     stderr = stderr if stderr is not None else sys.stderr
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "enroll":
+        return _enroll(argv[1:], stdout, stderr)
+    if argv and argv[0] == "revoke":
+        return _revoke(argv[1:], stdout, stderr)
 
     parser = argparse.ArgumentParser(
         prog="aihydro-approve",
@@ -111,6 +197,8 @@ def main(
     parser.add_argument("claim_id")
     parser.add_argument("--approver", default=None, help="approver name (default: the OS user)")
     parser.add_argument("--statement", default=None, help="approval statement stored in the record")
+    parser.add_argument("--key", default=None,
+                        help="SSH key to sign with (default: ~/.ssh/id_* or an enrolled ssh-agent key)")
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:  # argparse already printed usage
@@ -158,9 +246,24 @@ def main(
         return EXIT_DECLINED
 
     statement = args.statement or f"Approved claim {args.claim_id} at revision {rev[:19]}."
-    record = write_approval(args.session_id, args.claim_id, rev,
-                            Actor(kind="human", id=approver_id), statement)
-    print(f"Approved. Record {record['record_digest']} written under {approvals_dir()}.", file=stdout)
+    actor = Actor(kind="human", id=approver_id)
+    root, label = trust_root()
+    if root is None and not args.key and not require_signed():
+        record = write_approval(args.session_id, args.claim_id, rev, actor, statement)
+        print(f"Approved (UNSIGNED legacy record, channel cli_same_user: not verified human identity). "
+              f"Record {record['record_digest']} written under {approvals_dir()}.\n"
+              "To sign approvals: ssh-keygen -t ed25519-sk (or ed25519), then `aihydro-approve enroll "
+              "<key>.pub --user-trust` (or the printed sudo command).", file=stdout)
+        return EXIT_OK
+    try:
+        record = write_signed_approval(args.session_id, args.claim_id, rev, actor, statement, key=args.key)
+    except (SigningError, ValueError) as exc:
+        print(f"aihydro-approve: no approval recorded: {exc}\n"
+              "Enrol a key with `aihydro-approve enroll <key>.pub` and pass --key if needed.", file=stderr)
+        return EXIT_SIGNING
+    print(f"Approved and signed ({record['signer']['key_type']} {record['signer']['fingerprint']}, "
+          f"trust root {label}). Record {record['record_digest']} written under {approvals_dir()}.",
+          file=stdout)
     return EXIT_OK
 
 

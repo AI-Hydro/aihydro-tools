@@ -17,7 +17,11 @@ record itself (the seal is an unkeyed digest, so it proves integrity, not
 origin) or drive the CLI through a pseudo-terminal. Both were demonstrated by
 the slice-1 review. Records therefore carry ``channel: "cli_same_user"`` and
 registry stamps repeat it; it names how the record was produced, not that a
-human was verified. Closing the gap needs a client-held signing key (ADR-002b).
+human was verified. Closing the gap is ADR-002b: schema ``aihydro.approval/2`` carries an SSHSIG
+over ``record_digest`` made by an enrolled key; the verifier (``trust.py``)
+derives the channel (``ssh_sig_sk`` / ``ssh_sig`` / ``cli_same_user``) and
+refuses a v2 line without a valid, enrolled, unrevoked signature. v1 records
+stay readable as ``cli_same_user`` unless ``require_signed`` is in force.
 
 Store layout (``$AIHYDRO_HOME`` defaults to ``~/.aihydro``, resolved at call
 time)::
@@ -32,7 +36,9 @@ Record (schema ``aihydro.approval/1``)::
      record_digest}
 
 ``record_digest`` is ``aihydro_core.records.digest`` of the record without
-that key.
+that key. Schema ``aihydro.approval/2`` drops ``channel``, adds
+``signer {fingerprint, key_type}`` (sealed) and ``signature {format, namespace,
+armored}`` (outside the seal: it signs ``record_digest``).
 
 Single use
 ----------
@@ -73,19 +79,26 @@ from typing import Any, Iterable, Optional
 
 from aihydro_core.records import digest
 
+from ai_hydro.approval.trust import check_approval
 from ai_hydro.registry.locking import file_lock
 from ai_hydro.registry.paths import aihydro_home
 
 log = logging.getLogger("ai_hydro.approval")
 
-APPROVAL_SCHEMA = "aihydro.approval/1"
+APPROVAL_SCHEMA_V1 = "aihydro.approval/1"
+APPROVAL_SCHEMA_V2 = "aihydro.approval/2"
+APPROVAL_SCHEMA = APPROVAL_SCHEMA_V1      # schema the legacy (unsigned) writer emits
+_SCHEMAS = (APPROVAL_SCHEMA_V1, APPROVAL_SCHEMA_V2)
 REVISION_SCHEMA = "aihydro.claim_revision/2"
 CHANNEL = "cli_same_user"
 APPROVAL_REQUIRED = "APPROVAL_REQUIRED"
 CLI_NAME = "aihydro-approve"
 _SEAL_KEY = "record_digest"
+_SIG_KEY = "signature"      # v2 only: outside the seal, because it signs the seal
 _REQUIRED = ("claim_id", "session_id", "claim_revision_digest", "approver", "channel",
              "approved_at", "statement")
+_REQUIRED_V2 = ("claim_id", "session_id", "claim_revision_digest", "approver",
+                "approved_at", "statement", "signer", "signature")
 
 
 # ---------------------------------------------------------------------------
@@ -175,17 +188,37 @@ def session_claim_revision(session: Any, claim_id: str) -> tuple:
 # Records
 # ---------------------------------------------------------------------------
 
+def _body(record: dict) -> dict:
+    """The sealed part: everything except the seal and (v2) the signature over it."""
+    skip = {_SEAL_KEY, _SIG_KEY} if record.get("schema") == APPROVAL_SCHEMA_V2 else {_SEAL_KEY}
+    return {k: v for k, v in record.items() if k not in skip}
+
+
 def seal_record(record: dict) -> dict:
-    """Return ``record`` with ``record_digest`` computed over the other keys."""
+    """Return ``record`` with ``record_digest`` computed over the sealed body."""
+    body = _body(record)
+    sig = {_SIG_KEY: record[_SIG_KEY]} if _SIG_KEY in record and record.get("schema") == APPROVAL_SCHEMA_V2 else {}
+    return {**body, _SEAL_KEY: digest(body), **sig}
+
+
+def seal_record_generic(record: dict) -> dict:
+    """Seal any flat record (used for revocation lines): digest over all other keys."""
     body = {k: v for k, v in record.items() if k != _SEAL_KEY}
     return {**body, _SEAL_KEY: digest(body)}
 
 
 def verify_record(record: Any) -> bool:
-    """True iff ``record`` is a well-formed, intact, human-approver record."""
-    if not isinstance(record, dict) or record.get("schema") != APPROVAL_SCHEMA:
+    """True iff ``record`` is a well-formed, intact, human-approver record.
+
+    Structure and seal only. Whether it is *accepted* (signature, trust root,
+    revocation, require_signed) is ``check_approval``; ``find_approval`` applies both.
+    """
+    if not isinstance(record, dict) or record.get("schema") not in _SCHEMAS:
         return False
-    if any(not record.get(k) for k in _REQUIRED):
+    v2 = record["schema"] == APPROVAL_SCHEMA_V2
+    if any(not record.get(k) for k in (_REQUIRED_V2 if v2 else _REQUIRED)):
+        return False
+    if v2 and not (isinstance(record["signer"], dict) and isinstance(record["signature"], dict)):
         return False
     approver = record.get("approver")
     if not isinstance(approver, dict) or approver.get("kind") != "human" or not approver.get("id"):
@@ -194,7 +227,7 @@ def verify_record(record: Any) -> bool:
     if not isinstance(seal, str):
         return False
     try:
-        return digest({k: v for k, v in record.items() if k != _SEAL_KEY}) == seal
+        return digest(_body(record)) == seal
     except Exception:  # unencodable value: treat as tampered
         return False
 
@@ -244,7 +277,7 @@ def find_approval(session_id: str, claim_id: str, claim_revision: str,
     for record in iter_approvals():
         if (record["session_id"] == session_id and record["claim_id"] == claim_id
                 and record["claim_revision_digest"] == claim_revision
-                and record[_SEAL_KEY] not in consumed):
+                and record[_SEAL_KEY] not in consumed and check_approval(record).ok):
             found = record
     return found
 
@@ -252,9 +285,29 @@ def find_approval(session_id: str, claim_id: str, claim_revision: str,
 def get_approval(record_digest: str) -> Optional[dict]:
     """Intact approval record with this ``record_digest``, or None."""
     for record in iter_approvals():
-        if record[_SEAL_KEY] == record_digest:
+        if record[_SEAL_KEY] == record_digest and check_approval(record).ok:
             return record
     return None
+
+
+def verified_channel(record: dict) -> Optional[str]:
+    """The channel the *verifier* derives for ``record`` (``ssh_sig_sk``, ``ssh_sig``,
+    ``cli_same_user``), or None when the record is not accepted. Never read from the record."""
+    verdict = check_approval(record)
+    return verdict.channel if verdict.ok else None
+
+
+def approval_stamp(record: dict) -> dict:
+    """What a registry row should cite: ``{record_digest, channel, signer, trust_root}``.
+
+    ``channel`` is verifier-derived; ``signer`` (fingerprint, key_type) and
+    ``trust_root`` are None for legacy v1 records.
+    """
+    verdict = check_approval(record)
+    return {"record_digest": record[_SEAL_KEY],
+            "channel": verdict.channel if verdict.ok else None,
+            "signer": verdict.signer if verdict.ok else None,
+            "trust_root": verdict.trust_root if verdict.ok else None}
 
 
 def approve_command(session_id: str, claim_id: str) -> str:

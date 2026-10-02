@@ -94,10 +94,10 @@ tool, and an agent that shells out to `aihydro-approve` without a terminal is
 refused. It does **not** stop a process running as the same OS user. Such a
 process can append a correctly sealed record itself (the seal is an unkeyed
 digest, so it proves integrity, not origin) or drive the CLI through a
-pseudo-terminal; the review demonstrated both. Records and registry stamps
-therefore carry `channel: "cli_same_user"`, which names how the record was
-produced and must not be read as verified human identity. Closing the gap needs
-a client-held signing key (ADR-002b, owner decision).
+pseudo-terminal; the review demonstrated both. Unsigned (v1) records therefore
+carry `channel: "cli_same_user"`, which names how the record was produced and
+must not be read as verified human identity. ADR-002b closes the forgery gap
+with signed v2 records (see [Signed approvals](#signed-approvals-adr-002b)).
 
 **Approval record.** Stored at `$AIHYDRO_HOME/approvals/approvals.jsonl`
 (`AIHYDRO_HOME` defaults to `~/.aihydro`, resolved at call time). Append-only,
@@ -158,6 +158,83 @@ report label them `approval: self_asserted` at read time.
 
 The record does not say the claim is true: it records that a named person ran
 the CLI for this exact revision of the claim and its retained evidence.
+
+### Signed approvals (ADR-002b)
+
+`aihydro-approve` is the canonical approval channel; the editor extension is
+only a client that opens it. After the terminal confirmation the CLI signs the
+approval with an SSH key through `ssh-keygen -Y sign -n aihydro-approval@v1`
+(stdlib subprocess; no new dependency; private keys are never read or stored by
+this code) and writes schema `aihydro.approval/2`:
+
+```json
+{"schema": "aihydro.approval/2", "claim_id": "...", "session_id": "...",
+ "claim_revision_digest": "sha256:...", "approver": {"kind": "human", "id": "..."},
+ "approved_at": "<UTC>", "statement": "...",
+ "signer": {"fingerprint": "SHA256:...", "key_type": "ssh-ed25519"},
+ "record_digest": "sha256:...",
+ "signature": {"format": "sshsig", "namespace": "aihydro-approval@v1", "armored": "-----BEGIN SSH SIGNATURE-----..."}}
+```
+
+`signer` is sealed by `record_digest`; `signature` signs the UTF-8 bytes of
+`record_digest` and sits outside the seal. v2 has no `channel` field: the
+**verifier derives the channel**, never the record:
+
+| Channel | Meaning |
+|---|---|
+| `ssh_sig_sk` | signature verifies, key type `sk-ssh-ed25519@openssh.com` or `sk-ecdsa-sha2-nistp256@openssh.com`, and its allowed_signers line does not carry `no-touch-required` (one physical touch per signature) |
+| `ssh_sig` | signature verifies with any other enrolled key (software or ssh-agent key) |
+| `cli_same_user` | legacy v1 record: readable, labelled, never upgraded |
+
+**Trust root.** The signature must verify against an `allowed_signers` file:
+`/etc/aihydro/allowed_signers` when present (`trust_root: "system"`, root-owned
+in a sane deployment), else `$AIHYDRO_HOME/trust/allowed_signers`
+(`trust_root: "user_writable"`: a process running as you can edit it, so this
+tier only stops processes that do not). `valid-after` / `valid-before` are
+enforced by `ssh-keygen` at verification time, so a rotated-out key stops
+verifying (an unconsumed approval it signed must be redone). Verification also
+accepts a file the verifier supplies (`check_approval(record, allowed_signers=...)`,
+trust root `supplied`): that off-machine check, against keys published
+somewhere the signing machine cannot edit, is the real boundary.
+
+**Refused by `find_approval`:** a sealed v2 line with a missing, malformed or
+invalid signature (including a genuine signature copied from another record);
+a signature whose key differs from the sealed `signer`; a key not in
+allowed_signers or outside its validity window; a revoked key.
+
+**CLI.**
+
+```
+aihydro-approve <session_id> <claim_id> [--key PATH]
+aihydro-approve enroll <key.pub> [--principal NAME] [--valid-before D] [--user-trust]
+aihydro-approve revoke <SHA256:fingerprint> [--reason TEXT]
+```
+
+The key is `--key`, else `~/.ssh/id_ed25519_sk`, `id_ecdsa_sk`, `id_ed25519`,
+`id_ecdsa`, `id_rsa`, else an enrolled ssh-agent key. `enroll` prints the
+`allowed_signers` line and the `sudo` command for the system root; it never
+runs sudo, and writes only the user-writable fallback when `--user-trust` is
+given. `revoke` appends a sealed line to `$AIHYDRO_HOME/approvals/revocations.jsonl`
+(all approvals by that key stop verifying; also delete its allowed_signers line).
+With a trust root and no usable enrolled key the CLI records nothing (exit 5).
+With no trust root it writes a labelled unsigned v1 record and says so.
+
+**Policy for unsigned approvals (`require_signed`).** When true, v1
+(`cli_same_user`) approvals are refused. Default: true when any allowed_signers
+file exists, else false. Override with `AIHYDRO_REQUIRE_SIGNED=0|1` or
+`{"require_signed": bool}` in `$AIHYDRO_HOME/approvals/config.json`; a system
+trust root forces true and cannot be relaxed by either. Whether unsigned
+approvals may ever promote after 2b is owner decision OPEN-4 (recommendation:
+no, once a key is enrolled; this default implements that recommendation).
+
+**Not stopped.** A trojaned CLI in an editable install can show one claim and
+have the human sign another; a same-user process can edit the local verifier or
+a user-writable trust root; a software key loaded in ssh-agent signs silently
+(only `sk-` keys require a touch per approval). The registry-row stamp
+(`approval_stamp(record)` in `approval/records.py`) is wired into promotion in
+packet A2; until then rows still carry the constant `cli_same_user`. Hardware
+behaviour (whether `ssh-keygen -Y verify` enforces the touch flag) is unverified
+without a device.
 
 ## State isolation
 
