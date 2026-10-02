@@ -158,3 +158,70 @@ class TestRunLogArbitraryEntryShapes:
             reloaded = HydroSession.load("bare-entry-shape")
             run_log = reloaded.get("_run_log") or {}
             assert run_log["r-bare"] == {"kge": 0.82}
+
+
+class TestRunLogLockContention:
+    def test_no_write_is_lost_or_swallowed_under_contention(self, tmp_path, caplog):
+        """Regression (2026-10-02): the journal-mode PRAGMA on every connect
+        returned "database is locked" under contention, the writer swallowed
+        it, and a run-log row was lost silently. Probabilistic: on the old
+        writer this failed roughly 1 run in 3 on an idle machine and more
+        under load; the fixed writer lost 0 of 800 writes under CPU load.
+        Every row must land and no lock error may be logged."""
+        import logging
+
+        from ai_hydro.session.store import HydroSession
+
+        caplog.set_level(logging.WARNING, logger="ai_hydro")
+        for trial in range(30):
+            d = tmp_path / f"t{trial}"
+            d.mkdir()
+            with patch("ai_hydro.session.store._SESSIONS_DIR", d):
+                sid = "contention"
+                HydroSession(sid).save()
+
+                def _write(i):
+                    s = HydroSession.load(sid)
+                    s.set("_run_log", {f"run-{i}": {"tool_name": "t", "timestamp": str(i), "key_outputs": {"i": i}}})
+
+                threads = [threading.Thread(target=_write, args=(i,)) for i in range(32)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+                assert len(HydroSession.load(sid).get("_run_log") or {}) == 32, f"trial {trial} lost a row"
+        locked = [r.getMessage() for r in caplog.records if "locked" in r.getMessage().lower()]
+        assert not locked, f"lock errors were swallowed: {locked}"
+
+    def test_writer_waits_for_a_held_lock_instead_of_dropping_the_row(self, tmp_path):
+        """Guarantee (not a reproduction of the 2026-10-02 race): while
+        another connection holds an exclusive lock, the writer waits and
+        stores the row rather than dropping it. The original race, a lock
+        error swallowed under heavy concurrent first-time WAL setup, is
+        timing-dependent; the contention test above exercises it
+        probabilistically."""
+        import sqlite3
+        import time as _time
+
+        from ai_hydro.session import store
+
+        with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path):
+            sid = "held-lock"
+            db = store._run_log_db_path(sid)
+            setup = sqlite3.connect(str(db))
+            setup.execute("PRAGMA journal_mode=DELETE")
+            setup.execute("CREATE TABLE runs (run_id TEXT PRIMARY KEY, timestamp TEXT, entry_json TEXT)")
+            setup.commit()
+            setup.close()
+
+            holder = sqlite3.connect(str(db), check_same_thread=False)
+            holder.execute("BEGIN EXCLUSIVE")
+            release = threading.Timer(0.5, lambda: (holder.commit(), holder.close()))
+            release.start()
+            started = _time.monotonic()
+            status = store._run_log_record(sid, "run-held", {"tool_name": "t", "timestamp": "0"})
+            release.join()
+
+            assert status == "inserted", status
+            assert _time.monotonic() - started >= 0.4  # it waited for the lock
+            assert "run-held" in store._run_log_read_all(sid)
