@@ -8,8 +8,12 @@ inert unless an evaluation run was set up explicitly:
 
 The arm comes from the marker (``condition``: ``C1``/``C2``/``C3``), never from a free
 environment variable, so an agent that can set its own environment cannot change the
-condition it is measured under. Production, a missing marker and a wrong nonce are
-all a no-op (nothing hidden, nothing stripped, nothing refused).
+condition it is measured under. With ``AIHYDRO_EVAL_NONCE`` unset (production) the layer
+is a complete no-op with no filesystem access. With it SET, the layer fails CLOSED: a
+missing, unreadable, unparseable, non-dict, wrong-schema or nonce-mismatched marker
+behaves like an invalid marker (empty tool list; every call returns
+``EVAL_CONTEXT_MISMATCH``), so deleting or corrupting the marker can never switch an arm
+to the production surface.
 
 Marker (written by the runner, outside the agent sandbox)::
 
@@ -56,6 +60,7 @@ log = logging.getLogger("ai_hydro.mcp.eval_condition")
 
 MARKER_FILE = "eval_home.json"
 NONCE_ENV = "AIHYDRO_EVAL_NONCE"
+MARKER_SCHEMA = "aihydro.eval_home/1"
 CONDITIONS = ("C1", "C2", "C3")
 CONTEXT_MISMATCH = "EVAL_CONTEXT_MISMATCH"
 
@@ -92,9 +97,9 @@ class _InvalidMarker(Exception):
 def active_state() -> Optional[EvalState]:
     """The evaluation state, or ``None`` when the layer is inactive (the production path).
 
-    Raises ``_InvalidMarker`` only when the nonce matches but the marker names no valid
-    arm: an evaluation was clearly intended, so the call fails closed instead of running
-    under an unknown surface.
+    Once ``AIHYDRO_EVAL_NONCE`` is set an evaluation is clearly intended, so any marker
+    problem (missing, unreadable, unparseable, non-dict, wrong schema, nonce mismatch,
+    unknown arm) raises ``_InvalidMarker`` and the call fails closed.
     """
     nonce = os.environ.get(NONCE_ENV)
     if not nonce:
@@ -102,13 +107,15 @@ def active_state() -> Optional[EvalState]:
     try:
         from ai_hydro.registry.paths import aihydro_home
         path = aihydro_home() / MARKER_FILE
-        if not path.is_file():
-            return None
         marker = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(marker, dict) or marker.get("nonce") != nonce:
-        return None
+    except Exception as exc:
+        raise _InvalidMarker(f"{MARKER_FILE} is missing or unreadable ({type(exc).__name__})") from exc
+    if not isinstance(marker, dict):
+        raise _InvalidMarker(f"{MARKER_FILE} is not a JSON object")
+    if marker.get("schema") != MARKER_SCHEMA:
+        raise _InvalidMarker(f"{MARKER_FILE} has schema {marker.get('schema')!r}; expected {MARKER_SCHEMA!r}")
+    if marker.get("nonce") != nonce:
+        raise _InvalidMarker(f"{MARKER_FILE} nonce does not match {NONCE_ENV}")
     condition = marker.get("condition", marker.get("arm"))
     if condition not in CONDITIONS:
         raise _InvalidMarker(f"eval_home.json names condition {condition!r}; expected one of {CONDITIONS}")

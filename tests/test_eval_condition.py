@@ -161,21 +161,50 @@ def test_hidden_tool_cannot_be_called_directly(server, home, monkeypatch):
 
 # ---------------------------------------------------------------- inactive cases
 
-@pytest.mark.parametrize("variant", ["no_marker", "wrong_nonce", "no_env_nonce", "malformed_marker"])
-def test_inactive_is_a_complete_noop(server, home, monkeypatch, variant):
-    if variant == "wrong_nonce":
-        arm(home, monkeypatch, "C1", nonce="marker-nonce", env_nonce="different")
-    elif variant == "no_env_nonce":
-        arm(home, monkeypatch, "C1", env_nonce=None)
-    elif variant == "malformed_marker":
-        (home / ec.MARKER_FILE).write_text("{not json")
-        monkeypatch.setenv(ec.NONCE_ENV, NONCE)
+def test_unset_env_nonce_is_a_complete_noop(server, home, monkeypatch):
+    arm(home, monkeypatch, "C1", env_nonce=None)         # marker present, env unset: production
     assert names(server) == set(ALL_TOOLS)
     res = call(server)                                   # no client label, nothing refused
     assert not res.is_error
     sc = res.structured_content
     assert {"quality_flags", "promotion_check", "next_steps", "skeptic_verdict"} <= set(sc)
     assert sc["_run_id"]
+
+
+def test_unset_env_nonce_touches_no_filesystem(home, monkeypatch):
+    import ai_hydro.registry.paths as paths
+    monkeypatch.setattr(paths, "aihydro_home", lambda: (_ for _ in ()).throw(AssertionError("fs access")))
+    assert ec.active_state() is None
+
+
+@pytest.mark.parametrize("variant", ["no_marker", "wrong_nonce", "malformed_marker", "non_dict",
+                                     "wrong_schema", "unreadable"])
+def test_env_nonce_set_with_bad_marker_fails_closed(server, home, monkeypatch, variant):
+    marker = home / ec.MARKER_FILE
+    monkeypatch.setenv(ec.NONCE_ENV, NONCE)
+    if variant == "wrong_nonce":
+        arm(home, monkeypatch, "C1", nonce="marker-nonce", env_nonce="different")
+    elif variant == "malformed_marker":
+        marker.write_text("{not json")
+    elif variant == "non_dict":
+        marker.write_text("[1, 2]")
+    elif variant == "wrong_schema":
+        marker.write_text(json.dumps({"schema": "other/1", "condition": "C3", "nonce": NONCE}))
+    elif variant == "unreadable":
+        marker.mkdir()                                   # a directory: read_text raises
+    assert names(server) == set()
+    for client in (None, label("C1"), label("C3")):
+        res = call(server, client=client)
+        assert res.structured_content["code"] == ec.CONTEXT_MISMATCH
+    assert rows() == {}
+
+
+def test_marker_deleted_mid_run_fails_closed(server, home, monkeypatch):
+    arm(home, monkeypatch, "C1")
+    assert names(server) == {"probe", "add_claim"}
+    (home / ec.MARKER_FILE).unlink()
+    assert names(server) == set()
+    assert call(server, client=label("C1")).structured_content["code"] == ec.CONTEXT_MISMATCH
 
 
 def test_arm_comes_from_marker_not_env(server, home, monkeypatch):
