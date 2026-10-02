@@ -697,7 +697,13 @@ def export_session(
             "rows_scrubbed_unsealed": _priv_counts["scrubbed"],
             "files_scrubbed": _priv_files,
         }
-        if _priv_counts["redacted"]:
+        if _priv_counts["seal_mismatch"]:
+            # A row failed verification at export: the archive cannot be
+            # integrity-checked, and replay will report a failure. The manifest
+            # must never claim more than replay will find.
+            manifest["replay_status"] = "not_performed"
+            manifest["integrity_failures_at_export"] = _priv_counts["seal_mismatch"]
+        elif _priv_counts["redacted"]:
             manifest["replay_status"] = "archive_integrity_partial"   # some rows are not verifiable here
         (capsule_dir / _MF).write_text(json.dumps(manifest, indent=2))
         files_written.append(str(capsule_dir / _MF))

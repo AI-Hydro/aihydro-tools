@@ -273,6 +273,10 @@ def test_tampered_path_bearing_sealed_row_fails_replay_not_redacted(world, tmp_p
     assert not _scan_capsule(cap, "/Users/bob")
     rl = json.loads((cap / "run_log.json").read_text())
     assert rl["tam_1"]["integrity"] == "seal_mismatch_at_export"
+    # The manifest and the export result never claim more than replay finds (V8).
+    mf = json.loads((cap / "capsule_manifest.json").read_text())
+    assert mf["replay_status"] == "not_performed" and res["replay_status"] == "not_performed"
+    assert mf["integrity_failures_at_export"] == 1
     p = subprocess.run([sys.executable, "replay.py"], cwd=cap, capture_output=True, text=True, timeout=120)
     assert p.returncode != 0 and "seal_mismatch_at_export" in p.stdout, p.stdout[-1500:]
 
