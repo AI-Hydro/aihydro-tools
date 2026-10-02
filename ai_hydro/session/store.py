@@ -536,6 +536,58 @@ def _run_log_record(
     return status
 
 
+def _run_log_mark_unsealable(
+    session_id: str, run_id: str, expected_body_json: str | None, reason: str,
+    *, deadline: float | None = None,
+) -> str:
+    """Mark an UNSEALED row ``record_status: unsealable`` (with ``reason``).
+
+    Only when the row still has no record and, when ``expected_body_json`` is
+    given, its body (scrubbed or not) is still that text. A sealed row is never
+    touched. Returns ``marked``, ``noop`` (already sealed, already marked or
+    the row is gone), ``changed`` (body differs) or ``error``. Never raises.
+    """
+    if deadline is None:
+        deadline = _new_deadline()
+
+    def _txn() -> str:
+        conn = _run_log_connect(session_id, deadline=deadline)
+        try:
+            conn.execute(f"PRAGMA busy_timeout={int(_busy_timeout_s(deadline) * 1000)}")
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT entry_json FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            if row is None:
+                conn.commit()
+                return "noop"
+            try:
+                existing = json.loads(row[0]) if row[0] else {}
+            except json.JSONDecodeError:
+                existing = {}
+            if _run_log_sealed(existing) or existing.get("record_status") == "unsealable":
+                conn.commit()
+                return "noop"
+            if expected_body_json is not None and _run_log_body_json(existing) != expected_body_json \
+                    and _run_log_body_json(_scrub_row_body(session_id, existing)) != expected_body_json:
+                conn.commit()
+                return "changed"
+            marked = {**_scrub_row_body(session_id, existing),
+                      "record_status": "unsealable", "record_status_reason": str(reason)}
+            conn.execute(
+                "INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?, ?, ?)",
+                (run_id, str(marked.get("timestamp", "") or ""), json.dumps(marked, default=str)),
+            )
+            conn.commit()
+            return "marked"
+        finally:
+            conn.close()
+
+    try:
+        return _retry_when_locked(_txn, deadline=deadline)
+    except Exception as exc:
+        log.warning("Failed to mark run-log row %s unsealable in session %s: %s", run_id, session_id, exc)
+        return "error"
+
+
 def _run_log_read_one(session_id: str, run_id: str, *, deadline: float | None = None,
                       strict: bool = False) -> dict | None:
     """One run-log row, or None. Never creates the database.

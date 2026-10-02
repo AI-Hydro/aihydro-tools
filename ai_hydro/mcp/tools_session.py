@@ -500,6 +500,8 @@ def export_session(
 
         if format == "defensibility_report":
             from ai_hydro.session.store import _run_log_read_all
+            from ai_hydro.session.run_records import reseal_unsealed_rows
+            reseal_unsealed_rows(session_id)             # retry rows a lock left unsealed
             _run_log_read_all(session_id, strict=True)   # refuse a report built on an unreadable log
             from ai_hydro.reports.defensibility import build_defensibility_report
             md, summary = build_defensibility_report(session, session_id, today)
@@ -523,6 +525,8 @@ def export_session(
         # Fail loudly before writing anything if the run log cannot be read: an
         # empty run_log.json would read as "no runs" and claim integrity.
         from ai_hydro.session.store import _run_log_read_all
+        from ai_hydro.session.run_records import reseal_unsealed_rows
+        reseal_unsealed_rows(session_id)                 # retry rows a lock left unsealed
         _strict_run_log = _run_log_read_all(session_id, strict=True)
         if capsule_path:
             capsule_dir = Path(capsule_path)
