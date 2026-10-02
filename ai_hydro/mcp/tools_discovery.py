@@ -72,8 +72,6 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "experiments": ("define_experiment", "run_experiment", "get_experiment_table"),
     "skeptic":     ("run_skeptic",),
     "literature":  ("index_passages", "search_passages_tool", "resolve_passage"),
-    # Wave C: aihydro-lsh global CAMELS attributes (community plugin)
-    "lsh":         ("lsh_",),
     # Feature registry (C2 — multi-geometry)
     "features":    ("register_feature", "list_features", "set_active_feature",
                     "bind_map_to_claim"),

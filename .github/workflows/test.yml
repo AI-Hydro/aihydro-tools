@@ -36,7 +36,7 @@ jobs:
           # therefore not installable from public CI. Modelling integration
           # tests use pytest.importorskip when that package is unavailable.
           pip install import-linter
-          pip install "aihydro-core[contracts] @ git+https://github.com/AI-Hydro/aihydro-core.git@e47e5d9" "aihydro-data[stac] @ git+https://github.com/AI-Hydro/AIhydro-data.git@9385eea" "aihydro-watershed @ git+https://github.com/AI-Hydro/aihydro-watershed.git@fc8e4f2" "aihydro-lsh[all] @ git+https://github.com/AI-Hydro/aihydro-lsh.git@82ac1cb" "pygeoglim @ git+https://github.com/galib9690/pygeoglim.git@ebf4ae9"
+          pip install "aihydro-core[contracts] @ git+https://github.com/AI-Hydro/aihydro-core.git@e47e5d9" "aihydro-data[stac] @ git+https://github.com/AI-Hydro/AIhydro-data.git@9385eea" "aihydro-watershed @ git+https://github.com/AI-Hydro/aihydro-watershed.git@fc8e4f2" "pygeoglim @ git+https://github.com/galib9690/pygeoglim.git@ebf4ae9"
           pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]" pyyaml
 
       - name: Lint with ruff (advisory — pre-existing debt, not yet a merge gate)

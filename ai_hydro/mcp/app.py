@@ -236,21 +236,6 @@ TOOL_TIERS: dict[str, int] = {
     "index_passages":                   2,
     "search_passages_tool":             2,
     "resolve_passage":                  3,
-    # ── Wave C: aihydro-lsh community plugin (global CAMELS) ─────────────
-    # Tier 1 → scientific artifact (101 scalar attrs / daily forcing);
-    # Tier 2 → workflow (batch, parity comparison);
-    # Tier 3 → discovery / status (families, attr info, recipe status).
-    "lsh_attributes":                   1,
-    "lsh_geomorphic_attributes":        1,
-    "lsh_forcing":                      1,
-    "lsh_dynamic_attributes":           1,
-    "lsh_events":                       1,
-    "lsh_batch":                        2,
-    "lsh_compare_to_ref":               2,
-    "lsh_families":                     3,
-    "lsh_attribute_info":               3,
-    "lsh_recipe_status":                3,
-    "lsh_reliability_matrix":           3,
 }
 
 
