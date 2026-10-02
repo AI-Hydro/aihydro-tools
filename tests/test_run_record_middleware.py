@@ -302,10 +302,10 @@ def test_record_error_from_the_record_is_visible_in_the_result(server):
 def test_store_refusal_is_visible_and_does_not_fail_the_call(server):
     real = store._run_log_record
 
-    def refuse_middleware(session_id, run_id, entry, *, writer=None):
+    def refuse_middleware(session_id, run_id, entry, *, writer=None, **kw):
         if writer == "middleware":
             return "refused"
-        return real(session_id, run_id, entry, writer=writer)
+        return real(session_id, run_id, entry, writer=writer, **kw)
 
     with patch.object(store, "_run_log_record", refuse_middleware):
         is_error, body, _ = call(server, "post_run_tool", {"session_id": SID})

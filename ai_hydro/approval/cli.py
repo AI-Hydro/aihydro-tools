@@ -40,6 +40,7 @@ but unavailable (no key, key not enrolled, signing refused).
 from __future__ import annotations
 
 import argparse
+import unicodedata
 import getpass
 import shlex
 import sys
@@ -74,7 +75,59 @@ def _is_tty(stream: TextIO) -> bool:
         return False
 
 
-def _render(session_id: str, claim_id: str, fields: dict, rev: str) -> str:
+def _basin_ref_lines(scope: dict, refs: Optional[dict]) -> list:
+    """One block per bound basin ref: label -> id, then the retained ref's method,
+    anchor and quality flags, so the approver knows which basin realisation."""
+    entries = scope.get("basin_refs") or []
+    if not entries:
+        return ["Basin refs  : (none: basins are unbound labels)"]
+    lines = ["Basin refs  :"]
+    for r in entries:
+        lines.append(f"  - {r.get('label')} -> {r.get('id')}")
+        full = (refs or {}).get(r.get("id"))
+        if not full:
+            lines.append("      (ref not retained in this session: method, anchor and flags unavailable)")
+            continue
+        a = full.get("anchor") or {}
+        flags = full.get("quality_flags") or []
+        lines.append(f"      method: {full.get('method')}")
+        lines.append(f"      anchor: {a.get('kind')} / {a.get('network')} / "
+                     f"version {a.get('network_version')} / element {a.get('element')}")
+        lines.append("      quality_flags: " + (", ".join(str(f) for f in flags) if flags else "(none)"))
+    return lines
+
+
+_RENDER_LINE_CAP = 2000
+
+
+def _visible(text: str) -> str:
+    """Make one rendered line safe to print to the approver's terminal.
+
+    Every rendered field may carry agent-chosen text (claim text, basin labels,
+    quality flags, limitations). Terminal control sequences in it could rewrite
+    the window title, forge an "Approve? y" line over the real prompt, or write
+    the clipboard (OSC 52). The approval terminal is the human trust boundary
+    (ADR-002), so C0/C1 controls, format characters (bidi overrides) and
+    embedded line/paragraph separators are shown as visible escapes, and long
+    lines are capped.
+    """
+    out = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if ch == "\t":
+            out.append("    ")
+        elif cat in ("Cc", "Cf", "Zl", "Zp"):
+            o = ord(ch)
+            out.append(f"\\x{o:02x}" if o < 0x100 else f"\\u{o:04x}")
+        else:
+            out.append(ch)
+    safe = "".join(out)
+    if len(safe) > _RENDER_LINE_CAP:
+        safe = safe[:_RENDER_LINE_CAP] + " ...[truncated]"
+    return safe
+
+
+def _render(session_id: str, claim_id: str, fields: dict, rev: str, refs: Optional[dict] = None) -> str:
     scope = fields["scope"]
     lines = [
         "",
@@ -87,9 +140,7 @@ def _render(session_id: str, claim_id: str, fields: dict, rev: str) -> str:
         f"Rationale   : {fields['confidence_rationale']}",
         f"Scope       : basins={scope.get('basins')}  period={scope.get('period')}  "
         f"metric={scope.get('metric')}  forcing={scope.get('forcing')}",
-        "Basin refs  : " + (
-            "; ".join(f"{r.get('label')} -> {r.get('id')}" for r in scope["basin_refs"])
-            if scope.get("basin_refs") else "(none: basins are unbound labels)"),
+        *_basin_ref_lines(scope, refs),
         "Evidence    :",
     ]
     spans = fields["evidence_spans"]
@@ -115,7 +166,9 @@ def _render(session_id: str, claim_id: str, fields: dict, rev: str) -> str:
         lines.append(f"WARNING: status '{fields['status']}' is not eligible for promotion "
                      f"({', '.join(_ELIGIBLE)}); this approval will not promote it as-is.")
         lines.append("")
-    return "\n".join(lines)
+    # Sanitise every line last, so no field (or a newline inside one) can
+    # inject terminal control sequences or forge extra lines.
+    return "\n".join(_visible(str(line)) for line in lines)
 
 
 def _enroll(argv: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
@@ -229,11 +282,14 @@ def main(
                   f"'{args.session_id}'.", file=stderr)
             return EXIT_CLAIM
         _, _, fields, rev = session_claim_revision(session, args.claim_id)
+        from ai_hydro import identity
+        _claim = session.claims.get(args.claim_id)
+        refs = identity.retained_refs(session, _claim if isinstance(_claim, dict) else None)
     except Exception as exc:
         print(f"aihydro-approve: cannot load claim: {exc}", file=stderr)
         return EXIT_CLAIM
 
-    print(_render(args.session_id, args.claim_id, fields, rev), file=stdout)
+    print(_render(args.session_id, args.claim_id, fields, rev, refs), file=stdout)
 
     existing = find_approval(args.session_id, args.claim_id, rev, unconsumed_only=True)
     if existing:
