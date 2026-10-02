@@ -171,7 +171,17 @@ never implied approved. `python replay.py --allowed-signers FILE` verifies each
 approval with `ssh-keygen -Y verify` against the file the verifier supplies (for
 example the owner's published GitHub keys), namespace `aihydro-approval@v1`,
 principal = the approver id; it also re-derives the sealed body digest and checks
-that the approval's `claim_revision_digest` equals the registry stamp's. It
+that the approval's `claim_revision_digest` equals the registry stamp's. It also
+binds the approval to the capsule: the record's own `claim_id` must equal the
+index entry's, the record, index and `session.json` must name one session, and
+`claim_revision_digest` is recomputed in stdlib (`aihydro.claim_revision/2`) from
+the claim in `session.json` and the cited run rows in `run_log.json`; editing the
+claim, or a cited run row, after approval fails. Claims whose evidence is not
+run-backed (dataset or paper spans), or legacy `evidence` lists, cannot be
+re-derived in stdlib and FAIL with that reason rather than PASS. Approval files
+are confined to `approvals/<64 hex>.json` named by the record digest (no absolute
+paths, traversal or symlinks); the approver must be a human actor. The index
+`status` `record_carried` means only that the record is in the capsule. It
 prints `PASS`/`FAIL` per approval and
 `approvals: N verified against supplied signers, M failed, K unsigned (cli_same_user/opt-out)`;
 any failure exits 1. Unsigned v1 records are reported `UNSIGNED`, never `PASS`;

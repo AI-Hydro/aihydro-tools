@@ -11,7 +11,7 @@ Layout::
     approvals/index.json          {schema, session_id, claims: [entry, ...]}
     approvals/<hex>.json          one approval record, verbatim (signature included)
 
-Entry ``status`` is ``approved`` (record carried), ``no_approval`` (legacy
+Entry ``status`` is ``record_carried`` (the approval record is in the capsule; it is not verified until replay), ``no_approval`` (legacy
 self-asserted promotion or a promoted claim with no registry row: listed,
 never implied approved) or ``approval_record_missing`` (the registry stamp
 cites a record this machine could not find; replay reports it as a failure).
@@ -77,7 +77,7 @@ def collect_approvals(session: Any, session_id: str, capsule_dir: Path) -> list:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 rel = f"{APPROVALS_DIR}/{digest.split(':')[-1]}.json"
                 (capsule_dir / rel).write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
-                entry.update(status="approved", record_digest=digest, approval_file=rel)
+                entry.update(status="record_carried", record_digest=digest, approval_file=rel)
         entries.append(entry)
     for claim_id, claim in sorted(claims.items()):
         if isinstance(claim, dict) and claim.get("promoted") and claim_id not in seen_claims:
@@ -102,7 +102,7 @@ def manifest_section(capsule_dir: Path, entries: list) -> dict:
     return {
         "schema": INDEX_SCHEMA,
         "n_promoted_claims": len(entries),
-        "n_with_approval_record": sum(1 for e in entries if e["status"] == "approved"),
+        "n_with_approval_record": sum(1 for e in entries if e["status"] == "record_carried"),
         "n_no_approval": sum(1 for e in entries if e["status"] == "no_approval"),
         "n_record_missing": sum(1 for e in entries if e["status"] == "approval_record_missing"),
         "files": files,
