@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -96,7 +97,11 @@ def run_pytest(extra_args: list[str]) -> dict[str, str]:
     ] + extra_args
 
     print(f"Running: {' '.join(cmd)}", flush=True)
-    result = subprocess.run(cmd, capture_output=False)
+    # Isolate registry/approval state: a bench run must never write the user's
+    # real ~/.aihydro (ADR-002a). tests/conftest.py also isolates each test.
+    with tempfile.TemporaryDirectory(prefix="aihydro-bench-home-") as bench_home:
+        env = {**os.environ, "AIHYDRO_HOME": bench_home}
+        result = subprocess.run(cmd, capture_output=False, env=env)
     print(f"Exit code: {result.returncode}", flush=True)
 
     if not Path(xml_path).exists():

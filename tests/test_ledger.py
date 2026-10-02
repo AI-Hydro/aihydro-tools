@@ -1,6 +1,7 @@
 import pytest
 from ai_hydro.session.store import HydroSession
 from ai_hydro.session.models import EvidenceSpan, ScientificClaim
+from approval_helpers import approve
 from ai_hydro.mcp.tools_ledger import (
     add_claim,
     add_assumption,
@@ -93,6 +94,11 @@ def test_promotion_gate():
         uncertainty_verified=True,
     )
     assert update["status"] == "updated"
+    # Authority is a human approval record for this exact revision (ADR-002a);
+    # researcher_approved=True alone is refused.
+    refused = promote_claim_to_registry(session_id, "c2", researcher_approved=True)
+    assert refused["code"] == "APPROVAL_REQUIRED"
+    approve(session_id, "c2")
     res = promote_claim_to_registry(session_id, "c2", researcher_approved=True)
     assert res["status"] == "promoted"
 

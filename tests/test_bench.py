@@ -52,6 +52,12 @@ def _build_session(session_id: str, setup: dict) -> None:
     if "run_log" in setup:
         session.set("_run_log", setup["run_log"])
     session.save()
+    # Promotion tasks that expect success declare ``approve_claims``: record a
+    # human-approval fixture (ADR-002a) for the claim's current revision. The
+    # store is the per-test isolated AIHYDRO_HOME (tests/conftest.py).
+    for claim_id in setup.get("approve_claims", []):
+        from approval_helpers import approve
+        approve(session_id, claim_id, approver="bench-fixture")
 
 
 def _call_mcp_tool(tool_name: str, kwargs: dict) -> dict:

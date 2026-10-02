@@ -30,7 +30,7 @@ classifiers = [
 dependencies = [
     # Robustness substrate. Version-bounded because downstream watershed/tools
     # consume the pydantic-backed HydroResult contract.
-    "aihydro-core[contracts]>=0.2.0,<0.3",
+    "aihydro-core[contracts]>=0.2.1,<0.3",
     "numpy>=1.24.0",
     "pandas>=2.0.0",
     "pydantic>=2.0.0",
@@ -152,6 +152,7 @@ dev = [
 aihydro-mcp = "ai_hydro.mcp:main"
 aihydro-gee = "ai_hydro.gee.cli:main"
 aihydro-bench = "bench.gen_scorecard:main"
+aihydro-approve = "ai_hydro.approval.cli:main"
 
 # Community plugin tool entry point namespace.
 # Third-party packages add tools in their own pyproject.toml:

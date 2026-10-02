@@ -98,16 +98,16 @@ New tools that do not appear in any of these paths require stronger justificatio
 
 ## Approval semantics for write-requiring tools
 
-"Write requires approval" does not mean real-time human sign-off in an agentic loop — there is no human in the approval path at inference time. It means the tool checks a session-level flag set by a prior, explicit human-triggered action before executing.
+"Write requires approval" means the tool checks a record created by a prior, explicit human action in a channel the model cannot call. A boolean tool argument cannot do this: the agent supplies every argument, so `researcher_approved=True` was self-approvable (reproduced, evidence report §3b).
 
-Pattern (from `promote_claim_to_registry`):
+Pattern (from `promote_claim_to_registry`, ADR-002a):
 ```python
-def promote_claim_to_registry(session_id: str, claim_id: str, researcher_approved: bool = False) -> dict:
-    if not researcher_approved:
-        raise ValueError("Researcher approval is required.")
+approval = find_approval(session_id, claim_id, claim_revision_digest(claim))
+if approval is None:
+    raise ApprovalRequiredError(...)   # code APPROVAL_REQUIRED, names `aihydro-approve`
 ```
 
-This is the model for all destructive or irreversible operations. The `researcher_approved` flag is set by the researcher explicitly in the tool call, not by the agent. The agent cannot self-approve.
+The record is written only by the `aihydro-approve` CLI after the human types the claim's revision digest in a terminal; no MCP tool can write it, editing the claim or its retained evidence invalidates it, and it authorises one promotion. `researcher_approved` remains as a request flag and is never sufficient. This blocks unintended self-approval, not a process running as the same OS user: that can forge a sealed record or drive the CLI through a pty, so records are labelled `channel: "cli_same_user"` (see `docs/evidence-integrity.md`, "Human approval"). Use this model for destructive or irreversible operations.
 
 ---
 

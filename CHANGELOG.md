@@ -8,6 +8,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Run records for every tool call (ADR-001).** A FastMCP `RunRecordMiddleware` attaches a sealed `aihydro.run/2` record (`aihydro_core.records`) to the run-log row of every tool call that resolves a session: tool and version, input and output digests, environment digest, parents, and an explicit `record_error` when a digest is missing (the tool result gains `_record_error`; the middleware never fails a call). Failed calls are recorded. Catalog, read-only view, UI and lifecycle tools are exempt, each with a reason, in `ai_hydro/session/run_records.py::RECORD_EXEMPT`; `tests/test_run_record_coverage.py` fails when a registered tool is neither recorded nor exempt. Requires an `aihydro-core` that provides `aihydro_core.records`.
+- **Insert-only run-log rows.** A row with a sealed record cannot be changed by a same-id write: identical writes are no-ops, a stale legacy snapshot never drops the record, anything else is refused and logged. Legacy rows and `set("_run_log")` keep working.
+- **First lineage edge.** `extract_hydrological_signatures` records the streamflow run it consumed (`parents`, plus `served_data` input refs with the producer's output digest and the digest of the series read). Streamflow slots carry `meta.run_id`, stamped when stored; older slots carry none and get no edge.
+- Research snapshot: additive `record_coverage` and `record_errors` fields.
+- `capsule_manifest.json`: `replay_status: "archive_integrity"`, `recomputation: "not_performed"`, and a `run_records` summary including the exporting environment.
+
+### Changed
+
+- **`replay.py --live` no longer passes vacuously.** The generated verifier (now `ai_hydro/capsule/standalone_replay.py`, written verbatim into each capsule) reads the real export shape (slots are top-level `session.json` keys, not `session["slots"]`), verifies every v2 record and its binding to its run-log row, prints `replay_status` and the comparison count, and exits 2 when `--live` finds nothing comparable. It never claims recomputation. `capsule.manifest.verify_live` delegates to the same code.
+- `post_run` run ids carry 32 bits of entropy (`{hex8}` suffix, was 4 hex digits) and are checked for uniqueness within the session. Older ids remain valid; no consumer parses the suffix.
+- `post_run` and the legacy `_record_run_log_entry` write one run-log row directly instead of re-sending the whole log.
+
+### Changed (behaviour change)
+
+- `promote_claim_to_registry` now requires a **human approval record** bound to the claim's current revision: text, `claim_type`, status, confidence and rationale, scope, evidence spans, limitations, `prereg_id`, `uncertainty_verified`, and the `sha256-v2` fingerprints of the retained evidence it cites (revision schema `aihydro.claim_revision/2`). `researcher_approved=True` is only a request flag and no longer suffices: without a matching record the tool returns `APPROVAL_REQUIRED` and the exact `aihydro-approve` command (not the digest). Editing the claim, or mutating retained evidence after approval, invalidates the approval. An approval is **single use**: the registry refuses a second row citing the same record. The check runs after the evidence/limitation gates. (ADR-002a)
+- Approval records and registry stamps carry `channel: "cli_same_user"`. This blocks unintended self-approval through tools; it does not stop a same-OS-user process from forging a sealed record or driving the CLI through a pty. Closing that needs ADR-002b signing.
+- Registry entries gain `approval: {"record_digest": ..., "channel": ...}`. Rows written before this change are not rewritten; `list_registry_claims` (new `n_self_asserted` count) and the defensibility report label them `approval: self_asserted`. The defensibility report gains a "Registry promotions and approval" table and `n_promoted_claims` / `n_self_asserted_promotions` summary keys; `build_defensibility_report` takes an optional `registry_entries` argument.
+- The registry path honours `AIHYDRO_HOME` (default `~/.aihydro`), resolved when used rather than at import. `registry.store.REGISTRY_DIR` / `CLAIMS_FILE` are now `None`-by-default overrides; use `registry_dir()` / `claims_file()`.
+- Registry read-modify-write (`append`, `mark_stale`, `mark_retracted`) runs under a cross-process lock (`fcntl.flock`; `msvcrt.locking` on Windows; logged no-op if neither exists).
+
+### Added
+
+- `aihydro-approve <session_id> <claim_id>` console script and `ai_hydro.approval` package: the only writer of the append-only approval store at `$AIHYDRO_HOME/approvals/`. Interactive terminal only; requires typing the claim revision digest prefix. A test fails if any MCP tool or module imports or calls the writer.
+- Test and bench isolation: `tests/conftest.py` gives every test its own `AIHYDRO_HOME`; `aihydro-bench --run` sets a temporary one. Bench promotion tasks B-016 and B-045 declare `setup.approve_claims` and previously wrote promoted fixtures into the user's real `~/.aihydro/registry`.
+- Golden test pinning one legacy `sha256-v2` evidence fingerprint.
+- Requires `aihydro_core.records` (`digest`, `Actor`, `utc_now`) from the records-v2 core contract; the `aihydro-core` dependency pin needs to move to the release that ships it.
+
 ### Fixed
 
 - Curve number: NLCD 81 (Pasture/Hay) now uses TR-55 pasture, good condition (39/61/74/80 for groups A-D). It previously used the row-crop values (67/78/85/89), which overstated CN on pasture by 9 to 28 points. (Fix lives in `aihydro-watershed`.)

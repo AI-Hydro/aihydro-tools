@@ -171,8 +171,12 @@ Tool result → session Store Protocol / enforcement run writer
             → promote_claim_to_registry
               • resolve exact retained run / dataset result / indexed passage
               • reject unavailable metrics, failed checks, absent/mismatched CI
-              • preserve researcher approval and limitations gates
-            → ~/.aihydro/registry/claims.jsonl
+              • preserve limitations gates
+              • require a single-use human approval record for the claim's
+                current revision and retained-evidence fingerprints (created
+                only by `aihydro-approve`, never by a tool; channel
+                `cli_same_user`, not proof against a same-user forger)
+            → $AIHYDRO_HOME/registry/claims.jsonl (default ~/.aihydro)
               • evidence schema 2, retained-content fingerprints, claim scope
               • explicit unverified scope/method/text alignment
             → check_registry_staleness
@@ -191,8 +195,8 @@ Capsule manifest verification checks retained content and some live values;
 it is not general scientific recomputation. The Defensibility Report presents
 metadata, claims, audits, uncertainty, experiments and pre-registration.
 
-SQLite run rows remain replaceable and JSONL registry writes are not
-transactional across concurrent read/modify/write operations. Full input
+SQLite run rows remain replaceable. Registry read/modify/write is serialised by
+a cross-process lock but the file is still rewritten whole, not append-only. Full input
 lineage, period/population/units alignment and recomputation remain open.
 
 ---

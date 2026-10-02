@@ -34,6 +34,13 @@ The JSON envelope contains:
 - `claims`: canonical claims plus legacy claims when not superseded.
 - `experiments`: the active-feature/latest-parameter result using the backend
   slot-selection convention, with legacy-feature fallback.
+- `record_coverage` and `record_errors` (additive; `schema_version` stays 1):
+  how many run-log rows carry a verifiable `aihydro.run/2` record
+  (`run_log_rows`, `v2_records`, `v2_verified`, `legacy_unrecorded`,
+  `record_errors`, `coverage`, `problems`), and the `record_error` of each run
+  whose record says a digest is missing. Reading verifies records and never
+  writes. `record_coverage` is `null` when the installed `aihydro-core` has no
+  records module. See [evidence integrity](evidence-integrity.md#run-records-aihydrorun2).
 - `warnings`: missing-history diagnostics. Nonfinite values are serialized as
   null for strict JSON; null never means zero.
 
@@ -54,8 +61,8 @@ are not applied to that in-flight view.
 
 These are read snapshots, not a transaction spanning session JSON and SQLite.
 Automatic refresh, pagination/virtualization for very large studies, stable
-event revision ordering, immutable runs and scientific recomputation remain
-separate work. The Replay panel labels absent validation as “not checked” and
+event revision ordering and scientific recomputation remain separate work. Rows
+that carry a sealed run record are insert-only; legacy rows are not. The Replay panel labels absent validation as “not checked” and
 shows retained inputs/uncertainty; a passing recorded check is not certification
 of scientific validity.
 

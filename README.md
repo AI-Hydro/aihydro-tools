@@ -166,7 +166,7 @@ Results become actionable knowledge through the ledger:
 
 1. **`draft_claim_from_run(session_id, run_id, metric_ref)`** — reads the run log for any Tier 1 tool call and returns a claim template with `evidence_spans` pre-populated. The agent authors only the scientific interpretation.
 2. **`add_claim(..., evidence_spans=[...])`** — records the claim. `EvidenceSpan` ties the claim to a run, paper, or dataset with typed attribution (`source_type`, `source_id`, `metric_ref`).
-3. **`promote_claim_to_registry(..., researcher_approved=True)`** — resolves retained evidence before promotion. It requires an eligible status, limitations, researcher approval, finite referenced metrics, no recorded failed checks, and matching persisted uncertainty for metric-scoped empirical or negative-result claims. An agent's uncertainty acknowledgement alone is insufficient.
+3. **`promote_claim_to_registry(..., researcher_approved=True)`** — resolves retained evidence before promotion. It requires an eligible status, limitations, a single-use human approval record for the claim's current revision and retained evidence (channel `cli_same_user`: it stops unintended self-approval, not a same-user process that forges it; the researcher runs `aihydro-approve <session_id> <claim_id>` in a terminal; `researcher_approved=True` alone is refused with `APPROVAL_REQUIRED`), finite referenced metrics, no recorded failed checks, and matching persisted uncertainty for metric-scoped empirical or negative-result claims. An agent's uncertainty acknowledgement alone is insufficient.
 
 New registry entries fingerprint retained records. Missing/changed evidence and
 unverifiable legacy snapshots are flagged for review by
