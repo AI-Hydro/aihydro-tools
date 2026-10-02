@@ -41,6 +41,26 @@ The JSON envelope contains:
   whose record says a digest is missing. Reading verifies records and never
   writes. `record_coverage` is `null` when the installed `aihydro-core` has no
   records module. See [evidence integrity](evidence-integrity.md#run-records-aihydrorun2).
+- Run rows (additive): `minimal` (true for rows written by the recording
+  middleware rather than by the tool; their `key_outputs` is always `{}`, so
+  consumers can hide them while counting them), `record` (the sealed record,
+  unchanged) and `record_error` (lifted from the record, else null).
+- Claim fields (additive), read from the insert-only revision store without
+  loading or migrating the session: `revision`, `revision_digest`,
+  `history_len` (null/0 when the claim has no history), `revision_error` (set,
+  with the other fields null, when only that claim's chain fails verification;
+  other claims and the runs are unaffected), and `revision_drift`
+  (`state` `no_history|in_sync|drifted`, `drift`, `changed_fields`,
+  `evidence_checked: false`). Drift compares the claim's current fields with
+  its latest revision; live evidence fingerprints need a loaded session, so
+  evidence drift is not checked here and `revision_drift_reason` says why when
+  the value is null. `approval` is `{state: none|approved|consumed|unverifiable,
+  for_revision_digest, channel, trust_root, principal, policy, record_digest}`
+  for the claim's latest revision. Approvals fail closed (ADR-002b): a record
+  the verifier does not accept (no trust root, bad signature) is
+  `unverifiable`, never `approved`; `consumed` means a registry row cites it.
+  A capsule never reads the live revision store: `revision` is null and
+  approval is `unverifiable`.
 - `warnings`: missing-history diagnostics. Nonfinite values are serialized as
   null for strict JSON; null never means zero.
 

@@ -117,11 +117,18 @@ def _normalize_runs(records: dict, session_id: str) -> list[dict]:
         outputs = record.get("key_outputs", record.get("data"))
         if outputs is None:
             metadata_keys = {"run_id", "session_id", "tool_name", "tool", "timestamp", "created_at",
-                             "meta", "inputs", "evidence", "slot", "diff_status", "diff_notes"}
+                             "meta", "inputs", "evidence", "slot", "diff_status", "diff_notes",
+                             "record", "minimal", "error", "error_summary"}
             outputs = {k: v for k, v in record.items() if k not in metadata_keys}
+        if record.get("minimal") is True:
+            # Middleware-written rows carry no tool outputs; nothing may leak in.
+            outputs = {}
         if not isinstance(outputs, dict):
             raise SnapshotError("RUN_LOG_INVALID", f"Run '{rid}' has invalid key outputs.")
-        entries.append({**record, "run_id": rid, "session_id": session_id,
+        rec = record.get("record") if isinstance(record.get("record"), dict) else None
+        entries.append({**record, "run_id": rid,
+                        "minimal": record.get("minimal") is True,
+                        "record_error": rec.get("record_error") if rec else None, "session_id": session_id,
                         "tool_name": str(record.get("tool_name") or record.get("tool") or meta.get("tool") or "unknown"),
                         "timestamp": str(record.get("timestamp") or record.get("created_at") or meta.get("computed_at") or ""),
                         "key_outputs": outputs})
@@ -144,6 +151,101 @@ def _record_visibility(records: dict) -> tuple[dict | None, list[dict]]:
               if isinstance(entry, dict) and isinstance(entry.get("record"), dict)
               and entry["record"].get("record_error")]
     return coverage, errors
+
+
+_NO_REVISION = {"revision": None, "revision_digest": None, "history_len": 0,
+                "revision_drift": None, "approval": {"state": "none"}}
+
+
+def _approval_state(session_id: str, claim_id: str, digest: str) -> dict:
+    """Read-only approval state for exactly this revision digest.
+
+    Fails closed (ADR-002b): an approval the verifier does not accept (no
+    trust root, bad signature, unenrolled key) is ``unverifiable``, never
+    ``approved``. ``consumed`` means a registry row already cites it.
+    """
+    from ai_hydro.approval import records as approvals
+    from ai_hydro.approval.trust import check_approval
+
+    matching = [r for r in approvals.iter_approvals()
+                if r.get("session_id") == session_id and r.get("claim_id") == claim_id
+                and r.get("claim_revision_digest") == digest]
+    if not matching:
+        return {"state": "none", "for_revision_digest": digest}
+    accepted = approvals.find_approval(session_id, claim_id, digest)
+    if accepted is None:
+        reason = check_approval(matching[-1]).reason
+        return {"state": "unverifiable", "for_revision_digest": digest, "reason": reason,
+                "channel": None, "trust_root": None, "principal": None, "policy": None}
+    stamp = approvals.approval_stamp(accepted)
+    consumed = stamp["record_digest"] in approvals.approval_consumers()
+    return {"state": "consumed" if consumed else "approved", "for_revision_digest": digest,
+            "record_digest": stamp["record_digest"], "channel": stamp["channel"],
+            "trust_root": stamp["trust_root"], "principal": stamp["principal"],
+            "policy": stamp["policy"]}
+
+
+def _claim_surface(session_id: str, claim_id: str, claim: dict, chains: dict, capsule: bool) -> dict:
+    """Additive revision/approval fields for one claim; never raises."""
+    if capsule:
+        return {**_NO_REVISION, "revision_error": None,
+                "revision_drift": None, "revision_drift_reason": "capsule has no claim revision store",
+                "approval": {"state": "unverifiable", "reason": "capsule has no claim revision store"}}
+    chain = chains.get(claim_id)
+    if chain is None:
+        return {**_NO_REVISION, "revision_error": None, "revision_drift_reason": "no revision history"}
+    if not chain.get("ok"):
+        return {**_NO_REVISION, "revision_error": chain.get("error", "chain unreadable"),
+                "revision_drift_reason": "revision chain failed verification",
+                "approval": {"state": "unverifiable", "reason": "revision chain failed verification"}}
+    rows = chain["rows"]
+    last = rows[-1] if rows else None
+    if last is None:
+        return {**_NO_REVISION, "revision_error": None, "revision_drift_reason": "no revision history"}
+    out = {"revision": last["revision"], "revision_digest": last["revision_digest"],
+           "history_len": len(rows), "revision_error": None}
+    try:
+        from ai_hydro.approval.records import claim_revision_fields
+        from ai_hydro.session.claim_revisions import revision_drift
+
+        # Live evidence fingerprints need a loaded session (migrating, writing);
+        # a read-only snapshot compares the claim fields only.
+        fields = claim_revision_fields(claim, last["content"].get("evidence_versions", {}))
+        out["revision_drift"] = {**revision_drift(fields, last), "evidence_checked": False}
+        out["revision_drift_reason"] = None
+    except Exception as exc:
+        out["revision_drift"] = None
+        out["revision_drift_reason"] = f"{type(exc).__name__}: {exc}"
+    try:
+        out["approval"] = _approval_state(session_id, claim_id, last["revision_digest"])
+    except Exception as exc:
+        out["approval"] = {"state": "unverifiable", "reason": f"{type(exc).__name__}: {exc}"}
+    return out
+
+
+def _surface_claims(session_id: str, claims: dict, capsule: bool) -> dict:
+    chains: dict = {}
+    history_error = None
+    if not capsule:
+        try:
+            from ai_hydro.session import claim_revisions
+            chains = claim_revisions.history(session_id)
+        except Exception as exc:  # store unreadable: per-claim error, snapshot survives
+            history_error = f"{type(exc).__name__}: {exc}"
+    result = {}
+    for cid, claim in claims.items():
+        if not isinstance(claim, dict):
+            result[cid] = claim
+            continue
+        try:
+            extra = _claim_surface(session_id, cid, claim, chains, capsule)
+            if history_error:
+                extra.update({**_NO_REVISION, "revision_error": history_error,
+                              "approval": {"state": "unverifiable", "reason": history_error}})
+        except Exception as exc:
+            extra = {**_NO_REVISION, "revision_error": f"{type(exc).__name__}: {exc}"}
+        result[cid] = {**claim, **extra}
+    return result
 
 
 def read_research_snapshot(reference: str, *, home: Path | None = None) -> dict:
@@ -178,7 +280,7 @@ def read_research_snapshot(reference: str, *, home: Path | None = None) -> dict:
     snapshot = {
         "schema_version": 1, "session_id": sid, "session_path": str(path),
         "source": "capsule" if capsule else "session", "run_log_source": log_source,
-        "claims": {**legacy_claims, **claims}, "experiments": experiments,
+        "claims": _surface_claims(sid, {**legacy_claims, **claims}, capsule), "experiments": experiments,
         "runs": _normalize_runs(records, sid),
         # Additive (schema_version stays 1): how many rows carry a verifiable
         # aihydro.run/2 record, and which records say a digest is missing.
