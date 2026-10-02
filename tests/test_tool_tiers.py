@@ -57,10 +57,15 @@ def test_all_registered_tools_have_tiers():
     import ai_hydro.mcp  # noqa: F401
     from ai_hydro.mcp.app import mcp
 
+    from _plugin_tools import optional_plugin_tool_names
+
     registered_names: set[str] = set()
     try:
         tools = asyncio.run(mcp.list_tools())
         registered_names = {t.name for t in tools}
+        # Optional community plugins (e.g. aihydro-lsh) default to tier 2 and
+        # are not part of the built-in tier contract (commit 9a81960).
+        registered_names -= optional_plugin_tool_names(tools, TOOL_TIERS)
     except Exception:
         # Fallback: introspect the internal tool map if list_tools() is unavailable
         if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
