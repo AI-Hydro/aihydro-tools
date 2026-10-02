@@ -673,6 +673,43 @@ def test_listed_tools_never_advertise_hidden_tools_or_stripped_fields(home, monk
         assert "promotion_check" not in add_claim.description and "basin_refs" in add_claim.description
 
 
+def test_c1_description_strip_keeps_other_documentation(home, monkeypatch):
+    import ai_hydro.mcp  # noqa: F401
+
+    async def full():
+        return await app.mcp.get_tools()
+    registry = asyncio.run(full())
+    mentioning = {n for n, t in registry.items() if ec._STRIPPED_TOKEN.search(t.description or "")}
+    assert {"data_describe_product", "data_fetch", "get_data_fetch_result", "compute_spectral_index",
+            "add_claim", "update_claim_status"} <= mentioning
+    arm(home, monkeypatch, "C1")
+
+    async def listed():
+        async with Client(app.mcp) as c:
+            return {t.name: t.description for t in await c.list_tools()}
+    tools = asyncio.run(listed())
+    pat = ec.hidden_name_pattern("C1", registry.keys())
+    for n in mentioning & set(tools):
+        assert not ec._STRIPPED_TOKEN.search(tools[n]), n
+        if n in ("add_claim", "update_claim_status"):
+            continue                      # their promotion_check text is advisory and removed
+        kept = [ln for ln in registry[n].description.split("\n")
+                if not ec._STRIPPED_TOKEN.search(ln) and not pat.search(ln)]
+        shown = tools[n].split("\n")
+        assert all(ln in shown for ln in kept), (n, [ln for ln in kept if ln not in shown])
+    # lines that only list a stripped field keep the rest of the line
+    assert "citation" in tools["data_fetch"] and "license" in tools["data_fetch"]
+    assert "BibTeX" in tools["data_describe_product"]
+    assert "On complete: {status, variable, product, source, citation," in tools["get_data_fetch_result"]
+    assert "promotion_check" not in tools["add_claim"] and "basin_refs" in tools["add_claim"]
+    assert "promotion_check" not in tools["update_claim_status"]
+
+
+def test_strip_description_line_granularity():
+    text = "Intro.\n\nReturns `quality_flags`: a\n  continued\n\n- ``next_steps`` - x\n- keep me\nOut: {a, next_steps, b}."
+    assert ec.strip_description(text) == "Intro.\n\n\n- keep me\nOut: {a, b}."
+
+
 def test_scrub_updates_sibling_counts_when_entries_are_dropped():
     pat = ec.hidden_name_pattern("C1", LIVE)
     out = ec.scrub_hidden_names({"count": 3, "total": 3, "n_other": 7, "ok": True,

@@ -243,10 +243,38 @@ def scrub_hidden_names(value: Any, pattern: "re.Pattern[str]") -> Any:
 _STRIPPED_TOKEN = re.compile(r"(?<![A-Za-z0-9])_*(?:" + "|".join(sorted(STRIPPED_FIELDS)) + r"|skeptic[A-Za-z0-9_]*)(?![A-Za-z0-9])")
 
 
+_STRIPPED_NAME = r"(?:" + "|".join(sorted(STRIPPED_FIELDS)) + r"|skeptic[A-Za-z0-9_]*)"
+_CORE = r"`{0,2}_*" + _STRIPPED_NAME + r"(?![A-Za-z0-9_])`{0,2}"
+_LEADING = re.compile(r"^(?:[-*\u2022]\s*|Returns\s+)?" + _CORE)
+_BULLET = re.compile(r"^\s*[-*\u2022]\s")
+
+
 def strip_description(text: str) -> str:
-    """``text`` without the paragraphs that advertise a C1-stripped field."""
-    paragraphs = re.split(r"\n\s*\n", text)
-    return "\n\n".join(p for p in paragraphs if not _STRIPPED_TOKEN.search(p))
+    """``text`` without the mentions of a C1-stripped field, at line granularity.
+
+    A line that is ABOUT a stripped field (a bullet or ``Returns `field` ...`` sentence that
+    starts with it) is dropped together with its continuation lines up to the next blank
+    line or bullet. Where a stripped name is only one item in a list or sentence it is
+    removed from that line and the rest of the line is kept, so the surrounding
+    documentation survives.
+    """
+    out: list[str] = []
+    skipping = False
+    for line in text.split("\n"):
+        if skipping:
+            if not line.strip() or _BULLET.match(line):
+                skipping = False
+            else:
+                continue
+        if _STRIPPED_TOKEN.search(line):
+            if _LEADING.match(line.strip()):
+                skipping = True
+                continue
+            line = re.sub(r",\s*" + _CORE, "", line)
+            line = re.sub(_CORE + r",?[ \t]*", "", line)
+            line = re.sub(r"[ \t]+([.,;:)])", r"\1", line)
+        out.append(line)
+    return "\n".join(out)
 
 
 def _sanitize(value: Any, state: EvalState, pattern: "re.Pattern[str]") -> Any:
