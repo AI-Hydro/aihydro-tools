@@ -22,6 +22,7 @@ Marker (written by the runner, outside the agent sandbox)::
 What each arm gets (the kernel is identical; only the surface differs)::
 
     all arms  hide write_research_interpretation  (submit_answer is the runner's only output channel)
+              and run_python (arbitrary same-user code execution; see below)
     C1, C2    hide the registry tools (promote_claim_to_registry, list_registry_claims,
               check_registry_staleness)
     C1        also hide every ``check_*`` validator, run_skeptic, audit_interpretation,
@@ -29,6 +30,12 @@ What each arm gets (the kernel is identical; only the surface differs)::
               ``quality_flags``, ``promotion_check``, ``next_steps`` and the skeptic
               fields (``skeptic*`` / ``_skeptic*``). ``_run_id`` is kept.
     C3        nothing more: the production gate surface.
+
+Code execution is hidden in every arm because ``run_python`` runs as the same OS user as
+the server and could edit the marker, the session, the registry or the trust files, which
+would make this whole layer advisory. Re-enabling it (or any other tool that executes
+arbitrary user code) in an evaluation arm requires the owner's OS-user / container
+sandbox decision (ADR-007); it is not a per-run toggle.
 
 Order matters and is fixed in ``ai_hydro/mcp/app.py``: this middleware is registered
 BEFORE ``RunRecordMiddleware`` so it wraps it. The sealed run record is therefore
@@ -64,7 +71,7 @@ MARKER_SCHEMA = "aihydro.eval_home/1"
 CONDITIONS = ("C1", "C2", "C3")
 CONTEXT_MISMATCH = "EVAL_CONTEXT_MISMATCH"
 
-HIDDEN_ALL_ARMS = frozenset({"write_research_interpretation"})
+HIDDEN_ALL_ARMS = frozenset({"write_research_interpretation", "run_python"})
 REGISTRY_TOOLS = frozenset({"promote_claim_to_registry", "list_registry_claims", "check_registry_staleness"})
 C1_ONLY_HIDDEN = frozenset({"run_skeptic", "audit_interpretation", "register_research_plan"})
 STRIPPED_FIELDS = frozenset({"quality_flags", "promotion_check", "next_steps"})

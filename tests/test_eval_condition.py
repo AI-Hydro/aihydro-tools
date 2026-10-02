@@ -137,7 +137,7 @@ def test_real_app_tool_lists_and_registration_order(home, monkeypatch):
         assert needed in full
     arm(home, monkeypatch, "C3")
     c3 = names(app.mcp)
-    assert full - c3 == {"write_research_interpretation"}
+    assert full - c3 == ec.HIDDEN_ALL_ARMS == {"write_research_interpretation", "run_python"}
     arm(home, monkeypatch, "C2")
     c2 = names(app.mcp)
     assert c3 - c2 == REGISTRY
@@ -148,6 +148,17 @@ def test_real_app_tool_lists_and_registration_order(home, monkeypatch):
     assert all(n.startswith("check_") for n in removed - C1_EXTRA)
     assert not any(n.startswith("check_") for n in c1)
     assert "add_claim" in c1 and "update_claim_status" in c1
+
+
+def test_code_execution_is_hidden_in_every_arm(home, monkeypatch):
+    import ai_hydro.mcp  # noqa: F401  (registers every tool on the singleton)
+    assert "run_python" in ec.HIDDEN_ALL_ARMS
+    assert "run_python" in names(app.mcp)                        # production keeps it
+    for condition in ("C1", "C2", "C3"):
+        arm(home, monkeypatch, condition)
+        assert "run_python" not in names(app.mcp)
+    res = call(app.mcp, "run_python", client=label("C3"))
+    assert res.is_error and "Unknown tool" in str(res.content)
 
 
 def test_hidden_tool_cannot_be_called_directly(server, home, monkeypatch):
