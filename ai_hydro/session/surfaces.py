@@ -176,7 +176,8 @@ class _ReadOnlyRunSession:
         return (self._records or None) if slot == "_run_log" else None
 
 
-def _live_evidence(session_id: str, claim: dict, records: dict) -> tuple[dict | None, str | None]:
+def _live_evidence(session_id: str, claim: dict, records: dict,
+                   like: dict | None = None) -> tuple[dict | None, str | None]:
     """``(evidence_versions, None)`` computed from retained runs, else ``(None, reason)``.
 
     Same ``fingerprint(resolve_source())`` promotion uses. Dataset and paper
@@ -189,7 +190,7 @@ def _live_evidence(session_id: str, claim: dict, records: dict) -> tuple[dict | 
     kinds = sorted({str(s.source_type) for s in spans} - {"run"})
     if kinds:
         return None, f"evidence span type(s) {', '.join(kinds)} cannot be checked read-only"
-    return evidence_fingerprints(_ReadOnlyRunSession(session_id, records), spans), None
+    return evidence_fingerprints(_ReadOnlyRunSession(session_id, records), spans, like=like), None
 
 
 def _approval_state(session_id: str, claim_id: str, digest: str) -> dict:
@@ -273,7 +274,8 @@ def _claim_surface(session_id: str, claim_id: str, claim: dict, chains: dict, ca
         from ai_hydro.session.claim_revisions import revision_drift
         from aihydro_core.records import digest as seal_digest
 
-        versions, unchecked_reason = _live_evidence(session_id, claim, records)
+        versions, unchecked_reason = _live_evidence(
+            session_id, claim, records, last["content"].get("evidence_versions"))
         checked = versions is not None
         fields = claim_revision_fields(
             claim, versions if checked else last["content"].get("evidence_versions", {}))

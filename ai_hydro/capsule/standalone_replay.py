@@ -191,6 +191,7 @@ def record_seal_ok(record: dict) -> bool:
 def verify_run_log(run_log: dict) -> dict:
     """Verify every v2 record in a run log. Rows without a record are legacy."""
     summary = {"rows": 0, "v2_records": 0, "verified": 0, "unbound": 0, "legacy": 0,
+               "unsealable": 0, "unsealable_rows": [],
                "record_errors": 0, "redacted": 0, "failures": []}
     for run_id, entry in sorted(run_log.items()):
         summary["rows"] += 1
@@ -210,6 +211,9 @@ def verify_run_log(run_log: dict) -> dict:
         record = entry.get("record") if isinstance(entry, dict) else None
         if not isinstance(record, dict):
             summary["legacy"] += 1
+            if isinstance(entry, dict) and entry.get("record_status") == "unsealable":
+                summary["unsealable"] += 1
+                summary["unsealable_rows"].append((run_id, str(entry.get("record_status_reason"))))
             continue
         summary["v2_records"] += 1
         if record.get("record_error"):
@@ -417,17 +421,37 @@ _APPROVAL_FILE_RE = re.compile(r"^approvals/([0-9a-f]{64})\.json$")
 REVISION_SCHEMA = "aihydro.claim_revision/2"
 
 
-def _run_fingerprint(record: dict) -> str:
-    """``registry.evidence.fingerprint``: sha256-v2 of the sorted, compact JSON of a run row."""
+# Mirrors ``registry.evidence`` (a test pins that they agree): v2 hashes the whole
+# run row; v3 hashes the row body only, excluding the seal (``record``) and every
+# ``record_status*`` key, so sealing or marking a row later does not change it.
+_RUN_ROW_SEAL_KEY = "record"
+_RUN_ROW_STATUS_PREFIX = "record_status"
+_MAX_BRANCHING_SOURCES = 10     # versions are tried per source only up to 2**10 combinations
+
+
+def _is_run_row_metadata_key(key) -> bool:
+    return key == _RUN_ROW_SEAL_KEY or (isinstance(key, str) and key.startswith(_RUN_ROW_STATUS_PREFIX))
+
+
+def _run_fingerprint(record: dict, version: str = "sha256-v3") -> str:
+    """``registry.evidence.evidence_fingerprint`` for a run row, in ``version``."""
+    if version == "sha256-v3":
+        record = {k: v for k, v in record.items() if not _is_run_row_metadata_key(k)}
+    elif version != "sha256-v2":
+        raise ValueError(version)
     payload = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return "sha256-v2:" + hashlib.sha256(payload.encode()).hexdigest()
+    return f"{version}:" + hashlib.sha256(payload.encode()).hexdigest()
 
 
-def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str):
+def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str, expected: str | None = None):
     """``(claim_revision_digest, None)`` recomputed from the capsule, or ``(None, reason)``.
 
     Mirrors ``ai_hydro.approval.records.claim_revision_fields`` for claims whose
     evidence spans are all run-backed (the retained run row is in ``run_log.json``).
+    The capsule does not carry which fingerprint version each source was bound
+    in, so when ``expected`` is given every per-source v2/v3 choice (only sources
+    whose two fingerprints differ branch) is tried and ``expected`` is returned
+    on a match; otherwise the all-v3 digest is returned.
     Anything not reproducible in stdlib returns a precise reason, never a digest:
     dataset and paper spans (they need the raw slot / the passage index), legacy
     ``evidence`` lists, claims that are not valid scientific claims.
@@ -463,7 +487,7 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str):
             return None, f"run {sid!r} cited by the claim is not retained in run_log.json"
         if row.get("session_id", session_id) != session_id or row.get("run_id", sid) != sid:
             return None, f"run {sid!r} has conflicting session/run identity"
-        versions[sid] = _run_fingerprint(row)
+        versions[sid] = {v: _run_fingerprint(row, v) for v in ("sha256-v3", "sha256-v2")}
         norm_spans.append({"source_type": kind, "source_id": sid, "metric_ref": span.get("metric_ref"),
                            "page": span.get("page"), "passage_hash": span.get("passage_hash")})
     out_scope = {"basins": list(scope["basins"]), "period": scope["period"],
@@ -471,22 +495,36 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str):
                  "model_versions": scope.get("model_versions") or {}}
     if scope.get("basin_refs") is not None:     # same omission-when-None rule as ClaimScope (slice 3)
         out_scope["basin_refs"] = [dict(e) for e in scope["basin_refs"]]
-    fields = {
-        "schema": REVISION_SCHEMA,
-        "text": claim["claim"],
-        "claim_type": claim["claim_type"],
-        "status": claim["status"],
-        "confidence": claim["confidence"],
-        "confidence_rationale": rationale,
-        "scope": out_scope,
-        "evidence_spans": norm_spans,
-        "evidence_versions": versions,
-        "limitations": list(claim.get("limitations") or []),
-        "prereg_id": claim.get("prereg_id"),
-        "uncertainty_verified": bool(claim.get("uncertainty_verified")),
-    }
+    def _fields(chosen: dict) -> dict:
+        return {
+            "schema": REVISION_SCHEMA,
+            "text": claim["claim"],
+            "claim_type": claim["claim_type"],
+            "status": claim["status"],
+            "confidence": claim["confidence"],
+            "confidence_rationale": rationale,
+            "scope": out_scope,
+            "evidence_spans": norm_spans,
+            "evidence_versions": chosen,
+            "limitations": list(claim.get("limitations") or []),
+            "prereg_id": claim.get("prereg_id"),
+            "uncertainty_verified": bool(claim.get("uncertainty_verified")),
+        }
     try:
-        return c14n_digest(fields), None
+        default = c14n_digest(_fields({s: v["sha256-v3"] for s, v in versions.items()}))
+        if expected is None or default == expected:
+            return default, None
+        branching = [s for s, v in versions.items() if v["sha256-v3"] != v["sha256-v2"]]
+        if not branching or len(branching) > _MAX_BRANCHING_SOURCES:
+            return default, None
+        import itertools
+        for combo in itertools.product(("sha256-v3", "sha256-v2"), repeat=len(branching)):
+            choice = {s: v["sha256-v3"] for s, v in versions.items()}
+            choice.update({s: versions[s][ver] for s, ver in zip(branching, combo)})
+            candidate = c14n_digest(_fields(choice))
+            if candidate == expected:
+                return candidate, None
+        return default, None
     except Exception as exc:
         return None, f"claim revision could not be encoded: {exc}"
 
@@ -589,7 +627,8 @@ def verify_approvals(capsule_dir: Path, allowed_signers=None, out=print) -> dict
         if not isinstance(approver, dict) or approver.get("kind") != "human" or not approver.get("id"):
             problems.append("approver is not a human actor")
         if not problems:
-            recomputed, why = recompute_claim_revision(session_raw, run_log, record["claim_id"])
+            recomputed, why = recompute_claim_revision(session_raw, run_log, record["claim_id"],
+                                                         record["claim_revision_digest"])
             if recomputed is None:
                 problems.append(f"claim revision cannot be re-derived from the capsule: {why}")
             elif recomputed != record["claim_revision_digest"]:
@@ -787,7 +826,10 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
         records_ok = not summary["failures"]
         out(f"Run records: {summary['verified']} of {summary['v2_records']} v2 records verify; "
             f"{summary['unbound']} sealed but unbound to their row; "
-            f"{summary['legacy']} legacy rows have no record; {summary['record_errors']} carry a record_error")
+            f"{summary['legacy']} legacy rows have no record ({summary['unsealable']} of them marked "
+            f"unsealable by the recorder); {summary['record_errors']} carry a record_error")
+        for run_id, why in summary["unsealable_rows"]:
+            out(f"NOTE  run {run_id}: unsealable: {why}")
         if summary["redacted"]:
             out(f"NOTE  {summary['redacted']} run-log row(s) redacted for privacy "
                 "(not verifiable from capsule): neither verified nor failed")

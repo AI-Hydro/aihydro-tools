@@ -320,7 +320,7 @@ def test_mutating_retained_evidence_after_approval_invalidates_it(session):
 def test_cli_shows_and_binds_the_same_evidence_fingerprints(session):
     expected = session_claim_revision(HydroSession.load("appr"), "c1")
     fingerprint = expected[1]["r1"]
-    assert fingerprint.startswith("sha256-v2:")
+    assert fingerprint.startswith("sha256-v3:")
     code, out, err = _run_cli(["appr", "c1", "--approver", "alice"], typed=expected[3].split(":")[1][:12] + "\n")
     assert code == 0, err
     assert fingerprint in out and expected[3] in out

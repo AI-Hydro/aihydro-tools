@@ -354,7 +354,7 @@ def test_s3_non_reproducible_evidence_fails_with_reason(tmp_path, monkeypatch, k
     """Dataset spans need the raw slot: replay cannot re-derive the digest, so it must not PASS."""
     c = Case.__new__(Case)
     import ai_hydro.approval.records as rec_mod
-    monkeypatch.setattr(rec_mod, "evidence_fingerprints", lambda session, spans: {"ds": "sha256-v2:" + "00" * 32})
+    monkeypatch.setattr(rec_mod, "evidence_fingerprints", lambda session, spans, like=None: {"ds": "sha256-v2:" + "00" * 32})
     c.__init__(tmp_path, monkeypatch, {"c1": "signed"}, keys["good"], span_kind="dataset")
     code, out = c.replay("--allowed-signers", str(keys["supplied_good"]))
     assert code == 1 and "PASS  approval c1 (" not in out

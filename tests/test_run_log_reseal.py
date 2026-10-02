@@ -140,3 +140,24 @@ def test_pending_set_is_bounded(env):
     for i in range(rr.PENDING_MAX_PER_SESSION + 5):
         rr._register_pending(SID, f"r{i}", body=None, record=None, row_absent=False, reason="x")
     assert len(rr.pending_seal_ids(SID)) == rr.PENDING_MAX_PER_SESSION
+
+
+def test_late_writer_row_after_absent_minimal_is_marked_with_clear_reason(env, monkeypatch):
+    monkeypatch.setattr(store, "_RUN_LOG_LOCK_WAIT_S", 0.5)
+    store._run_log_record(SID, "seed", ENTRY)
+    holder = _hold_write_lock(SID)
+    try:
+        _call("late", id_factory=lambda t, s: "late")      # row absent; the minimal write fails
+    finally:
+        holder.close()
+    assert rr.pending_seal_ids(SID) == ["late"]
+    store._run_log_record(SID, "late", ENTRY)               # a writer's row appears afterwards
+    assert rr.reseal_unsealed_rows(SID)["unsealable"] == ["late"]
+    assert _row("late")["record_status_reason"] == "row appeared after the call; its body was never observed"
+
+
+def test_mark_with_expected_body_does_not_land_on_a_different_body(env):
+    store._run_log_record(SID, "m1", ENTRY)
+    other = store._run_log_body_json({**ENTRY, "key_outputs": {"a": 2}})
+    assert store._run_log_mark_unsealable(SID, "m1", other, "x") == "changed"
+    assert "record_status" not in _row("m1")

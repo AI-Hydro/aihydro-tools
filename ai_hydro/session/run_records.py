@@ -921,7 +921,8 @@ def _reseal_one(store, session_id: str, p: "_PendingSeal", deadline: float) -> s
         # The body was never observed (or kept changing): no seal can be bound to it.
         if row is None:
             return "gone"
-        outcome = store._run_log_mark_unsealable(session_id, p.run_id, None, p.reason, deadline=deadline)
+        outcome = store._run_log_mark_unsealable(
+            session_id, p.run_id, store._run_log_body_json(row), p.reason, deadline=deadline)
         return "unsealable" if outcome in ("marked", "noop") else "retry"
     expected = store._run_log_body_json(p.body)
     if row is None:
@@ -931,8 +932,10 @@ def _reseal_one(store, session_id: str, p: "_PendingSeal", deadline: float) -> s
         same = (store._run_log_body_json(row) == expected
                 or store._run_log_body_json(store._scrub_row_body(session_id, row)) == expected)
         if not same or p.row_absent:
-            reason = "row body changed after the call that could not seal it"
-            outcome = store._run_log_mark_unsealable(session_id, p.run_id, None, reason, deadline=deadline)
+            reason = ("row appeared after the call; its body was never observed" if p.row_absent
+                      else "row body changed after the call that could not seal it")
+            outcome = store._run_log_mark_unsealable(
+                session_id, p.run_id, store._run_log_body_json(row), reason, deadline=deadline)
             return "unsealable" if outcome in ("marked", "noop") else "retry"
     outcome = store._run_log_record(session_id, p.run_id, {**p.body, "record": p.record},
                                     writer="middleware", deadline=deadline)
@@ -940,8 +943,8 @@ def _reseal_one(store, session_id: str, p: "_PendingSeal", deadline: float) -> s
         return "resealed"
     if outcome in ("stale", "refused"):
         outcome = store._run_log_mark_unsealable(
-            session_id, p.run_id, None, "row body changed after the call that could not seal it",
-            deadline=deadline)
+            session_id, p.run_id, store._run_log_body_json(row),
+            "row body changed after the call that could not seal it", deadline=deadline)
         return "unsealable" if outcome in ("marked", "noop") else "retry"
     return "retry"
 

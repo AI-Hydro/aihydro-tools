@@ -181,12 +181,14 @@ def _quality_warnings(session: Any, spans: list[dict]) -> list[dict]:
     return found
 
 
-def evaluate_promotion(session: Any, claim: dict, *, claim_id: str | None = None) -> PromotionEvaluation:
+def evaluate_promotion(session: Any, claim: dict, *, claim_id: str | None = None,
+                       like: dict | None = None) -> PromotionEvaluation:
     """All promotion violations for ``claim`` plus the verified evidence fingerprints.
 
     ``claim`` is the session's claim dict. Exceptions other than the structured
     refusals below (e.g. a malformed claim) propagate exactly as the inline checks
-    did.
+    did. ``like``: the claim's latest stored ``evidence_versions``; fingerprints are
+    computed in each stored entry's version so an old binding does not drift.
     """
     from ai_hydro.registry.evidence import EvidenceError, verified_versions
     from ai_hydro.session.models import ScientificClaim
@@ -255,7 +257,7 @@ def evaluate_promotion(session: Any, claim: dict, *, claim_id: str | None = None
                 "The scope metric does not match any referenced evidence metric.")))
     versions: dict = {}
     try:
-        versions = verified_versions(session, spans, require_uncertainty=requires_uncertainty)
+        versions = verified_versions(session, spans, require_uncertainty=requires_uncertainty, like=like)
     except EvidenceError as exc:
         out.append(_from_exc(exc.code, "evidence", exc))
 

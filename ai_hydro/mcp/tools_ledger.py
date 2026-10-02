@@ -460,7 +460,9 @@ def promote_claim_to_registry(
         )
         from ai_hydro.registry.evidence import fingerprint
 
-        evaluation = evaluate_promotion(session, claim_dict, claim_id=claim_id)
+        from ai_hydro.approval.records import latest_bound_versions
+        evaluation = evaluate_promotion(session, claim_dict, claim_id=claim_id,
+                                        like=latest_bound_versions(session_id, claim_id))
         blocked = evaluation.first_blocking
         if blocked is not None:
             raise blocked.exception

@@ -80,7 +80,7 @@ def test_valid_backed_claim_and_idempotent_promotion(session):
     assert promote()["registry_id"] == first["registry_id"]
     entry, = registry.all_entries()
     assert entry["evidence_schema_version"] == 2
-    assert entry["evidence_versions"]["r1"].startswith("sha256-v2:")
+    assert entry["evidence_versions"]["r1"].startswith("sha256-v3:")
     assert entry["scope"]["period"] == "2000-2001"
     assert check_registry_staleness("integrity")["fresh_claims"] == ["c1"]
 
