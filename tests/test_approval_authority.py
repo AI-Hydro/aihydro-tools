@@ -8,6 +8,10 @@ The only writer is ``ai_hydro.approval.writer``, reachable only from the
 2. runtime reachability: importing the whole MCP server in a clean interpreter
    does not load the writer or the CLI;
 3. registered tools: no tool function (nor its module globals) holds the writer.
+
+ADR-002b adds the signing side (``ai_hydro.approval.signing``, the only code that
+runs ``ssh-keygen -Y sign``): the same three layers apply to it, plus a scan
+that nothing under ``ai_hydro/mcp`` invokes ``-Y sign`` or ``ssh-keygen`` at all.
 """
 from __future__ import annotations
 
@@ -48,6 +52,50 @@ def _references_writer(path: Path) -> list[str]:
     return hits
 
 
+SIGNING_MODULE = "ai_hydro.approval.signing"
+SIGNING_USERS = {PKG / "approval" / "signing.py", PKG / "approval" / "writer.py", PKG / "approval" / "cli.py"}
+
+
+def _references_signing(path: Path) -> list[str]:
+    hits = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            hits += [a.name for a in node.names if a.name.startswith(SIGNING_MODULE)]
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod.startswith(SIGNING_MODULE) or (mod == "ai_hydro.approval"
+                                                  and any(a.name == "signing" for a in node.names)):
+                hits.append(mod)
+            if node.level and mod in {"signing", "approval.signing"}:
+                hits.append(f".{mod}")
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+              and node.value.strip().startswith(SIGNING_MODULE) and " " not in node.value.strip()):
+            hits.append(node.value)
+    return hits
+
+
+def test_only_writer_and_cli_reference_the_signing_module():
+    offenders = {str(p.relative_to(REPO)): _references_signing(p)
+                 for p in sorted(PKG.rglob("*.py")) if p not in SIGNING_USERS and _references_signing(p)}
+    assert not offenders, offenders
+
+
+def test_nothing_under_mcp_invokes_ssh_keygen_or_dash_Y_sign():
+    offenders = {}
+    for path in sorted((PKG / "mcp").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "ssh-keygen" in text or "ssh-add" in text or ('"-Y"' in text and '"sign"' in text):
+            offenders[str(path.relative_to(REPO))] = "ssh-keygen / -Y sign"
+    assert not offenders, offenders
+
+
+def test_signing_invocation_is_confined_to_the_signing_module():
+    """``-Y sign`` appears in exactly one module under ai_hydro/."""
+    users = {str(p.relative_to(REPO)) for p in PKG.rglob("*.py")
+             if '"-Y", "sign"' in p.read_text(encoding="utf-8")}
+    assert users == {"ai_hydro/approval/signing.py"}, users
+
+
 def test_scanner_detects_a_violation(tmp_path):
     """The scan itself must be able to fail."""
     bad = tmp_path / "bad_tool.py"
@@ -83,9 +131,10 @@ def test_importing_the_mcp_server_never_loads_the_writer_or_cli():
         "from ai_hydro.mcp import tools_ledger  # the tool that reads approvals\n"
         "r = tools_ledger.promote_claim_to_registry('no-such-session', 'c', researcher_approved=True)\n"
         "assert r['error'] is True  # exercised: the approval read path is now imported\n"
-        "bad = [m for m in ('ai_hydro.approval.writer', 'ai_hydro.approval.cli') if m in sys.modules]\n"
+        "bad = [m for m in ('ai_hydro.approval.writer', 'ai_hydro.approval.cli', 'ai_hydro.approval.signing')\n"
+        "       if m in sys.modules]\n"
         "assert not bad, bad\n"
-        "assert 'ai_hydro.approval.records' in sys.modules\n"
+        "assert 'ai_hydro.approval.records' in sys.modules and 'ai_hydro.approval.trust' in sys.modules\n"
         "print('ok')\n"
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,

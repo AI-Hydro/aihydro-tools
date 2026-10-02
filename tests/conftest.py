@@ -27,6 +27,12 @@ def _isolated_aihydro_home(tmp_path_factory, monkeypatch):
     """Fresh ``AIHYDRO_HOME`` per test (registry + approvals)."""
     home = tmp_path_factory.mktemp("aihydro_home")
     monkeypatch.setenv("AIHYDRO_HOME", str(home))
+    # Approvals fail closed by default (ADR-002b). Legacy v1 approval fixtures
+    # run under the explicit, stamped development opt-out; signing tests
+    # override both variables themselves. A real /etc/aihydro trust root on
+    # the developer's machine must never leak into the suite.
+    monkeypatch.setenv("AIHYDRO_REQUIRE_SIGNED", "0")
+    monkeypatch.setenv("AIHYDRO_SYSTEM_TRUST_FILE", str(home / "no-system-trust"))
     return home
 
 

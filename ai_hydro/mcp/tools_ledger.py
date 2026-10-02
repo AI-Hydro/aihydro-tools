@@ -379,13 +379,14 @@ def promote_claim_to_registry(
     APPROVAL_REQUIRED and names that command. Editing the claim or mutating its
     retained evidence invalidates the approval, and one approval authorises one
     promotion. `researcher_approved=True` is only a request flag: required for
-    compatibility but never sufficient. The approval channel is `cli_same_user`:
-    it stops unintended self-approval, not a same-OS-user process that forges it.
+    compatibility but never sufficient. The registry row stamps the verifier-derived approval channel, trust root,
+    principal, signer and policy (ADR-002b). Only a `system` trust root with an
+    `sk` touch key is a boundary against a same-OS-user process.
     """
     try:
         from ai_hydro.approval.records import (
-            CHANNEL,
             ApprovalRequiredError,
+            approval_stamp,
             claim_revision_digest,
             find_approval,
         )
@@ -535,6 +536,9 @@ def promote_claim_to_registry(
             "claim_text_alignment": "not_verified",
         }
 
+        # Verifier-derived stamp (ADR-002b A2): channel names the trust root, plus
+        # principal, signer and policy; never a constant.
+        stamp = approval_stamp(approval)
         registry_entry = {
             "registry_id": registry_id,
             "claim_id": claim_id,
@@ -551,7 +555,7 @@ def promote_claim_to_registry(
             "evidence_schema_version": 2,
             "scope": claim.scope.model_dump(),
             "evidence_verification": verification,
-            "approval": {"record_digest": approval["record_digest"], "channel": CHANNEL},
+            "approval": stamp,
             "claim_revision_digest": stored["revision_digest"],
             "claim_revision": stored["revision"],
             "staleness": None,
@@ -580,9 +584,7 @@ def promote_claim_to_registry(
             "status": "promoted",
             "n_evidence_versions": len(evidence_versions),
             "evidence_verification": verification,
-            "approval": {"record_digest": approval["record_digest"],
-                         "approver": approval["approver"]["id"],
-                         "channel": CHANNEL},
+            "approval": {**stamp, "approver": approval["approver"]["id"]},
             "note": (
                 f"Claim '{claim_id}' written to global registry as '{registry_id}'. "
                 "Call check_registry_staleness to detect when underlying data changes."
