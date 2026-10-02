@@ -457,7 +457,10 @@ def export_session(
         citations.bib + environment.yml + session.json + run_log.json +
         capsule_manifest.json + replay.py + data/figures/model/). data/ holds
         the served streamflow series (CSV; sha256 and producing run in the
-        manifest's ``data_artifacts``). replay.py
+        manifest's ``data_artifacts``). approvals/ holds the approval record
+        each promoted claim consumed plus its registry stamp (claims with no
+        approval are listed as such); ``replay.py --allowed-signers FILE``
+        verifies the signatures against a key file the verifier supplies. replay.py
         verifies file hashes and run-record digests (replay status
         ``archive_integrity``); ``--live`` also cross-checks the run log
         against session.json and exits 2 if nothing could be compared. No
@@ -665,6 +668,11 @@ def export_session(
         )
         files_written.append(str(capsule_dir / "run_log.json"))
 
+        # approvals/ — the approval record each promoted claim consumed plus its
+        # registry stamp, so a third party can verify against their own signer file
+        from ai_hydro.capsule.approvals import collect_approvals, manifest_section as _approvals_section
+        approval_entries = collect_approvals(session, session_id, capsule_dir)
+
         # capsule_manifest.json — SHA-256 of every data file for integrity checking
         from ai_hydro.capsule.manifest import build_manifest, MANIFEST_FILE as _MF
         manifest = build_manifest(capsule_dir)
@@ -672,6 +680,7 @@ def export_session(
         # the export-time consistency checks. The digest of each file is also
         # in ``files``; verify_manifest covers it.
         manifest["data_artifacts"] = data_artifacts
+        manifest["approvals"] = _approvals_section(capsule_dir, approval_entries)
         (capsule_dir / _MF).write_text(json.dumps(manifest, indent=2))
         files_written.append(str(capsule_dir / _MF))
 
@@ -692,6 +701,7 @@ def export_session(
             "replay_status": manifest["replay_status"],
             "recomputation": manifest["recomputation"],
             "data_artifacts": data_artifacts,
+            "approvals": manifest["approvals"],
             "_note": (
                 "NEXT: call get_session_raw_state then write_research_interpretation "
                 "to author the scientific interpretation, then export again to embed it in README.md."

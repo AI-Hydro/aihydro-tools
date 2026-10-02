@@ -159,6 +159,27 @@ report label them `approval: self_asserted` at read time.
 The record does not say the claim is true: it records that a named person ran
 the CLI for this exact revision of the claim and its retained evidence.
 
+**Capsule approvals and external verification.** The machine's trust root is not
+the boundary against a same-user process; a third party's own key file is.
+`export_session` writes `approvals/` into the capsule: one verbatim approval
+record (signature included) per promoted claim, plus `approvals/index.json`
+with the registry row stamp (`approval`, `claim_revision_digest`,
+`claim_revision`). Files are hashed in `capsule_manifest.json` (also summarised
+under `approvals`). Claims with no approval (legacy `self_asserted` rows, or a
+promoted claim without a registry row) are listed with status `no_approval`,
+never implied approved. `python replay.py --allowed-signers FILE` verifies each
+approval with `ssh-keygen -Y verify` against the file the verifier supplies (for
+example the owner's published GitHub keys), namespace `aihydro-approval@v1`,
+principal = the approver id; it also re-derives the sealed body digest and checks
+that the approval's `claim_revision_digest` equals the registry stamp's. It
+prints `PASS`/`FAIL` per approval and
+`approvals: N verified against supplied signers, M failed, K unsigned (cli_same_user/opt-out)`;
+any failure exits 1. Unsigned v1 records are reported `UNSIGNED`, never `PASS`;
+without `--allowed-signers` signed approvals are "not verified (no signer file
+supplied)". The capsule carries no trust root, and local revocation is not
+consulted: use `valid-before` in the supplied file to retire a key. A pass shows
+who signed which claim revision, not that the claim is true.
+
 ## Claim revisions (`aihydro.claim_revision_record/1`)
 
 Added in 2040 slice 2. Every authority-bearing change to a session claim
