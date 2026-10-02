@@ -222,13 +222,31 @@ def scrub_hidden_names(value: Any, pattern: "re.Pattern[str]") -> Any:
     if isinstance(value, str):
         return pattern.sub(UNAVAILABLE, value)
     if isinstance(value, dict):
-        return {k: scrub_hidden_names(v, pattern) for k, v in value.items()
-                if not (isinstance(k, str) and pattern.fullmatch(k))}
+        out = {k: scrub_hidden_names(v, pattern) for k, v in value.items()
+               if not (isinstance(k, str) and pattern.fullmatch(k))}
+        # A list that lost hidden entries no longer matches a sibling count/total/n_* field
+        # that equalled its old length (it would reveal how many entries were dropped).
+        for k, old in value.items():
+            new = out.get(k)
+            if isinstance(old, list) and isinstance(new, list) and len(new) < len(old):
+                for k2, v2 in out.items():
+                    if isinstance(v2, int) and not isinstance(v2, bool) and v2 == len(old):
+                        out[k2] = len(new)
+        return out
     if isinstance(value, list):
         return [scrub_hidden_names(v, pattern) for v in value
                 if not (isinstance(v, str) and pattern.fullmatch(v))
                 and _hidden_entry_name(v, pattern) is None]
     return value
+
+
+_STRIPPED_TOKEN = re.compile(r"(?<![A-Za-z0-9])_*(?:" + "|".join(sorted(STRIPPED_FIELDS)) + r"|skeptic[A-Za-z0-9_]*)(?![A-Za-z0-9])")
+
+
+def strip_description(text: str) -> str:
+    """``text`` without the paragraphs that advertise a C1-stripped field."""
+    paragraphs = re.split(r"\n\s*\n", text)
+    return "\n\n".join(p for p in paragraphs if not _STRIPPED_TOKEN.search(p))
 
 
 def _sanitize(value: Any, state: EvalState, pattern: "re.Pattern[str]") -> Any:
@@ -264,7 +282,7 @@ def _sanitize_tool_result(tool_result: ToolResult, state: EvalState,
                       meta=getattr(tool_result, "meta", None))
 
 
-def _refusal(message: str) -> ToolError:
+def _refusal(message: str, kind: str = "tool") -> ToolError:
     """The refusal for a fault the condition layer itself detects.
 
     It is an MCP *error*, not a shaped success: error results skip output-schema
@@ -272,8 +290,10 @@ def _refusal(message: str) -> ToolError:
     "Output validation error". The error text is the JSON envelope (``code`` readable
     by the runner).
     """
-    from ai_hydro.mcp.errors import StructuredToolError
-    return StructuredToolError({
+    from ai_hydro.mcp import errors
+    cls = {"tool": errors.StructuredToolError, "resource": errors.StructuredResourceError,
+           "prompt": errors.StructuredPromptError}[kind]
+    return cls({
         "error": True, "code": CONTEXT_MISMATCH, "message": message,
         "recovery": "This is an evaluation harness fault, not something the agent can fix.",
         "next_tools": []})
@@ -313,7 +333,48 @@ class EvalConditionMiddleware(Middleware):
             return tools
         names = [t.name for t in tools]
         hidden = hidden_tools(state.condition, names)
-        return [t for t in tools if t.name not in hidden]
+        pattern = hidden_name_pattern(state.condition, names)
+        return [self._scrub_listed_tool(t, state, pattern) for t in tools if t.name not in hidden]
+
+    @staticmethod
+    def _scrub_listed_tool(tool, state, pattern):
+        """The advertised tool with hidden names scrubbed from its description and schemas
+        (and, in C1, without paragraphs that describe stripped advisory fields)."""
+        update: dict = {}
+        desc = getattr(tool, "description", None)
+        if isinstance(desc, str):
+            if state.condition == "C1":
+                desc = strip_description(desc)
+            update["description"] = pattern.sub(UNAVAILABLE, desc)
+        for attr in ("parameters", "output_schema"):
+            schema = getattr(tool, attr, None)
+            if isinstance(schema, dict):
+                if attr == "output_schema" and state.condition == "C1":
+                    schema = strip_fields(schema)
+                update[attr] = scrub_hidden_names(copy.deepcopy(schema), pattern)
+        return tool.model_copy(update=update)
+
+    # P1 is tools-only: in an evaluation run (env nonce set, whatever the marker state)
+    # resources and prompts are neither listed nor readable.
+
+    async def on_list_resources(self, context, call_next):  # type: ignore[override]
+        return await call_next(context) if not os.environ.get(NONCE_ENV) else []
+
+    async def on_list_resource_templates(self, context, call_next):  # type: ignore[override]
+        return await call_next(context) if not os.environ.get(NONCE_ENV) else []
+
+    async def on_list_prompts(self, context, call_next):  # type: ignore[override]
+        return await call_next(context) if not os.environ.get(NONCE_ENV) else []
+
+    async def on_read_resource(self, context, call_next):  # type: ignore[override]
+        if os.environ.get(NONCE_ENV):
+            raise _refusal("resources are not available in an evaluation run.", "resource")
+        return await call_next(context)
+
+    async def on_get_prompt(self, context, call_next):  # type: ignore[override]
+        if os.environ.get(NONCE_ENV):
+            raise _refusal("prompts are not available in an evaluation run.", "prompt")
+        return await call_next(context)
 
     @staticmethod
     async def _scrubbed_exception(context, state, exc: Exception) -> Exception:

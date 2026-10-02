@@ -13,11 +13,27 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import PromptError, ResourceError, ToolError
 
 
 class StructuredToolError(ToolError):
     """A ``ToolError`` carrying a structured error envelope (``.envelope``)."""
+
+    def __init__(self, envelope: dict[str, Any]):
+        self.envelope = dict(envelope)
+        super().__init__(json.dumps(self.envelope, default=str))
+
+
+class StructuredResourceError(ResourceError):
+    """``StructuredToolError`` for resource reads (FastMCP expects ``ResourceError``)."""
+
+    def __init__(self, envelope: dict[str, Any]):
+        self.envelope = dict(envelope)
+        super().__init__(json.dumps(self.envelope, default=str))
+
+
+class StructuredPromptError(PromptError):
+    """``StructuredToolError`` for prompt gets (FastMCP expects ``PromptError``)."""
 
     def __init__(self, envelope: dict[str, Any]):
         self.envelope = dict(envelope)

@@ -344,13 +344,13 @@ def test_scrub_hidden_names_is_generic_and_recursive():
     tree = {"_instruction": "Next call write_research_interpretation, then run_skeptic or check_record_length.",
             "next_tools": ["add_claim", "promote_claim_to_registry", "check_stationarity"],
             "by_name": {"run_skeptic": 1, "keep": "see add_claim"},
-            "nested": [{"hint": "use register_research_plan"}], "n": 3}
+            "nested": [{"hint": "use register_research_plan"}], "n": 99}
     out = ec.scrub_hidden_names(tree, pat)
     flat = json.dumps(out)
     for name in ("write_research_interpretation", "run_skeptic", "check_record_length", "check_stationarity",
                  "promote_claim_to_registry", "register_research_plan"):
         assert name not in flat
-    assert out["next_tools"] == ["add_claim"] and out["by_name"] == {"keep": "see add_claim"} and out["n"] == 3
+    assert out["next_tools"] == ["add_claim"] and out["by_name"] == {"keep": "see add_claim"} and out["n"] == 99
     # per-arm: C3 hides only the all-arm tools, C2 adds the registry
     assert ec.hidden_name_pattern("C3").search("promote_claim_to_registry") is None
     assert ec.hidden_name_pattern("C3").search("run_python")
@@ -596,6 +596,109 @@ def test_scrub_drops_hidden_entries_from_lists_and_scrubs_mentions():
     with pytest.raises(ec._HiddenEntry):
         ec._sanitize({"name": "run_python", "input_schema": {}},
                      ec.EvalState("C3", "0" * 16), pat)
+
+
+# ---------------------------------------------------------------- resources / prompts / listed tools
+
+@pytest.mark.parametrize("condition", ["C1", "C2", "C3"])
+def test_resources_and_prompts_are_empty_and_refused_in_every_arm(home, monkeypatch, condition):
+    import ai_hydro.mcp  # noqa: F401
+    from mcp.shared.exceptions import McpError
+
+    async def prod():
+        async with Client(app.mcp) as c:
+            return (await c.list_resources(), await c.list_resource_templates(), await c.list_prompts())
+    res, tpl, _ = asyncio.run(prod())
+    assert res and tpl, "production exposes resources; test would be vacuous"
+    uri = str(res[0].uri)
+    arm(home, monkeypatch, condition)
+
+    async def run():
+        async with Client(app.mcp) as c:
+            assert await c.list_resources() == [] and await c.list_resource_templates() == []
+            assert await c.list_prompts() == []
+            with pytest.raises(McpError) as e1:
+                await c.read_resource(uri)
+            with pytest.raises(McpError) as e2:
+                await c.get_prompt("anything", {})
+            return e1.value, e2.value
+    e1, e2 = asyncio.run(run())
+    assert json.loads(e1.error.message)["code"] == ec.CONTEXT_MISMATCH
+    assert json.loads(e2.error.message)["code"] == ec.CONTEXT_MISMATCH
+
+
+def test_resources_refused_when_marker_is_invalid_and_untouched_when_nonce_unset(home, monkeypatch):
+    import ai_hydro.mcp  # noqa: F401
+    from mcp.shared.exceptions import McpError
+    arm(home, monkeypatch, "C3")
+    (home / ec.MARKER_FILE).unlink()          # env nonce set, marker gone
+
+    async def bad():
+        async with Client(app.mcp) as c:
+            assert await c.list_resources() == []
+            with pytest.raises(McpError):
+                await c.read_resource("aihydro://nothing")
+    asyncio.run(bad())
+    monkeypatch.delenv(ec.NONCE_ENV)
+
+    async def prod():
+        async with Client(app.mcp) as c:
+            return await c.list_resources(), await c.list_resource_templates()
+    res, tpl = asyncio.run(prod())
+    assert res and tpl
+
+
+@pytest.mark.parametrize("condition", ["C1", "C2", "C3"])
+def test_listed_tools_never_advertise_hidden_tools_or_stripped_fields(home, monkeypatch, condition):
+    import ai_hydro.mcp  # noqa: F401
+
+    async def all_names():
+        return sorted((await app.mcp.get_tools()).keys())
+    registry = asyncio.run(all_names())
+    arm(home, monkeypatch, condition)
+    pat = ec.hidden_name_pattern(condition, registry)
+
+    async def listed():
+        async with Client(app.mcp) as c:
+            return await c.list_tools()
+    tools = asyncio.run(listed())
+    assert tools
+    for t in tools:
+        blob = json.dumps({"d": t.description, "s": t.inputSchema, "o": t.outputSchema})
+        assert not pat.search(blob), (t.name, pat.findall(blob))
+        if condition == "C1":
+            assert not ec._STRIPPED_TOKEN.search(t.description or ""), t.name
+    if condition == "C1":
+        add_claim = next(t for t in tools if t.name == "add_claim")
+        assert "promotion_check" not in add_claim.description and "basin_refs" in add_claim.description
+
+
+def test_scrub_updates_sibling_counts_when_entries_are_dropped():
+    pat = ec.hidden_name_pattern("C1", LIVE)
+    out = ec.scrub_hidden_names({"count": 3, "total": 3, "n_other": 7, "ok": True,
+                                 "tools": [{"name": "run_skeptic"}, {"name": "add_claim"}, {"name": "x"}]}, pat)
+    assert [t["name"] for t in out["tools"]] == ["add_claim", "x"]
+    assert out["count"] == 2 and out["total"] == 2 and out["n_other"] == 7 and out["ok"] is True
+    untouched = ec.scrub_hidden_names({"count": 2, "tools": [{"name": "add_claim"}, {"name": "x"}]}, pat)
+    assert untouched["count"] == 2
+
+
+@pytest.mark.parametrize("condition", ["C1", "C2", "C3"])
+def test_discovery_counts_match_filtered_entries(home, monkeypatch, condition):
+    import ai_hydro.mcp  # noqa: F401
+    arm(home, monkeypatch, condition)
+    hidden_name = sorted(ec.hidden_tools(condition, ["run_python", "write_research_interpretation"]))[0]
+
+    async def run():
+        async with Client(app.mcp) as c:
+            meta = {META: {"study_id": SID, "client": label(condition)}}
+            a = await c.call_tool("list_available_tools", {}, meta=meta, raise_on_error=False)
+            b = await c.call_tool("describe_tools", {"names": [hidden_name, "add_claim"]}, meta=meta,
+                                  raise_on_error=False)
+            return a.structured_content, b.structured_content
+    a, b = asyncio.run(run())
+    assert a["n_tools"] == len(a["tools"])
+    assert b["count"] == len(b["tools"]) == 1
 
 
 # ---------------------------------------------------------------- locality
