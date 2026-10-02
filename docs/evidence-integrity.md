@@ -95,8 +95,30 @@ after the call. It adds the record to the row the tool's own writer produced
 (`post_run`, the Store Protocol writer, the legacy helper) or creates a minimal
 row (`"minimal": true`, empty `key_outputs`) when the tool wrote none. Failed
 calls, including raised exceptions, are recorded with `status: "error"`.
+A Tier-1 call that uses both `post_run` and the Store Protocol writer produces
+two rows (the slot write and the `post_run` row). Both are recorded; the
+secondary row's `extra.call_run_id` is the `_run_id` returned to the caller.
+The map CLI (`hydro_map_cli delineate-point`) calls the tool directly, so it
+records through `run_records.recorded_call` (`extra.mcp_client = "direct_call"`).
+List, string and number results are digested as delivered. Replay and coverage
+report a record without `extra.entry_digest` as *unbound*, not verified.
 Calls with no resolvable session are counted as `no_session` and not recorded.
 Direct Python calls that bypass the MCP server are not recorded.
+
+**What a record does not give you (limits).**
+
+- A seal proves *integrity*, not *origin*. Anyone who can write the run log can
+  build a record that verifies.
+- Insert-only protects against cooperating writers (stale snapshots, accidental
+  rewrites), not against an adversary with access to the SQLite file.
+- A deleted sealed row is not detectable: there is no hash chain or signed head
+  yet. The hash-chained ledger in swatplus-builder is the model for that fix.
+- A writer that pre-seals its own record, including `run_python` code or any
+  same-user process, authors its own provenance. The middleware leaves an
+  already-sealed row untouched and will not overwrite it.
+- If `aihydro_core.records` is unavailable when a record is written, the record
+  is dropped (and logged) and the legacy row kept; an unverifiable sealed-looking
+  record is never stored.
 
 A record states: tool, tool version (`meta.version` when the result carries
 one, otherwise the `aihydro-tools` distribution version, labelled by

@@ -116,6 +116,14 @@ def server(env):
         return {"data": {"ok": True}}
 
     @srv.tool()
+    def list_tool(session_id: str) -> list:
+        return [1, 2, 3]
+
+    @srv.tool()
+    def str_tool(session_id: str) -> str:
+        return "plain text result"
+
+    @srv.tool()
     def big_tool(session_id: str) -> dict:
         return {"data": {"blob": "z" * 200}}
 
@@ -324,3 +332,39 @@ def test_recording_unavailable_degrades_to_a_plain_call(server, monkeypatch):
         is_error, body, _ = call(server, "ok_tool", {"x": 4, "session_id": SID})
     assert not is_error and body == {"data": {"x": 4}}
     assert run_log() == {}
+
+
+@pytest.mark.parametrize("tool,expected", [("list_tool", [1, 2, 3]), ("str_tool", "plain text result")])
+def test_list_and_string_results_are_digested(server, tool, expected):
+    from aihydro_core.records import digest
+
+    is_error, body, _ = call(server, tool, {"session_id": SID})
+    assert not is_error
+    (row,) = run_log().values()
+    assert row["record"]["output_digest"] == digest(expected)
+    assert "record_error" not in row["record"]
+
+
+def test_map_cli_delineation_is_recorded(env, monkeypatch):
+    import argparse
+
+    import ai_hydro.mcp.tools_analysis as ta
+    from ai_hydro import hydro_map_cli
+    from ai_hydro.session.store import HydroSession as HS
+
+    def fake(session_id=None, **kw):
+        sid = "cli-session"
+        HS(sid).save()
+        HS.load(sid).put_result("watershed", "f", "k", {"data": {"area_km2": 12.0}, "meta": {"tool": "delineate_watershed_from_point"}})
+        return {"data": {"area_km2": 12.0, "method_used": "stub"}, "_run_id": None}
+
+    monkeypatch.setattr(ta, "delineate_watershed_from_point", fake)
+    args = argparse.Namespace(session_id=None, method="3dep", lat=40.0, lon=-86.0, workspace_dir=None,
+                              expected_area_km2=None, name=None)
+    out = hydro_map_cli.cmd_delineate_point(args)
+    assert out["ok"] is True
+    rows = HydroSession.load("cli-session").get("_run_log")
+    recs = [r["record"] for r in rows.values() if "record" in r]
+    assert recs and all(r["tool"] == "delineate_watershed_from_point" for r in recs)
+    assert recs[0]["extra"]["mcp_client"] == "direct_call"
+    assert rr.verify_run_log_entry(next(iter(rows.values())))["record_ok"]

@@ -301,3 +301,10 @@ def test_standalone_reproduces_every_core_golden_vector():
     for case in vectors["cases"]:
         assert sr.canonical_bytes(case["input"]).decode("utf-8") == case["canonical"], case["name"]
         assert sr.c14n_digest(case["input"]) == case["digest"], case["name"]
+
+
+def test_replay_of_an_empty_archive_is_not_performed(tmp_path):
+    (tmp_path / MANIFEST_FILE).write_text(json.dumps({"files": []}))
+    (tmp_path / "replay.py").write_text(sr.source_text())
+    code, out = _replay(tmp_path)
+    assert code == 1 and "replay_status: not_performed" in out

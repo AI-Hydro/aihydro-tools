@@ -167,10 +167,16 @@ class TestCoverageSummary:
         assert summary["run_log_rows"] == 4
         assert summary["v2_records"] == 3
         assert summary["legacy_unrecorded"] == 1
-        assert summary["v2_verified"] == 2          # t.1 and t.3 (t.3 verifies; its error is the point)
+        assert summary["v2_verified"] == 1          # t.1; t.3 is sealed but built without its row
+        assert summary["v2_unbound"] == 1
         assert summary["record_errors"] == 1
         assert {p["run_id"] for p in summary["problems"]} == {"t.2", "t.3"}
         assert math.isclose(summary["coverage"], 0.75)
 
     def test_empty_log(self):
         assert rr.coverage_summary({})["coverage"] is None
+
+
+def test_error_text_is_scrubbed_and_truncated():
+    out = rr.scrub_error_text("fail https://x.org/a?token=abc&k=1 api_key=SECRET123 " + "z" * 500)
+    assert "abc" not in out and "SECRET123" not in out and len(out) <= 200

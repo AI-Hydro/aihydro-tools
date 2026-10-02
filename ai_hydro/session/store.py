@@ -314,6 +314,17 @@ def _run_log_record(
     try:
         incoming = entry.get("record")
         if incoming is not None:
+            try:
+                import aihydro_core.records  # noqa: F401
+            except ImportError:
+                # Cannot verify the seal, so do not store a sealed-looking
+                # record: keep the legacy row, drop the record, say so.
+                log.warning(
+                    "aihydro_core.records unavailable: dropping unverifiable record "
+                    "from run-log row %s in session %s", run_id, session_id)
+                entry = {k: v for k, v in entry.items() if k != "record"}
+                incoming = None
+        if incoming is not None:
             problem = _run_log_record_problem(run_id, incoming)
             if problem:
                 log.warning("Refused run-log record for %s in session %s: %s", run_id, session_id, problem)

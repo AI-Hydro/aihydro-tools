@@ -299,7 +299,12 @@ def cmd_delineate_point(args: argparse.Namespace) -> dict[str, Any]:
             }
             method = "merit_gee"
 
-    result = delineate_watershed_from_point(
+    # Called directly (not through the MCP server), so record it explicitly.
+    from ai_hydro.session.run_records import recorded_call
+
+    result = recorded_call(
+        "delineate_watershed_from_point",
+        delineate_watershed_from_point,
         session_id=session_id,
         lat=args.lat,
         lon=args.lon,

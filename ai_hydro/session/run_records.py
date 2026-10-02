@@ -13,6 +13,19 @@ What a record claims, and what it does not:
   (digest), and optionally which earlier runs it consumed (``parents``).
 - It does not say the computation is reproducible, correct, or appropriate.
   ``record_digest`` only makes later edits to the record detectable.
+
+Limits of the seal (read before relying on a record):
+
+- A seal proves *integrity*, not *origin*. Anyone who can write the run log
+  can build a record that verifies.
+- Insert-only rows protect against cooperating writers (stale snapshots,
+  accidental rewrites), not against an adversary with access to the SQLite
+  file, who can also delete or rebuild rows.
+- A deleted sealed row is not detectable: there is no hash chain or signed
+  head yet. (swatplus-builder's hash-chained ledger is the model for that.)
+- A writer that pre-seals its own record, including ``run_python`` code or any
+  same-user process, authors its own provenance. The middleware leaves an
+  already-sealed row untouched and does not overwrite it.
 - ``input_digest`` covers the arguments as received, not the effective
   parameters after defaults, so a call that omits a default and one that
   passes it explicitly digest differently.
@@ -267,7 +280,7 @@ def verify_run_log_entry(entry: Any) -> Dict[str, Any]:
 
 def coverage_summary(run_log: Dict[str, Any]) -> Dict[str, Any]:
     """Record coverage of a ``{run_id: entry}`` run log (additive snapshot field)."""
-    total = recorded = verified = with_error = 0
+    total = recorded = verified = unbound = with_error = 0
     problems: List[Dict[str, Any]] = []
     for run_id, entry in (run_log or {}).items():
         total += 1
@@ -275,8 +288,10 @@ def coverage_summary(run_log: Dict[str, Any]) -> Dict[str, Any]:
         if not check["has_record"]:
             continue
         recorded += 1
-        if check["record_ok"] and check["entry_ok"] is not False:
+        if check["record_ok"] and check["entry_ok"] is True:
             verified += 1
+        elif check["record_ok"] and check["entry_ok"] is None:
+            unbound += 1       # sealed, but not bound to its row's legacy fields
         else:
             problems.append({"run_id": run_id, "problem": "record_digest_mismatch"
                              if not check["record_ok"] else "entry_modified_after_sealing"})
@@ -288,6 +303,7 @@ def coverage_summary(run_log: Dict[str, Any]) -> Dict[str, Any]:
         "run_log_rows": total,
         "v2_records": recorded,
         "v2_verified": verified,
+        "v2_unbound": unbound,
         "legacy_unrecorded": total - recorded,
         "record_errors": with_error,
         "coverage": round(recorded / total, 4) if total else None,
@@ -457,6 +473,51 @@ def resolve_call_session(
     return None
 
 
+_URL_QUERY = re.compile(r"\?[^\s\"']*")
+_SECRET_ASSIGN = re.compile(r"(\b[\w-]*(?:key|token|secret|credential|password)[\w-]*\s*[=:]\s*)[^\s,;\"']+", re.IGNORECASE)
+
+
+def scrub_error_text(text: Any, limit: int = 200) -> str:
+    """Error text safe to keep in a row: URL query strings and secret-shaped
+    assignments redacted, truncated."""
+    out = _URL_QUERY.sub("?<redacted>", str(text))
+    out = _SECRET_ASSIGN.sub(r"\1<redacted>", out)
+    return out[:limit]
+
+
+def recorded_call(tool: str, fn: Callable[..., Any], /, **kwargs: Any) -> Any:
+    """Call ``fn(**kwargs)`` (a tool implementation) and record the call.
+
+    For callers outside the MCP server, such as the map CLI, that invoke tool
+    functions directly and therefore bypass ``RunRecordMiddleware``. Same record
+    contract; the tool's exception, if any, propagates after being recorded.
+    Never raises on account of recording.
+    """
+    capture, token = begin_capture()
+    failure: Optional[BaseException] = None
+    result: Any = None
+    try:
+        result = fn(**kwargs)
+    except Exception as exc:
+        failure = exc
+    finally:
+        end_capture(token)
+    try:
+        from ai_hydro.mcp.enforcement import _generate_unique_run_id
+
+        record_call(
+            tool=tool, arguments=kwargs,
+            result=({"error": True, "message": str(failure)} if failure is not None else result),
+            failure=failure, capture=capture, chat_id=None,
+            id_factory=_generate_unique_run_id, mcp_client="direct_call",
+        )
+    except Exception as exc:  # pragma: no cover - record_call does not raise
+        log.warning("recorded_call(%s): %s", tool, exc)
+    if failure is not None:
+        raise failure
+    return result
+
+
 def _minimal_entry(run_id: str, tool: str, session_id: str, result: Any, failure: Optional[BaseException]) -> Dict[str, Any]:
     from datetime import datetime, timezone
 
@@ -476,7 +537,7 @@ def _minimal_entry(run_id: str, tool: str, session_id: str, result: Any, failure
             detail = ""
         if failure is not None:
             detail = f"{type(failure).__name__}: {failure}"
-        entry["error_summary"] = str(detail)[:300]
+        entry["error_summary"] = scrub_error_text(detail)
     return entry
 
 
@@ -536,6 +597,8 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
     call_id = declared if isinstance(declared, str) and declared else rows[-1][1]
     status = "error" if (failure is not None or (isinstance(result, dict) and result.get("error"))) else "ok"
     skip_reason = None
+    if result is None and failure is None:
+        skip_reason = "tool returned no content"
     if output_bytes is not None and output_bytes > MAX_DIGEST_BYTES:
         skip_reason = f"{output_bytes} bytes exceeds {MAX_DIGEST_BYTES}"
 

@@ -175,7 +175,7 @@ def record_seal_ok(record: dict) -> bool:
 
 def verify_run_log(run_log: dict) -> dict:
     """Verify every v2 record in a run log. Rows without a record are legacy."""
-    summary = {"rows": 0, "v2_records": 0, "verified": 0, "legacy": 0,
+    summary = {"rows": 0, "v2_records": 0, "verified": 0, "unbound": 0, "legacy": 0,
                "record_errors": 0, "failures": []}
     for run_id, entry in sorted(run_log.items()):
         summary["rows"] += 1
@@ -193,6 +193,9 @@ def verify_run_log(run_log: dict) -> dict:
             summary["failures"].append((run_id, "record_digest mismatch"))
             continue
         expected = (record.get("extra") or {}).get("entry_digest")
+        if expected is None:
+            summary["unbound"] += 1     # sealed but not bound to its row: not "verified"
+            continue
         if expected is not None:
             body = {k: v for k, v in entry.items() if k != "record"}
             try:
@@ -373,6 +376,7 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
             out(f"FAIL  record {run_id}: {why}")
         records_ok = not summary["failures"]
         out(f"Run records: {summary['verified']} of {summary['v2_records']} v2 records verify; "
+            f"{summary['unbound']} sealed but unbound to their row; "
             f"{summary['legacy']} legacy rows have no record; {summary['record_errors']} carry a record_error")
     else:
         out("Run records: run_log.json not found")
@@ -391,6 +395,9 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
             out(f"SKIP  {run_id}: {why}")
 
     integrity_ok = hashes_ok and records_ok
+    if not hash_results and not (rl_path.exists() and summary["v2_records"]):
+        integrity_ok = False        # nothing was actually checked
+        out("FAIL  archive has no files and no records; nothing was verified.")
     status = replay_status(integrity_ok, live, len(comparisons), comparisons_ok)
     out(f"\nreplay_status: {status}")
     out("recomputation: not_performed")

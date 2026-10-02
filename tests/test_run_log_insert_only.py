@@ -201,3 +201,14 @@ def test_old_four_hex_ids_remain_valid_everywhere(sessions):
     legacy = "sigs.20260508.01031500.a3f2"
     assert RUN_ID_RE.match(legacy)
     assert _run_log_record(SID, legacy, _entry(legacy)) == "inserted"
+
+
+def test_record_is_dropped_not_stored_when_core_records_unavailable(sessions, caplog):
+    import sys
+
+    sealed = _sealed(_entry())
+    with patch.dict(sys.modules, {"aihydro_core.records": None}):
+        with caplog.at_level("WARNING", logger="ai_hydro.session.store"):
+            assert _run_log_record(SID, "r1", sealed) == "inserted"
+    assert _stored() == _entry()                      # legacy row kept, no record
+    assert "dropping unverifiable record" in caplog.text

@@ -537,10 +537,21 @@ def _tool_result_dict(tool_result):
                     text_dict = parsed
     structured = getattr(tool_result, "structured_content", None)
     if isinstance(structured, dict):
-        if set(structured) == {"result"} and isinstance(structured["result"], dict):
-            return structured["result"], size
+        if set(structured) == {"result"}:
+            return structured["result"], size       # wrapped non-object result
         return structured, size
-    return text_dict, size
+    if text_dict is not None:
+        return text_dict, size
+    # List, string or number results: digest what was delivered rather than
+    # leaving the output digest silently empty.
+    for block in getattr(tool_result, "content", None) or []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            try:
+                return _json.loads(text), size
+            except ValueError:
+                return text, size
+    return None, size
 
 
 def _inject_record_error(tool_result, message: str) -> None:
@@ -574,7 +585,14 @@ def _mcp_client_label(context) -> str | None:
 
 
 class RunRecordMiddleware(Middleware):
-    """Attach a sealed ``aihydro.run/2`` record to every recorded tool call."""
+    """Attach a sealed ``aihydro.run/2`` record to every recorded tool call.
+
+    A seal proves integrity, not origin. Insert-only rows protect against
+    cooperating writers, not adversaries. A deleted sealed row is not
+    detectable (no hash chain yet). A writer that pre-seals its own record
+    (including run_python code or any same-user process) authors its own
+    provenance, and this middleware does not overwrite an already-sealed row.
+    """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
         try:
