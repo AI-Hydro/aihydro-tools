@@ -408,14 +408,17 @@ def list_available_tools() -> dict:
         tools_out = []
         for t in tools_raw:
             entry: dict = {"name": t.name, "description": (t.description or "").strip()}
-            if hasattr(t, "parameters") and t.parameters:
+            schema = getattr(t, "parameters", None)
+            if schema:
+                # FastMCP exposes the JSON schema as a dict; older shapes as an object.
+                get = schema.get if isinstance(schema, dict) else (lambda k, d=None: getattr(schema, k, d))
                 params = {}
-                props = getattr(t.parameters, "properties", None) or {}
+                props = get("properties", None) or {}
                 for pname, pschema in props.items():
                     params[pname] = {
                         "type": pschema.get("type", "any"),
                         "description": pschema.get("description", ""),
-                        "required": pname in (getattr(t.parameters, "required", None) or []),
+                        "required": pname in (get("required", None) or []),
                     }
                     if "default" in pschema:
                         params[pname]["default"] = pschema["default"]

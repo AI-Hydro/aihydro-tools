@@ -115,18 +115,29 @@ def _get_version() -> str:
 
 
 def _list_tools_sync() -> list:
-    """Return the list of registered MCP tools (sync wrapper)."""
+    """Return the list of registered MCP tools (sync wrapper).
+
+    Safe to call from any context. FastMCP runs sync tools on the server's event loop,
+    so from inside a tool call a loop IS running and ``asyncio.run`` cannot nest; in that
+    case the coroutine runs on a private loop in a worker thread (the registry read does
+    not touch the caller's loop) and the caller blocks until it finishes.
+    """
     import asyncio
+    from concurrent.futures import ThreadPoolExecutor
     from ai_hydro.mcp.app import mcp
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass                        # no loop running here: safe to start one
-    else:
-        return []                   # called from async code; cannot nest asyncio.run
-    try:
+
+    def _run() -> list:
         return asyncio.run(mcp.list_tools())
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return _run()           # no loop running here: safe to start one
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_run).result()
     except Exception:
+        log.warning("could not list registered tools", exc_info=True)
         return []
 
 
