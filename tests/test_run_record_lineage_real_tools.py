@@ -164,7 +164,9 @@ def test_fetch_record_binds_the_retained_file_digest(world):
     bound = slot["meta"]["retained_series"]
     assert bound == {"path": path, "digest": digest_bytes(open(path, "rb").read())}
     rec = _rows()[slot["meta"]["run_id"]]["record"]
-    assert {"path": path, "digest": bound["digest"], "role": "artifact"} in rec["extra"]["retained_files"]
+    # The sealed record names the file by location-independent ref, not absolute path.
+    from ai_hydro.session.refs import to_ref
+    assert {"path": to_ref(path), "digest": bound["digest"], "role": "artifact"} in rec["extra"]["retained_files"]
 
 
 def test_tampered_retained_series_gives_no_edge_and_is_not_consumed(world):

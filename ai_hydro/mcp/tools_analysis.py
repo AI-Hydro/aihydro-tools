@@ -1086,7 +1086,10 @@ def fetch_streamflow_data(
                 from ai_hydro.session import run_records as _rr0
                 _fdig = _dbytes(Path(saved).read_bytes())
                 d.setdefault("meta", {})["retained_series"] = {"path": saved, "digest": _fdig}
-                _rr0.declare_lineage(retained_files=[{"path": saved, "digest": _fdig, "role": "artifact"}])
+                from ai_hydro.session.refs import to_ref as _to_ref
+                _rr0.declare_lineage(retained_files=[{
+                    "path": _to_ref(saved, getattr(session, "workspace_dir", None)),
+                    "digest": _fdig, "role": "artifact"}])
             except Exception as _fe:
                 log.warning("could not digest retained streamflow file: %s", _fe)
         _session_store(session_id, "streamflow", d, tool_name="fetch_streamflow_data")
@@ -1322,7 +1325,9 @@ def extract_hydrological_signatures(
                 if _series_digest:
                     _refs.append(_iref(f"{_edge['parent']}#q_cms", _series_digest, role="served_data"))
                 if _file_digest:
-                    _refs.append(_iref(str(_data_file), _file_digest, role="served_data"))
+                    from ai_hydro.session.refs import to_ref as _to_ref
+                    _refs.append(_iref(_to_ref(_data_file, getattr(session, "workspace_dir", None)),
+                                       _file_digest, role="served_data"))
                 _rr.declare_lineage(parents=[_edge["parent"]], input_refs=_refs)
             else:
                 _rr.declare_lineage(parent_unresolved="streamflow slot carries no retained run id")

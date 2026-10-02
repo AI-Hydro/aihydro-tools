@@ -21,8 +21,17 @@ Usage:
     python replay.py                     # archive integrity
     python replay.py --live              # also cross-check run log vs session
     python replay.py --tolerance=0.02    # allow 2% deviation (default 1%)
+    python replay.py --allowed-signers FILE
+                                         # verify approval signatures against
+                                         # a key file YOU supply (for example
+                                         # the owner's published GitHub keys)
 
-Exit code: 0 = all checks passed, 1 = a check failed,
+Approvals (approvals/ in the capsule) are verified only against the signer file
+you pass; the capsule carries no trust root and the exporting machine's is not
+consulted. Without --allowed-signers each signed approval is reported "not
+verified" and never PASS. Requires ssh-keygen (OpenSSH 8.0+) on PATH.
+
+Exit code: 0 = all checks passed, 1 = a check failed (including any approval),
            2 = --live found no comparable values (nothing was cross-checked).
 """
 from __future__ import annotations
@@ -30,8 +39,14 @@ from __future__ import annotations
 import decimal
 import hashlib
 import json
+import base64
 import math
+import re
+import shutil
+import struct
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 MANIFEST_FILE = "capsule_manifest.json"
@@ -243,6 +258,11 @@ def verify_hashes(capsule_dir: Path, out=print):
 # --------------------------------------------------------------------------- #
 
 def _retained_name(path: str) -> str:
+    # "session-data:<file>" / "workspace:<rel>" refs (and legacy absolute paths)
+    for scheme in ("session-data:", "workspace:"):
+        if path.startswith(scheme):
+            path = path[len(scheme):]
+            break
     return Path(path).name.split(".data.", 1)[-1]
 
 
@@ -323,6 +343,284 @@ def verify_data_bindings(capsule_dir: Path, out=print) -> bool:
                     ok = False
                     out(f"FAIL  {art['path']} does not equal the retained series {ra}")
     return ok
+
+
+# --------------------------------------------------------------------------- #
+# Approvals: verify signed human approvals against a SUPPLIED signer file
+# --------------------------------------------------------------------------- #
+
+APPROVAL_NAMESPACE = "aihydro-approval@v1"
+APPROVALS_INDEX = "approvals/index.json"
+
+
+def _sshsig_key(armored: str):
+    """``(key_type, fingerprint, namespace)`` from an armored SSHSIG, or None."""
+    try:
+        lines = [ln.strip() for ln in armored.strip().splitlines()]
+        if lines[0] != "-----BEGIN SSH SIGNATURE-----" or lines[-1] != "-----END SSH SIGNATURE-----":
+            return None
+        blob = base64.b64decode("".join(lines[1:-1]), validate=True)
+        if blob[:6] != b"SSHSIG":
+            return None
+
+        def read(buf, off):
+            (n,) = struct.unpack_from(">I", buf, off)
+            return buf[off + 4: off + 4 + n], off + 4 + n
+
+        pub, off = read(blob, 10)
+        ns, _ = read(blob, off)
+        ktype, _ = read(pub, 0)
+        fp = "SHA256:" + base64.b64encode(hashlib.sha256(pub).digest()).decode().rstrip("=")
+        return ktype.decode("ascii"), fp, ns.decode("utf-8")
+    except Exception:
+        return None
+
+
+def _ssh_verify(record: dict, signers: Path):
+    """``(ok, reason)`` from ``ssh-keygen -Y verify`` over the sealed digest."""
+    exe = shutil.which("ssh-keygen")
+    if exe is None:
+        return False, "ssh-keygen not found on PATH"
+    principal = (record.get("approver") or {}).get("id")
+    if not principal:
+        return False, "approval has no approver id"
+    with tempfile.TemporaryDirectory(prefix="aihydro-replay-") as tmp:
+        sig = Path(tmp) / "approval.sig"
+        sig.write_text(record["signature"]["armored"].strip() + "\n", encoding="utf-8")
+        try:
+            res = subprocess.run(
+                [exe, "-Y", "verify", "-f", str(signers), "-I", principal,
+                 "-n", APPROVAL_NAMESPACE, "-s", str(sig)],
+                input=record["record_digest"].encode("utf-8"), capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"ssh-keygen failed: {exc}"
+    if res.returncode == 0:
+        return True, "signature verifies"
+    msg = (res.stderr or res.stdout).decode("utf-8", "replace").strip().splitlines()
+    return False, f"signature not accepted for principal {principal!r}: {msg[0] if msg else 'verify failed'}"
+
+
+_APPROVAL_FILE_RE = re.compile(r"^approvals/([0-9a-f]{64})\.json$")
+REVISION_SCHEMA = "aihydro.claim_revision/2"
+
+
+def _run_fingerprint(record: dict) -> str:
+    """``registry.evidence.fingerprint``: sha256-v2 of the sorted, compact JSON of a run row."""
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "sha256-v2:" + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str):
+    """``(claim_revision_digest, None)`` recomputed from the capsule, or ``(None, reason)``.
+
+    Mirrors ``ai_hydro.approval.records.claim_revision_fields`` for claims whose
+    evidence spans are all run-backed (the retained run row is in ``run_log.json``).
+    Anything not reproducible in stdlib returns a precise reason, never a digest:
+    dataset and paper spans (they need the raw slot / the passage index), legacy
+    ``evidence`` lists, claims that are not valid scientific claims.
+    """
+    claims = session_raw.get("claims")
+    claim = claims.get(claim_id) if isinstance(claims, dict) else None
+    if not isinstance(claim, dict):
+        return None, f"claim {claim_id!r} is not in session.json"
+    if claim.get("evidence") and "evidence_spans" not in claim:
+        return None, "claim uses the legacy 'evidence' list; its revision is not reproducible in stdlib"
+    scope = claim.get("scope")
+    rationale = claim.get("confidence_rationale")
+    if (not isinstance(scope, dict) or not isinstance(scope.get("basins"), list)
+            or not isinstance(scope.get("period"), str) or not isinstance(claim.get("claim"), str)
+            or not all(isinstance(claim.get(k), str) for k in ("claim_type", "status", "confidence"))
+            or not isinstance(rationale, str) or len(rationale.strip()) < 20):
+        return None, "claim in session.json is not a valid scientific claim"
+    spans = claim.get("evidence_spans") or []
+    session_id = session_raw.get("session_id")
+    norm_spans, versions = [], {}
+    for span in spans:
+        if not isinstance(span, dict) or not span.get("source_type") or not span.get("source_id"):
+            return None, "claim has a malformed evidence span"
+        kind, sid = span["source_type"], span["source_id"]
+        if kind != "run":
+            return None, (f"evidence span {sid!r} is a {kind} span; its fingerprint needs "
+                          f"{'the raw session slot' if kind == 'dataset' else 'the passage index'}, "
+                          "not reproducible in stdlib from the capsule")
+        row = run_log.get(sid) if isinstance(run_log, dict) else None
+        if not isinstance(row, dict) or not row:
+            return None, f"run {sid!r} cited by the claim is not retained in run_log.json"
+        if row.get("session_id", session_id) != session_id or row.get("run_id", sid) != sid:
+            return None, f"run {sid!r} has conflicting session/run identity"
+        versions[sid] = _run_fingerprint(row)
+        norm_spans.append({"source_type": kind, "source_id": sid, "metric_ref": span.get("metric_ref"),
+                           "page": span.get("page"), "passage_hash": span.get("passage_hash")})
+    fields = {
+        "schema": REVISION_SCHEMA,
+        "text": claim["claim"],
+        "claim_type": claim["claim_type"],
+        "status": claim["status"],
+        "confidence": claim["confidence"],
+        "confidence_rationale": rationale,
+        "scope": {"basins": list(scope["basins"]), "period": scope["period"],
+                  "forcing": scope.get("forcing"), "metric": scope.get("metric"),
+                  "model_versions": scope.get("model_versions") or {}},
+        "evidence_spans": norm_spans,
+        "evidence_versions": versions,
+        "limitations": list(claim.get("limitations") or []),
+        "prereg_id": claim.get("prereg_id"),
+        "uncertainty_verified": bool(claim.get("uncertainty_verified")),
+    }
+    try:
+        return c14n_digest(fields), None
+    except Exception as exc:
+        return None, f"claim revision could not be encoded: {exc}"
+
+
+def _approval_path(capsule_dir: Path, rel, digest):
+    """The approval file iff ``rel`` is exactly ``approvals/<hex>.json`` for ``digest`` and a real file inside the capsule."""
+    m = _APPROVAL_FILE_RE.match(rel) if isinstance(rel, str) else None
+    if m is None or digest != "sha256:" + m.group(1):
+        return None
+    d, f = capsule_dir / "approvals", capsule_dir / rel
+    if d.is_symlink() or f.is_symlink() or not f.is_file():
+        return None
+    return f if f.resolve().parent == d.resolve() else None
+
+
+def verify_approvals(capsule_dir: Path, allowed_signers=None, out=print) -> dict:
+    """Check every approval the capsule carries.
+
+    Per approval: the sealed body digest, the binding of ``claim_revision_digest``
+    to the registry stamp, and (v2 with ``allowed_signers``) the SSHSIG under the
+    supplied file, namespace ``aihydro-approval@v1`` and principal = approver id.
+    Without a signer file a signed approval is "not verified", never PASS.
+    Returns counts; ``failed > 0`` means exit 1.
+    """
+    c = {"verified": 0, "failed": 0, "unsigned": 0, "unverified": 0, "no_approval": 0, "claims": 0}
+    index_path = capsule_dir / APPROVALS_INDEX
+    if not index_path.exists():
+        out("Approvals: none in this capsule (no promoted claims were exported)")
+        return c
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        claims = index["claims"]
+    except Exception:
+        out(f"FAIL  {APPROVALS_INDEX} is unreadable")
+        c["failed"] += 1
+        return c
+    try:
+        session_raw = json.loads((capsule_dir / "session.json").read_text(encoding="utf-8"))
+        session_raw = session_raw if isinstance(session_raw, dict) else {}
+    except Exception:
+        session_raw = {}
+    try:
+        run_log = json.loads((capsule_dir / "run_log.json").read_text(encoding="utf-8"))
+    except Exception:
+        run_log = {}
+    signers = Path(allowed_signers) if allowed_signers else None
+    if signers is not None and not signers.is_file():
+        out(f"FAIL  --allowed-signers file not found: {signers}")
+        c["failed"] += 1
+        signers = None
+    for e in claims:
+        c["claims"] += 1
+        label = f"{e.get('claim_id')} ({e.get('registry_id') or 'no registry id'})"
+        status = e.get("status")
+        if status == "no_approval":
+            c["no_approval"] += 1
+            out(f"NOTE  approval {label}: no approval record ({e.get('reason', 'self_asserted')}); not approved")
+            continue
+        if status != "record_carried":
+            c["failed"] += 1
+            out(f"FAIL  approval {label}: {e.get('reason') or status}")
+            continue
+        path = _approval_path(capsule_dir, e.get("approval_file"), e.get("record_digest"))
+        if path is None:
+            c["failed"] += 1
+            out(f"FAIL  approval {label}: approval file must be approvals/<64 hex>.json named by its "
+                f"record digest, a regular file inside the capsule (got {e.get('approval_file')!r})")
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            c["failed"] += 1
+            out(f"FAIL  approval {label}: record file {e.get('approval_file')} unreadable")
+            continue
+        v2 = record.get("schema") == "aihydro.approval/2"
+        skip = {"record_digest", "signature"} if v2 else {"record_digest"}
+        try:
+            sealed = c14n_digest({k: v for k, v in record.items() if k not in skip}) == record.get("record_digest")
+        except Exception:
+            sealed = False
+        stamp = (e.get("registry_stamp") or {})
+        problems = []
+        if not sealed:
+            problems.append("sealed body digest mismatch (record altered)")
+        if record.get("record_digest") != e.get("record_digest") \
+                or record.get("record_digest") != (stamp.get("approval") or {}).get("record_digest"):
+            problems.append("record_digest differs from the registry stamp's")
+        if not stamp.get("claim_revision_digest") \
+                or record.get("claim_revision_digest") != stamp.get("claim_revision_digest"):
+            problems.append("claim_revision_digest differs from the registry stamp's")
+        if record.get("claim_id") != e.get("claim_id"):
+            problems.append(f"the record approves claim {record.get('claim_id')!r}, not "
+                            f"{e.get('claim_id')!r}")
+        sess_ids = {record.get("session_id"), index.get("session_id"), session_raw.get("session_id")}
+        if len(sess_ids) != 1 or None in sess_ids:
+            problems.append("session id differs between the approval record "
+                            f"({record.get('session_id')!r}), the approvals index "
+                            f"({index.get('session_id')!r}) and session.json ({session_raw.get('session_id')!r})")
+        approver = record.get("approver")
+        if not isinstance(approver, dict) or approver.get("kind") != "human" or not approver.get("id"):
+            problems.append("approver is not a human actor")
+        if not problems:
+            recomputed, why = recompute_claim_revision(session_raw, run_log, record["claim_id"])
+            if recomputed is None:
+                problems.append(f"claim revision cannot be re-derived from the capsule: {why}")
+            elif recomputed != record["claim_revision_digest"]:
+                problems.append("the claim (or the run rows it cites) in this capsule is not the revision "
+                                "the approval signed: recomputed claim_revision_digest differs")
+        if problems:
+            c["failed"] += 1
+            out(f"FAIL  approval {label}: " + "; ".join(problems))
+            continue
+        if not v2:
+            c["unsigned"] += 1
+            out(f"UNSIGNED  approval {label}: v1 record (cli_same_user); sealed and bound to its "
+                f"claim revision, but no signature exists to verify")
+            continue
+        sig = record.get("signature") or {}
+        parsed = _sshsig_key(sig.get("armored", "")) if isinstance(sig.get("armored"), str) else None
+        signer = record.get("signer") or {}
+        if sig.get("namespace") != APPROVAL_NAMESPACE or parsed is None or parsed[2] != APPROVAL_NAMESPACE:
+            c["failed"] += 1
+            out(f"FAIL  approval {label}: missing or malformed signature (namespace {APPROVAL_NAMESPACE})")
+            continue
+        if parsed[1] != signer.get("fingerprint") or parsed[0] != signer.get("key_type"):
+            c["failed"] += 1
+            out(f"FAIL  approval {label}: signature key does not match the sealed signer")
+            continue
+        if signers is None:
+            c["unverified"] += 1
+            if allowed_signers:
+                continue
+            out(f"NOTE  approval {label}: not verified (no signer file supplied); "
+                f"signer {signer.get('fingerprint')}")
+            continue
+        ok, why = _ssh_verify(record, signers)
+        if ok:
+            c["verified"] += 1
+            out(f"PASS  approval {label}: {why}; approver {record['approver']['id']}, "
+                f"signer {signer.get('fingerprint')}")
+        else:
+            c["failed"] += 1
+            out(f"FAIL  approval {label}: {why}")
+    if allowed_signers:
+        out(f"approvals: {c['verified']} verified against supplied signers, {c['failed']} failed, "
+            f"{c['unsigned']} unsigned (cli_same_user/opt-out)")
+    else:
+        out(f"approvals: {c['unverified']} not verified (no signer file supplied), {c['failed']} failed, "
+            f"{c['unsigned']} unsigned (cli_same_user/opt-out)")
+    if c["no_approval"]:
+        out(f"claims without an approval record: {c['no_approval']}")
+    return c
 
 
 # --------------------------------------------------------------------------- #
@@ -449,7 +747,8 @@ def replay_status(integrity_ok: bool, live: bool, n_comparisons: int, comparison
     return "archive_integrity"
 
 
-def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERANCE, out=print) -> int:
+def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERANCE, out=print,
+        allowed_signers=None) -> int:
     hashes_ok, hash_results = verify_hashes(capsule_dir, out=out)
     n_pass = sum(1 for r in hash_results if r["status"] == "pass")
     n_bad = sum(1 for r in hash_results if r["status"] != "pass")
@@ -469,6 +768,9 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
         out("Run records: run_log.json not found")
 
     bindings_ok = verify_data_bindings(capsule_dir, out=out)
+
+    out("")
+    approvals_ok = verify_approvals(capsule_dir, allowed_signers, out=out)["failed"] == 0
 
     comparisons, comparisons_ok = [], True
     if live:
@@ -493,7 +795,7 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
     if live:
         out(f"comparisons: {len(comparisons)}")
 
-    if not (integrity_ok and comparisons_ok):
+    if not (integrity_ok and comparisons_ok and approvals_ok):
         return 1
     if live and not comparisons:
         out("FAIL  --live found no comparable values; nothing was cross-checked.")
@@ -504,13 +806,22 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
 def main(argv=None, capsule_dir: Path | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     tolerance = DEFAULT_TOLERANCE
-    for arg in argv:
+    allowed_signers = None
+    for i, arg in enumerate(argv):
         if arg.startswith("--tolerance="):
             try:
                 tolerance = float(arg.split("=", 1)[1])
             except ValueError:
                 pass
-    return run(capsule_dir or Path(__file__).parent, live="--live" in argv, tolerance=tolerance)
+        elif arg.startswith("--allowed-signers="):
+            allowed_signers = arg.split("=", 1)[1]
+        elif arg == "--allowed-signers":
+            if i + 1 >= len(argv):
+                print("FAIL  --allowed-signers needs a file argument")
+                return 1
+            allowed_signers = argv[i + 1]
+    return run(capsule_dir or Path(__file__).parent, live="--live" in argv, tolerance=tolerance,
+               allowed_signers=allowed_signers)
 
 
 def source_text() -> str:

@@ -69,7 +69,9 @@ BINDING_SELF = "self_attested"
 
 def retained_name(path: str | Path) -> str:
     """Capsule file name for a retained file ("<session>.data.<name>" -> <name>)."""
-    return Path(path).name.split(".data.", 1)[-1]
+    from ai_hydro.session.refs import ref_name
+
+    return ref_name(path)
 
 
 def sealed_retained_files(record: dict | None) -> list[dict]:

@@ -159,6 +159,37 @@ report label them `approval: self_asserted` at read time.
 The record does not say the claim is true: it records that a named person ran
 the CLI for this exact revision of the claim and its retained evidence.
 
+**Capsule approvals and external verification.** The machine's trust root is not
+the boundary against a same-user process; a third party's own key file is.
+`export_session` writes `approvals/` into the capsule: one verbatim approval
+record (signature included) per promoted claim, plus `approvals/index.json`
+with the registry row stamp (`approval`, `claim_revision_digest`,
+`claim_revision`). Files are hashed in `capsule_manifest.json` (also summarised
+under `approvals`). Claims with no approval (legacy `self_asserted` rows, or a
+promoted claim without a registry row) are listed with status `no_approval`,
+never implied approved. `python replay.py --allowed-signers FILE` verifies each
+approval with `ssh-keygen -Y verify` against the file the verifier supplies (for
+example the owner's published GitHub keys), namespace `aihydro-approval@v1`,
+principal = the approver id; it also re-derives the sealed body digest and checks
+that the approval's `claim_revision_digest` equals the registry stamp's. It also
+binds the approval to the capsule: the record's own `claim_id` must equal the
+index entry's, the record, index and `session.json` must name one session, and
+`claim_revision_digest` is recomputed in stdlib (`aihydro.claim_revision/2`) from
+the claim in `session.json` and the cited run rows in `run_log.json`; editing the
+claim, or a cited run row, after approval fails. Claims whose evidence is not
+run-backed (dataset or paper spans), or legacy `evidence` lists, cannot be
+re-derived in stdlib and FAIL with that reason rather than PASS. Approval files
+are confined to `approvals/<64 hex>.json` named by the record digest (no absolute
+paths, traversal or symlinks); the approver must be a human actor. The index
+`status` `record_carried` means only that the record is in the capsule. It
+prints `PASS`/`FAIL` per approval and
+`approvals: N verified against supplied signers, M failed, K unsigned (cli_same_user/opt-out)`;
+any failure exits 1. Unsigned v1 records are reported `UNSIGNED`, never `PASS`;
+without `--allowed-signers` signed approvals are "not verified (no signer file
+supplied)". The capsule carries no trust root, and local revocation is not
+consulted: use `valid-before` in the supplied file to retire a key. A pass shows
+who signed which claim revision, not that the claim is true.
+
 ## Claim revisions (`aihydro.claim_revision_record/1`)
 
 Added in 2040 slice 2. Every authority-bearing change to a session claim
@@ -498,3 +529,14 @@ and `recomputation: "not_performed"`. See `ai_hydro/capsule/standalone_replay.py
 | `archive_integrity` | Files match their hashes; every v2 record verifies. Nothing recomputed. |
 | `cross_check` | `--live` and at least one comparison, all agreeing within tolerance. Still no recomputation. |
 | `not_performed` | An integrity check failed. |
+
+## No absolute paths in records or capsules
+
+Sealed records reference retained files by a location-independent ref, never by
+absolute path: `session-data:<file name>` (session data directory) or
+`workspace:<relative path>`, via `ai_hydro/session/refs.py`. The recorded digest
+is the file's identity; the ref is only a locator, so a record or capsule leaks
+no home directory and means the same on another machine. Records written before
+this change keep their absolute paths (sealed rows are never rewritten); readers
+resolve them and match capsule files by name, so they still verify. Capsule
+`session.json` rewrites local paths to refs or `~/`.

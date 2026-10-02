@@ -115,27 +115,22 @@ def _resolve_session(
     auto_create_hint: str | None = None,
     allow_auto_create: bool = True,
 ) -> str:
-    # Wave 3 Axis 3: if no chat_id was passed explicitly, read from the
-    # per-request ContextVar populated by the _call_tool_mcp interceptor.
-    # This fires for every tool invoked via the MCP server while the extension
-    # injects _chat_id; it is a no-op when the ContextVar holds None (e.g.
-    # direct Python calls, tests, CLI invocations).
-    if chat_id is None:
-        from ai_hydro.mcp.app import ACTIVE_CHAT_ID
-        chat_id = ACTIVE_CHAT_ID.get()
     """
     Resolve which study (HydroSession) a tool call should operate on.
 
     Priority chain
     --------------
-    1. **Explicit** ``session_id`` — always wins.  Also rebinds the chat
-       to this study if ``chat_id`` is provided.
-    2. **Chat binding** — look up ``~/.aihydro/chat_studies.json`` for
+    1. **Explicit** ``session_id`` — always wins (rule ``explicit_arg``).
+       Also rebinds the chat to this study if ``chat_id`` is provided.
+    1b. **Request context** — ``study_id`` from
+       ``_meta["aihydro/context"]`` (rule ``meta``); same rebinding.
+    2. **Chat binding** (rule ``chat_binding``) — look up ``~/.aihydro/chat_studies.json`` for
        a study previously bound to *chat_id*.
-    3. **Auto-create** — if *auto_create_hint* is set (typically a
+    3. **Auto-create** (rule ``auto_create``) — if *auto_create_hint* is set (typically a
        gauge ID, lat/lon slug, or explicit name) and
        *allow_auto_create* is True, create a new HydroSession with
        that ID and bind it to the chat.
+    3.5. **Most recent study** on disk (rule ``recent_fallback``).
     4. **Error** — raises ``SessionResolutionError`` with a helpful
        recovery message.
 
@@ -156,8 +151,57 @@ def _resolve_session(
     Returns
     -------
     str
-        A normalised session_id ready for ``HydroSession.load()``.
+        A normalised session_id ready for ``HydroSession.load()``.  Use
+        ``_resolve_session_with_rule`` to also get the rule used; the rule is
+        always noted on the in-flight run record
+        (``extra.session_resolution``).
     """
+    return _resolve_session_with_rule(
+        session_id, chat_id,
+        auto_create_hint=auto_create_hint, allow_auto_create=allow_auto_create,
+    )[0]
+
+
+def _resolve_session_with_rule(
+    session_id: str | None,
+    chat_id: str | None = None,
+    *,
+    auto_create_hint: str | None = None,
+    allow_auto_create: bool = True,
+) -> tuple[str, str]:
+    """``(session_id, rule)``; see ``_resolve_session`` for the chain."""
+    sid, rule = _resolve_session_impl(
+        session_id, chat_id,
+        auto_create_hint=auto_create_hint, allow_auto_create=allow_auto_create,
+    )
+    try:
+        from ai_hydro.session.run_records import note_session_resolution
+
+        note_session_resolution(rule)
+    except Exception:  # recording must never break resolution
+        pass
+    return sid, rule
+
+
+def _resolve_session_impl(
+    session_id: str | None,
+    chat_id: str | None,
+    *,
+    auto_create_hint: str | None,
+    allow_auto_create: bool,
+) -> tuple[str, str]:
+    # Wave 3 Axis 3: if no chat_id was passed explicitly, read from the
+    # per-request ContextVar populated by _ContextInjectionMiddleware (from
+    # _meta, else the legacy hidden args).  No-op when it holds None (direct
+    # Python calls, tests, CLI invocations).
+    from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_STUDY_ID
+
+    if chat_id is None:
+        chat_id = ACTIVE_CHAT_ID.get()
+    rule = "explicit_arg"
+    if not session_id:
+        session_id = ACTIVE_STUDY_ID.get()
+        rule = "meta"
     from ai_hydro.session.chat_binding import get_binding_store
 
     store = get_binding_store()
@@ -177,7 +221,7 @@ def _resolve_session(
             next_tools=["aihydro_chat_status", "aihydro_rebind_chat"],
         )
 
-    # 1. Explicit session_id → use it; optionally rebind chat
+    # 1. Explicit session_id (or _meta study_id) → use it; optionally rebind chat
     if session_id:
         sid = _normalize_session_id(session_id)
         if chat_id and store.lookup_study(chat_id) != sid:
@@ -186,7 +230,7 @@ def _resolve_session(
                 log.debug("Rebound chat=%s → study=%s (explicit override)", chat_id, sid)
             except Exception as exc:
                 log.debug("Could not persist chat binding: %s", exc)
-        return sid
+        return sid, rule
 
     # 2. Chat binding lookup
     if chat_id:
@@ -200,7 +244,7 @@ def _resolve_session(
                 _maybe_set_workspace(HydroSession.load(bound))
             except Exception:
                 pass
-            return bound
+            return bound, "chat_binding"
 
     # 3. Auto-create from hint
     if auto_create_hint and allow_auto_create:
@@ -219,7 +263,7 @@ def _resolve_session(
                 log.debug("Auto-created study=%s and bound to chat=%s", sid, chat_id)
             except Exception as exc:
                 log.debug("Could not persist auto-created binding: %s", exc)
-        return sid
+        return sid, "auto_create"
 
     # 3.5 Most-recent-session fallback (WS-4 session-binding fix).
     # The weak model frequently omits session_id on a follow-up call before a
@@ -252,7 +296,7 @@ def _resolve_session(
                     _maybe_set_workspace(HydroSession.load(sid))
                 except Exception:
                     pass
-                return sid
+                return sid, "recent_fallback"
         except Exception as exc:
             log.debug("Most-recent-session fallback skipped: %s", exc)
 
