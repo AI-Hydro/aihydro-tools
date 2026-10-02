@@ -396,15 +396,14 @@ def write_research_interpretation(
         return _tool_error_to_dict(e)
 
 @mcp.tool()
-def list_available_tools() -> dict:
+async def list_available_tools() -> dict:
     """
     List all registered MCP tools (built-in + community plugins via the
     aihydro.tools entry point). For token-efficient discovery, prefer
     aihydro_describe_capability(domain) over this full dump.
     """
     try:
-        from ai_hydro.mcp.tools_docs import _list_tools_sync
-        tools_raw = _list_tools_sync()
+        tools_raw = await mcp.list_tools()   # on the server loop: no second loop, no blocking
         tools_out = []
         for t in tools_raw:
             entry: dict = {"name": t.name, "description": (t.description or "").strip()}

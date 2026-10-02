@@ -188,12 +188,36 @@ def hidden_name_pattern(condition: str, tool_names: Any = ()) -> "re.Pattern[str
     return re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(alternatives) + r")(?![A-Za-z0-9_])")
 
 
+class _HiddenEntry(Exception):
+    """The whole result is the descriptor of a hidden tool (e.g. ``describe_tool``)."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.name = name
+
+
+def _hidden_entry_name(value: Any, pattern: "re.Pattern[str]") -> "str | None":
+    """The hidden tool name when ``value`` is a descriptor OF a hidden tool, else None.
+
+    A dict whose ``name`` or ``tool`` value is exactly a hidden name IS that tool's
+    entry (listing, schema, description); one that merely mentions it in text is scrubbed.
+    """
+    if isinstance(value, dict):
+        for key in ("name", "tool"):
+            v = value.get(key)
+            if isinstance(v, str) and pattern.fullmatch(v):
+                return v
+    return None
+
+
 def scrub_hidden_names(value: Any, pattern: "re.Pattern[str]") -> Any:
     """Copy of ``value`` that never names a hidden tool, at any depth.
 
-    A string that IS a hidden name is dropped from lists and from dict keys; a hidden
-    name inside longer text is replaced by ``UNAVAILABLE``. This is a generic discovery
-    scrub, not a per-tool rule: every hidden tool is treated the same wherever it is named.
+    An object that IS a hidden tool (a dict whose ``name``/``tool`` is a hidden name) and
+    a string that IS a hidden name are dropped from lists; a hidden-name dict key is
+    dropped; a hidden name inside longer text is replaced by ``UNAVAILABLE``. This is a
+    generic discovery scrub, not a per-tool rule: every hidden tool is treated the same
+    wherever it is named.
     """
     if isinstance(value, str):
         return pattern.sub(UNAVAILABLE, value)
@@ -202,11 +226,15 @@ def scrub_hidden_names(value: Any, pattern: "re.Pattern[str]") -> Any:
                 if not (isinstance(k, str) and pattern.fullmatch(k))}
     if isinstance(value, list):
         return [scrub_hidden_names(v, pattern) for v in value
-                if not (isinstance(v, str) and pattern.fullmatch(v))]
+                if not (isinstance(v, str) and pattern.fullmatch(v))
+                and _hidden_entry_name(v, pattern) is None]
     return value
 
 
 def _sanitize(value: Any, state: EvalState, pattern: "re.Pattern[str]") -> Any:
+    hidden = _hidden_entry_name(value, pattern)
+    if hidden is not None:
+        raise _HiddenEntry(hidden)
     if state.condition == "C1":
         value = strip_fields(value)
     return scrub_hidden_names(value, pattern)
@@ -321,11 +349,16 @@ class EvalConditionMiddleware(Middleware):
         except Exception as exc:
             # Exceptions raised inside the tool skip the result sanitiser below; scrub their
             # text too so an error message cannot name a tool this arm cannot call.
-            raise await self._scrubbed_exception(context, state, exc) from None
+            scrubbed = await self._scrubbed_exception(context, state, exc)
+            if scrubbed is exc:
+                raise
+            raise scrubbed from None      # rebuilt: do not chain the unscrubbed original
         try:
             live = await context.fastmcp_context.fastmcp.get_tools()
             pattern = hidden_name_pattern(state.condition, live.keys())
             return _sanitize_tool_result(result, state, pattern)
+        except _HiddenEntry as hidden:   # the result describes a tool this arm cannot call
+            raise ToolError(f"Unknown tool: '{hidden.name}'") from None
         except Exception as exc:   # never hand back a half-sanitised result
             log.warning("eval sanitise failed for %s: %s", name, exc)
             raise _refusal(f"could not sanitise the result: {exc}") from exc

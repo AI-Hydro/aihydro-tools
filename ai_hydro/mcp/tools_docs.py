@@ -135,7 +135,7 @@ def _list_tools_sync() -> list:
         except RuntimeError:
             return _run()           # no loop running here: safe to start one
         with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(_run).result()
+            return pool.submit(_run).result(timeout=30)
     except Exception:
         log.warning("could not list registered tools", exc_info=True)
         return []

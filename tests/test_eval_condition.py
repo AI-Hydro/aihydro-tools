@@ -541,6 +541,63 @@ def test_refusal_is_a_structured_tool_error():
     assert err.envelope["code"] == ec.CONTEXT_MISMATCH and json.loads(str(err)) == err.envelope
 
 
+@pytest.mark.parametrize("condition", ["C1", "C2", "C3"])
+def test_discovery_tools_expose_exactly_the_visible_tool_set(home, monkeypatch, condition):
+    """A tool the arm cannot call must be unobservable through every discovery surface."""
+    import ai_hydro.mcp  # noqa: F401  (registers every tool on the singleton)
+
+    async def all_names():
+        return sorted((await app.mcp.get_tools()).keys())
+    registry = asyncio.run(all_names())
+    arm(home, monkeypatch, condition)
+    visible = names(app.mcp)
+    assert set(registry) - visible, "arm hides nothing; test would be vacuous"
+    ctx = {"client": label(condition)}
+
+    async def run():
+        out = {}
+        async with Client(app.mcp) as c:
+            async def call(tool, args):
+                return await c.call_tool(tool, args, meta={META: {"study_id": SID, **ctx}},
+                                         raise_on_error=False)
+            res = await call("list_available_tools", {})
+            out["list_available_tools"] = {t["name"] for t in res.structured_content["tools"]}
+            res = await call("describe_tools", {"names": registry})
+            out["describe_tools"] = {t["name"] for t in res.structured_content["tools"]}
+            seen = set()
+            for n in registry:
+                r = await call("describe_tool", {"name": n})
+                if not r.is_error:
+                    seen.add(r.structured_content["name"])
+                else:
+                    assert "Unknown tool" in "".join(getattr(b, "text", "") for b in r.content)
+            out["describe_tool"] = seen
+            dom = await call("aihydro_describe_capability", {})
+            cap = set()
+            for d in dom.structured_content["domains"]:
+                r = await call("aihydro_describe_capability", {"domain": d["domain"]})
+                cap |= {t["name"] for t in r.structured_content["tools"]}
+            out["aihydro_describe_capability"] = cap
+        return out
+
+    observed = asyncio.run(run())
+    for surface, got in observed.items():
+        assert got <= visible, (surface, sorted(got - visible))
+    for surface in ("list_available_tools", "describe_tools", "describe_tool"):
+        assert observed[surface] == visible, (surface, sorted(visible - observed[surface]))
+
+
+def test_scrub_drops_hidden_entries_from_lists_and_scrubs_mentions():
+    pat = ec.hidden_name_pattern("C1", LIVE)
+    out = ec.scrub_hidden_names(
+        {"tools": [{"name": "run_skeptic", "description": "x"}, {"tool": "run_python"},
+                   {"name": "add_claim", "description": "then run_skeptic"}]}, pat)
+    assert out == {"tools": [{"name": "add_claim", "description": f"then {ec.UNAVAILABLE}"}]}
+    with pytest.raises(ec._HiddenEntry):
+        ec._sanitize({"name": "run_python", "input_schema": {}},
+                     ec.EvalState("C3", "0" * 16), pat)
+
+
 # ---------------------------------------------------------------- locality
 
 def test_eval_condition_logic_lives_only_in_eval_condition_module():
