@@ -469,6 +469,12 @@ def _run_log_record(
             problem = _run_log_record_problem(run_id, incoming)
             if problem:
                 log.warning("Refused run-log record for %s in session %s: %s", run_id, session_id, problem)
+                if writer and writer != "middleware":
+                    try:
+                        from ai_hydro.session import run_records
+                        run_records.note_row_refused(session_id, run_id, writer, "refused")
+                    except Exception:  # capture is best-effort bookkeeping
+                        pass
                 return "refused"
         def _txn() -> str:
             status_box = ["error"]
@@ -531,6 +537,14 @@ def _run_log_record(
         try:
             from ai_hydro.session import run_records
             run_records.note_row_written(session_id, run_id, writer)
+        except Exception:  # capture is best-effort bookkeeping
+            pass
+    elif writer and writer != "middleware" and status in ("refused", "stale"):
+        # The writer's body disagrees with the stored (sealed) row: keep the
+        # sealed body, but say so (skeptic-slice3 R3).
+        try:
+            from ai_hydro.session import run_records
+            run_records.note_row_refused(session_id, run_id, writer, status)
         except Exception:  # capture is best-effort bookkeeping
             pass
     return status

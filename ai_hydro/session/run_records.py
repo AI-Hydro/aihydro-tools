@@ -349,6 +349,7 @@ class CallCapture:
     input_refs: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
     notes: Dict[str, Any] = dataclasses.field(default_factory=dict)
     failed_rows: List[Tuple[str, str, str, str]] = dataclasses.field(default_factory=list)  # (session, run, writer, reason)
+    refused_rows: List[Tuple[str, str, str, str]] = dataclasses.field(default_factory=list)  # (session, run, writer, outcome)
 
 
 _CAPTURE: contextvars.ContextVar[Optional[CallCapture]] = contextvars.ContextVar(
@@ -377,6 +378,14 @@ def note_row_failed(session_id: str, run_id: str, writer: str, reason: str) -> N
     capture = _CAPTURE.get()
     if capture is not None:
         capture.failed_rows.append((session_id, run_id, writer or "unknown", reason))
+
+
+def note_row_refused(session_id: str, run_id: str, writer: str, outcome: str) -> None:
+    """Called by the run-log writer when a sealed row kept its body against the
+    writer's different one (``refused``/``stale``). No-op outside a call."""
+    capture = _CAPTURE.get()
+    if capture is not None:
+        capture.refused_rows.append((session_id, run_id, writer or "unknown", outcome))
 
 
 def declare_lineage(
@@ -500,7 +509,8 @@ def resolve_call_session_rule(
     if isinstance(arguments, dict):
         candidates.append((arguments.get("session_id"), "explicit_arg"))
     candidates.append((meta_study_id, "meta"))
-    written = capture.rows
+    # A row a writer lost or was refused still names its session.
+    written = capture.rows or [r[:3] for r in capture.failed_rows] or [r[:3] for r in capture.refused_rows]
     if written:
         sid = written[0][0]
         rule = noted
@@ -675,6 +685,12 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         if (sid, rid) not in seen:
             seen.add((sid, rid))
             rows.append((sid, rid, writer))
+    refused: Dict[Tuple[str, str], str] = {}
+    for sid, rid, writer, outcome in capture.refused_rows:
+        refused[(sid, rid)] = outcome
+        if (sid, rid) not in seen:
+            seen.add((sid, rid))
+            rows.append((sid, rid, writer))
     created = False
     if not rows:
         rows.append((session_id, id_factory(tool, session_id), "middleware"))
@@ -719,6 +735,10 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         known = [f"writer_row_lost: {lost_reason}"] if lost_reason else []
         if lost_reason:
             problems.append(f"{rid}: writer_row_lost: {lost_reason}")
+        refused_outcome = refused.get((sid, rid))
+        if refused_outcome:
+            problems.append(f"{rid}: writer_row_refused: the tool wrote a different body after "
+                            f"the row was sealed ({refused_outcome}); the sealed body was kept")
         row_absent = False
         for _attempt in range(3):
             try:
