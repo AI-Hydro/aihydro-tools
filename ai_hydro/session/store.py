@@ -94,8 +94,9 @@ log = logging.getLogger("ai_hydro.session")
 
 SESSIONS_DIR = Path.home() / ".aihydro" / "sessions"
 _SESSIONS_DIR = SESSIONS_DIR  # backward compat alias
+# Deprecated: no longer used for any write (see ai_hydro.registry.paths.rules_dir).
+# Kept only so existing ``patch("...store._REPO_ROOT")`` test fixtures still resolve.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_RULES_DIR_NAME = ".aihydrorules"
 
 # Sentinel feature ID used by backward-compat set()/get() path.
 # Old tools write results here; new @feature_tool tools use real feature IDs.
@@ -1671,8 +1672,8 @@ class HydroSession:
             "Scientific context authored by the LLM via `write_research_interpretation`.*"
         )
 
-        base = Path(self.workspace_dir) if self.workspace_dir else _REPO_ROOT
-        research_md = base / _RULES_DIR_NAME / "research.md"
+        from ai_hydro.registry.paths import rules_dir
+        research_md = rules_dir(self.workspace_dir) / "research.md"
         research_md.parent.mkdir(parents=True, exist_ok=True)
         research_md.write_text("\n".join(lines))
 

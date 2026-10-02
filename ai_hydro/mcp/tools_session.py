@@ -281,7 +281,7 @@ def write_research_interpretation(
     try:
         session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
-        from ai_hydro.session.store import _REPO_ROOT, _RULES_DIR_NAME
+        from ai_hydro.registry.paths import rules_dir
         from ai_hydro.mcp.tools_docs import _write_tools_md, _list_tools_sync
 
         # ── Answer Auditor gate ───────────────────────────────────────────────
@@ -349,8 +349,7 @@ def write_research_interpretation(
         session.save()
 
         tools_path = _write_tools_md()
-        base = Path(session.workspace_dir) if session.workspace_dir else _REPO_ROOT
-        research_md_path = base / _RULES_DIR_NAME / "research.md"
+        research_md_path = rules_dir(session.workspace_dir) / "research.md"
 
         citations_path: str | None = None
         bib = session.export_bibtex()

@@ -119,9 +119,12 @@ def _list_tools_sync() -> list:
     import asyncio
     from ai_hydro.mcp.app import mcp
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            return []
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass                        # no loop running here: safe to start one
+    else:
+        return []                   # called from async code; cannot nest asyncio.run
+    try:
         return asyncio.run(mcp.list_tools())
     except Exception:
         return []
@@ -135,11 +138,12 @@ def _write_tools_md() -> Path:
     Community-added tools appear here automatically on next server start
     or write_research_interpretation call — no manual edits needed.
     """
-    # Repo root: ai_hydro/mcp/tools_docs.py → up 4 levels
-    repo_root = Path(__file__).resolve().parent.parent.parent.parent
-    rules_dir = repo_root / ".aihydrorules"
-    rules_dir.mkdir(parents=True, exist_ok=True)
-    tools_md = rules_dir / "tools.md"
+    # Always under AIHYDRO_HOME, never a workspace: tools.md is large and the extension
+    # injects every file of <workspace>/.aihydrorules into the prompt.
+    from ai_hydro.registry.paths import rules_dir
+    out_dir = rules_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tools_md = out_dir / "tools.md"
 
     tools = _list_tools_sync()
     if not tools:

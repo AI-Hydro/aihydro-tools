@@ -19,3 +19,21 @@ def aihydro_home() -> Path:
     if override:
         return Path(override).expanduser()
     return Path.home() / ".aihydro"
+
+
+RULES_DIR_NAME = ".aihydrorules"
+
+
+def rules_dir(workspace_dir: "str | os.PathLike[str] | None" = None) -> Path:
+    """Where generated rules/context files (``research.md``, ``tools.md``) live.
+
+    ``<workspace_dir>/.aihydrorules`` when the session has a workspace (the VS Code
+    extension reads that directory as user rules), otherwise
+    ``<aihydro_home>/.aihydrorules``. Never derived from the location of the code
+    checkout: an install must not write beside, or above, its own source tree, and
+    a per-run ``AIHYDRO_HOME`` must contain everything the run writes. Resolved at
+    call time, like :func:`aihydro_home`.
+    """
+    if workspace_dir:
+        return Path(workspace_dir) / RULES_DIR_NAME
+    return aihydro_home() / RULES_DIR_NAME

@@ -24,10 +24,6 @@ from pathlib import Path
 
 _PROFILE_PATH = Path.home() / ".aihydro" / "researcher.json"
 
-# Project root: python/ai_hydro/session/persona.py → up 4 levels
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-_RESEARCH_MD = _PROJECT_ROOT / ".aihydrorules" / "research.md"
-
 
 class ResearcherProfile:
     """
