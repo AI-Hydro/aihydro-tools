@@ -40,7 +40,12 @@ class TestToolRegistration:
         """All built-in tools must be registered after importing ai_hydro.mcp."""
         from ai_hydro.mcp import mcp
         tools = asyncio.run(mcp.list_tools())
-        tool_names = {t.name for t in tools}
+        from ai_hydro.mcp.app import TOOL_TIERS
+        from _plugin_tools import optional_plugin_tool_names
+        # Optional community plugins (e.g. aihydro-lsh) are environment
+        # dependent and not part of the built-in contract.
+        optional = optional_plugin_tool_names(tools, TOOL_TIERS)
+        tool_names = {t.name for t in tools} - optional
         expected_tools = self.expected_tools()
         assert tool_names == expected_tools, (
             f"Missing: {expected_tools - tool_names}, "
@@ -50,8 +55,11 @@ class TestToolRegistration:
     def test_tool_count_matches_expected(self):
         """Tool count matches EXPECTED_TOOLS — catches accidental duplicates or drops."""
         from ai_hydro.mcp import mcp
+        from ai_hydro.mcp.app import TOOL_TIERS
+        from _plugin_tools import optional_plugin_tool_names
         tools = asyncio.run(mcp.list_tools())
-        assert len(tools) == len(self.expected_tools())
+        optional = optional_plugin_tool_names(tools, TOOL_TIERS)
+        assert len(tools) - len(optional) == len(self.expected_tools())
 
     def test_all_tools_have_descriptions(self):
         """Every tool should have a non-empty description (from docstring)."""
