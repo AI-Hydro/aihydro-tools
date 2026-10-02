@@ -114,11 +114,16 @@ class TestVersionAndEnvironment:
         rec = _build(result={"data": {}, "meta": {"version": "9.9.9"}})
         assert (rec.tool_version, rec.version_source) == ("9.9.9", "result_meta")
 
-    def test_falls_back_to_distribution_version_and_says_so(self):
+    def test_uses_package_version_and_says_so(self):
+        import ai_hydro
         rec = _build(result={"data": {}})
-        assert rec.version_source in ("distribution", "unavailable")
-        if rec.version_source == "distribution":
-            assert rec.tool_version
+        assert (rec.tool_version, rec.version_source) == (ai_hydro.__version__, "package")
+
+    def test_distribution_version_is_only_a_fallback(self, monkeypatch):
+        monkeypatch.setattr(rr, "_package_version", lambda: None)
+        monkeypatch.setattr(rr, "_distribution_version", lambda: "1.2.3")
+        rec = _build(result={"data": {}})
+        assert (rec.tool_version, rec.version_source) == ("1.2.3", "distribution")
 
     def test_environment_fingerprint_is_memoised(self):
         assert rr.process_environment() is rr.process_environment()

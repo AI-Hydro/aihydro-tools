@@ -408,6 +408,33 @@ def _session_store(
         log.debug("Session store skipped (%s): %s", slot, exc)
 
 
+class MissingPrerequisiteError(RuntimeError):
+    """A tool was called before the step whose output it needs.
+
+    Distinct from an unexpected failure: the caller did nothing wrong in the
+    tool arguments, it skipped a step. ``to_dict`` returns the code
+    ``MISSING_PREREQUISITES`` (the vocabulary the tools already use for the
+    same condition) with ``next_tools`` naming the step to run.
+    """
+
+    code = "MISSING_PREREQUISITES"
+
+    def __init__(self, message: str, *, next_tools: list[str], recovery: str = ""):
+        super().__init__(message)
+        self.next_tools = list(next_tools)
+        self.recovery = recovery or f"Run {', '.join(self.next_tools)} first."
+
+    def to_dict(self) -> dict:
+        return {
+            "error": True,
+            "code": self.code,
+            "message": str(self),
+            "recovery": self.recovery,
+            "next_tools": list(self.next_tools),
+            "docs_anchor": "",
+        }
+
+
 def _get_session_geometry(session_id: str) -> dict:
     """
     Return the watershed GeoJSON dict from the cached session.
@@ -420,9 +447,10 @@ def _get_session_geometry(session_id: str) -> dict:
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         if session.watershed is None:
-            raise RuntimeError(
+            raise MissingPrerequisiteError(
                 f"No watershed cached for session '{session_id}'. "
-                "Run delineate_watershed first."
+                "Run delineate_watershed first.",
+                next_tools=["delineate_watershed"],
             )
         ws_data = session.watershed.get("data", {})
 

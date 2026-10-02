@@ -138,17 +138,31 @@ def _distribution_version() -> Optional[str]:
     return process_environment()[0]["distributions"].get("aihydro-tools")
 
 
+def _package_version() -> Optional[str]:
+    """``ai_hydro.__version__`` of the running source, or None if unknown."""
+    try:
+        from ai_hydro import __version__
+    except Exception:
+        return None
+    return __version__ if isinstance(__version__, str) and __version__ and __version__ != "unknown" else None
+
+
 def resolve_tool_version(result: Any) -> Tuple[Optional[str], str]:
     """``(version, version_source)``.
 
     ``meta.version`` of the result (the producing package's own version) wins;
-    otherwise the ``aihydro-tools`` distribution version, labelled as such.
+    then the running package's own ``ai_hydro.__version__`` ("package"); the
+    installed ``aihydro-tools`` distribution metadata is only a fallback, since
+    it can lag the source (stale editable-install dist-info).
     """
     meta = result.get("meta") if isinstance(result, dict) else None
     if isinstance(meta, dict):
         version = meta.get("version")
         if isinstance(version, str) and version:
             return version, "result_meta"
+    version = _package_version()
+    if version:
+        return version, "package"
     version = _distribution_version()
     return version, ("distribution" if version else "unavailable")
 

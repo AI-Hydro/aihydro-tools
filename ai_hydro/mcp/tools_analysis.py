@@ -1064,6 +1064,13 @@ def fetch_streamflow_data(
         saved = _workspace_write(
             session_id, f"streamflow_{resolved_gauge_id}.json", d["data"]
         )
+        if not saved:
+            # No workspace: the lean session JSON would keep only q_cms_n and
+            # the series would be unrecoverable for the tools that consume it.
+            from ai_hydro.session import store as _store
+            saved = _store.write_session_data_file(
+                session_id, f"streamflow_{resolved_gauge_id}.json", d["data"]
+            )
         if saved:
             files_saved.append(saved)
 
@@ -1237,7 +1244,20 @@ def extract_hydrological_signatures(
             or (session.site_id and session.site_id.isdigit() and len(session.site_id) >= 7)
         )
 
-        if not _is_usgs or session.streamflow:
+        # The streamflow slot is usable for a USGS gauge only when it covers the
+        # gauge and period requested here; otherwise it is a different series
+        # and the signatures function fetches its own (recorded as such below).
+        _slot_params = ((session.streamflow or {}).get("meta") or {}).get("params") or {}
+        _slot_mismatch = None
+        if _is_usgs and _slot_params:
+            for _k, _want in (("start_date", start_date), ("end_date", end_date),
+                              ("gauge_id", session.site_id)):
+                _have = _slot_params.get(_k)
+                if _have not in (None, "") and _want and str(_have) != str(_want):
+                    _slot_mismatch = f"slot {_k}={_have!r} != requested {_want!r}"
+                    break
+
+        if (not _is_usgs or session.streamflow) and not _slot_mismatch:
             # Load q_cms from session (may have been stripped to disk)
             sf_data: dict = {}
             if session.streamflow:
@@ -1256,8 +1276,11 @@ def extract_hydrological_signatures(
         # that stored it (the slot carries its run id in meta.run_id) and the
         # digest of that run's recorded output. Never inferred: a slot without
         # a run id (stored before slots were stamped) yields no parent edge.
+        # When the series did NOT come from the slot (USGS gauge, slot absent,
+        # for another period, or its arrays unrecoverable) the signatures
+        # function acquires its own streamflow; that is declared, not hidden.
+        from ai_hydro.session import run_records as _rr
         if _q_cms:
-            from ai_hydro.session import run_records as _rr
             _edge = _rr.parent_edge_for_run(
                 session_id, ((session.streamflow or {}).get("meta") or {}).get("run_id")
             )
@@ -1273,6 +1296,20 @@ def extract_hydrological_signatures(
                 _rr.declare_lineage(parents=[_edge["parent"]], input_refs=_refs)
             else:
                 _rr.declare_lineage(parent_unresolved="streamflow slot carries no retained run id")
+        elif _is_usgs:
+            if _slot_mismatch:
+                _why = f"session streamflow slot not used ({_slot_mismatch})"
+            elif session.streamflow:
+                _why = "session streamflow slot has no recoverable series"
+            else:
+                _why = "no streamflow slot in session"
+            _rr.declare_lineage(
+                streamflow_acquisition={
+                    "mode": "internal_nwis_fetch", "gauge_id": session.site_id,
+                    "start_date": start_date, "end_date": end_date, "reason": _why,
+                },
+                parent_unresolved="signatures fetched its own NWIS streamflow; no session run supplied it",
+            )
 
         # gauge_id for USGS fetch; None for global basins (uses q_cms_series)
         usgs_gauge_id: str | None = None

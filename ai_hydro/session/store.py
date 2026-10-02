@@ -226,6 +226,26 @@ def _now() -> str:
 # this is an internal storage swap, not an API change.
 # --------------------------------------------------------------------------- #
 
+def write_session_data_file(session_id: str, name: str, content: Any) -> str | None:
+    """Write ``content`` as JSON next to the session file; return the path.
+
+    Fallback home for arrays that the lean session JSON drops (long lists
+    become ``<key>_n`` counts) when the session has no workspace directory, so
+    that a later tool can read back exactly the series a fetch stored instead
+    of re-acquiring it. Returns None when the write fails.
+    """
+    try:
+        path = _SESSIONS_DIR / (
+            f"{_safe_filename_component(session_id)}.data.{_safe_filename_component(name, 'data')}"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(content, default=str))
+        return str(path)
+    except Exception as exc:
+        log.debug("Session data write skipped (%s): %s", name, exc)
+        return None
+
+
 def _run_log_db_path(session_id: str) -> Path:
     safe = _safe_filename_component(session_id)
     return _SESSIONS_DIR / f"{safe}.runlog.sqlite3"
