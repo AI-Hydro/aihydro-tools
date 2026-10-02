@@ -42,9 +42,16 @@ def push_claim_event(
     evidence_spans: list[dict] | None = None,
     limitations: list[str] | None = None,
     created_at: str = "",
+    revision: int | None = None,
+    revision_digest: str = "",
 ) -> bool:
-    """Push a claim added/updated/removed event to the ledger events directory."""
-    return write_ledger_event({
+    """Push a claim added/updated/removed event to the ledger events directory.
+
+    ``revision``/``revision_digest`` are the claim's sealed revision after the
+    write; consumers use them to tell the event's revision from a snapshot's.
+    They are omitted from the payload when not supplied.
+    """
+    payload = {
         "change_type": change_type,
         "session_id": session_id,
         "claim_id": claim_id,
@@ -55,4 +62,8 @@ def push_claim_event(
         "evidence_spans": evidence_spans or [],
         "limitations": limitations or [],
         "created_at": created_at,
-    })
+    }
+    if revision is not None and revision_digest:
+        payload["revision"] = revision
+        payload["revision_digest"] = revision_digest
+    return write_ledger_event(payload)

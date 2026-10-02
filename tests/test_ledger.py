@@ -288,3 +288,36 @@ def test_assumptions_ledger():
     session2 = HydroSession.load(session_id)
     assert "a1" in session2.assumptions
     assert session2.assumptions["a1"]["risk"] == "high"
+
+
+def test_claim_events_carry_the_new_sealed_revision(monkeypatch):
+    """Events are write notifications: they must name the revision the write produced."""
+    from ai_hydro.session import claim_revisions
+    from ai_hydro.mcp.ledger_commands import push_claim_event as real_push
+    from unittest.mock import patch
+
+    events = []
+    monkeypatch.setattr("ai_hydro.mcp.tools_ledger.push_claim_event",
+                        lambda **kw: events.append(kw) or True)
+    sid = "test-ledger-event-revision"
+    HydroSession(sid)
+    r1 = add_claim(session_id=sid, claim_id="claim.c1", statement="KGE is high for this basin.", claim_type="empirical_result",
+              status="tested", confidence="medium", confidence_rationale="Tested with 10 years of data.",
+              basins=["01031500"], period="2000-2010")
+    update_claim_status(session_id=sid, claim_id="claim.c1", status="supported",
+                        confidence="medium", rationale="Re-reviewed against the longer record.")
+    assert r1.get("status") == "recorded", r1
+    assert [e["change_type"] for e in events] == ["added", "updated"]
+    latest = claim_revisions.latest(sid, "claim.c1")
+    assert events[0]["revision_digest"] and events[1]["revision_digest"]
+    assert events[0]["revision_digest"] != events[1]["revision_digest"]
+    assert events[1]["revision"] == events[0]["revision"] + 1
+    assert events[1]["revision_digest"] == latest["revision_digest"]
+
+    with patch("ai_hydro.mcp.ledger_commands.write_ledger_event") as w:
+        real_push(change_type="updated", session_id=sid, claim_id="claim.c1",
+                  revision=3, revision_digest="d3")
+        assert w.call_args[0][0]["revision"] == 3
+        assert w.call_args[0][0]["revision_digest"] == "d3"
+        real_push(change_type="updated", session_id=sid, claim_id="claim.c1")
+        assert "revision_digest" not in w.call_args[0][0]

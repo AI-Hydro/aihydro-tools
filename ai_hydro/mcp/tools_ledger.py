@@ -209,8 +209,8 @@ def add_claim(
         existed = claim_id in session.claims
         before = _revision_fields(session, claim_id) if existed else None
         session.claims[claim_id] = claim_dict
-        _record_revision(session, claim_id, tool="add_claim", before=before,
-                         reason="redefined" if existed else "created")
+        rev = _record_revision(session, claim_id, tool="add_claim", before=before,
+                               reason="redefined" if existed else "created")
         session.save()
         push_claim_event(
             change_type="added",
@@ -222,6 +222,8 @@ def add_claim(
             confidence=confidence,
             evidence_spans=normalized_spans,
             limitations=limitations or [],
+            revision=rev.revision,
+            revision_digest=rev.revision_digest,
         )
         out = {"id": claim_id, "status": "recorded"}
         if entries:
@@ -297,8 +299,8 @@ def update_claim_status(
         if uncertainty_verified:
             claim_dict["uncertainty_verified"] = True
 
-        _record_revision(session, claim_id, tool="update_claim_status",
-                         reason="status_update", before=before)
+        rev = _record_revision(session, claim_id, tool="update_claim_status",
+                               reason="status_update", before=before)
         session.save()
         push_claim_event(
             change_type="updated",
@@ -308,6 +310,8 @@ def update_claim_status(
             status=status,
             claim_type=claim_type,
             confidence=confidence,
+            revision=rev.revision,
+            revision_digest=rev.revision_digest,
         )
         # C2 advisory: what promotion would block on this claim as stored (same policy).
         return {"id": claim_id, "status": "updated",
