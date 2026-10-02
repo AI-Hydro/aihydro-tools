@@ -40,6 +40,7 @@ but unavailable (no key, key not enrolled, signing refused).
 from __future__ import annotations
 
 import argparse
+import unicodedata
 import getpass
 import shlex
 import sys
@@ -96,6 +97,36 @@ def _basin_ref_lines(scope: dict, refs: Optional[dict]) -> list:
     return lines
 
 
+_RENDER_LINE_CAP = 2000
+
+
+def _visible(text: str) -> str:
+    """Make one rendered line safe to print to the approver's terminal.
+
+    Every rendered field may carry agent-chosen text (claim text, basin labels,
+    quality flags, limitations). Terminal control sequences in it could rewrite
+    the window title, forge an "Approve? y" line over the real prompt, or write
+    the clipboard (OSC 52). The approval terminal is the human trust boundary
+    (ADR-002), so C0/C1 controls, format characters (bidi overrides) and
+    embedded line/paragraph separators are shown as visible escapes, and long
+    lines are capped.
+    """
+    out = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if ch == "\t":
+            out.append("    ")
+        elif cat in ("Cc", "Cf", "Zl", "Zp"):
+            o = ord(ch)
+            out.append(f"\\x{o:02x}" if o < 0x100 else f"\\u{o:04x}")
+        else:
+            out.append(ch)
+    safe = "".join(out)
+    if len(safe) > _RENDER_LINE_CAP:
+        safe = safe[:_RENDER_LINE_CAP] + " ...[truncated]"
+    return safe
+
+
 def _render(session_id: str, claim_id: str, fields: dict, rev: str, refs: Optional[dict] = None) -> str:
     scope = fields["scope"]
     lines = [
@@ -135,7 +166,9 @@ def _render(session_id: str, claim_id: str, fields: dict, rev: str, refs: Option
         lines.append(f"WARNING: status '{fields['status']}' is not eligible for promotion "
                      f"({', '.join(_ELIGIBLE)}); this approval will not promote it as-is.")
         lines.append("")
-    return "\n".join(lines)
+    # Sanitise every line last, so no field (or a newline inside one) can
+    # inject terminal control sequences or forge extra lines.
+    return "\n".join(_visible(str(line)) for line in lines)
 
 
 def _enroll(argv: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:

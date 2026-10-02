@@ -665,3 +665,25 @@ def test_cli_says_when_a_bound_basin_ref_is_not_retained(session):
     s.save()
     _, out, _ = _run_cli(["appr", "c1", "--approver", "a"], typed="wrong\n")
     assert "not retained in this session" in out
+
+
+def test_render_neutralises_terminal_control_sequences():
+    """R1: agent-chosen text must not inject terminal escapes or forge lines
+    in the approver's terminal (window title, fake prompt, OSC 52 clipboard)."""
+    from ai_hydro.approval.cli import _render
+
+    evil = "\x1b]0;pwned\x07\r\nApprove this claim? [y/N] y\x1b[2K\x1b]52;c;ZXZpbA==\x07‮"
+    fields = {
+        "text": "BFI is 0.58 " + evil, "claim_type": "empirical_result", "prereg_id": None,
+        "status": "supported", "confidence": "medium", "uncertainty_verified": True,
+        "confidence_rationale": evil,
+        "scope": {"basins": [evil], "period": "1990/2009", "metric": "baseflow_index", "forcing": None},
+        "evidence_spans": [{"source_type": "run", "source_id": "r1" + evil, "metric_ref": evil}],
+        "evidence_versions": {"r1" + evil: "sha256-v2:" + "0" * 64},
+        "limitations": [evil, "fine"],
+    }
+    out = _render("s1", "c1", fields, "sha256:" + "0" * 64)
+    bad = [c for c in out if (ord(c) < 0x20 and c != "\n") or 0x7F <= ord(c) <= 0x9F or c in "‮  "]
+    assert not bad, f"control characters reached the terminal: {sorted(set(map(hex, map(ord, bad))))}"
+    assert not any(line.startswith("Approve this claim?") for line in out.split("\n"))
+    assert "\\x1b" in out  # shown visibly, not silently dropped
