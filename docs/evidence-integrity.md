@@ -159,6 +159,50 @@ report label them `approval: self_asserted` at read time.
 The record does not say the claim is true: it records that a named person ran
 the CLI for this exact revision of the claim and its retained evidence.
 
+## Claim revisions (`aihydro.claim_revision_record/1`)
+
+Added in 2040 slice 2. Every authority-bearing change to a session claim
+appends exactly one sealed row to `<sessions_dir>/<session_id>.claims.sqlite3`.
+`ai_hydro/session/claim_revisions.py` is the only writer.
+
+A row carries `session_id`, `claim_id`, `revision` (from 0), `supersedes` (the
+previous row's `revision_digest`), `revision_digest`, `content`, `cause`
+(`{tool, reason, run_id?, ...}`), `actor`, `recorded_at` and `record_digest`
+(`aihydro_core.records.ClaimRevision`). `revision_digest` is the same
+`aihydro.claim_revision/2` digest an approval binds to, including the retained
+evidence fingerprints, so a revision and an approval name the same thing.
+
+| `cause.reason` | Written by |
+|---|---|
+| `created`, `redefined` | `add_claim` (`redefined` when the id already existed) |
+| `status_update` | `update_claim_status` |
+| `promotion` | `promote_claim_to_registry`, after the registry row is written. Promotion is outside the digest, so the row repeats the approved `revision_digest` and records `registry_id` |
+| `staleness` | `check_registry_staleness` when it sets `status: stale` |
+| `evidence_drift` | promotion found that the retained evidence differs from the latest stored revision. The revision is written, then promotion is refused unless an unused approval already binds the new revision |
+| `out_of_band_edit` | promotion found claim fields that differ from the latest revision for another reason (the session JSON was edited outside the tools) |
+| `legacy_unrecorded` | first touch of a claim that predates the store |
+
+Rules:
+
+- **Insert-only.** `PRIMARY KEY (claim_id, revision)`, plain `INSERT`, and
+  `BEFORE UPDATE`/`BEFORE DELETE` triggers that abort. Read-modify-insert runs in
+  `BEGIN IMMEDIATE`, so concurrent writers get consecutive numbers.
+- **Fail closed.** Every read verifies each seal and the chain; a failing row
+  raises instead of being skipped, and promotion therefore errors.
+- **Record before save.** The revision is written before `session.save()`. A
+  change that cannot be recorded is not persisted.
+- **No unchanged rows.** An update that moves no authority field (same
+  `revision_digest`) writes nothing.
+- **Promotion** requires the approval's `claim_revision_digest` to equal the
+  latest stored revision's `revision_digest`. Registry rows gain
+  `claim_revision_digest` and `claim_revision` (the approved revision number).
+  `registry_id` is unchanged and legacy rows are not recomputed.
+- **Legacy claims** get revision 0 with `legacy_unrecorded` on first touch,
+  recording the state when first seen. Earlier history is never back-filled.
+
+A seal proves integrity, not origin: a process running as the same OS user can
+rewrite the SQLite file and re-seal. Signed approvals (ADR-002b) address origin.
+
 ## State isolation
 
 Scope: the registry (`$AIHYDRO_HOME/registry/claims.jsonl`) and approval paths
