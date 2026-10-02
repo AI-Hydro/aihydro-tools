@@ -239,6 +239,93 @@ def verify_hashes(capsule_dir: Path, out=print):
 
 
 # --------------------------------------------------------------------------- #
+# Served data: bind data/ files to the producer's SEALED record
+# --------------------------------------------------------------------------- #
+
+def _retained_name(path: str) -> str:
+    return Path(path).name.split(".data.", 1)[-1]
+
+
+def _csv_matches_json(csv_path: Path, json_path: Path) -> bool:
+    """The derived CSV holds exactly the retained JSON's dates and q_cms."""
+    try:
+        body = json.loads(json_path.read_text(encoding="utf-8"))
+        lines = csv_path.read_text(encoding="utf-8").splitlines()
+        if lines[0].split(",") != ["date", "q_cms"]:
+            return False
+        rows = [ln.split(",") for ln in lines[1:]]
+        dates, q = body["dates"], body["q_cms"]
+        if len(rows) != len(dates):
+            return False
+        for (d, v), d0, v0 in zip(rows, dates, q):
+            if d != str(d0) or (v == "") != (v0 is None) or (v != "" and float(v) != float(v0)):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def verify_data_bindings(capsule_dir: Path, out=print) -> bool:
+    """Check retained data files against digests sealed in producer records.
+
+    Reads run_log.json (not the manifest), so a regenerated manifest cannot
+    hide a swapped series. A record whose seal fails is ignored here; the
+    record check reports it. Files with no sealed digest are reported as
+    self-attested, never as bound.
+    """
+    ok = True
+    rl_path = capsule_dir / "run_log.json"
+    run_log = json.loads(rl_path.read_text(encoding="utf-8")) if rl_path.exists() else {}
+    sealed_names = set()
+    for run_id, entry in sorted(run_log.items()):
+        record = entry.get("record") if isinstance(entry, dict) else None
+        if not isinstance(record, dict) or not record_seal_ok(record):
+            continue
+        for f in (record.get("extra") or {}).get("retained_files") or []:
+            if not (isinstance(f, dict) and f.get("path") and f.get("digest")):
+                continue
+            name = _retained_name(f["path"])
+            fpath = capsule_dir / "data" / name
+            if not fpath.exists():
+                if f"data/{name}" in _listed_data_paths(capsule_dir):
+                    # The manifest says the capsule carries this evidence; its
+                    # absence is a deletion, which must fail like a swap.
+                    ok = False
+                    out(f"FAIL  data/{name}: sealed by {run_id} and listed in the manifest, but missing")
+                else:
+                    out(f"NOTE  data/{name}: sealed by {run_id} but not in this capsule")
+                continue
+            sealed_names.add(f"data/{name}")
+            actual = "sha256:" + _sha256(fpath)
+            if actual == f["digest"]:
+                out(f"PASS  data/{name} matches the digest sealed by {run_id}")
+            else:
+                ok = False
+                out(f"FAIL  data/{name} differs from the digest sealed by {run_id}")
+    try:
+        manifest = json.loads((capsule_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
+    except Exception:
+        manifest = {}
+    for art in manifest.get("data_artifacts") or []:
+        ra = (art.get("retained_artifact") or {}).get("path")
+        if art.get("binding") == "producer_sealed" and ra not in sealed_names:
+            ok = False
+            out(f"FAIL  {art.get('path')} claims a producer-sealed binding but no sealed record "
+                f"names {ra}")
+        elif art.get("path") and art.get("binding") != "producer_sealed":
+            out(f"NOTE  {art['path']}: {art.get('binding', 'self_attested')} "
+                f"({art.get('status')}); no sealed producer digest names this series")
+        if art.get("path") and ra:
+            if (capsule_dir / ra).exists() and (capsule_dir / art["path"]).exists():
+                if _csv_matches_json(capsule_dir / art["path"], capsule_dir / ra):
+                    out(f"PASS  {art['path']} equals the retained series {ra}")
+                else:
+                    ok = False
+                    out(f"FAIL  {art['path']} does not equal the retained series {ra}")
+    return ok
+
+
+# --------------------------------------------------------------------------- #
 # Live cross-check: run log vs the values retained in session.json
 # --------------------------------------------------------------------------- #
 
@@ -381,6 +468,8 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
     else:
         out("Run records: run_log.json not found")
 
+    bindings_ok = verify_data_bindings(capsule_dir, out=out)
+
     comparisons, comparisons_ok = [], True
     if live:
         comparisons, skipped = live_cross_check(capsule_dir, tolerance)
@@ -394,7 +483,7 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
         for run_id, why in skipped:
             out(f"SKIP  {run_id}: {why}")
 
-    integrity_ok = hashes_ok and records_ok
+    integrity_ok = hashes_ok and records_ok and bindings_ok
     if not hash_results and not (rl_path.exists() and summary["v2_records"]):
         integrity_ok = False        # nothing was actually checked
         out("FAIL  archive has no files and no records; nothing was verified.")
@@ -428,6 +517,20 @@ def source_text() -> str:
     """The text written to a capsule as ``replay.py`` (this file, verbatim)."""
     return Path(__file__).read_text(encoding="utf-8")
 
+
+
+def _listed_data_paths(capsule_dir: Path) -> set:
+    """data/ paths the manifest claims the capsule carries (files + data_artifacts)."""
+    try:
+        m = json.loads((capsule_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    listed = {e.get("path") for e in m.get("files") or [] if isinstance(e, dict)}
+    for art in m.get("data_artifacts") or []:
+        if isinstance(art, dict):
+            listed.add(art.get("path"))
+            listed.add(art.get("retained_artifact", {}).get("path") if isinstance(art.get("retained_artifact"), dict) else None)
+    return {x for x in listed if isinstance(x, str) and x.startswith("data/")}
 
 if __name__ == "__main__":
     sys.exit(main())

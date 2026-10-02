@@ -40,7 +40,6 @@ def build_manifest(capsule_dir: Path) -> dict:
     Return shape::
 
         {
-          "capsule_dir": str,
           "n_files": int,
           "files": [{"path": str, "sha256": str, "size": int}, ...],
           "replay_status": "archive_integrity",
@@ -68,7 +67,6 @@ def build_manifest(capsule_dir: Path) -> dict:
             }
         )
     manifest = {
-        "capsule_dir": str(capsule_dir),
         "n_files": len(entries),
         "files": entries,
         "replay_status": REPLAY_STATUS,

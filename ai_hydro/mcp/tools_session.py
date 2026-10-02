@@ -455,7 +455,9 @@ def export_session(
 
     format='capsule' (default): reproducible folder (README.md + methods.md +
         citations.bib + environment.yml + session.json + run_log.json +
-        capsule_manifest.json + replay.py + data/figures/model/). replay.py
+        capsule_manifest.json + replay.py + data/figures/model/). data/ holds
+        the served streamflow series (CSV; sha256 and producing run in the
+        manifest's ``data_artifacts``). replay.py
         verifies file hashes and run-record digests (replay status
         ``archive_integrity``); ``--live`` also cross-checks the run log
         against session.json and exits 2 if nothing could be compared. No
@@ -521,6 +523,14 @@ def export_session(
         (capsule_dir / "figures").mkdir(parents=True, exist_ok=True)
         (capsule_dir / "model").mkdir(parents=True, exist_ok=True)
 
+        # Served input data the claims depend on (streamflow series as CSV),
+        # so a reader outside the platform can recompute. Written first; the
+        # workspace copy below never overwrites these paths.
+        from ai_hydro.capsule.data_artifacts import collect_data_artifacts
+        data_artifacts = collect_data_artifacts(session, capsule_dir)
+        _artifact_paths = {a["path"] for a in data_artifacts if a.get("path")} | {
+            a["retained_artifact"]["path"] for a in data_artifacts if a.get("retained_artifact")}
+
         # README.md
         display = session.site_name or session.site_id or session_id
         name_str = ""
@@ -542,6 +552,23 @@ def export_session(
             computed_at = (result.get("meta", {}).get("computed_at", "")[:10]
                            if result else "") or "—"
             readme.append(f"- **{slot}** (computed {computed_at})")
+        if data_artifacts:
+            readme += ["", "## Data"]
+            for a in data_artifacts:
+                if a.get("path"):
+                    if a.get("requested_by_run_id") is not None or a["retrieval"]["mechanism"] == "aihydro_data_refetch":
+                        who = ("re-queried at export; may differ from what the run consumed "
+                               f"(requested by run `{a.get('requested_by_run_id') or 'unrecorded'}`)")
+                    else:
+                        who = f"run `{a.get('produced_by_run_id') or 'unrecorded'}`"
+                    bind = ("bound to the producer's sealed record" if a["binding"] == "producer_sealed"
+                            else "self-attested: no sealed producer digest names this series")
+                    readme.append(
+                        f"- `{a['path']}` ({a['n_rows']} rows, sha256 `{a['sha256'][:16]}...`, "
+                        f"{who}, {a['retrieval']['mechanism']}; {bind}; status {a['status']})"
+                    )
+                else:
+                    readme.append(f"- {a['variable']}: unavailable ({a.get('reason')})")
         if session.pending():
             readme += ["", "## Pending", ", ".join(session.pending())]
         if session.notes:
@@ -596,6 +623,8 @@ def export_session(
                     continue
                 if f.suffix in (".json", ".geojson", ".csv", ".tif", ".tiff"):
                     dest = capsule_dir / "data" / f.name
+                    if f"data/{f.name}" in _artifact_paths:
+                        continue
                     shutil.copy2(f, dest)
                     files_written.append(str(dest))
                 elif f.suffix in (".png", ".html", ".svg"):
@@ -639,6 +668,10 @@ def export_session(
         # capsule_manifest.json — SHA-256 of every data file for integrity checking
         from ai_hydro.capsule.manifest import build_manifest, MANIFEST_FILE as _MF
         manifest = build_manifest(capsule_dir)
+        # Which run produced each served-data file, how it was obtained, and
+        # the export-time consistency checks. The digest of each file is also
+        # in ``files``; verify_manifest covers it.
+        manifest["data_artifacts"] = data_artifacts
         (capsule_dir / _MF).write_text(json.dumps(manifest, indent=2))
         files_written.append(str(capsule_dir / _MF))
 
@@ -658,6 +691,7 @@ def export_session(
             "n_manifest_entries": manifest["n_files"],
             "replay_status": manifest["replay_status"],
             "recomputation": manifest["recomputation"],
+            "data_artifacts": data_artifacts,
             "_note": (
                 "NEXT: call get_session_raw_state then write_research_interpretation "
                 "to author the scientific interpretation, then export again to embed it in README.md."
