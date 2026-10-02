@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from fastmcp.exceptions import ToolError as McpToolError
 
 from ai_hydro.mcp.app import mcp
+from ai_hydro.mcp.errors import StructuredToolError
 from ai_hydro.session import HydroSession
 from ai_hydro.session.models import ScientificClaim, Assumption, ClaimScope, EvidenceSpan
 from ai_hydro.mcp.helpers import _tool_error_to_dict
@@ -365,12 +366,12 @@ def _load_session_or_raise(session_id: str) -> HydroSession:
                 "recovery": "Check the session id or call start_session first.",
                 "next_tools": ["start_session", "get_session_summary"],
             }
-            raise McpToolError(json.dumps(envelope))
+            raise StructuredToolError(envelope)
         return HydroSession.load(session_id)
     except McpToolError:
         raise
     except Exception as exc:
-        raise McpToolError(json.dumps(_tool_error_to_dict(exc), default=str)) from exc
+        raise StructuredToolError(_tool_error_to_dict(exc)) from exc
 
 
 @mcp.tool()

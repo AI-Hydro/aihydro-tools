@@ -184,3 +184,44 @@ class TestMiddleware:
         # No schema info → middleware must not swallow; re-raises
         with pytest.raises(ValueError):
             _run(mw.on_call_tool(ctx, call_next))
+
+
+class TestStructuredRefusalPassthrough:
+    def test_structured_tool_error_passes_through_untaught(self):
+        from ai_hydro.mcp.errors import StructuredToolError
+        mw = _make_mw()
+        err = StructuredToolError({"error": True, "code": "X", "message": "m"})
+
+        async def call_next(c):
+            raise err
+
+        with pytest.raises(StructuredToolError) as ei:
+            _run(mw.on_call_tool(_ctx("compute_spectral_index", {"bogus": 1}), call_next))
+        assert ei.value is err and ei.value.envelope["code"] == "X"
+
+    def test_envelope_is_the_json_text(self):
+        import json
+        from ai_hydro.mcp.errors import StructuredToolError
+        env = {"error": True, "code": "X", "message": "m", "next_tools": []}
+        assert json.loads(str(StructuredToolError(env))) == env
+
+    def test_legacy_json_text_toolerror_still_passes_through(self):
+        import json
+        from fastmcp.exceptions import ToolError
+        mw = _make_mw()
+
+        async def call_next(c):
+            raise ToolError(json.dumps({"error": True, "code": "Y"}))
+
+        with pytest.raises(ToolError):
+            _run(mw.on_call_tool(_ctx("compute_spectral_index", {"bogus": 1}), call_next))
+
+    def test_plain_toolerror_is_still_taught(self):
+        from fastmcp.exceptions import ToolError
+        mw = _make_mw()
+
+        async def call_next(c):
+            raise ToolError("Error calling tool: bad")
+
+        res = _run(mw.on_call_tool(_ctx("compute_spectral_index", {"bogus": 1}), call_next))
+        assert res.structured_content["error"] is True

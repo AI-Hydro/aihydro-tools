@@ -244,10 +244,11 @@ def _refusal(message: str) -> ToolError:
     "Output validation error". The error text is the JSON envelope (``code`` readable
     by the runner).
     """
-    return ToolError(json.dumps({
+    from ai_hydro.mcp.errors import StructuredToolError
+    return StructuredToolError({
         "error": True, "code": CONTEXT_MISMATCH, "message": message,
         "recovery": "This is an evaluation harness fault, not something the agent can fix.",
-        "next_tools": []}))
+        "next_tools": []})
 
 
 class EvalConditionMiddleware(Middleware):

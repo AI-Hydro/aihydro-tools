@@ -482,6 +482,13 @@ def test_list_tool_refusals_keep_their_code_on_every_path(server, home, monkeypa
     assert res.is_error and "Unknown tool" in str(res.content)
 
 
+def test_refusal_is_a_structured_tool_error():
+    from ai_hydro.mcp.errors import StructuredToolError
+    err = ec._refusal("nope")
+    assert isinstance(err, StructuredToolError)
+    assert err.envelope["code"] == ec.CONTEXT_MISMATCH and json.loads(str(err)) == err.envelope
+
+
 # ---------------------------------------------------------------- locality
 
 def test_eval_condition_logic_lives_only_in_eval_condition_module():

@@ -134,14 +134,21 @@ def repair_arguments(
 
 
 def _is_structured_refusal(exc: Exception) -> bool:
-    """True for a ``ToolError`` a tool raised on purpose with a JSON error envelope.
+    """True for a ``StructuredToolError`` a tool raised on purpose with an error envelope.
 
     Tools whose output schema is an array (``list_claims``, ``list_assumptions``) cannot
-    return the usual error dict, so they raise ``ToolError(json.dumps(envelope))``. That
-    is a deliberate, already-structured refusal, not a malformed call: teaching the
-    caller the input schema would hide it.
+    return the usual error dict, so they raise ``StructuredToolError``. That is a
+    deliberate, already-structured refusal, not a malformed call: teaching the caller the
+    input schema would hide it.
+
+    The JSON-text sniff is kept as a fallback only for a third-party tool that raises a
+    plain ``ToolError(json.dumps(envelope))`` (the pre-``StructuredToolError`` contract,
+    still possible in community tools); the typed check is the primary mechanism.
     """
     from fastmcp.exceptions import ToolError
+    from ai_hydro.mcp.errors import StructuredToolError
+    if isinstance(exc, StructuredToolError):
+        return True
     if not isinstance(exc, ToolError):
         return False
     try:

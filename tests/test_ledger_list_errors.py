@@ -69,3 +69,12 @@ def test_populated_session_still_lists(sessions):
     only = call("list_claims", {"session_id": "with-rows", "status": "supported"}).structured_content["result"]
     assert [c["id"] for c in only] == ["C-2"]
     assert call("list_assumptions", {"session_id": "with-rows", "validated": False}).structured_content["result"][0]["id"] == "A-1"
+
+
+def test_raised_errors_are_structured_tool_errors(sessions):
+    from ai_hydro.mcp.errors import StructuredToolError
+    from ai_hydro.mcp.tools_ledger import _load_session_or_raise
+    with pytest.raises(StructuredToolError) as ei:
+        _load_session_or_raise("no-such-session")
+    assert ei.value.envelope["code"] == "SESSION_NOT_FOUND"
+    assert json.loads(str(ei.value)) == ei.value.envelope
