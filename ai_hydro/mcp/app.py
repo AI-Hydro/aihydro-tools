@@ -574,6 +574,9 @@ class _ContextInjectionMiddleware(Middleware):
 
 
 mcp.add_middleware(_ContextInjectionMiddleware())
+# Evaluation arms (P1/W2): registered BEFORE RunRecordMiddleware so it wraps it and strips only after sealing.
+from ai_hydro.mcp.eval_condition import EvalConditionMiddleware as _EvalConditionMiddleware  # noqa: E402
+mcp.add_middleware(_EvalConditionMiddleware())
 
 
 # ---------------------------------------------------------------------------
