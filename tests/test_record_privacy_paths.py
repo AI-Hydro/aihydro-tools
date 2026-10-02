@@ -105,3 +105,99 @@ def test_portable_handles_windows_paths():
     assert refs._portable_str(r"C:\ws\a\b.json", Path("/s"), Path(r"C:\ws"), h) == "workspace:a/b.json"
     assert refs._portable_str(r"C:\Users\bob\.aihydro\sessions\x.data.y.json", Path(r"C:\Users\bob\.aihydro\sessions"), None, h) == "session-data:x.data.y.json"
     assert refs._portable_str("not a path", Path("/s"), None, h) == "not a path"
+
+
+def _scan_capsule(cap: Path, *needles: str) -> dict:
+    bad = {}
+    for f in cap.rglob("*"):
+        if f.is_file() and f.suffix in {".json", ".md", ".py", ".txt", ".csv", ".yaml", ".yml", ".bib"}:
+            hits = _leaks(f.read_text(errors="replace"), *needles)
+            if hits:
+                bad[str(f.relative_to(cap))] = hits[:3]
+    return bad
+
+
+def _delineate_world(world, monkeypatch, tmp_path):
+    """Fresh session (no watershed slot) with delineate_watershed's NLDI call mocked."""
+    sid = "privacy-full"
+    s = HydroSession(sid)
+    s.site_id, s.site_type = GAUGE, "usgs_gauge"
+    s.save()
+
+    class _R:
+        def to_dict(self):
+            return {"data": {"area_km2": 250.0, "gauge_id": GAUGE, "gauge_name": "Mock",
+                             "gauge_lat": 39.25, "gauge_lon": -77.45,
+                             "geometry_geojson": json.loads(SQUARE)},
+                    "meta": {"tool": "delineate_watershed", "source": "mock NLDI"}}
+
+    monkeypatch.setattr("ai_hydro.analysis.watershed.delineate_watershed", lambda **k: _R())
+    return sid
+
+
+def test_full_session_delineate_fetch_signatures_export_leaks_nothing(world, tmp_path, monkeypatch):
+    server, _ = world
+    sid = _delineate_world(world, monkeypatch, tmp_path)
+    is_err, ws = _call(server, "delineate_watershed", {"session_id": sid, "gauge_id": GAUGE})
+    assert not is_err and not ws.get("error"), ws
+    for tool, args in (
+        ("fetch_streamflow_data", {"session_id": sid, "gauge_id": GAUGE, "start_date": START, "end_date": END}),
+        ("extract_hydrological_signatures", {"session_id": sid, "start_date": START, "end_date": END,
+                                             "geometry_geojson": SQUARE}),
+    ):
+        is_err, res = _call(server, tool, args)
+        assert not is_err and not res.get("error"), res
+
+    rows = HydroSession.load(sid).get("_run_log")
+    ws_row = next(r for r in rows.values() if r.get("tool_name") == "delineate_watershed")
+    assert ws_row["key_outputs"]["geometry_geojson_path"].startswith("session-data:")
+    assert not _leaks(json.dumps(rows, default=str), str(tmp_path))
+    from ai_hydro.session import run_records as rr
+    assert all(rr.verify_run_log_entry(r)["record_ok"] for r in rows.values() if r.get("record"))
+
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=sid, capsule_path=str(tmp_path / "capsule"))
+    assert "error" not in res, res
+    cap = Path(res["capsule_dir"])
+    assert not _scan_capsule(cap, str(tmp_path))
+    assert json.loads((cap / "capsule_manifest.json").read_text())["privacy"]["legacy_paths_scrubbed_on_export"] == 0
+
+
+def test_legacy_sealed_row_with_path_is_redacted_in_export_and_replay_notes_it(world, tmp_path, monkeypatch):
+    """A pre-fix sealed row holding a path is never rewritten in the store; the
+    export carries a redacted stub with its record_digest; replay: not FAIL, not PASS."""
+    import subprocess, sys
+    from ai_hydro.session import run_records as rr, store
+    server, _ = world
+    sid = _delineate_world(world, monkeypatch, tmp_path)
+    _call(server, "delineate_watershed", {"session_id": sid, "gauge_id": GAUGE})
+    # Forge a legacy sealed row directly in the db (bypassing the write-time scrubber).
+    leak = str(tmp_path / "home" / ".aihydro" / "sessions" / f"{sid}.geojson")
+    body = {"run_id": "legacy_1", "tool_name": "legacy_tool", "timestamp": "2026-01-01T00:00:00+00:00",
+            "key_outputs": {"geometry_geojson_path": leak}}
+    rec = rr.build_run_record(run_id="legacy_1", tool="legacy_tool", session_id=sid, entry=body)
+    import sqlite3
+    conn = store._run_log_connect(sid)
+    conn.execute("INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?,?,?)",
+                 ("legacy_1", body["timestamp"], json.dumps({**body, "record": rec.to_dict()})))
+    conn.commit(); conn.close()
+
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=sid, capsule_path=str(tmp_path / "capsule"))
+    cap = Path(res["capsule_dir"])
+    assert not _scan_capsule(cap, str(tmp_path))
+    rl = json.loads((cap / "run_log.json").read_text())
+    assert rl["legacy_1"]["redacted_for_privacy"] and rl["legacy_1"]["record_digest"] == rec.record_digest
+    priv = json.loads((cap / "capsule_manifest.json").read_text())["privacy"]
+    assert priv["legacy_paths_scrubbed_on_export"] == 1 and priv["rows_redacted_for_privacy"] == 1
+    # store row untouched
+    assert HydroSession.load(sid).get("_run_log")["legacy_1"]["key_outputs"]["geometry_geojson_path"] == leak
+    p = subprocess.run([sys.executable, "replay.py"], cwd=cap, capture_output=True, text=True, timeout=120)
+    assert "redacted for privacy" in p.stdout and "FAIL" not in p.stdout, p.stdout[-1500:]
+
+
+def test_scrub_is_idempotent_and_whole_path_values():
+    from ai_hydro.session.refs import scrub_value
+    once = scrub_value({"a": "/Users/bob/My Docs/x.csv", "b": f"see '/opt/z/q.json' ok", "c": 3})
+    assert once["a"] == "<abs>/x.csv" and once["b"] == "see '<abs>/q.json' ok"
+    assert scrub_value(once) == once

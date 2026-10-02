@@ -191,9 +191,13 @@ def record_seal_ok(record: dict) -> bool:
 def verify_run_log(run_log: dict) -> dict:
     """Verify every v2 record in a run log. Rows without a record are legacy."""
     summary = {"rows": 0, "v2_records": 0, "verified": 0, "unbound": 0, "legacy": 0,
-               "record_errors": 0, "failures": []}
+               "record_errors": 0, "redacted": 0, "failures": []}
     for run_id, entry in sorted(run_log.items()):
         summary["rows"] += 1
+        if isinstance(entry, dict) and entry.get("redacted_for_privacy"):
+            # Legacy sealed row withheld on export (it held a local path): neither verified nor failed.
+            summary["redacted"] += 1
+            continue
         record = entry.get("record") if isinstance(entry, dict) else None
         if not isinstance(record, dict):
             summary["legacy"] += 1
@@ -444,6 +448,8 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str):
                           f"{'the raw session slot' if kind == 'dataset' else 'the passage index'}, "
                           "not reproducible in stdlib from the capsule")
         row = run_log.get(sid) if isinstance(run_log, dict) else None
+        if isinstance(row, dict) and row.get("redacted_for_privacy"):
+            return None, f"run {sid!r} is redacted for privacy (not verifiable from capsule)"
         if not isinstance(row, dict) or not row:
             return None, f"run {sid!r} cited by the claim is not retained in run_log.json"
         if row.get("session_id", session_id) != session_id or row.get("run_id", sid) != sid:
@@ -767,6 +773,9 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
         out(f"Run records: {summary['verified']} of {summary['v2_records']} v2 records verify; "
             f"{summary['unbound']} sealed but unbound to their row; "
             f"{summary['legacy']} legacy rows have no record; {summary['record_errors']} carry a record_error")
+        if summary["redacted"]:
+            out(f"NOTE  {summary['redacted']} run-log row(s) redacted for privacy "
+                "(not verifiable from capsule): neither verified nor failed")
     else:
         out("Run records: run_log.json not found")
 

@@ -122,8 +122,11 @@ def _portable_str(s: str, sessions_dir: Path, ws: Path | None, home: Path) -> st
 # Absolute path inside free text: quoted (may contain spaces) or bare.
 _TEXT_PATH = re.compile(
     r"""(?P<q>['"])(?P<qp>(?:/|[A-Za-z]:[\\/]|\\\\)[^'"]*)(?P=q)"""
-    r"""|(?<![\w:/.\\-])(?P<bp>(?:/[^\s'"<>()\[\],;]+|[A-Za-z]:[\\/][^\s'"<>()\[\],;]*|\\\\[^\s'"<>()\[\],;]+))"""
+    r"""|(?<![\w:/.\\~>-])(?P<bp>(?:/[^\s'"<>()\[\],;]+|[A-Za-z]:[\\/][^\s'"<>()\[\],;]*|\\\\[^\s'"<>()\[\],;]+))"""
 )
+
+
+_WHOLE_PATH = re.compile(r"""^\s*(?:/|[A-Za-z]:[\\/]|\\\\)[^\n"':,;]*$""")
 
 
 def scrub_paths(text: str, workspace_dir: str | Path | None = None) -> str:
@@ -146,12 +149,16 @@ def scrub_paths(text: str, workspace_dir: str | Path | None = None) -> str:
         base = re.split(r"[\\/]+", path.rstrip("\\/"))[-1]
         return "<abs>/" + base if base else "<abs>"
 
+    text = str(text)
+    if _WHOLE_PATH.match(text):          # the value IS a path (may contain spaces)
+        return one(text.strip())
+
     def sub(m: re.Match) -> str:
         if m.group("q"):
             return m.group("q") + one(m.group("qp")) + m.group("q")
         return one(m.group("bp"))
 
-    return _TEXT_PATH.sub(sub, str(text))
+    return _TEXT_PATH.sub(sub, text)
 
 
 def portable(obj, workspace_dir: str | Path | None = None):
@@ -173,6 +180,25 @@ def portable(obj, workspace_dir: str | Path | None = None):
         if isinstance(x, dict):
             return {k: walk(v) for k, v in x.items()}
         if isinstance(x, list):
+            return [walk(v) for v in x]
+        return x
+
+    return walk(obj)
+
+
+def scrub_value(obj, workspace_dir: str | Path | None = None):
+    """Deep copy of ``obj`` with ``scrub_paths`` applied to every string (and key).
+
+    Idempotent: scrubbing already-scrubbed data changes nothing, which is what
+    lets a row body be scrubbed at write time and again before digesting it.
+    """
+    def walk(x):
+        if isinstance(x, str):
+            return scrub_paths(x, workspace_dir)
+        if isinstance(x, dict):
+            return {(scrub_paths(k, workspace_dir) if isinstance(k, str) else k): walk(v)
+                    for k, v in x.items()}
+        if isinstance(x, (list, tuple)):
             return [walk(v) for v in x]
         return x
 

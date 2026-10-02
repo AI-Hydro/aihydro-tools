@@ -662,11 +662,18 @@ def export_session(
         files_written.append(str(capsule_dir / "environment.yml"))
 
         # run_log.json — evidence-binding keys for every analysis in this session
-        run_log = session.get("_run_log") or {}
+        # Privacy: new rows were scrubbed when written; legacy sealed rows that
+        # still hold an absolute path are exported as redacted stubs (a scrubbed
+        # copy would not verify), see ai_hydro/capsule/privacy.py.
+        from ai_hydro.capsule import privacy as _privacy
+        run_log, _priv_counts = _privacy.export_run_log(
+            session.get("_run_log") or {}, session.workspace_dir)
         (capsule_dir / "run_log.json").write_text(
             json.dumps(run_log, indent=2, default=str)
         )
         files_written.append(str(capsule_dir / "run_log.json"))
+        # Second layer over every other exported JSON/MD/text file.
+        _priv_files = _privacy.scrub_exported_text(capsule_dir, session.workspace_dir)
 
         # approvals/ — the approval record each promoted claim consumed plus its
         # registry stamp, so a third party can verify against their own signer file
@@ -681,6 +688,12 @@ def export_session(
         # in ``files``; verify_manifest covers it.
         manifest["data_artifacts"] = data_artifacts
         manifest["approvals"] = _approvals_section(capsule_dir, approval_entries)
+        manifest["privacy"] = {
+            "legacy_paths_scrubbed_on_export": _priv_counts["redacted"] + _priv_counts["scrubbed"],
+            "rows_redacted_for_privacy": _priv_counts["redacted"],
+            "rows_scrubbed_unsealed": _priv_counts["scrubbed"],
+            "files_scrubbed": _priv_files,
+        }
         (capsule_dir / _MF).write_text(json.dumps(manifest, indent=2))
         files_written.append(str(capsule_dir / _MF))
 

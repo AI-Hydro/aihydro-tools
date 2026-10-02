@@ -692,6 +692,9 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
             if _run_log_has_record(entry):
                 stored = True          # already sealed; never touch it
                 break
+            # Seal the privacy-scrubbed body (what the store will keep), so
+            # extra.entry_digest matches the stored row.
+            entry = store._scrub_row_body(sid, entry)
             record = build_run_record(
                 run_id=rid, tool=tool, session_id=sid, arguments=arguments,
                 result=result, status=status, parents=capture.parents,

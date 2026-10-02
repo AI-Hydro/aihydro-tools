@@ -338,6 +338,29 @@ def _run_log_record_problem(run_id: str, record: Any) -> str | None:
     return None
 
 
+def _session_workspace_dir(session_id: str) -> str | None:
+    """Workspace dir recorded in the session file, read raw (no HydroSession load)."""
+    try:
+        sf = _SESSIONS_DIR / f"{_safe_filename_component(session_id)}.json"
+        return json.loads(sf.read_text()).get("workspace_dir") or None
+    except Exception:
+        return None
+
+
+def _scrub_row_body(session_id: str, entry: dict) -> dict:
+    """Privacy choke point: a row body (everything except ``record``) never
+    stores an absolute local path. Applied before the body is digested into
+    ``extra.entry_digest`` and before it is stored; idempotent."""
+    try:
+        from ai_hydro.session.refs import scrub_value
+
+        ws = _session_workspace_dir(session_id)
+        return {k: (v if k == "record" else scrub_value(v, ws)) for k, v in entry.items()}
+    except Exception as exc:  # never block a write on the scrubber
+        log.warning("run-log row scrub skipped: %s", exc)
+        return entry
+
+
 def _run_log_record(
     session_id: str, run_id: str, entry: dict, *, writer: str | None = None
 ) -> str:
@@ -372,6 +395,7 @@ def _run_log_record(
         return "skipped"
     status = "error"
     try:
+        entry = _scrub_row_body(session_id, entry)
         incoming = entry.get("record")
         if incoming is not None:
             try:
@@ -404,7 +428,11 @@ def _run_log_record(
                 if existing is None:
                     status_box[0] = "inserted"
                 elif _run_log_sealed(existing):
-                    same_body = _run_log_body_json(existing) == _run_log_body_json(entry)
+                    # Legacy sealed rows may still hold paths: compare scrubbed forms so a
+                    # stale identical write stays a no-op (the stored row is never rewritten).
+                    same_body = (_run_log_body_json(existing) == _run_log_body_json(entry)
+                                 or _run_log_body_json(_scrub_row_body(session_id, existing))
+                                 == _run_log_body_json(entry))
                     same_record = incoming is None or incoming.get("record_digest") == existing["record"]["record_digest"]
                     if same_body and same_record:
                         status_box[0] = "noop"
@@ -415,7 +443,8 @@ def _run_log_record(
                             "different record" if not same_record else "other fields differ",
                         )
                         status_box[0] = "refused"
-                elif incoming is not None and _run_log_body_json(existing) != _run_log_body_json(entry):
+                elif (incoming is not None and _run_log_body_json(existing) != _run_log_body_json(entry)
+                      and _run_log_body_json(_scrub_row_body(session_id, existing)) != _run_log_body_json(entry)):
                     status_box[0] = "stale"
                 else:
                     status_box[0] = "replaced"

@@ -540,3 +540,20 @@ no home directory and means the same on another machine. Records written before
 this change keep their absolute paths (sealed rows are never rewritten); readers
 resolve them and match capsule files by name, so they still verify. Capsule
 `session.json` rewrites local paths to refs or `~/`.
+
+### Run-log row bodies and legacy rows
+
+Every run-log row body (`key_outputs`, `inputs`, `evidence`, and any other
+free-form field except `record`) is scrubbed at one choke point, the store
+writer (`session/store.py::_scrub_row_body`), before it is digested into
+`extra.entry_digest` and stored: session dir to `session-data:`, workspace to
+`workspace:`, home to `~/`, any other absolute path to `<abs>/basename`. The
+scrub is idempotent. `export_session` applies a second layer to every other
+exported JSON/MD/text file. Rows sealed before this change that still contain an
+absolute path are never rewritten in the store; because a scrubbed copy of a
+sealed row would not verify, the export carries a `redacted_for_privacy` stub
+with the row's `record_digest` instead, and `capsule_manifest.json` records
+`privacy: {legacy_paths_scrubbed_on_export: N, ...}`. The standalone replay
+reports such rows as "redacted for privacy (not verifiable from capsule)":
+neither verified nor failed. A claim approval that cites a redacted row cannot be
+re-derived from the capsule and says so.
