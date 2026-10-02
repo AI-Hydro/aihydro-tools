@@ -28,6 +28,14 @@ same OS user can rewrite the SQLite file and re-seal. The approval signing work
 (``aihydro.claim_revision/2``, including ``evidence_versions``). It is the same
 value an approval binds to.
 
+No external anchor
+------------------
+The chain is self-contained. Truncating its tail, or editing the latest row
+and re-sealing it, cannot be detected from the SQLite file alone. The anchor
+that exists today is the registry: promotion stamps ``claim_revision_digest``
+and ``claim_revision`` on the registry row, and ``check_registry_staleness``
+compares them with this chain (``revision_chain_mismatch``).
+
 Legacy claims (present in the session, no history) get revision 0 with
 ``cause.reason == "legacy_unrecorded"`` on first touch. That row records the
 claim's state when first seen; nothing earlier is back-filled.
@@ -110,11 +118,16 @@ def _insert_sealed(conn: sqlite3.Connection, rev: ClaimRevision) -> None:
     if not rev.verify():
         raise ClaimRevisionIntegrityError("refusing to store an unsealed or altered revision")
     try:
+        row_json = json.dumps(rev.to_dict(), sort_keys=True, allow_nan=False)
+    except ValueError as exc:
+        raise ClaimRevisionError(
+            f"claim {rev.claim_id!r} content holds a non-finite number (NaN/inf) or another value "
+            f"that cannot be stored as JSON; fix the claim field and retry: {exc}") from exc
+    try:
         conn.execute(
             "INSERT INTO claim_revisions (claim_id, revision, revision_digest, record_digest, row_json)"
             " VALUES (?, ?, ?, ?, ?)",
-            (rev.claim_id, rev.revision, rev.revision_digest, rev.record_digest,
-             json.dumps(rev.to_dict(), sort_keys=True, allow_nan=False)),
+            (rev.claim_id, rev.revision, rev.revision_digest, rev.record_digest, row_json),
         )
     except sqlite3.IntegrityError as exc:
         raise ClaimRevisionConflict(
@@ -200,21 +213,71 @@ def ensure_baseline(session_id: str, claim_id: str, fields: dict, *, tool: str,
 # Reader
 # ---------------------------------------------------------------------------
 
-def history(session_id: str) -> Dict[str, List[dict]]:
-    """``{claim_id: [revision rows oldest first]}``; every chain is verified."""
+def history(session_id: str) -> Dict[str, Dict[str, Any]]:
+    """``{claim_id: {"ok": True, "rows": [...]} | {"ok": False, "error": str}}``.
+
+    Every chain is verified. One corrupt claim does not hide the others;
+    ``latest`` and ``get_revision`` still raise for it (fail closed).
+    """
     conn = _connect(session_id, create=False)
     if conn is None:
         return {}
     with closing(conn):
         ids = [r[0] for r in conn.execute("SELECT DISTINCT claim_id FROM claim_revisions ORDER BY claim_id")]
-        return {cid: [r.to_dict() for r in _rows(conn, cid)] for cid in ids}
+        out: Dict[str, Dict[str, Any]] = {}
+        for cid in ids:
+            try:
+                out[cid] = {"ok": True, "rows": [r.to_dict() for r in _rows(conn, cid)]}
+            except Exception as exc:        # corrupt row, bad JSON, broken chain
+                out[cid] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return out
 
 
 def latest(session_id: str, claim_id: str) -> Optional[dict]:
-    """Latest verified revision row for the claim, or None when it has no history."""
+    """Latest verified revision row for the claim, or None when it has no history.
+
+    Raises :class:`ClaimRevisionIntegrityError` if the chain does not verify.
+    """
     conn = _connect(session_id, create=False)
     if conn is None:
         return None
     with closing(conn):
         chain = _rows(conn, claim_id)
         return chain[-1].to_dict() if chain else None
+
+
+def get_revision(session_id: str, claim_id: str, revision: int) -> Optional[dict]:
+    """The verified row ``(claim_id, revision)``, or None if the chain has no such revision.
+
+    Verifies the whole chain first and raises if it does not verify.
+    """
+    conn = _connect(session_id, create=False)
+    if conn is None:
+        return None
+    with closing(conn):
+        for row in _rows(conn, claim_id):
+            if row.revision == revision:
+                return row.to_dict()
+        return None
+
+
+def revision_drift(current_fields: dict, latest_row: Optional[dict]) -> dict:
+    """Pure read-time comparison of a claim's current fields with its latest revision.
+
+    ``current_fields`` is ``claim_revision_fields(claim, evidence_versions)``;
+    ``latest_row`` is the result of :func:`latest` (or None). Returns
+    ``{"state": "no_history" | "in_sync" | "drifted", "drift": bool, ...}``. A
+    claim edited outside the tools, or whose retained evidence changed, reads as
+    ``drifted`` with the latest revision's number and digest and the current digest.
+    """
+    if latest_row is None:
+        return {"state": "no_history", "drift": False}
+    current = digest(current_fields)
+    if current == latest_row["revision_digest"]:
+        return {"state": "in_sync", "drift": False, "revision": latest_row["revision"],
+                "revision_digest": current}
+    changed = sorted(k for k in set(current_fields) | set(latest_row["content"])
+                     if current_fields.get(k) != latest_row["content"].get(k))
+    return {"state": "drifted", "drift": True, "revision": latest_row["revision"],
+            "revision_digest": latest_row["revision_digest"], "current_digest": current,
+            "changed_fields": changed}

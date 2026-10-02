@@ -59,7 +59,9 @@ def _supported():
 
 
 def _rows(cid="c1"):
-    return cr.history("rev")[cid]
+    entry = cr.history("rev")[cid]
+    assert entry["ok"], entry
+    return entry["rows"]
 
 
 def test_add_claim_writes_one_sealed_revision_zero(session):
@@ -212,3 +214,89 @@ def test_concurrent_writers_get_consecutive_revisions(session):
     [t.join() for t in threads]
     assert not errors
     assert [r["revision"] for r in _rows()] == list(range(9))
+
+
+def _promoted():
+    _add(prereg_id="prereg.x.1")
+    _supported()
+    approve("rev", "c1")
+    assert promote_claim_to_registry("rev", "c1", researcher_approved=True)["status"] == "promoted"
+
+
+def _raw():
+    conn = cr._connect("rev", create=False)
+    conn.execute("DROP TRIGGER claim_revisions_no_update")
+    conn.execute("DROP TRIGGER claim_revisions_no_delete")
+    return conn
+
+
+def test_prereg_id_is_in_the_revision_content(session):
+    _add(prereg_id="prereg.x.1")
+    assert _rows()[0]["content"]["prereg_id"] == "prereg.x.1"
+
+
+def test_intact_chain_has_no_registry_mismatch(session):
+    _promoted()
+    assert check_registry_staleness("rev")["revision_chain_mismatches"] == []
+
+
+def test_truncated_chain_detected_by_registry_anchor(session):
+    _promoted()                                    # revisions 0..2; row anchored at 1
+    conn = _raw()
+    conn.execute("DELETE FROM claim_revisions WHERE revision >= 1")
+    conn.close()
+    (m,) = check_registry_staleness("rev")["revision_chain_mismatches"]
+    assert m["reason"] == "missing_revision" and m["flag"] == "revision_chain_mismatch"
+
+
+def test_resealed_chain_detected_by_registry_anchor(session):
+    from aihydro_core.records import digest
+    _promoted()
+    rows = _rows()
+    conn = _raw()
+    conn.execute("DELETE FROM claim_revisions WHERE revision >= 1")
+    prev = ClaimRevision.from_dict(rows[0])
+    for old in rows[1:]:                           # rewrite revisions 1.. with other content, resealed
+        content = {**old["content"], "confidence_rationale": "rewritten after the fact"}
+        new = ClaimRevision(session_id="rev", claim_id="c1", revision=old["revision"],
+                            supersedes=prev.revision_digest, revision_digest=digest(content),
+                            content=content, cause=old["cause"], actor=old["actor"]).seal()
+        cr._insert_sealed(conn, new)
+        prev = new
+    conn.close()
+    assert cr.latest("rev", "c1")["revision"] == 2   # the chain itself still verifies
+    (m,) = check_registry_staleness("rev")["revision_chain_mismatches"]
+    assert m["reason"] == "different_digest"
+
+
+def test_history_isolates_a_corrupt_claim(session):
+    _add()
+    _add(claim_id="c2")
+    conn = _raw()
+    conn.execute("UPDATE claim_revisions SET row_json = replace(row_json, 'proposed', 'supported')"
+                 " WHERE claim_id = 'c1'")
+    conn.close()
+    h = cr.history("rev")
+    assert h["c1"]["ok"] is False and "error" in h["c1"]
+    assert h["c2"]["ok"] is True and len(h["c2"]["rows"]) == 1
+    with pytest.raises(cr.ClaimRevisionIntegrityError):
+        cr.latest("rev", "c1")
+
+
+def test_revision_drift_helper(session):
+    _add()
+    fields = session_claim_revision(HydroSession.load("rev"), "c1")[2]
+    assert cr.revision_drift(fields, None)["state"] == "no_history"
+    assert cr.revision_drift(fields, cr.latest("rev", "c1"))["state"] == "in_sync"
+    out = cr.revision_drift({**fields, "status": "supported"}, cr.latest("rev", "c1"))
+    assert out["drift"] and out["changed_fields"] == ["status"]
+
+
+def test_non_finite_content_gets_a_helpful_error(session):
+    conn = cr._connect("rev", create=True)
+    bad = ClaimRevision(session_id="rev", claim_id="cx", revision=0, revision_digest="sha256:" + "0" * 64,
+                        content={"x": float("nan")}, cause={"tool": "t", "reason": "created"},
+                        actor={"kind": "package", "id": "a"}).seal()
+    with pytest.raises(cr.ClaimRevisionError, match="NaN"):
+        cr._insert_sealed(conn, bad)
+    conn.close()

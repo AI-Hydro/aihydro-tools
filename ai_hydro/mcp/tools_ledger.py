@@ -658,7 +658,30 @@ def check_registry_staleness(session_id: str) -> dict:
         if stale_results:
             session.save()
 
+        # Registry rows are the only external anchor of the revision chain:
+        # compare the revision each row was promoted at with what the chain holds.
+        from ai_hydro.session import claim_revisions
+        mismatches = []
+        for entry in entries:
+            rev_no, rev_digest = entry.get("claim_revision"), entry.get("claim_revision_digest")
+            if rev_no is None or not rev_digest:
+                continue                      # row predates revision stamping
+            reason = None
+            try:
+                row = claim_revisions.get_revision(session_id, entry["claim_id"], rev_no)
+                if row is None:
+                    reason = "missing_revision"
+                elif row["revision_digest"] != rev_digest:
+                    reason = "different_digest"
+            except claim_revisions.ClaimRevisionError:
+                reason = "chain_corrupt"
+            if reason:
+                mismatches.append({"claim_id": entry["claim_id"], "registry_id": entry.get("registry_id"),
+                                   "claim_revision": rev_no, "reason": reason,
+                                   "flag": "revision_chain_mismatch"})
+
         return {
+            "revision_chain_mismatches": mismatches,
             "n_checked": len(promoted),
             "n_stale": len(stale_results),
             "n_already_stale": len(already_stale),
