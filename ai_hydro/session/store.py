@@ -251,6 +251,33 @@ def _run_log_db_path(session_id: str) -> Path:
     return _SESSIONS_DIR / f"{safe}.runlog.sqlite3"
 
 
+# Lock contention on the run-log database must never lose a row silently
+# (2026-10-02: concurrent writers lost ~1 row in 10 runs to "database is
+# locked" raised by the journal-mode PRAGMA and swallowed by the writer).
+_RUN_LOG_LOCK_WAIT_S = 30.0
+
+
+def _is_lock_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
+def _retry_when_locked(fn, *, deadline_s: float = _RUN_LOG_LOCK_WAIT_S):
+    """Call ``fn`` and retry with backoff while SQLite reports lock contention."""
+    start = time.monotonic()
+    delay = 0.005
+    while True:
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            if not _is_lock_error(exc) or time.monotonic() - start >= deadline_s:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+
+
 def _run_log_connect(session_id: str) -> sqlite3.Connection:
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     path = _run_log_db_path(session_id)
@@ -259,11 +286,24 @@ def _run_log_connect(session_id: str) -> sqlite3.Connection:
         raise ValueError(
             f"Refusing to resolve run-log db outside SESSIONS_DIR: session_id={session_id!r}"
         )
-    conn = sqlite3.connect(str(contained), timeout=30.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, timestamp TEXT, entry_json TEXT)"
-    )
+    conn = sqlite3.connect(str(contained), timeout=_RUN_LOG_LOCK_WAIT_S)
+
+    def _init() -> None:
+        # Switching journal mode needs an exclusive lock and can return
+        # SQLITE_BUSY immediately (the busy timeout is not applied), so only
+        # switch when the database is not already in WAL mode, and retry.
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(mode).lower() != "wal":
+            conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS runs (run_id TEXT PRIMARY KEY, timestamp TEXT, entry_json TEXT)"
+        )
+
+    try:
+        _retry_when_locked(_init)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -349,43 +389,48 @@ def _run_log_record(
             if problem:
                 log.warning("Refused run-log record for %s in session %s: %s", run_id, session_id, problem)
                 return "refused"
-        conn = _run_log_connect(session_id)
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT entry_json FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-            existing = None
-            if row is not None:
-                try:
-                    existing = json.loads(row[0]) if row[0] else {}
-                except json.JSONDecodeError:
-                    existing = {}
-            if existing is None:
-                status = "inserted"
-            elif _run_log_sealed(existing):
-                same_body = _run_log_body_json(existing) == _run_log_body_json(entry)
-                same_record = incoming is None or incoming.get("record_digest") == existing["record"]["record_digest"]
-                if same_body and same_record:
-                    status = "noop"
+        def _txn() -> str:
+            status_box = ["error"]
+            conn = _run_log_connect(session_id)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT entry_json FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+                existing = None
+                if row is not None:
+                    try:
+                        existing = json.loads(row[0]) if row[0] else {}
+                    except json.JSONDecodeError:
+                        existing = {}
+                if existing is None:
+                    status_box[0] = "inserted"
+                elif _run_log_sealed(existing):
+                    same_body = _run_log_body_json(existing) == _run_log_body_json(entry)
+                    same_record = incoming is None or incoming.get("record_digest") == existing["record"]["record_digest"]
+                    if same_body and same_record:
+                        status_box[0] = "noop"
+                    else:
+                        log.warning(
+                            "Refused write to sealed run-log row %s in session %s: %s",
+                            run_id, session_id,
+                            "different record" if not same_record else "other fields differ",
+                        )
+                        status_box[0] = "refused"
+                elif incoming is not None and _run_log_body_json(existing) != _run_log_body_json(entry):
+                    status_box[0] = "stale"
                 else:
-                    log.warning(
-                        "Refused write to sealed run-log row %s in session %s: %s",
-                        run_id, session_id,
-                        "different record" if not same_record else "other fields differ",
+                    status_box[0] = "replaced"
+                if status_box[0] in ("inserted", "replaced"):
+                    timestamp = str(entry.get("timestamp", "") or "")
+                    conn.execute(
+                        "INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?, ?, ?)",
+                        (run_id, timestamp, json.dumps(entry, default=str)),
                     )
-                    status = "refused"
-            elif incoming is not None and _run_log_body_json(existing) != _run_log_body_json(entry):
-                status = "stale"
-            else:
-                status = "replaced"
-            if status in ("inserted", "replaced"):
-                timestamp = str(entry.get("timestamp", "") or "")
-                conn.execute(
-                    "INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?, ?, ?)",
-                    (run_id, timestamp, json.dumps(entry, default=str)),
-                )
-            conn.commit()
-        finally:
-            conn.close()
+                conn.commit()
+            finally:
+                conn.close()
+            return status_box[0]
+
+        status = _retry_when_locked(_txn)
     except Exception as exc:
         log.warning("Failed to record run-log entry %s for session %s: %s", run_id, session_id, exc)
         return "error"
