@@ -243,7 +243,7 @@ def _render_example(tool_name: str, props: dict, required: set) -> list[str]:
     ]
 
 
-def generate_tool_reference(target: Path | str | None = None) -> Path:
+def generate_tool_reference(target: Path | str) -> Path:
     """Emit the full mkdocs Tool Reference from the live registry.
 
     Writes a single ``reference.md`` containing every registered tool grouped
@@ -251,14 +251,16 @@ def generate_tool_reference(target: Path | str | None = None) -> Path:
     and a worked example call. The published reference is therefore generated
     from the same source of truth the agent sees — it cannot drift.
 
+    ``target`` is required: the file is written exactly there and nowhere else. Only the
+    developer CLI (``python -m ai_hydro.mcp.tools_docs``) defaults to the repo's
+    ``docs/tools/reference.md``.
+
     Returns the path written.
     """
     tools = _list_tools_sync()
     if not tools:
         raise RuntimeError("no tools registered — cannot generate reference")
 
-    if target is None:
-        target = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "tools" / "reference.md"
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -331,6 +333,12 @@ def generate_tool_reference(target: Path | str | None = None) -> Path:
 
 
 if __name__ == "__main__":  # pragma: no cover
+    import argparse
     import ai_hydro.mcp  # noqa: F401 — trigger tool registration
-    path = generate_tool_reference()
+
+    # Developer command: the default is the repo checkout's docs/tools/reference.md.
+    _default = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "tools" / "reference.md"
+    _ap = argparse.ArgumentParser(description="Generate the mkdocs Tool Reference.")
+    _ap.add_argument("--out", type=Path, default=_default, help=f"output file (default: {_default})")
+    path = generate_tool_reference(_ap.parse_args().out)
     print(f"Wrote {path}")
