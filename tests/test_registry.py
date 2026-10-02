@@ -28,6 +28,7 @@ from ai_hydro.mcp.tools_ledger import (
     list_registry_claims,
 )
 from ai_hydro.session.store import HydroSession
+from approval_helpers import approve
 
 
 # ---------------------------------------------------------------------------
@@ -285,23 +286,27 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
         self.p_reg_file.stop()
 
     def test_promote_returns_registry_id(self):
+        approve("s-promo-001", "c-001")
         r = promote_claim_to_registry("s-promo-001", "c-001", researcher_approved=True)
         self.assertNotIn("error", r)
         self.assertIn("registry_id", r)
         self.assertTrue(r["registry_id"].startswith("reg."))
 
     def test_promote_writes_to_registry_file(self):
+        approve("s-promo-001", "c-001")
         promote_claim_to_registry("s-promo-001", "c-001", researcher_approved=True)
         entries = reg.all_entries()
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["claim_id"], "c-001")
 
     def test_promote_captures_evidence_versions(self):
+        approve("s-promo-001", "c-001")
         promote_claim_to_registry("s-promo-001", "c-001", researcher_approved=True)
         entry = reg.all_entries()[0]
         self.assertIn("evidence_versions", entry)
 
     def test_promote_updates_session_claim(self):
+        approve("s-promo-001", "c-001")
         promote_claim_to_registry("s-promo-001", "c-001", researcher_approved=True)
         import ai_hydro.session.store as _store
         with patch.object(_store, "_SESSIONS_DIR", self.sessions_dir):
@@ -370,6 +375,7 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
             }
             s.claims["c-hydro-acked"] = cd
             s.save()
+        approve("s-promo-001", "c-hydro-acked")
         r = promote_claim_to_registry("s-promo-001", "c-hydro-acked", researcher_approved=True)
         self.assertNotIn("error", r)
         self.assertIn("registry_id", r)
@@ -379,6 +385,7 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
         USGS-gauge-shaped basin ID) must promote without a modelled-streamflow
         limitation — this is the common, legitimate CONUS-observed case, and
         the gate must not create false-positive friction for it."""
+        approve("s-promo-001", "c-001")
         r = promote_claim_to_registry("s-promo-001", "c-001", researcher_approved=True)
         self.assertNotIn("error", r)
 
@@ -414,6 +421,7 @@ class TestCheckRegistryStaleness(unittest.TestCase):
             s.claims[claim_id] = _promoted_claim_dict(claim_id)
             s.set("streamflow", _backed_result(data))
             s.save()
+        approve(session_id, claim_id)
         return promote_claim_to_registry(session_id, claim_id, researcher_approved=True)
 
     def test_no_promoted_claims_returns_zero(self):

@@ -102,6 +102,8 @@ tasks:
       Human-adjudicated expected behaviour, sourced from …
     setup:                       # optional: session slots to seed
       session_id: bench-aud-027
+      # approve_claims: [claim-id] # promotion tasks only: harness records a human-approval
+      #                            # fixture (ADR-002a) in the run's isolated AIHYDRO_HOME
     call:
       tool: audit_interpretation
       kwargs:
@@ -111,6 +113,15 @@ tasks:
       - {path: passed, op: eq, expected: true}
       - {path: numeric_coverage, op: approx, expected: 1.0, tol: 0.01}
 ```
+
+## Isolation
+
+Bench runs never touch the user's real `~/.aihydro`. `tests/conftest.py` gives
+every test a fresh `AIHYDRO_HOME`, and `aihydro-bench --run` sets a temporary
+`AIHYDRO_HOME` for the pytest subprocess it launches. Promotion tasks (B-016,
+B-045) write their registry rows and approval fixtures there.
+`tests/test_bench_isolation.py` proves a bench promotion leaves the real path
+untouched.
 
 ## Oracle operators
 

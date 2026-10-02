@@ -3,9 +3,10 @@
 Implemented locally on 2026-09-07. This is a retained-record integrity gate,
 not a scientific certification system.
 
-`promote_claim_to_registry` still requires explicit researcher approval,
-eligible claim status and limitations. It now resolves every evidence span
-before writing to the registry. Failure returns a structured `EVIDENCE_*`
+`promote_claim_to_registry` requires a human approval record for the claim's
+current revision (see [Human approval](#human-approval-adr-002a)), eligible
+claim status and limitations. It resolves every evidence span before writing to
+the registry. Failure returns a structured `EVIDENCE_*`
 error with the source ID and recovery instructions; it leaves the session
 claim available and writes no promoted entry.
 
@@ -77,6 +78,82 @@ alignment are explicitly `not_verified`. These are remaining research gates:
 - Make run records immutable and registry/session writes transactional under
   concurrency. SQLite currently permits row replacement; fingerprints detect
   a later difference, but cannot establish a tamper-proof history.
+
+## Human approval (ADR-002a)
+
+Added in Slice 1b (2026-10-02). `researcher_approved` was an ordinary tool
+argument, so an agent could (and in a reproduced run did) promote its own claim.
+It is now only a *request flag*: it must be true, and it is never sufficient.
+Authority comes from a record the model cannot mint.
+
+**Approval record.** Stored at `$AIHYDRO_HOME/approvals/approvals.jsonl`
+(`AIHYDRO_HOME` defaults to `~/.aihydro`, resolved at call time). Append-only,
+one line per record, written under a cross-process lock; existing lines are
+never rewritten.
+
+```json
+{"schema": "aihydro.approval/1", "claim_id": "...", "session_id": "...",
+ "claim_revision_digest": "sha256:...", "approver": {"kind": "human", "id": "..."},
+ "approved_at": "<UTC>", "statement": "...", "record_digest": "sha256:..."}
+```
+
+`record_digest` is the `aihydro_core.records.digest` of the other fields. Lines
+that fail verification (tampered, unsealed, or with a non-human approver) are
+ignored.
+
+**Claim revision digest.** `digest` (canonicalization `aihydro.c14n/1`) over the
+tagged object `aihydro.claim_revision/1`: claim text, scope (basins, period,
+forcing, metric, model versions), status, confidence, every evidence span, and
+limitations, normalised through `ScientificClaim`. Editing any of these changes
+the digest and invalidates the approval; the claim must be approved again.
+Deliberately outside the digest: `claim_type`, `confidence_rationale`,
+`contradictions`, `citations`, `prereg_id`, `uncertainty_verified`, timestamps
+and promotion bookkeeping.
+
+**Who can write it.** Only the `aihydro-approve <session_id> <claim_id>` CLI
+(`ai_hydro/approval/cli.py` -> `writer.py`). It loads the claim read-only, prints
+text, scope, evidence spans, limitations and the revision digest, and requires
+the human to type the first 12 hex characters of that digest. It refuses unless
+stdin and stdout are a terminal, and has no `--yes` flag. `--approver` defaults
+to the OS user. No MCP tool imports or calls the writer; `tests/test_approval_authority.py`
+enforces this statically (AST scan of `ai_hydro/`), by importing the full MCP
+server in a clean interpreter, and by inspecting registered tools.
+
+**Promotion.** After every other gate passes, a missing record for the current
+revision returns `APPROVAL_REQUIRED` with the exact command
+(`aihydro-approve <session_id> <claim_id>`) in `approval_command` and
+`recovery`. Registry entries gain `approval: {"record_digest": ...}`.
+
+**Legacy rows.** Registry rows written before this change have no `approval`
+key and are never rewritten. `list_registry_claims` and the defensibility
+report label them `approval: self_asserted` at read time.
+
+**What this does and does not establish.** It makes agent self-approval through
+the MCP tool surface impossible. It does not stop a process that runs as the
+same OS user from writing the approvals file directly (for example through a
+general-purpose code-execution tool such as `run_python`, or a shell tool in the
+client), and the digest seal proves integrity, not origin. The TTY check blocks
+accidental or naive non-interactive use, not a determined same-user process.
+Closing that gap needs a signing key or an approval service outside the agent's
+reach (ADR-002b, owner decision). The record also does not say the claim is
+true: it records that a named human reviewed this exact revision.
+
+## State isolation
+
+The registry (`$AIHYDRO_HOME/registry/claims.jsonl`) and approval paths are
+resolved when used, not at import. `tests/conftest.py` gives every test its own
+`AIHYDRO_HOME`, and `aihydro-bench --run` sets a temporary one for its pytest
+subprocess, so test and bench promotions never write the user's real registry.
+Before this change the shipped bench tasks B-016 and B-045 wrote promoted
+fixtures into `~/.aihydro/registry`. Registry read-modify-write operations
+(`append`, `mark_stale`, `mark_retracted`) run under an exclusive cross-process
+lock (`fcntl.flock` on a sidecar `claims.jsonl.lock` on POSIX, `msvcrt.locking`
+on Windows; with neither available the lock is a logged no-op). The lock is
+advisory and the registry file is still rewritten whole, not append-only.
+
+`tests/test_registry_fingerprint_golden.py` pins one legacy `sha256-v2` evidence
+fingerprint, so changes to the algorithm that would silently re-stale or re-bless
+existing rows fail loudly.
 
 No real claims are migrated or promoted by installing this change. All
 regression fixtures use isolated temporary sessions, registry files and passage

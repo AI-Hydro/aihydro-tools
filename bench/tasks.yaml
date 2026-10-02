@@ -17,6 +17,12 @@
 #   compute_fn — call an underlying computation function with synthetic data
 #   session_op — set up a session slot, then call an MCP tool
 #
+# setup.approve_claims (session_op, optional): claim ids for which the harness
+# records a HUMAN approval fixture (ADR-002a) after building the session, so a
+# promotion task can exercise the success path. Promotion refuses with
+# APPROVAL_REQUIRED without it; the harness writes the record into the
+# isolated $AIHYDRO_HOME it runs under, never the user's real ~/.aihydro.
+#
 # Adjudicated ranges are sourced from:
 #   - Addor et al. (2017) CAMELS dataset, HESS 21:5293-5313
 #   - Sawicz et al. (2011) Catchment classification, WRR 47:W11520
@@ -450,6 +456,7 @@ tasks:
       dataset is a retained session product (evidence-integrity gate, R01).
     setup:
       session_id: bench-lg-016
+      approve_claims: [c-016]
       # Synthetic fixture values; shaped exactly as capture_result_evidence()
       # writes them, so the gate resolves a real retained record.
       run_log:
@@ -1383,7 +1390,8 @@ tasks:
     category: registry
     rationale: >
       promote_claim_to_registry must write a real entry to
-      ~/.aihydro/registry/claims.jsonl and return a deterministic registry_id
+      $AIHYDRO_HOME/registry/claims.jsonl (isolated per run; default
+      ~/.aihydro/registry/claims.jsonl) and return a deterministic registry_id
       (reg.<session>.<date>.<hash>) with status='promoted'. The gate must pass
       for an empirical claim that has at least one evidence_span, at least one
       limitation, and status in {supported, weakly_supported}. The cited
@@ -1391,6 +1399,7 @@ tasks:
     call_style: session_op
     setup:
       session_id: bench-reg-045
+      approve_claims: [bench-claim-001]
       # Synthetic retained product for the cited dataset span.
       slots:
         streamflow:

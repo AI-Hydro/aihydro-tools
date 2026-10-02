@@ -3,11 +3,12 @@
 #
 # "write_requires_approval" semantics:
 #   There is no human in the MCP tool-call path at inference time.
-#   "Approval" means the tool checks a session-level boolean flag
-#   (researcher_approved: bool) set explicitly in the tool call by
-#   the researcher, NOT by the agent. The agent cannot self-approve.
-#   Pattern: promote_claim_to_registry(researcher_approved=True).
-#   Tools in this tier raise ValueError if researcher_approved=False.
+#   For promote_claim_to_registry, "approval" means a human approval record
+#   bound to the claim's current revision, created only by the
+#   `aihydro-approve` CLI in a terminal (ADR-002a). researcher_approved=True
+#   is a request flag; it is required but never sufficient, because the agent
+#   sets every tool argument. Without the record the tool returns
+#   APPROVAL_REQUIRED. Other tools in this tier still use the flag only.
 #
 # "read_only" semantics:
 #   Tool may fetch external data and read session state.

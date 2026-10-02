@@ -52,6 +52,16 @@ def _build_session(session_id: str, setup: dict) -> None:
     if "run_log" in setup:
         session.set("_run_log", setup["run_log"])
     session.save()
+    # Promotion tasks that expect success declare ``approve_claims``: record a
+    # human-approval fixture (ADR-002a) for the claim's current revision. The
+    # store is the per-test isolated AIHYDRO_HOME (tests/conftest.py).
+    for claim_id in setup.get("approve_claims", []):
+        from aihydro_core.records import Actor
+        from ai_hydro.approval.records import claim_revision_digest
+        from ai_hydro.approval.writer import write_approval
+        claim = HydroSession.load(session_id).claims[claim_id]
+        write_approval(session_id, claim_id, claim_revision_digest(claim),
+                       Actor(kind="human", id="bench-fixture"), "bench fixture approval")
 
 
 def _call_mcp_tool(tool_name: str, kwargs: dict) -> dict:

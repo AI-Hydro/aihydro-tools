@@ -8,6 +8,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (behaviour change)
+
+- `promote_claim_to_registry` now requires a **human approval record** bound to the claim's current revision (text, scope, status, confidence, evidence spans, limitations). `researcher_approved=True` is only a request flag and no longer suffices: without a matching record the tool returns `APPROVAL_REQUIRED` and the exact `aihydro-approve` command. Editing the claim invalidates its approval. The check runs after the evidence/limitation gates. (ADR-002a)
+- Registry entries gain `approval: {"record_digest": ...}`. Rows written before this change are not rewritten; `list_registry_claims` (new `n_self_asserted` count) and the defensibility report label them `approval: self_asserted`. The defensibility report gains a "Registry promotions and approval" table and `n_promoted_claims` / `n_self_asserted_promotions` summary keys; `build_defensibility_report` takes an optional `registry_entries` argument.
+- The registry path honours `AIHYDRO_HOME` (default `~/.aihydro`), resolved when used rather than at import. `registry.store.REGISTRY_DIR` / `CLAIMS_FILE` are now `None`-by-default overrides; use `registry_dir()` / `claims_file()`.
+- Registry read-modify-write (`append`, `mark_stale`, `mark_retracted`) runs under a cross-process lock (`fcntl.flock`; `msvcrt.locking` on Windows; logged no-op if neither exists).
+
+### Added
+
+- `aihydro-approve <session_id> <claim_id>` console script and `ai_hydro.approval` package: the only writer of the append-only approval store at `$AIHYDRO_HOME/approvals/`. Interactive terminal only; requires typing the claim revision digest prefix. A test fails if any MCP tool or module imports or calls the writer.
+- Test and bench isolation: `tests/conftest.py` gives every test its own `AIHYDRO_HOME`; `aihydro-bench --run` sets a temporary one. Bench promotion tasks B-016 and B-045 declare `setup.approve_claims` and previously wrote promoted fixtures into the user's real `~/.aihydro/registry`.
+- Golden test pinning one legacy `sha256-v2` evidence fingerprint.
+- Requires `aihydro_core.records` (`digest`, `Actor`, `utc_now`) from the records-v2 core contract; the `aihydro-core` dependency pin needs to move to the release that ships it.
+
 ### Fixed
 
 - Curve number: NLCD 81 (Pasture/Hay) now uses TR-55 pasture, good condition (39/61/74/80 for groups A-D). It previously used the row-crop values (67/78/85/89), which overstated CN on pasture by 9 to 28 points. (Fix lives in `aihydro-watershed`.)

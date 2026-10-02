@@ -337,14 +337,24 @@ def promote_claim_to_registry(
     uncertainty_verified for
     metric-scoped empirical claims, a modelled-streamflow limitation when the claim
     touches a hydrology-signature metric) then writes a real entry to
-    ~/.aihydro/registry/claims.jsonl with evidence version hashes captured
-    at this moment.  The registry_id is returned for future staleness checks.
+    $AIHYDRO_HOME/registry/claims.jsonl (default ~/.aihydro/registry/claims.jsonl)
+    with evidence version hashes captured at this moment.  The registry_id is returned for future staleness checks.
 
-    Requires researcher_approved=True to prevent accidental promotion.
+    Authority (ADR-002a): promotion also needs a HUMAN approval record bound to the
+    claim's current revision (text, scope, status, confidence, evidence spans and
+    limitations). The researcher creates it in their own interactive terminal with
+    `aihydro-approve <session_id> <claim_id>`; no tool can create it. Without a
+    matching record this refuses with code APPROVAL_REQUIRED and names that
+    command. Editing the claim afterwards invalidates the approval.
+    `researcher_approved=True` is only a request flag: it is required for
+    compatibility but never sufficient on its own.
     """
     try:
-        if not researcher_approved:
-            raise ValueError("Researcher approval is required to promote a claim to global knowledge.")
+        from ai_hydro.approval.records import (
+            ApprovalRequiredError,
+            claim_revision_digest,
+            find_approval,
+        )
 
         session = HydroSession.load(session_id)
         claim_dict = session.claims.get(claim_id)
@@ -352,6 +362,14 @@ def promote_claim_to_registry(
             raise ValueError(f"Claim '{claim_id}' not found.")
 
         claim = ScientificClaim(**claim_dict)
+        claim_rev = claim_revision_digest(claim)
+
+        if not researcher_approved:
+            raise ApprovalRequiredError(
+                session_id, claim_id, claim_rev,
+                "Researcher approval is required to promote a claim to global knowledge. "
+                "researcher_approved=False: promotion was not requested, and a human approval "
+                "record is also required (see approval_command).")
 
         # ── Promotion gate ────────────────────────────────────────────────────
         if not claim.evidence_spans:
@@ -408,6 +426,18 @@ def promote_claim_to_registry(
                                     "The scope metric does not match any referenced evidence metric.")
         evidence_versions = verified_versions(session, spans, require_uncertainty=requires_uncertainty)
 
+        # ── Human approval (ADR-002a) ─────────────────────────────────────────
+        # Checked last so the researcher is only asked to approve a claim that
+        # already passes every other gate. The record must match the claim's
+        # CURRENT revision; a tool argument can request but never confer this.
+        approval = find_approval(session_id, claim_id, claim_rev)
+        if approval is None:
+            raise ApprovalRequiredError(
+                session_id, claim_id, claim_rev,
+                "No human approval record exists for the current revision of this claim "
+                "(it was never approved, or it was edited after approval). "
+                "researcher_approved=True does not substitute for one.")
+
         promoted_at = datetime.now(timezone.utc).isoformat()
         revision = fingerprint({"statement": claim.claim, "scope": claim.scope.model_dump(),
                                 "claim_type": claim.claim_type, "confidence": claim.confidence,
@@ -445,6 +475,7 @@ def promote_claim_to_registry(
             "evidence_schema_version": 2,
             "scope": claim.scope.model_dump(),
             "evidence_verification": verification,
+            "approval": {"record_digest": approval["record_digest"]},
             "staleness": None,
         }
         _reg_append(registry_entry)
@@ -461,6 +492,8 @@ def promote_claim_to_registry(
             "status": "promoted",
             "n_evidence_versions": len(evidence_versions),
             "evidence_verification": verification,
+            "approval": {"record_digest": approval["record_digest"],
+                         "approver": approval["approver"]["id"]},
             "note": (
                 f"Claim '{claim_id}' written to global registry as '{registry_id}'. "
                 "Call check_registry_staleness to detect when underlying data changes."
@@ -563,20 +596,28 @@ def list_registry_claims(
         entries   — list of registry entry dicts
         n_entries — count
         n_stale   — stale count across the full filter result
+        n_self_asserted — entries with no human approval record (legacy rows);
+                          each such entry shows ``approval: "self_asserted"``
     """
     try:
         from ai_hydro.registry.store import all_entries, find_by_session
+
+        from ai_hydro.registry.store import SELF_ASSERTED, with_approval_label
 
         entries = find_by_session(session_id) if session_id else all_entries()
         if status:
             entries = [e for e in entries if e.get("status") == status]
 
         n_stale = sum(1 for e in entries if e.get("status") == "stale")
+        # Legacy rows have no approval stamp; label them at read time (the
+        # stored rows are not rewritten).
+        entries = [with_approval_label(e) for e in entries]
 
         return {
             "entries": entries,
             "n_entries": len(entries),
             "n_stale": n_stale,
+            "n_self_asserted": sum(1 for e in entries if e["approval"] == SELF_ASSERTED),
         }
     except Exception as exc:
         return _tool_error_to_dict(exc)
