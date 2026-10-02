@@ -24,14 +24,28 @@ only when the signature verifies against an ``allowed_signers`` file:
 at verification time (now), so a rotated-out key stops verifying; an
 unconsumed approval signed by it must be redone.
 
-The channel is derived here, never read from the record:
+The channel is derived here, never read from the record. It names the key
+class and the trust root it was verified under:
 
-    ssh_sig_sk     key type sk-ssh-ed25519@openssh.com / sk-ecdsa-sha2-nistp256@openssh.com,
-                   signature verifies, and the allowed_signers line does not
-                   carry ``no-touch-required`` (touch per signature)
-    ssh_sig        any other verifying key (software key, agent key)
-    cli_same_user  legacy v1 record; never upgraded; refused when signatures
-                   are required
+    ssh_sig_sk_system_trust   sk key (touch per signature), system trust root
+    ssh_sig_system_trust      other enrolled key, system trust root
+    ssh_sig_sk_user_trust     sk key, user-writable trust root
+    ssh_sig_user_trust        other enrolled key, user-writable trust root
+    ssh_sig_sk_supplied / ssh_sig_supplied   verified against a file the verifier brought
+    cli_same_user             legacy v1 record; never upgraded
+
+HONEST BOUNDARY: against a process running as the same OS user there is no
+boundary unless ``trust_root == "system"`` AND the key is an ``sk`` key that
+needs a physical touch. ``*_user_trust`` is integrity-only, equivalent to
+``cli_same_user``: the trust file is editable by that process. Nothing here
+claims human verification.
+
+Fail closed: ``require_signed()`` is True unless explicitly opted out
+(``AIHYDRO_REQUIRE_SIGNED=0`` or config); with no allowed_signers anywhere no
+approval verifies. Records verified under an opt-out carry
+``policy: "unsigned_opt_out"`` in their stamp and the opt-out is logged.
+A trust file earns ``system`` only when the file AND its directory are
+neither writable by, nor owned by, the current user.
 """
 from __future__ import annotations
 
@@ -39,6 +53,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -53,10 +68,13 @@ from aihydro_core.records import digest
 
 from ai_hydro.registry.paths import aihydro_home
 
+log = logging.getLogger("ai_hydro.approval")
+_OPT_OUT_LOGGED = False
+POLICY_SIGNED = "signed_required"
+POLICY_OPT_OUT = "unsigned_opt_out"
+
 NAMESPACE = "aihydro-approval@v1"
 SIG_FORMAT = "sshsig"
-CHANNEL_SK = "ssh_sig_sk"
-CHANNEL_SSH = "ssh_sig"
 CHANNEL_LEGACY = "cli_same_user"
 SK_KEY_TYPES = ("sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com")
 SYSTEM_TRUST_FILE = "/etc/aihydro/allowed_signers"
@@ -84,11 +102,27 @@ def config_file() -> Path:
     return aihydro_home() / "approvals" / "config.json"
 
 
+def _protected(path: Path) -> bool:
+    """True iff neither ``path`` nor its directory is writable by, or owned by, the current user."""
+    try:
+        uid = os.geteuid()
+        for p in (path, path.parent):
+            if os.access(p, os.W_OK) or os.stat(p).st_uid == uid:
+                return False
+        return True
+    except (OSError, AttributeError):         # no geteuid (Windows) or unreadable: not provably protected
+        return False
+
+
 def trust_root() -> tuple:
-    """``(path, label)``: system file if present, else user file if present, else ``(None, None)``."""
+    """``(path, label)``: system file if present, else user file if present, else ``(None, None)``.
+
+    ``system`` is earned only by a file (and directory) the current user can
+    neither write nor owns; otherwise the system-path file is ``user_writable``.
+    """
     sys_file = system_trust_file()
     if sys_file.is_file():
-        return sys_file, "system"
+        return sys_file, "system" if _protected(sys_file) else "user_writable"
     usr = user_trust_file()
     if usr.is_file():
         return usr, "user_writable"
@@ -106,12 +140,11 @@ def _truthy(value: Any) -> Optional[bool]:
 
 
 def require_signed() -> bool:
-    """Whether unsigned (v1, ``cli_same_user``) approvals are refused.
+    """Whether unsigned (v1, ``cli_same_user``) approvals are refused. Fails closed.
 
-    A system trust root forces True (a user-writable flag must not be able to
-    weaken a root-owned policy). Otherwise ``AIHYDRO_REQUIRE_SIGNED`` or
-    ``{"require_signed": bool}`` in ``$AIHYDRO_HOME/approvals/config.json``
-    decides; the default is True when any allowed_signers file exists.
+    True unless explicitly opted out with ``AIHYDRO_REQUIRE_SIGNED=0`` or
+    ``{"require_signed": false}`` in ``$AIHYDRO_HOME/approvals/config.json``
+    (development only). A protected system trust root forces True.
     """
     _, label = trust_root()
     if label == "system":
@@ -126,7 +159,18 @@ def require_signed() -> bool:
             return flag
     except (OSError, ValueError):
         pass
-    return label is not None
+    return True
+
+
+def _policy() -> str:
+    global _OPT_OUT_LOGGED
+    if require_signed():
+        return POLICY_SIGNED
+    if not _OPT_OUT_LOGGED:
+        _OPT_OUT_LOGGED = True
+        log.warning("approval signing opt-out is in force (require_signed=false): approvals are "
+                    "verified without a required signature and are stamped policy=unsigned_opt_out")
+    return POLICY_OPT_OUT
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +282,17 @@ class Verdict:
     signer: Optional[dict] = None
     trust_root: Optional[str] = None
     principal: Optional[str] = None
+    policy: Optional[str] = None
 
     def stamp(self) -> dict:
-        return {"channel": self.channel, "signer": self.signer, "trust_root": self.trust_root}
+        return {"channel": self.channel, "signer": self.signer, "trust_root": self.trust_root,
+                "principal": self.principal, "policy": self.policy}
+
+
+def _channel(key_type: str, options: list, label: str) -> str:
+    sk = key_type in SK_KEY_TYPES and "no-touch-required" not in options
+    root = {"system": "system_trust", "user_writable": "user_trust"}.get(label, label)
+    return f"ssh_sig{'_sk' if sk else ''}_{root}"
 
 
 def _ssh_keygen() -> Optional[str]:
@@ -299,13 +351,20 @@ def verify_signature(record: dict, *, allowed_signers: Optional[Any] = None) -> 
                 if found.returncode == 0 else []
             if not principals:
                 return Verdict(False, reason="no allowed signer matches this signature", **base)
-            for principal in principals:
+            approver = (record.get("approver") or {}).get("id")
+            order = ([approver] if approver else []) + [p for p in principals if p != approver]
+            last = None
+            for principal in order:
                 res = _run([exe, "-Y", "verify", "-f", str(trust_path), "-I", principal,
                             "-n", NAMESPACE, "-s", str(sig_path)], data)
                 if res.returncode == 0:
-                    sk = parsed["key_type"] in SK_KEY_TYPES and "no-touch-required" not in line["options"]
-                    return Verdict(True, CHANNEL_SK if sk else CHANNEL_SSH, "verified", principal=principal, **base)
-            reason = (res.stderr or res.stdout).decode("utf-8", "replace").strip().splitlines()
+                    if principal != approver:        # signature is fine but names someone else
+                        return Verdict(False, reason=f"approver id {approver!r} does not match the "
+                                       f"enrolled principal {principal!r}", **base)
+                    return Verdict(True, _channel(parsed["key_type"], line["options"], label),
+                                   "verified", principal=principal, policy=_policy(), **base)
+                last = res
+            reason = (last.stderr or last.stdout).decode("utf-8", "replace").strip().splitlines()
             return Verdict(False, reason=f"signature not accepted: {reason[0] if reason else 'verify failed'}", **base)
         except (OSError, subprocess.SubprocessError) as exc:
             return Verdict(False, reason=f"ssh-keygen failed: {exc}", **base)
@@ -316,10 +375,11 @@ def check_approval(record: dict, *, allowed_signers: Optional[Any] = None) -> Ve
     schema = record.get("schema")
     if schema == "aihydro.approval/1":
         if require_signed() and allowed_signers is None:
-            return Verdict(False, reason="unsigned (v1) approvals are refused: signatures are required")
+            return Verdict(False, reason="unsigned (v1) approvals are refused: signatures are required (fail closed)")
         if allowed_signers is not None:
             return Verdict(False, reason="unsigned (v1) approval cannot be verified against a supplied trust root")
-        return Verdict(True, CHANNEL_LEGACY, "legacy unsigned record")
+        return Verdict(True, CHANNEL_LEGACY, "legacy unsigned record under explicit opt-out",
+                       policy=_policy())
     if schema == "aihydro.approval/2":
         return verify_signature(record, allowed_signers=allowed_signers)
     return Verdict(False, reason=f"unknown approval schema {schema!r}")

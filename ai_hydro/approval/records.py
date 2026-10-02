@@ -19,9 +19,9 @@ the slice-1 review. Records therefore carry ``channel: "cli_same_user"`` and
 registry stamps repeat it; it names how the record was produced, not that a
 human was verified. Closing the gap is ADR-002b: schema ``aihydro.approval/2`` carries an SSHSIG
 over ``record_digest`` made by an enrolled key; the verifier (``trust.py``)
-derives the channel (``ssh_sig_sk`` / ``ssh_sig`` / ``cli_same_user``) and
+derives the channel (``ssh_sig[_sk]_{system,user}_trust`` / ``cli_same_user``) and
 refuses a v2 line without a valid, enrolled, unrevoked signature. v1 records
-stay readable as ``cli_same_user`` unless ``require_signed`` is in force.
+are accepted as ``cli_same_user`` only under an explicit opt-out (fail closed by default).
 
 Store layout (``$AIHYDRO_HOME`` defaults to ``~/.aihydro``, resolved at call
 time)::
@@ -291,23 +291,30 @@ def get_approval(record_digest: str) -> Optional[dict]:
 
 
 def verified_channel(record: dict) -> Optional[str]:
-    """The channel the *verifier* derives for ``record`` (``ssh_sig_sk``, ``ssh_sig``,
-    ``cli_same_user``), or None when the record is not accepted. Never read from the record."""
+    """The channel the *verifier* derives for ``record`` (``ssh_sig[_sk]_system_trust`` /
+    ``_user_trust`` / ``_supplied``, or ``cli_same_user``), or None when not accepted.
+    Never read from the record; ``*_user_trust`` is integrity-only, not human verification."""
     verdict = check_approval(record)
     return verdict.channel if verdict.ok else None
 
 
 def approval_stamp(record: dict) -> dict:
-    """What a registry row should cite: ``{record_digest, channel, signer, trust_root}``.
+    """What a registry row should cite.
 
-    ``channel`` is verifier-derived; ``signer`` (fingerprint, key_type) and
-    ``trust_root`` are None for legacy v1 records.
+    ``{record_digest, channel, trust_root, principal, signer {fingerprint,
+    key_type}, policy}``. ``channel`` is verifier-derived and names the trust
+    root (``ssh_sig_sk_system_trust`` ... ``cli_same_user``); ``signer``,
+    ``trust_root`` and ``principal`` are None for legacy v1 records; ``policy``
+    is ``unsigned_opt_out`` when verified under an explicit opt-out. All
+    None (except the digest) when the record is not accepted.
     """
-    verdict = check_approval(record)
+    v = check_approval(record)
     return {"record_digest": record[_SEAL_KEY],
-            "channel": verdict.channel if verdict.ok else None,
-            "signer": verdict.signer if verdict.ok else None,
-            "trust_root": verdict.trust_root if verdict.ok else None}
+            "channel": v.channel if v.ok else None,
+            "trust_root": v.trust_root if v.ok else None,
+            "principal": v.principal if v.ok else None,
+            "signer": v.signer if v.ok else None,
+            "policy": v.policy if v.ok else None}
 
 
 def approve_command(session_id: str, claim_id: str) -> str:

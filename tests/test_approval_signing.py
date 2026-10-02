@@ -46,6 +46,11 @@ def scratch_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def opt_out(monkeypatch):
+    monkeypatch.setenv("AIHYDRO_REQUIRE_SIGNED", "0")
+
+
 def make_key(directory: Path, name: str = "k") -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
@@ -80,7 +85,7 @@ def sign_manually(rec_body: dict, key: Path, tmp_path: Path) -> dict:
 
 
 BODY = {"claim_id": "c1", "session_id": "s1", "claim_revision_digest": REV,
-        "approver": {"kind": "human", "id": "mallory"}, "approved_at": "2026-01-01T00:00:00Z",
+        "approver": {"kind": "human", "id": "alice"}, "approved_at": "2026-01-01T00:00:00Z",
         "statement": "x"}
 
 
@@ -102,19 +107,83 @@ def test_sign_and_verify_roundtrip(scratch_home):
     assert rec["signer"] == {"fingerprint": fp, "key_type": "ssh-ed25519"}
     found = find_approval("s1", "c1", REV)
     assert found["record_digest"] == rec["record_digest"]
-    assert verified_channel(found) == "ssh_sig"
+    assert verified_channel(found) == "ssh_sig_user_trust"
     stamp = approval_stamp(found)
-    assert stamp == {"record_digest": rec["record_digest"], "channel": "ssh_sig",
-                     "signer": rec["signer"], "trust_root": "user_writable"}
+    assert stamp == {"record_digest": rec["record_digest"], "channel": "ssh_sig_user_trust",
+                     "signer": rec["signer"], "trust_root": "user_writable",
+                     "principal": "alice", "policy": "signed_required"}
 
 
-def test_system_trust_root_is_labelled_and_wins(scratch_home):
-    key = make_key(scratch_home / "keys")
+def _system_trust(scratch_home, key, monkeypatch, protected=True):
+    """Install a system-path trust file. ``protected`` simulates root ownership (we cannot chown)."""
     sysfile = Path(os.environ["AIHYDRO_SYSTEM_TRUST_FILE"])
     sysfile.parent.mkdir(parents=True)
     sysfile.write_text(enrol(key, user=False) + "\n")
+    if protected:
+        os.chmod(sysfile, 0o444)
+        os.chmod(sysfile.parent, 0o555)
+        real = os.geteuid()
+        monkeypatch.setattr(trust.os, "geteuid", lambda: real + 1)   # file is "owned by someone else"
+    return sysfile
+
+
+@pytest.mark.skipif(os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs a non-root POSIX user (root can always write)")
+def test_protected_system_trust_root_earns_system_label(scratch_home, monkeypatch):
+    key = make_key(scratch_home / "keys")
+    sysfile = _system_trust(scratch_home, key, monkeypatch)
+    try:
+        assert trust.trust_root() == (sysfile, "system")
+        rec = write_signed_approval("s1", "c1", REV, HUMAN, "ok", key=str(key))
+        stamp = approval_stamp(rec)
+        assert stamp["trust_root"] == "system" and stamp["channel"] == "ssh_sig_system_trust"
+    finally:
+        os.chmod(sysfile.parent, 0o755)
+
+
+def test_system_path_file_writable_or_owned_by_user_is_user_writable(scratch_home, monkeypatch):
+    """G5: the /etc path alone does not earn 'system'."""
+    key = make_key(scratch_home / "keys")
+    sysfile = _system_trust(scratch_home, key, monkeypatch, protected=False)   # we own it and can write it
+    assert trust.trust_root() == (sysfile, "user_writable")
     rec = write_signed_approval("s1", "c1", REV, HUMAN, "ok", key=str(key))
-    assert approval_stamp(rec)["trust_root"] == "system"
+    assert approval_stamp(rec)["trust_root"] == "user_writable"
+    assert approval_stamp(rec)["channel"] == "ssh_sig_user_trust"
+
+
+@pytest.mark.skipif(os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs a non-root POSIX user")
+def test_unwritable_but_user_owned_system_file_is_not_system(scratch_home, monkeypatch):
+    key = make_key(scratch_home / "keys")
+    sysfile = _system_trust(scratch_home, key, monkeypatch, protected=False)
+    os.chmod(sysfile, 0o444)
+    os.chmod(sysfile.parent, 0o555)           # not writable, but we own both: we could chmod them back
+    try:
+        assert trust.trust_root()[1] == "user_writable"
+    finally:
+        os.chmod(sysfile.parent, 0o755)
+
+
+@pytest.mark.skipif(os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs a non-root POSIX user")
+def test_writable_directory_blocks_system_label(scratch_home, monkeypatch):
+    key = make_key(scratch_home / "keys")
+    sysfile = _system_trust(scratch_home, key, monkeypatch)
+    try:
+        os.chmod(sysfile.parent, 0o755)       # file read-only and "foreign", but directory writable
+        assert trust.trust_root()[1] == "user_writable"
+    finally:
+        os.chmod(sysfile.parent, 0o755)
+
+
+def test_approver_must_match_enrolled_principal(scratch_home):
+    key = make_key(scratch_home / "keys")
+    enrol(key)                                                    # principal "alice"
+    with pytest.raises(ValueError, match="does not match the enrolled principal"):
+        write_signed_approval("s1", "c1", REV, Actor(kind="human", id="bob"), "ok", key=str(key))
+    assert approvals_lines() == []
+    put(sign_manually({**BODY, "approver": {"kind": "human", "id": "bob"}}, key, scratch_home))
+    assert find_approval("s1", "c1", REV) is None
 
 
 def test_default_key_from_ssh_dir_is_used(scratch_home):
@@ -134,7 +203,7 @@ def test_supplied_allowed_signers_verifies_off_machine(scratch_home):
     shutil.rmtree(trust.user_trust_file().parent)            # no local trust root at all
     assert trust.check_approval(rec).ok is False
     v = trust.check_approval(rec, allowed_signers=other)
-    assert v.ok and v.trust_root == "supplied" and v.channel == "ssh_sig"
+    assert v.ok and v.trust_root == "supplied" and v.channel == "ssh_sig_supplied"
     stranger = make_key(scratch_home / "keys2")
     other.write_text(enrol(stranger, user=False) + "\n")
     assert not trust.check_approval(rec, allowed_signers=other).ok
@@ -237,9 +306,11 @@ def test_revoked_key_is_refused_including_earlier_approvals(scratch_home):
     enrol(key)
     rec = write_signed_approval("s1", "c1", REV, HUMAN, "ok", key=str(key))
     assert find_approval("s1", "c1", REV)
+    out = _Sink()
     code = approve_cli(["revoke", rec["signer"]["fingerprint"], "--reason", "lost"],
-                       stdout=_Sink(), stderr=_Sink())
+                       stdout=out, stderr=_Sink())
     assert code == 0
+    assert "deletable and forgeable" in out.getvalue() and "valid-before" in out.getvalue()
     assert find_approval("s1", "c1", REV) is None
     with pytest.raises(ValueError, match="revoked"):
         write_signed_approval("s1", "c2", REV, HUMAN, "ok", key=str(key))
@@ -273,49 +344,64 @@ class _Sink:
 
 # --------------------------------------------------------------------------- legacy v1 policy
 
-def test_v1_verifies_as_cli_same_user_when_signatures_not_required(scratch_home):
-    rec = write_approval("s1", "c1", REV, HUMAN, "legacy")
-    assert trust.require_signed() is False
-    found = find_approval("s1", "c1", REV)
-    assert found and verified_channel(found) == "cli_same_user"
-    assert approval_stamp(found)["signer"] is None
-
-
-def test_v1_is_refused_once_an_allowed_signers_file_exists(scratch_home):
-    key = make_key(scratch_home / "keys")
+def test_fails_closed_by_default_with_no_trust_root(scratch_home):
+    """G2: no allowed_signers anywhere and no opt-out: nothing verifies, v1 included."""
     write_approval("s1", "c1", REV, HUMAN, "legacy")
-    assert find_approval("s1", "c1", REV)
-    enrol(key)
     assert trust.require_signed() is True
     assert find_approval("s1", "c1", REV) is None
+    key = make_key(scratch_home / "keys")
+    with pytest.raises(ValueError, match="no allowed_signers trust root"):
+        write_signed_approval("s1", "c1", REV, HUMAN, "ok", key=str(key))
 
 
-def test_require_signed_flag_overrides(scratch_home, monkeypatch):
+def test_v1_verifies_as_cli_same_user_only_under_explicit_opt_out(scratch_home, opt_out, caplog):
     write_approval("s1", "c1", REV, HUMAN, "legacy")
-    monkeypatch.setenv("AIHYDRO_REQUIRE_SIGNED", "1")
-    assert find_approval("s1", "c1", REV) is None                 # forced on without any trust root
-    monkeypatch.delenv("AIHYDRO_REQUIRE_SIGNED")
-    cfg = records.approvals_dir() / "config.json"
-    cfg.write_text(json.dumps({"require_signed": True}))
+    assert trust.require_signed() is False
+    trust._OPT_OUT_LOGGED = False
+    with caplog.at_level("WARNING", logger="ai_hydro.approval"):
+        found = find_approval("s1", "c1", REV)
+    assert found and verified_channel(found) == "cli_same_user"
+    stamp = approval_stamp(found)
+    assert stamp["signer"] is None and stamp["policy"] == "unsigned_opt_out"
+    assert "opt-out" in caplog.text
+
+
+def test_signed_record_under_opt_out_is_stamped_with_the_policy(scratch_home, opt_out):
+    key = make_key(scratch_home / "keys")
+    enrol(key)
+    rec = write_signed_approval("s1", "c1", REV, HUMAN, "ok", key=str(key))
+    assert approval_stamp(rec)["policy"] == "unsigned_opt_out"
+
+
+def test_v1_is_refused_once_an_allowed_signers_file_exists_even_under_default(scratch_home):
+    key = make_key(scratch_home / "keys")
+    write_approval("s1", "c1", REV, HUMAN, "legacy")
+    enrol(key)
     assert find_approval("s1", "c1", REV) is None
+
+
+def test_config_file_opt_out_and_flag_overrides(scratch_home, monkeypatch):
+    write_approval("s1", "c1", REV, HUMAN, "legacy")
+    assert find_approval("s1", "c1", REV) is None
+    cfg = records.approvals_dir() / "config.json"
     cfg.write_text(json.dumps({"require_signed": False}))
     assert find_approval("s1", "c1", REV) is not None
-    enrol(make_key(scratch_home / "keys"))                        # user trust root: flag may relax policy
-    assert find_approval("s1", "c1", REV) is not None
-    monkeypatch.setenv("AIHYDRO_REQUIRE_SIGNED", "0")
-    assert find_approval("s1", "c1", REV) is not None
-
-
-def test_system_trust_root_cannot_be_relaxed_by_user_flag(scratch_home, monkeypatch):
-    key = make_key(scratch_home / "keys")
-    sysfile = Path(os.environ["AIHYDRO_SYSTEM_TRUST_FILE"])
-    sysfile.parent.mkdir(parents=True)
-    sysfile.write_text(enrol(key, user=False) + "\n")
-    write_approval("s1", "c1", REV, HUMAN, "legacy")
-    monkeypatch.setenv("AIHYDRO_REQUIRE_SIGNED", "0")
-    (records.approvals_dir() / "config.json").write_text(json.dumps({"require_signed": False}))
-    assert trust.require_signed() is True
+    monkeypatch.setenv("AIHYDRO_REQUIRE_SIGNED", "1")             # env wins over config
     assert find_approval("s1", "c1", REV) is None
+
+
+@pytest.mark.skipif(os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs a non-root POSIX user")
+def test_protected_system_trust_root_cannot_be_relaxed_by_opt_out(scratch_home, monkeypatch):
+    key = make_key(scratch_home / "keys")
+    sysfile = _system_trust(scratch_home, key, monkeypatch)
+    try:
+        write_approval("s1", "c1", REV, HUMAN, "legacy")
+        monkeypatch.setenv("AIHYDRO_REQUIRE_SIGNED", "0")
+        assert trust.require_signed() is True
+        assert find_approval("s1", "c1", REV) is None
+    finally:
+        os.chmod(sysfile.parent, 0o755)
 
 
 # --------------------------------------------------------------------------- sk channel (stubbed verify)
@@ -332,10 +418,10 @@ def _fake_sshsig(key_type: str) -> tuple:
 
 
 @pytest.mark.parametrize("key_type,options,expect", [
-    ("sk-ssh-ed25519@openssh.com", 'namespaces="aihydro-approval@v1"', "ssh_sig_sk"),
-    ("sk-ecdsa-sha2-nistp256@openssh.com", "", "ssh_sig_sk"),
-    ("sk-ssh-ed25519@openssh.com", "no-touch-required", "ssh_sig"),     # touch not enforced: not claimed
-    ("ssh-ed25519", "", "ssh_sig"),
+    ("sk-ssh-ed25519@openssh.com", 'namespaces="aihydro-approval@v1"', "ssh_sig_sk_user_trust"),
+    ("sk-ecdsa-sha2-nistp256@openssh.com", "", "ssh_sig_sk_user_trust"),
+    ("sk-ssh-ed25519@openssh.com", "no-touch-required", "ssh_sig_user_trust"),   # touch not enforced: not claimed
+    ("ssh-ed25519", "", "ssh_sig_user_trust"),
 ])
 def test_channel_is_derived_from_key_type_and_touch_policy(scratch_home, monkeypatch, key_type, options, expect):
     armored, blob = _fake_sshsig(key_type)
@@ -357,7 +443,7 @@ def test_channel_is_derived_from_key_type_and_touch_policy(scratch_home, monkeyp
     verdict = trust.check_approval(rec)
     assert verdict.ok and verdict.channel == expect
     # a record that merely *says* it is sk-signed gets no such label
-    rec2 = {**rec, "channel": "ssh_sig_sk"}
+    rec2 = {**rec, "channel": "ssh_sig_sk_system_trust"}
     assert trust.check_approval(rec2).channel == expect
 
 
@@ -382,6 +468,8 @@ def _drive_cli(args: list, tmp_path: Path, rev: str, env_extra: dict) -> tuple:
            "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH", "")])),
            **env_extra}
     env.pop("SSH_AUTH_SOCK", None)
+    if "AIHYDRO_REQUIRE_SIGNED" not in env_extra:
+        env.pop("AIHYDRO_REQUIRE_SIGNED", None)       # approval_helpers sets the dev opt-out at import
     master, slave = pty.openpty()
     proc = subprocess.Popen([sys.executable, "-m", "ai_hydro.approval.cli", *args],
                             stdin=slave, stdout=slave, stderr=slave, env=env, cwd=str(REPO), close_fds=True)
@@ -417,20 +505,25 @@ def test_pty_bypass_with_no_key_available_yields_no_signed_record(scratch_home, 
         enrol_line(read_pubkey_file(Path(f"{other}.pub")), "alice") + "\n")
     code, out = _drive_cli(["pty-nokey", "c1", "--approver", "mallory"], scratch_home, rev, {})
     assert code == 5, out
-    assert "no approval recorded" in out
+    assert "no approval recorded" in out and "fail closed" in out
     monkeypatch.setenv("AIHYDRO_HOME", str(scratch_home / "state"))
     assert approvals_lines() == []
 
 
 @pytest.mark.skipif(os.name != "posix", reason="needs a POSIX pseudo-terminal")
-def test_pty_without_trust_root_writes_only_a_labelled_legacy_record(scratch_home, monkeypatch):
+def test_pty_without_trust_root_fails_closed_and_opt_out_writes_a_labelled_legacy_record(scratch_home, monkeypatch):
     rev = _claim_session("pty-legacy", monkeypatch, scratch_home)
     code, out = _drive_cli(["pty-legacy", "c1", "--approver", "mallory"], scratch_home, rev, {})
-    assert code == 0 and "UNSIGNED" in out, out
+    assert code == 5, out                                         # G2: nothing recorded, enrol first
     monkeypatch.setenv("AIHYDRO_HOME", str(scratch_home / "state"))
+    assert approvals_lines() == []
+    code, out = _drive_cli(["pty-legacy", "c1", "--approver", "mallory"], scratch_home, rev,
+                           {"AIHYDRO_REQUIRE_SIGNED": "0"})
+    assert code == 0 and "UNSIGNED" in out, out
     lines = approvals_lines()
     assert [x["schema"] for x in lines] == ["aihydro.approval/1"]
     assert not any(str(x.get("channel", "")).startswith("ssh_sig") for x in lines)
+    monkeypatch.setenv("AIHYDRO_REQUIRE_SIGNED", "0")
     assert verified_channel(find_approval("pty-legacy", "c1", rev)) == "cli_same_user"
 
 
@@ -446,7 +539,7 @@ def test_pty_with_enrolled_key_records_a_signed_approval(scratch_home, monkeypat
     assert code == 0 and "Approved and signed" in out, out
     monkeypatch.setenv("AIHYDRO_HOME", str(home))
     found = find_approval("pty-key", "c1", rev)
-    assert found["schema"] == "aihydro.approval/2" and verified_channel(found) == "ssh_sig"
+    assert found["schema"] == "aihydro.approval/2" and verified_channel(found) == "ssh_sig_user_trust"
 
 
 def test_enroll_prints_and_only_writes_with_user_trust(scratch_home):

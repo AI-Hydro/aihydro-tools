@@ -21,14 +21,16 @@ can drive this CLI through a pseudo-terminal or append a sealed record itself
 ``channel: "cli_same_user"`` for that reason (docs/evidence-integrity.md,
 "Human approval").
 
-Signing (ADR-002b). This CLI is the canonical approval channel. When an
+Signing (ADR-002b, fails closed). This CLI is the canonical approval channel. When an
 ``allowed_signers`` trust root exists (system ``/etc/aihydro/allowed_signers``
 or ``$AIHYDRO_HOME/trust/allowed_signers``), the confirmed approval is signed
 with an enrolled SSH key (``--key``, else ``~/.ssh/id_*``, else an enrolled
 ssh-agent key) via ``ssh-keygen -Y sign`` and stored as ``aihydro.approval/2``;
 a hardware (``sk-``) key makes the human touch the authenticator for each
-approval. With no trust root the CLI writes the legacy unsigned v1 record and
-says so. It never stores private keys and ``enroll`` never runs sudo: it prints
+approval. With no trust root nothing is recorded (exit 5) unless the developer
+opts out with AIHYDRO_REQUIRE_SIGNED=0, which writes a labelled unsigned v1
+record. ``--approver`` must equal the enrolled principal of the signing key
+(the verifier refuses a mismatch). It never stores private keys and ``enroll`` never runs sudo: it prints
 the line and command for the owner to apply.
 
 Exit codes: 0 approved (or already approved); 1 claim/session problem;
@@ -167,8 +169,10 @@ def _revoke(argv: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
     except ValueError as exc:
         print(f"aihydro-approve revoke: {exc}", file=stderr)
         return EXIT_USAGE
-    print(f"Revoked {args.fingerprint} (record {rec['record_digest']}). Also remove its line from "
-          "allowed_signers so it cannot be re-used.", file=stdout)
+    print(f"Recorded local revocation of {args.fingerprint} (record {rec['record_digest']}).\n"
+          "WARNING: this local revocation file is deletable and forgeable by any process running as "
+          "you; it is not a security control. Real revocation: set valid-before on that key's line "
+          "in the SYSTEM allowed_signers (root-owned), or remove the line.", file=stdout)
     return EXIT_OK
 
 
@@ -248,18 +252,19 @@ def main(
     statement = args.statement or f"Approved claim {args.claim_id} at revision {rev[:19]}."
     actor = Actor(kind="human", id=approver_id)
     root, label = trust_root()
-    if root is None and not args.key and not require_signed():
+    if not require_signed() and not args.key:      # explicit development opt-out only
         record = write_approval(args.session_id, args.claim_id, rev, actor, statement)
-        print(f"Approved (UNSIGNED legacy record, channel cli_same_user: not verified human identity). "
-              f"Record {record['record_digest']} written under {approvals_dir()}.\n"
-              "To sign approvals: ssh-keygen -t ed25519-sk (or ed25519), then `aihydro-approve enroll "
-              "<key>.pub --user-trust` (or the printed sudo command).", file=stdout)
+        print(f"Approved (UNSIGNED legacy record under explicit opt-out, channel cli_same_user: "
+              f"not verified human identity). Record {record['record_digest']} written under "
+              f"{approvals_dir()}.", file=stdout)
         return EXIT_OK
     try:
         record = write_signed_approval(args.session_id, args.claim_id, rev, actor, statement, key=args.key)
     except (SigningError, ValueError) as exc:
         print(f"aihydro-approve: no approval recorded: {exc}\n"
-              "Enrol a key with `aihydro-approve enroll <key>.pub` and pass --key if needed.", file=stderr)
+              "Approvals fail closed: enrol a signing key first (ssh-keygen -t ed25519-sk, then "
+              "`aihydro-approve enroll <key>.pub`, add the printed line to the trust root) and pass "
+              "--key if needed. Development only: AIHYDRO_REQUIRE_SIGNED=0 opts out.", file=stderr)
         return EXIT_SIGNING
     print(f"Approved and signed ({record['signer']['key_type']} {record['signer']['fingerprint']}, "
           f"trust root {label}). Record {record['record_digest']} written under {approvals_dir()}.",

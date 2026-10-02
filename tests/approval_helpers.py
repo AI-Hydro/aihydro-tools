@@ -7,6 +7,12 @@ the per-test isolated ``AIHYDRO_HOME`` (see ``conftest.py``).
 """
 from __future__ import annotations
 
+import os
+
+# Approvals fail closed (ADR-002b): v1 test fixtures need the explicit development opt-out.
+# (tests/conftest.py should set this per test too; this keeps importers working meanwhile.)
+os.environ["AIHYDRO_REQUIRE_SIGNED"] = "0"
+
 
 def approve(session_id: str, claim_id: str, approver: str = "test-researcher") -> dict:
     """Record a human approval for the claim's CURRENT revision (claim + evidence)."""
