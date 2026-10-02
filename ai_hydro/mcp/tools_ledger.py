@@ -496,6 +496,14 @@ def promote_claim_to_registry(
             stored = claim_revisions.record_change(
                 session_id, claim_id, now_fields, tool="promote_claim_to_registry",
                 reason="evidence_drift" if only_evidence else "out_of_band_edit").to_dict()
+            # The revision moved even if promotion is refused below: tell watchers.
+            push_claim_event(
+                change_type="updated", session_id=session_id, claim_id=claim_id,
+                statement=claim_dict.get("claim", claim_dict.get("statement", "")),
+                status=claim_dict.get("status", "proposed"),
+                claim_type=claim_dict.get("claim_type", ""),
+                confidence=claim_dict.get("confidence", ""),
+                revision=stored["revision"], revision_digest=stored["revision_digest"])
             # The old approval cannot cover the new revision. An approval that
             # already binds the new revision (the researcher approved the live
             # state) is honoured below; otherwise refuse.
@@ -587,6 +595,17 @@ def promote_claim_to_registry(
             extra_cause={"registry_id": registry_id,
                          "approval_record_digest": approval["record_digest"]})
         session.save()
+        # The approval was just consumed. Notify watchers (invalidation only: the
+        # event carries no approval state, snapshots are authoritative).
+        push_claim_event(
+            change_type="promoted",
+            session_id=session_id,
+            claim_id=claim_id,
+            statement=claim_dict.get("claim", claim_dict.get("statement", "")),
+            status=claim_dict.get("status", "proposed"),
+            claim_type=claim_dict.get("claim_type", ""),
+            confidence=claim_dict.get("confidence", ""),
+        )
 
         return {
             "id": claim_id,
