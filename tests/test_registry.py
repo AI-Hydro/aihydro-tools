@@ -28,7 +28,7 @@ from ai_hydro.mcp.tools_ledger import (
     list_registry_claims,
 )
 from ai_hydro.session.store import HydroSession
-from approval_helpers import approve
+from approval_helpers import approve, basin_ref
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,8 @@ def _promoted_claim_dict(claim_id: str = "c-001") -> dict:
         "status": "supported",
         "confidence": "high",
         "confidence_rationale": "30-year USGS record.",
-        "scope": {"basins": ["01013500"], "period": "1990-2020"},
+        "scope": {"basins": ["01013500"], "period": "1990-2020",
+                  "basin_refs": [basin_ref("01013500")]},
         "evidence_spans": [
             # source_id matches the session slot name used in staleness tests
             {"source_type": "dataset", "source_id": "streamflow", "metric_ref": "q_mean"},
@@ -350,7 +351,8 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
             cd = {
                 **_promoted_claim_dict("c-hydro-modelled"),
                 "claim": "baseflow_index for the Amazon headwaters basin is 0.31",
-                "scope": {"basins": ["amazon-headwaters"], "period": "1990-2020"},
+                "scope": {"basins": ["amazon-headwaters"], "period": "1990-2020",
+                          "basin_refs": [basin_ref("amazon-headwaters")]},
                 "limitations": ["Single basin only"],  # no modelled/geoglows acknowledgement
             }
             s.claims["c-hydro-modelled"] = cd
@@ -368,7 +370,8 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
             cd = {
                 **_promoted_claim_dict("c-hydro-acked"),
                 "claim": "baseflow_index for the Amazon headwaters basin is 0.31",
-                "scope": {"basins": ["amazon-headwaters"], "period": "1990-2020"},
+                "scope": {"basins": ["amazon-headwaters"], "period": "1990-2020",
+                          "basin_refs": [basin_ref("amazon-headwaters")]},
                 "limitations": [
                     "Signature computed from modelled GEOGLOWS discharge, not gauge observations."
                 ],

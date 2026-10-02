@@ -8,6 +8,14 @@ the per-test isolated ``AIHYDRO_HOME`` (see ``conftest.py``).
 from __future__ import annotations
 
 
+def basin_ref(label: str = "synthetic") -> dict:
+    """A well-formed ``ClaimScope.basin_refs`` entry (slice 3): promotion of a basin-scoped
+    claim now requires one. Test setup only; the id is derived, not minted by a delineation."""
+    from aihydro_core.records.place import BasinAnchor, basin_id_from_anchor
+    return {"id": basin_id_from_anchor(BasinAnchor("network_element", "test-network", "1", label)),
+            "label": label}
+
+
 def approve(session_id: str, claim_id: str, approver: str = "test-researcher") -> dict:
     """Record a human approval for the claim's CURRENT revision (claim + evidence)."""
     from aihydro_core.records import Actor

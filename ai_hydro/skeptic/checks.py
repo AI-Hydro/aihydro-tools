@@ -9,13 +9,14 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from ai_hydro import identity
 from ai_hydro.skeptic.models import SkepticIssue, SkepticReport
 
 if TYPE_CHECKING:
     from ai_hydro.session.store import HydroSession
 
-# Regex for USGS 8-digit gauge IDs (e.g. 01013500, 09380000)
-_GAUGE_RE = re.compile(r"\b(\d{8})\b")
+# USGS site IDs mentioned in text (8-15 digits; one rule in ai_hydro.identity)
+_GAUGE_RE = identity.USGS_SITE_ID_SEARCH_RE
 
 # Claim marker pattern: [claim:some-id]
 _CLAIM_MARKER_RE = re.compile(r"\[claim:([^\]]+)\]")
@@ -81,11 +82,13 @@ def check_scope_overreach(
         return issues
 
     # Collect all gauge IDs covered by at least one claim scope
+    # (basins labels, plus basin_refs ids/labels and the usgs alias ids of the
+    # session's delineated BasinRef when a claim binds to it)
     covered: set[str] = set()
+    slot_ref = identity.session_basin_ref(session)
+    refs_by_id = {slot_ref["id"]: slot_ref} if slot_ref and slot_ref.get("id") else {}
     for claim_dict in session.claims.values():
-        scope = claim_dict.get("scope", {})
-        for basin in scope.get("basins", []):
-            covered.add(str(basin).strip())
+        covered |= identity.claim_covered_ids(claim_dict.get("scope", {}), refs_by_id)
 
     # Skip the check entirely if no claims have basin scopes
     if not covered:

@@ -7,7 +7,6 @@ within a research session.
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime, timezone
 from ai_hydro.mcp.app import mcp
 from ai_hydro.session import HydroSession
@@ -15,6 +14,7 @@ from ai_hydro.session.models import ScientificClaim, Assumption, ClaimScope, Evi
 from ai_hydro.mcp.helpers import _tool_error_to_dict
 from ai_hydro.mcp.ledger_commands import push_claim_event
 from aihydro_core.primitives.hashing import content_hash
+from ai_hydro import identity
 
 log = logging.getLogger("ai_hydro.mcp")
 
@@ -31,10 +31,10 @@ _MODELLED_HYDROLOGY_METRIC_MARKERS = (
 _MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS = (
     "model", "geoglows", "ungauged", "simulat", "unobserved", "no gauge",
 )
-# USGS gauge IDs are 8-15 digit numeric strings. A claim scoped entirely to
-# basins that look like USGS gauge IDs is very likely CONUS observed
-# streamflow — the common, legitimate case — and should not be flagged.
-_USGS_GAUGE_ID_RE = re.compile(r"^\d{8,15}$")
+# USGS gauge IDs are 8-15 digit numeric strings (ai_hydro.identity owns the rule).
+# A claim scoped entirely to basins that look like USGS gauge IDs, or bound to a
+# BasinRef with a usgs alias, is very likely CONUS observed streamflow — the
+# common, legitimate case — and should not be flagged.
 
 
 def _claim_requires_uncertainty(claim_dict: dict) -> bool:
@@ -57,7 +57,7 @@ def _claim_requires_uncertainty(claim_dict: dict) -> bool:
     )
 
 
-def _claim_touches_hydrology_signature_metric(claim_dict: dict) -> bool:
+def _claim_touches_hydrology_signature_metric(claim_dict: dict, refs_by_id: dict | None = None) -> bool:
     """
     Heuristic: does this claim's scope.metric or statement reference a
     hydrology-signature metric that may be computed from modelled (not
@@ -81,13 +81,54 @@ def _claim_touches_hydrology_signature_metric(claim_dict: dict) -> bool:
     """
     scope = claim_dict.get("scope") or {}
     basins = scope.get("basins") or []
-    if basins and all(_USGS_GAUGE_ID_RE.match(str(b)) for b in basins):
+    if identity.gauge_shaped(basins, scope.get("basin_refs"), refs_by_id):
         return False
     haystack = " ".join([
         str(scope.get("metric") or ""),
         str(claim_dict.get("claim", claim_dict.get("statement", "")) or ""),
     ]).lower()
     return any(marker in haystack for marker in _MODELLED_HYDROLOGY_METRIC_MARKERS)
+
+
+def _slot_refs_by_id(session) -> dict:
+    """``{basin id: BasinRef dict}`` for the session's watershed slot (empty if none)."""
+    ref = identity.session_basin_ref(session)
+    return {ref["id"]: ref} if ref and ref.get("id") else {}
+
+
+def _resolve_basin_refs(session, basins: list[str], basin_refs: list[dict] | None):
+    """``(entries, auto_bound)`` for ``ClaimScope.basin_refs``.
+
+    Supplied entries are either full BasinRef dicts (verified: schema and id must
+    match the anchor) or ``{id, label}``. With none supplied, a watershed-slot ref
+    whose usgs alias, id or gauge label matches a basin label is bound (reported
+    as ``auto_bound``). Labels are never turned into identities.
+    """
+    from aihydro_core.records.place import verify_basin_ref_dict
+    if basin_refs:
+        entries = []
+        for item in basin_refs:
+            if not isinstance(item, dict):
+                raise ValueError("basin_refs entries must be dicts")
+            if "anchor" in item:
+                if not verify_basin_ref_dict(item):
+                    raise ValueError(
+                        f"basin_refs entry {item.get('id')!r} failed verification: its id does not "
+                        "match its anchor (or the schema is not aihydro.basin_ref/1).")
+                usgs = sorted(identity.usgs_ids_of_ref(item))
+                entries.append({"id": item["id"], "label": str(item.get("label") or (usgs[0] if usgs else item["id"]))})
+            else:
+                entries.append({"id": item.get("id"), "label": str(item.get("label") or item.get("id"))})
+        return entries, False
+    ref = identity.session_basin_ref(session)
+    if not basins or not ref or not identity.is_basin_id(ref.get("id")) \
+            or not verify_basin_ref_dict(ref):
+        return None, False
+    gauge = str((session.watershed.get("data") or {}).get("gauge_id") or "")
+    for label in basins:
+        if identity.ref_matches_label(ref, label) or (gauge and str(label).strip() == gauge):
+            return [{"id": ref["id"], "label": str(label)}], True
+    return None, False
 
 
 def _revision_fields(session, claim_id: str):
@@ -164,9 +205,18 @@ def add_claim(
     evidence: list[dict] | None = None,
     evidence_spans: list[dict] | None = None,
     prereg_id: str | None = None,
+    basin_refs: list[dict] | None = None,
 ) -> dict:
     """
     Add a scoped scientific claim to the session ledger.
+
+    basin_refs: canonical basin identity for the claim scope. Each entry is a
+        BasinRef dict from delineate_watershed / delineate_watershed_from_point
+        (data.basin_ref, verified here) or {"id": "aihydro:basin:sha256:<hex>",
+        "label": ...}. If omitted and the session watershed slot holds a basin_ref
+        whose usgs alias or gauge label matches one of `basins`, the claim is bound
+        to it automatically (response field `auto_bound`). Promotion of a claim
+        with basins but no basin_refs is refused (BASIN_REF_REQUIRED).
 
     evidence_spans: preferred format — list of dicts matching EvidenceSpan schema:
         [{"source_type": "run", "source_id": "<run_id>", "metric_ref": "kge"}]
@@ -177,9 +227,11 @@ def add_claim(
         confirmatory (planned) vs exploratory (post-hoc) in the defensibility report.
     """
     try:
+        identity.require_safe_ids(session_id, claim_id)
         session = HydroSession.load(session_id)
 
-        scope = ClaimScope(basins=basins, period=period, metric=metric)
+        entries, auto_bound = _resolve_basin_refs(session, basins, basin_refs)
+        scope = ClaimScope(basins=basins, period=period, metric=metric, basin_refs=entries)
         normalized_spans = _normalize_evidence_spans(evidence_spans, evidence)
         claim = ScientificClaim(
             id=claim_id,
@@ -213,7 +265,11 @@ def add_claim(
             evidence_spans=normalized_spans,
             limitations=limitations or [],
         )
-        return {"id": claim_id, "status": "recorded"}
+        out = {"id": claim_id, "status": "recorded"}
+        if entries:
+            out["basin_refs"] = entries
+            out["auto_bound"] = auto_bound
+        return out
     except Exception as exc:
         return _tool_error_to_dict(exc)
 
@@ -391,6 +447,9 @@ def promote_claim_to_registry(
             find_approval,
         )
 
+        # Stored ids that predate the id rule stay readable but cannot be promoted: the
+        # approval command (aihydro-approve <session> <claim>) must be buildable safely.
+        identity.require_safe_ids(session_id, claim_id, stored=True)
         session = HydroSession.load(session_id)
         claim_dict = session.claims.get(claim_id)
         if not claim_dict:
@@ -406,6 +465,9 @@ def promote_claim_to_registry(
                 "record is also required (see approval_command).")
 
         # ── Promotion gate ────────────────────────────────────────────────────
+        # Canonical place identity first (slice 3, fail closed): labels alone never promote.
+        if claim.scope.basins and not claim.scope.basin_refs:
+            raise identity.BasinRefRequiredError(claim_id, claim.scope.basins, session_id)
         if not claim.evidence_spans:
             raise ValueError(
                 "Promotion requires at least one evidence_span. "
@@ -421,7 +483,7 @@ def promote_claim_to_registry(
                 "Call update_claim_status(uncertainty_verified=True) after confirming "
                 "that an uncertainty estimate is available for the referenced metric."
             )
-        if _claim_touches_hydrology_signature_metric(claim_dict):
+        if _claim_touches_hydrology_signature_metric(claim_dict, _slot_refs_by_id(session)):
             limitations_text = " ".join(claim.limitations).lower()
             if not any(w in limitations_text for w in _MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS):
                 raise ValueError(

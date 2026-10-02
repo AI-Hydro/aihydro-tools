@@ -11,7 +11,7 @@ from ai_hydro.registry import store as registry
 from ai_hydro.registry.evidence import EvidenceError, verified_versions
 from ai_hydro.session import store
 from ai_hydro.session.store import HydroSession
-from approval_helpers import approve
+from approval_helpers import approve, basin_ref
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +42,8 @@ def claim():
     return {"id": "c1", "claim": "Synthetic evaluation NSE is 0.8",
             "claim_type": "empirical_result", "status": "supported",
             "confidence": "medium", "confidence_rationale": "Synthetic regression fixture only.",
-            "scope": {"basins": ["synthetic"], "period": "2000-2001", "metric": "nse"},
+            "scope": {"basins": ["synthetic"], "period": "2000-2001", "metric": "nse",
+                      "basin_refs": [basin_ref("synthetic")]},
             "evidence_spans": [{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}],
             "limitations": ["Synthetic regression case, no real research conclusion."],
             "uncertainty_verified": True}

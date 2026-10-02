@@ -87,6 +87,9 @@ def _render(session_id: str, claim_id: str, fields: dict, rev: str) -> str:
         f"Rationale   : {fields['confidence_rationale']}",
         f"Scope       : basins={scope.get('basins')}  period={scope.get('period')}  "
         f"metric={scope.get('metric')}  forcing={scope.get('forcing')}",
+        "Basin refs  : " + (
+            "; ".join(f"{r.get('label')} -> {r.get('id')}" for r in scope["basin_refs"])
+            if scope.get("basin_refs") else "(none: basins are unbound labels)"),
         "Evidence    :",
     ]
     spans = fields["evidence_spans"]

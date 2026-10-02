@@ -341,6 +341,7 @@ class ApprovalRequiredError(Exception):
             "error": True,
             "code": APPROVAL_REQUIRED,
             "message": str(self),
+            "session_id": self.session_id,
             "claim_id": self.claim_id,
             "approval_command": self.command,
             "recovery": (

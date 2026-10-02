@@ -7,7 +7,7 @@ during a research session.
 from __future__ import annotations
 import logging
 from typing import Literal, Any
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
 from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
@@ -15,11 +15,34 @@ log = logging.getLogger(__name__)
 
 class ClaimScope(BaseModel):
     """The boundary within which a scientific claim is valid."""
-    basins: list[str]
+    basins: list[str]                # legacy labels (usgs ids, slugs); never identities
     period: str
     forcing: str | None = None
     metric: str | None = None        # registry ID e.g. "metric.kge"
     model_versions: dict[str, str] = {}
+    # Canonical place identity (ADR-003, slice 3): [{id: "aihydro:basin:sha256:<hex>", label}].
+    # None = unbound. Omitted from every dump while None so claim revision digests,
+    # approval bindings and stored sessions stay byte-identical to pre-slice-3 ones.
+    basin_refs: list[dict[str, str]] | None = None
+
+    @field_validator("basin_refs")
+    @classmethod
+    def _check_basin_refs(cls, v):
+        if v is None:
+            return v
+        from ai_hydro.identity import is_basin_id
+        for entry in v:
+            if not is_basin_id(entry.get("id")) or set(entry) - {"id", "label"}:
+                raise ValueError(
+                    "basin_refs entries must be {id: 'aihydro:basin:sha256:<64 hex>', label?}")
+        return v
+
+    @model_serializer(mode="wrap")
+    def _omit_unbound_basin_refs(self, handler):
+        out = handler(self)
+        if out.get("basin_refs") is None:
+            out.pop("basin_refs", None)
+        return out
 
 
 class EvidenceSpan(BaseModel):

@@ -1,7 +1,7 @@
 import pytest
 from ai_hydro.session.store import HydroSession
 from ai_hydro.session.models import EvidenceSpan, ScientificClaim
-from approval_helpers import approve
+from approval_helpers import approve, basin_ref
 from ai_hydro.mcp.tools_ledger import (
     add_claim,
     add_assumption,
@@ -54,6 +54,7 @@ def test_promotion_gate():
         confidence="low",
         confidence_rationale="Preliminary result with limited data, low confidence.",
         basins=["b1"],
+        basin_refs=[basin_ref("b1")],
         period="p1"
     )
 
@@ -81,6 +82,7 @@ def test_promotion_gate():
         confidence="high",
         confidence_rationale="Validated across ten years of daily streamflow data with KGE > 0.7.",
         basins=["b1"],
+        basin_refs=[basin_ref("b1")],
         period="p1",
         limitations=["Only tested on one basin"],
         evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "kge"}],
@@ -153,6 +155,7 @@ def test_metric_scoped_empirical_claim_cannot_be_promoted_without_uncertainty():
         confidence="medium",
         confidence_rationale="The point estimate is recorded but its uncertainty is not verified.",
         basins=["01031500"],
+        basin_refs=[basin_ref("01031500")],
         period="2000-2010",
         metric="kge",
         limitations=["Synthetic regression case for one basin."],

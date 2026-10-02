@@ -35,7 +35,7 @@ from ai_hydro.mcp.tools_ledger import list_registry_claims, promote_claim_to_reg
 from ai_hydro.registry import store as registry
 from ai_hydro.session import store
 from ai_hydro.session.store import HydroSession
-from approval_helpers import approve
+from approval_helpers import approve, basin_ref
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -51,7 +51,8 @@ def _claim(**over):
         "id": "c1", "claim": "Synthetic evaluation NSE is 0.8",
         "claim_type": "empirical_result", "status": "supported", "confidence": "medium",
         "confidence_rationale": "Synthetic regression fixture only.",
-        "scope": {"basins": ["synthetic"], "period": "2000-2001", "metric": "nse"},
+        "scope": {"basins": ["synthetic"], "period": "2000-2001", "metric": "nse",
+                  "basin_refs": [basin_ref("synthetic")]},
         "evidence_spans": [{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}],
         "limitations": ["Synthetic regression case, no real research conclusion."],
         "uncertainty_verified": True,
@@ -105,7 +106,7 @@ def test_revision_digest_is_stable_and_normalised():
     assert _rev(_claim()) == d
     # Storage spelling/defaults do not matter: omitting defaulted fields is the same revision.
     spelled = _claim(scope={"basins": ["synthetic"], "period": "2000-2001", "metric": "nse",
-                            "forcing": None, "model_versions": {}})
+                            "basin_refs": [basin_ref("synthetic")], "forcing": None, "model_versions": {}})
     assert _rev(spelled) == d
     assert claim_revision_fields(_claim(), EV)["schema"] == "aihydro.claim_revision/2"
 

@@ -428,7 +428,7 @@ tasks:
           status: supported
           confidence: medium
           confidence_rationale: "Model ran successfully for 5 years of daily calibration data."
-          scope: {basins: ["02361000"], period: "2005-2010"}
+          scope: {basins: ["02361000"], period: "2005-2010", basin_refs: [{id: "aihydro:basin:sha256:e41ddd1daea6daad6a401301ebc6d60ae4c89bb91a27e0617649f235dcc02604", label: "02361000"}]}
           evidence_spans: []
           limitations: ["Single basin"]
     call:
@@ -486,7 +486,7 @@ tasks:
           confidence_rationale: >
             Validated across 3 random restarts with 10 years of daily
             USGS NWIS streamflow data. KGE=0.75 consistent across restarts.
-          scope: {basins: ["01031500"], period: "2000-2010"}
+          scope: {basins: ["01031500"], period: "2000-2010", basin_refs: [{id: "aihydro:basin:sha256:637dfcbea1a19215a4bf060db1d3bc4bb48ee230a906a139bf883a16bc435843", label: "01031500"}]}
           evidence_spans:
             - {source_type: run, source_id: hbv-run-01031500-v1, metric_ref: kge}
             - {source_type: dataset, source_id: usgs_nwis_01031500, metric_ref: null}
@@ -1420,6 +1420,7 @@ tasks:
             basins: ["01013500"]
             period: "1990-2010"
             metric: null
+            basin_refs: [{id: "aihydro:basin:sha256:6cf7e58c552feb22cd3338f735a2876abe052c61428359540668c365090bf333", label: "01013500"}]
           limitations:
             - "Limited to one gauge; regional generalisability not tested"
             - "Does not account for potential upstream regulation changes"

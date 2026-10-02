@@ -624,6 +624,8 @@ class HydroSession:
                     })
 
         if self.site_type == "usgs_gauge" and self.site_id:
+            # Legacy label check only: 7-digit strings stay acceptable as labels
+            # here but are never identities (ai_hydro.identity.is_usgs_site_id, O3).
             if not (self.site_id.isdigit() and 7 <= len(self.site_id) <= 10):
                 warnings.append({
                     "code": "site_id_format", "severity": "warn",
