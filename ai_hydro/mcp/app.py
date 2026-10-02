@@ -390,6 +390,36 @@ mcp = FastMCP(
 )
 
 
+def _preserve_callable_registration(method):
+    """Register FastMCP components but leave ordinary callables in modules.
+
+    FastMCP 2.7+ decorators replace decorated functions with component wrapper
+    objects. Keeping the original function is useful for internal composition
+    and direct unit tests; registration still goes through FastMCP unchanged.
+    """
+    def decorator_factory(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            function = args[0]
+            method(function)
+            return function
+
+        register = method(*args, **kwargs)
+
+        def decorate(function):
+            register(function)
+            return function
+
+        return decorate
+
+    return decorator_factory
+
+
+# Stable project convention: decorated implementations remain regular Python
+# callables while FastMCP owns the protocol-facing registered components.
+mcp.tool = _preserve_callable_registration(mcp.tool)
+mcp.resource = _preserve_callable_registration(mcp.resource)
+
+
 # ---------------------------------------------------------------------------
 # Wave 3 Axis 3 — strip injected identity params before argument validation
 # ---------------------------------------------------------------------------
