@@ -639,3 +639,29 @@ def test_concurrent_processes_do_not_lose_registry_writes(tmp_path):
     ids = {e["registry_id"] for e in
            (json.loads(l) for l in (home / "registry" / "claims.jsonl").read_text().splitlines())}
     assert ids == {f"w{n}-{i}" for n in range(4) for i in range(12)}
+
+
+def test_cli_shows_method_anchor_and_flags_of_each_bound_basin(session):
+    full = basin_ref_full("synthetic")
+    full2 = {**full, "quality_flags": ["fallback_of:COMID"]}
+    s = HydroSession.load("appr")
+    c = s.claims["c1"]
+    c["basin_ref_records"] = {full["id"]: full2}
+    s.claims["c1"] = c
+    s.save()
+    code, out, _ = _run_cli(["appr", "c1", "--approver", "a"], typed="wrong\n")
+    assert code == 4
+    assert f"synthetic -> {full['id']}" in out
+    assert "method: test_fixture" in out
+    assert "anchor: network_element / test-network / version 1 / element synthetic" in out
+    assert "quality_flags: fallback_of:COMID" in out
+
+
+def test_cli_says_when_a_bound_basin_ref_is_not_retained(session):
+    s = HydroSession.load("appr")
+    c = s.claims["c1"]
+    c["basin_ref_records"] = {}
+    s.claims["c1"] = c
+    s.save()
+    _, out, _ = _run_cli(["appr", "c1", "--approver", "a"], typed="wrong\n")
+    assert "not retained in this session" in out

@@ -194,6 +194,7 @@ def build_run_record(
     entry: Optional[Dict[str, Any]] = None,
     actor: Optional[Dict[str, Any]] = None,
     output_skip_reason: Optional[str] = None,
+    known_errors: Iterable[str] = (),
 ) -> RunRecord:
     """Build and seal one run record. Never raises.
 
@@ -203,7 +204,7 @@ def build_run_record(
     ``output_skip_reason`` records that the output was deliberately not
     digested (for example because it is too large), as a ``record_error``.
     """
-    errors: List[str] = []
+    errors: List[str] = [str(e) for e in known_errors]
 
     def _digest(label: str, value: Any) -> Optional[str]:
         try:
@@ -337,6 +338,7 @@ class CallCapture:
     parents: List[str] = dataclasses.field(default_factory=list)
     input_refs: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
     notes: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    failed_rows: List[Tuple[str, str, str, str]] = dataclasses.field(default_factory=list)  # (session, run, writer, reason)
 
 
 _CAPTURE: contextvars.ContextVar[Optional[CallCapture]] = contextvars.ContextVar(
@@ -358,6 +360,13 @@ def note_row_written(session_id: str, run_id: str, writer: str) -> None:
     capture = _CAPTURE.get()
     if capture is not None:
         capture.rows.append((session_id, run_id, writer or "unknown"))
+
+
+def note_row_failed(session_id: str, run_id: str, writer: str, reason: str) -> None:
+    """Called by the run-log writer when its row could not be stored. No-op outside a call."""
+    capture = _CAPTURE.get()
+    if capture is not None:
+        capture.failed_rows.append((session_id, run_id, writer or "unknown", reason))
 
 
 def declare_lineage(
@@ -633,6 +642,7 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
     from ai_hydro.session import store
 
     context = context or {}
+    deadline = store._new_deadline()   # one budget for every read and write of this call
     session_id, resolution = resolve_call_session_rule(
         arguments, result, chat_id, capture, context.get("study_id"))
     if session_id is None:
@@ -648,6 +658,12 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
     declared = result.get("_run_id") if isinstance(result, dict) else None
     if isinstance(declared, str) and declared and (session_id, declared) not in seen:
         rows.append((session_id, declared, "post_run"))
+    lost: Dict[Tuple[str, str], str] = {}
+    for sid, rid, writer, reason in capture.failed_rows:
+        lost[(sid, rid)] = scrub_error_text(reason)
+        if (sid, rid) not in seen:
+            seen.add((sid, rid))
+            rows.append((sid, rid, writer))
     created = False
     if not rows:
         rows.append((session_id, id_factory(tool, session_id), "middleware"))
@@ -688,8 +704,17 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         if resolution:
             extra["session_resolution"] = resolution
         stored = False
+        lost_reason = lost.get((sid, rid))
+        known = [f"writer_row_lost: {lost_reason}"] if lost_reason else []
+        if lost_reason:
+            problems.append(f"{rid}: writer_row_lost: {lost_reason}")
         for _attempt in range(3):
-            entry = store._run_log_read_one(sid, rid)
+            try:
+                entry = store._run_log_read_one(sid, rid, deadline=deadline, strict=True)
+            except Exception as exc:
+                # Could not look: never write a minimal row over a row we cannot see.
+                problems.append(f"{rid}: record_not_stored (row unreadable: {scrub_error_text(exc)})")
+                break
             if entry is None:
                 entry = _minimal_entry(rid, tool, sid, result, failure)
                 extra["entry"] = "minimal"
@@ -703,11 +728,15 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
                 run_id=rid, tool=tool, session_id=sid, arguments=arguments,
                 result=result, status=status, parents=capture.parents,
                 input_refs=capture.input_refs, extra=extra, entry=entry,
-                output_skip_reason=skip_reason,
+                output_skip_reason=skip_reason, known_errors=known,
             )
-            if record.record_error:
-                problems.append(f"{rid}: {record.record_error}")
-            outcome = store._run_log_record(sid, rid, {**entry, "record": record.to_dict()}, writer="middleware")
+            # known errors lead the record's error list and are already in problems
+            own_error = (record.record_error or "")[len("; ".join(known)):].lstrip("; ") if known \
+                else (record.record_error or "")
+            if own_error:
+                problems.append(f"{rid}: {own_error}")
+            outcome = store._run_log_record(sid, rid, {**entry, "record": record.to_dict()},
+                                            writer="middleware", deadline=deadline)
             if outcome in ("inserted", "replaced", "noop"):
                 stored = True
                 break

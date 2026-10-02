@@ -498,6 +498,8 @@ def export_session(
                     "computed": session.computed()}
 
         if format == "defensibility_report":
+            from ai_hydro.session.store import _run_log_read_all
+            _run_log_read_all(session_id, strict=True)   # refuse a report built on an unreadable log
             from ai_hydro.reports.defensibility import build_defensibility_report
             md, summary = build_defensibility_report(session, session_id, today)
             fname = f"defensibility_report_{session_id}_{today}.md"
@@ -517,6 +519,10 @@ def export_session(
             }
 
         # Capsule
+        # Fail loudly before writing anything if the run log cannot be read: an
+        # empty run_log.json would read as "no runs" and claim integrity.
+        from ai_hydro.session.store import _run_log_read_all
+        _strict_run_log = _run_log_read_all(session_id, strict=True)
         if capsule_path:
             capsule_dir = Path(capsule_path)
         else:
@@ -667,7 +673,7 @@ def export_session(
         # copy would not verify), see ai_hydro/capsule/privacy.py.
         from ai_hydro.capsule import privacy as _privacy
         run_log, _priv_counts = _privacy.export_run_log(
-            session.get("_run_log") or {}, session.workspace_dir)
+            _strict_run_log, session.workspace_dir)
         (capsule_dir / "run_log.json").write_text(
             json.dumps(run_log, indent=2, default=str)
         )
@@ -737,6 +743,16 @@ def export_session(
         }
     except Exception as e:
         log.error("export_session failed: %s", e)
+        from ai_hydro.session.store import RunLogUnreadable
+        if isinstance(e, RunLogUnreadable):
+            return {
+                "error": True,
+                "code": "RUN_LOG_UNREADABLE",
+                "message": str(e),
+                "recovery": ("The run log could not be read, so nothing was exported. "
+                             "Retry once other processes release the session, or inspect "
+                             "the session's .runlog.sqlite3 file."),
+            }
         return _tool_error_to_dict(e)
 
 

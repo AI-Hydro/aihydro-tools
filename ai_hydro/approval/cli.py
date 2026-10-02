@@ -74,7 +74,29 @@ def _is_tty(stream: TextIO) -> bool:
         return False
 
 
-def _render(session_id: str, claim_id: str, fields: dict, rev: str) -> str:
+def _basin_ref_lines(scope: dict, refs: Optional[dict]) -> list:
+    """One block per bound basin ref: label -> id, then the retained ref's method,
+    anchor and quality flags, so the approver knows which basin realisation."""
+    entries = scope.get("basin_refs") or []
+    if not entries:
+        return ["Basin refs  : (none: basins are unbound labels)"]
+    lines = ["Basin refs  :"]
+    for r in entries:
+        lines.append(f"  - {r.get('label')} -> {r.get('id')}")
+        full = (refs or {}).get(r.get("id"))
+        if not full:
+            lines.append("      (ref not retained in this session: method, anchor and flags unavailable)")
+            continue
+        a = full.get("anchor") or {}
+        flags = full.get("quality_flags") or []
+        lines.append(f"      method: {full.get('method')}")
+        lines.append(f"      anchor: {a.get('kind')} / {a.get('network')} / "
+                     f"version {a.get('network_version')} / element {a.get('element')}")
+        lines.append("      quality_flags: " + (", ".join(str(f) for f in flags) if flags else "(none)"))
+    return lines
+
+
+def _render(session_id: str, claim_id: str, fields: dict, rev: str, refs: Optional[dict] = None) -> str:
     scope = fields["scope"]
     lines = [
         "",
@@ -87,9 +109,7 @@ def _render(session_id: str, claim_id: str, fields: dict, rev: str) -> str:
         f"Rationale   : {fields['confidence_rationale']}",
         f"Scope       : basins={scope.get('basins')}  period={scope.get('period')}  "
         f"metric={scope.get('metric')}  forcing={scope.get('forcing')}",
-        "Basin refs  : " + (
-            "; ".join(f"{r.get('label')} -> {r.get('id')}" for r in scope["basin_refs"])
-            if scope.get("basin_refs") else "(none: basins are unbound labels)"),
+        *_basin_ref_lines(scope, refs),
         "Evidence    :",
     ]
     spans = fields["evidence_spans"]
@@ -229,11 +249,14 @@ def main(
                   f"'{args.session_id}'.", file=stderr)
             return EXIT_CLAIM
         _, _, fields, rev = session_claim_revision(session, args.claim_id)
+        from ai_hydro import identity
+        _claim = session.claims.get(args.claim_id)
+        refs = identity.retained_refs(session, _claim if isinstance(_claim, dict) else None)
     except Exception as exc:
         print(f"aihydro-approve: cannot load claim: {exc}", file=stderr)
         return EXIT_CLAIM
 
-    print(_render(args.session_id, args.claim_id, fields, rev), file=stdout)
+    print(_render(args.session_id, args.claim_id, fields, rev, refs), file=stdout)
 
     existing = find_approval(args.session_id, args.claim_id, rev, unconsumed_only=True)
     if existing:

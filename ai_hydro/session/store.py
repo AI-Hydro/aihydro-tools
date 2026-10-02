@@ -264,21 +264,47 @@ def _is_lock_error(exc: BaseException) -> bool:
     return "locked" in text or "busy" in text
 
 
-def _retry_when_locked(fn, *, deadline_s: float = _RUN_LOG_LOCK_WAIT_S):
-    """Call ``fn`` and retry with backoff while SQLite reports lock contention."""
-    start = time.monotonic()
+def _is_schema_changed_error(exc: BaseException) -> bool:
+    """A concurrent ``CREATE TABLE IF NOT EXISTS`` in another process invalidated
+    a prepared statement; a fresh connection succeeds."""
+    return isinstance(exc, sqlite3.OperationalError) and "schema has changed" in str(exc).lower()
+
+
+def _new_deadline(budget_s: float | None = None) -> float:
+    """Absolute ``time.monotonic()`` deadline for one run-log operation."""
+    return time.monotonic() + (_RUN_LOG_LOCK_WAIT_S if budget_s is None else budget_s)
+
+
+def _busy_timeout_s(deadline: float) -> float:
+    """SQLite busy wait for the time left, never above the lock-wait cap and
+    never zero (a zero timeout would fail on the first contended attempt)."""
+    return max(0.05, min(_RUN_LOG_LOCK_WAIT_S, deadline - time.monotonic()))
+
+
+def _retry_when_locked(fn, *, deadline: float | None = None):
+    """Call ``fn`` and retry with backoff while SQLite reports lock contention.
+
+    Never retries past ``deadline`` (absolute monotonic; default: a fresh
+    ``_RUN_LOG_LOCK_WAIT_S`` budget). A schema-changed error is retried once.
+    """
+    if deadline is None:
+        deadline = _new_deadline()
     delay = 0.005
+    schema_retried = False
     while True:
         try:
             return fn()
         except sqlite3.OperationalError as exc:
-            if not _is_lock_error(exc) or time.monotonic() - start >= deadline_s:
+            if _is_schema_changed_error(exc) and not schema_retried:
+                schema_retried = True
+                continue
+            if not _is_lock_error(exc) or time.monotonic() >= deadline:
                 raise
-            time.sleep(delay)
+            time.sleep(max(0.0, min(delay, deadline - time.monotonic())))
             delay = min(delay * 2, 0.25)
 
 
-def _run_log_connect(session_id: str) -> sqlite3.Connection:
+def _run_log_connect(session_id: str, *, deadline: float | None = None) -> sqlite3.Connection:
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     path = _run_log_db_path(session_id)
     contained = _contained_path(path)
@@ -286,12 +312,15 @@ def _run_log_connect(session_id: str) -> sqlite3.Connection:
         raise ValueError(
             f"Refusing to resolve run-log db outside SESSIONS_DIR: session_id={session_id!r}"
         )
-    conn = sqlite3.connect(str(contained), timeout=_RUN_LOG_LOCK_WAIT_S)
+    if deadline is None:
+        deadline = _new_deadline()
+    conn = sqlite3.connect(str(contained), timeout=_busy_timeout_s(deadline))
 
     def _init() -> None:
         # Switching journal mode needs an exclusive lock and can return
         # SQLITE_BUSY immediately (the busy timeout is not applied), so only
         # switch when the database is not already in WAL mode, and retry.
+        conn.execute(f"PRAGMA busy_timeout={int(_busy_timeout_s(deadline) * 1000)}")
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         if str(mode).lower() != "wal":
             conn.execute("PRAGMA journal_mode=WAL")
@@ -300,7 +329,7 @@ def _run_log_connect(session_id: str) -> sqlite3.Connection:
         )
 
     try:
-        _retry_when_locked(_init)
+        _retry_when_locked(_init, deadline=deadline)
     except Exception:
         conn.close()
         raise
@@ -381,7 +410,8 @@ def _scrub_row_body(session_id: str, entry: dict) -> dict:
 
 
 def _run_log_record(
-    session_id: str, run_id: str, entry: dict, *, writer: str | None = None
+    session_id: str, run_id: str, entry: dict, *, writer: str | None = None,
+    deadline: float | None = None,
 ) -> str:
     """
     Store one run-log row, verbatim as JSON, and return what happened:
@@ -408,10 +438,17 @@ def _run_log_record(
 
     ``writer`` labels the source (``post_run``, ``put_result``, ...) for the
     per-call capture used by the recording middleware; ``None`` or
-    ``"middleware"`` are not captured.
+    ``"middleware"`` are not captured. When a writer's row is lost (``error``)
+    that is captured too (``run_records.note_row_failed``) so the middleware
+    can say so in the minimal row and in the tool result.
+
+    ``deadline`` (absolute ``time.monotonic()``) bounds connect, retries and
+    the final busy wait together; default is one fresh lock-wait budget.
     """
     if not run_id or not isinstance(entry, dict):
         return "skipped"
+    if deadline is None:
+        deadline = _new_deadline()
     status = "error"
     try:
         entry = _scrub_row_body(session_id, entry)
@@ -434,8 +471,9 @@ def _run_log_record(
                 return "refused"
         def _txn() -> str:
             status_box = ["error"]
-            conn = _run_log_connect(session_id)
+            conn = _run_log_connect(session_id, deadline=deadline)
             try:
+                conn.execute(f"PRAGMA busy_timeout={int(_busy_timeout_s(deadline) * 1000)}")
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute("SELECT entry_json FROM runs WHERE run_id = ?", (run_id,)).fetchone()
                 existing = None
@@ -478,9 +516,15 @@ def _run_log_record(
                 conn.close()
             return status_box[0]
 
-        status = _retry_when_locked(_txn)
+        status = _retry_when_locked(_txn, deadline=deadline)
     except Exception as exc:
         log.warning("Failed to record run-log entry %s for session %s: %s", run_id, session_id, exc)
+        if writer and writer != "middleware":
+            try:
+                from ai_hydro.session import run_records
+                run_records.note_row_failed(session_id, run_id, writer, str(exc) or type(exc).__name__)
+            except Exception:  # capture is best-effort bookkeeping
+                pass
         return "error"
     if writer and writer != "middleware" and status in ("inserted", "replaced", "noop"):
         try:
@@ -491,12 +535,17 @@ def _run_log_record(
     return status
 
 
-def _run_log_read_one(session_id: str, run_id: str) -> dict | None:
-    """One run-log row, or None. Never creates the database."""
+def _run_log_read_one(session_id: str, run_id: str, *, deadline: float | None = None,
+                      strict: bool = False) -> dict | None:
+    """One run-log row, or None. Never creates the database.
+
+    ``strict``: raise on a read failure instead of returning None, so a caller
+    that is about to write can tell "no such row" from "could not look".
+    """
     if not run_id or not _run_log_db_path(session_id).exists():
         return None
     try:
-        conn = _run_log_connect(session_id)
+        conn = _run_log_connect(session_id, deadline=deadline)
         try:
             row = conn.execute("SELECT entry_json FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         finally:
@@ -506,12 +555,22 @@ def _run_log_read_one(session_id: str, run_id: str) -> dict | None:
         return json.loads(row[0]) if row[0] else {}
     except Exception as exc:
         log.warning("Failed to read run-log row %s for session %s: %s", run_id, session_id, exc)
+        if strict:
+            raise
         return None
 
 
-def _run_log_read_all(session_id: str) -> dict:
+class RunLogUnreadable(RuntimeError):
+    """The persisted run log exists but could not be read."""
+
+
+def _run_log_read_all(session_id: str, *, strict: bool = False) -> dict:
     """Reconstruct the {run_id: entry} dict view every existing reader expects,
-    with each entry exactly as it was written (see _run_log_record)."""
+    with each entry exactly as it was written (see _run_log_record).
+
+    A missing database is an empty log. An unreadable one is logged and
+    returned as ``{}`` for ordinary readers; ``strict=True`` (export) raises
+    ``RunLogUnreadable`` so an empty log is never mistaken for a real one."""
     path = _run_log_db_path(session_id)
     if not path.exists():
         return {}
@@ -525,6 +584,9 @@ def _run_log_read_all(session_id: str) -> dict:
             conn.close()
     except Exception as exc:
         log.warning("Failed to read run log for session %s: %s", session_id, exc)
+        if strict:
+            raise RunLogUnreadable(
+                f"run log for session {session_id!r} cannot be read: {exc}") from exc
         return {}
     out: dict[str, dict] = {}
     for run_id, entry_json in rows:
