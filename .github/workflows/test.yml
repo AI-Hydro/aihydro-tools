@@ -32,7 +32,10 @@ jobs:
       - name: Install package with dev + all extras
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[all,dev]" pyyaml
+          # The optional modelling backend is intentionally private and is
+          # therefore not installable from public CI. Modelling integration
+          # tests use pytest.importorskip when that package is unavailable.
+          pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]" pyyaml
 
       - name: Lint with ruff (advisory — pre-existing debt, not yet a merge gate)
         continue-on-error: true
