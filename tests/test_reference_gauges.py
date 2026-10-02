@@ -269,7 +269,7 @@ class TestTWITool:
             "twi_array": np.zeros((10, 10)),
         }
 
-        with patch("ai_hydro.analysis.twi.compute_twi", return_value=fake_raw):
+        with patch("aihydro_watershed.characterize.twi.compute_twi", return_value=fake_raw):
             try:
                 from ai_hydro.analysis.twi import compute_twi_result
 

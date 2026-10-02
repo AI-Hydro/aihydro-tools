@@ -802,7 +802,13 @@ def test_auto_conus_falls_back_to_raw_dem_when_nldi_and_merit_fail(
     )
     from ai_hydro.analysis.delineation.router import delineate_from_point
 
-    result = delineate_from_point(40.71829, -96.41265, method="auto")
+    # GEE is unavailable in this scenario: stub the snap-reference fetch (the
+    # first GEE touch, ee.Initialize) so the test never reaches the network.
+    with patch(
+        "aihydro_watershed.delineation.merit_flowdir_pipeline.merit_get_snap_reference",
+        side_effect=RuntimeError("GEE unavailable"),
+    ):
+        result = delineate_from_point(40.71829, -96.41265, method="auto")
     mock_fast.assert_called_once()
     assert result.data["method_used"] == "dem_raw_fallback"
     assert result.data["workflow_steps"][-1]["step"] == "fallback_warning"
@@ -837,6 +843,10 @@ def test_auto_global_uses_merit_gee_before_raw_dem(mock_merit, mock_fast):
     with patch(
         "aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache",
         return_value={"pfaf_region": "45", "flowdir_ready": False},
+    ), patch(
+        # Snap-reference fetch is a GEE call (ee.Initialize); stub it offline.
+        "aihydro_watershed.delineation.merit_flowdir_pipeline.merit_get_snap_reference",
+        side_effect=RuntimeError("GEE unavailable"),
     ):
         result = delineate_from_point(28.4, 77.2, method="auto")
     mock_merit.assert_called_once()
