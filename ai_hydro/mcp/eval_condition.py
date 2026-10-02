@@ -171,16 +171,20 @@ def strip_fields(value: Any) -> Any:
 UNAVAILABLE = "[tool unavailable in this configuration]"
 
 
-def hidden_name_pattern(condition: str) -> "re.Pattern[str]":
-    """Regex matching the name of any tool arm ``condition`` hides (``check_*`` for C1)."""
+def hidden_name_pattern(condition: str, tool_names: Any = ()) -> "re.Pattern[str]":
+    """Regex matching the name of any tool arm ``condition`` hides.
+
+    The alternation is the fixed hidden names plus whatever ``hidden_tools`` selects from
+    the live registered ``tool_names`` (this is where the C1 ``check_*`` prefix rule
+    lives), so an ordinary token such as ``check_only`` is never rewritten.
+    """
     names = set(HIDDEN_ALL_ARMS)
     if condition in ("C1", "C2"):
         names |= REGISTRY_TOOLS
     if condition == "C1":
         names |= C1_ONLY_HIDDEN
-    alternatives = [re.escape(n) for n in sorted(names)]
-    if condition == "C1":
-        alternatives.append(r"check_[A-Za-z0-9_]+")
+    names |= hidden_tools(condition, tool_names)
+    alternatives = [re.escape(n) for n in sorted(names, key=lambda n: (-len(n), n))]
     return re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(alternatives) + r")(?![A-Za-z0-9_])")
 
 
@@ -202,18 +206,18 @@ def scrub_hidden_names(value: Any, pattern: "re.Pattern[str]") -> Any:
     return value
 
 
-def _sanitize(value: Any, state: EvalState) -> Any:
+def _sanitize(value: Any, state: EvalState, pattern: "re.Pattern[str]") -> Any:
     if state.condition == "C1":
         value = strip_fields(value)
-    return scrub_hidden_names(value, hidden_name_pattern(state.condition))
+    return scrub_hidden_names(value, pattern)
 
 
-def _sanitize_tool_result(tool_result: ToolResult, state: EvalState) -> ToolResult:
+def _sanitize_tool_result(tool_result: ToolResult, state: EvalState,
+                          pattern: "re.Pattern[str]") -> ToolResult:
     """A new ``ToolResult`` with advisory fields removed (C1) and hidden tool names
     scrubbed (every arm); the original, already sealed, result is untouched."""
     structured = getattr(tool_result, "structured_content", None)
-    new_structured = _sanitize(copy.deepcopy(structured), state) if isinstance(structured, dict) else structured
-    pattern = hidden_name_pattern(state.condition)
+    new_structured = _sanitize(copy.deepcopy(structured), state, pattern) if isinstance(structured, dict) else structured
     blocks = []
     for block in getattr(tool_result, "content", None) or []:
         text = getattr(block, "text", None)
@@ -223,7 +227,7 @@ def _sanitize_tool_result(tool_result: ToolResult, state: EvalState) -> ToolResu
             except ValueError:
                 parsed = None
             if isinstance(parsed, (dict, list)):
-                blocks.append(TextContent(type="text", text=json.dumps(_sanitize(parsed, state), default=str)))
+                blocks.append(TextContent(type="text", text=json.dumps(_sanitize(parsed, state, pattern), default=str)))
             else:
                 blocks.append(TextContent(type="text", text=pattern.sub(UNAVAILABLE, text)))
             continue
@@ -282,7 +286,9 @@ class EvalConditionMiddleware(Middleware):
 
         result = await call_next(context)
         try:
-            return _sanitize_tool_result(result, state)
+            live = await context.fastmcp_context.fastmcp.get_tools()
+            pattern = hidden_name_pattern(state.condition, live.keys())
+            return _sanitize_tool_result(result, state, pattern)
         except Exception as exc:   # never hand back a half-sanitised result
             log.warning("eval sanitise failed for %s: %s", name, exc)
             raise _refusal(f"could not sanitise the result: {exc}") from exc

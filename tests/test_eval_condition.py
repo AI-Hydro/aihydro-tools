@@ -335,8 +335,12 @@ def test_c1_result_tree_has_no_stripped_key_at_any_depth(home, monkeypatch):
 
 # ---------------------------------------------------------------- hidden-name scrub (S1)
 
+LIVE = ["add_claim", "check_record_length", "check_stationarity", "check_registry_staleness",
+        "merit_ensure_routing_region"]
+
+
 def test_scrub_hidden_names_is_generic_and_recursive():
-    pat = ec.hidden_name_pattern("C1")
+    pat = ec.hidden_name_pattern("C1", LIVE)
     tree = {"_instruction": "Next call write_research_interpretation, then run_skeptic or check_record_length.",
             "next_tools": ["add_claim", "promote_claim_to_registry", "check_stationarity"],
             "by_name": {"run_skeptic": 1, "keep": "see add_claim"},
@@ -352,7 +356,41 @@ def test_scrub_hidden_names_is_generic_and_recursive():
     assert ec.hidden_name_pattern("C3").search("run_python")
     assert ec.hidden_name_pattern("C2").search("promote_claim_to_registry")
     assert ec.hidden_name_pattern("C2").search("run_skeptic") is None
-    assert ec.hidden_name_pattern("C1").search("my_check_record") is None      # no partial-word hits
+    assert ec.hidden_name_pattern("C1", LIVE).search("my_check_record") is None   # no partial-word hits
+
+
+def test_scrub_builds_check_alternatives_from_live_tools_only():
+    pat = ec.hidden_name_pattern("C1", LIVE)
+    # a registered check_* tool is hidden and scrubbed ...
+    assert pat.search("run check_record_length now")
+    # ... but ordinary check_ tokens that are not tools are untouched (real collision:
+    # merit_ensure_* echo acquisition_policy="check_only")
+    for text in ('acquisition_policy="check_only"', "check_only", "policy check_only ok"):
+        assert pat.sub(ec.UNAVAILABLE, text) == text
+    out = ec.scrub_hidden_names({"acquisition_policy": "check_only", "policies": ["check_only", "fetch"]}, pat)
+    assert out == {"acquisition_policy": "check_only", "policies": ["check_only", "fetch"]}
+    assert ec.hidden_name_pattern("C1").search("check_anything") is None     # no generic prefix rule
+
+
+def test_check_only_value_survives_through_the_middleware(home, monkeypatch):
+    srv = FastMCP(name="eval-checkonly")
+    srv.add_middleware(app._ContextInjectionMiddleware())
+    srv.add_middleware(ec.EvalConditionMiddleware())
+    srv.add_middleware(app.RunRecordMiddleware())
+
+    @srv.tool()
+    def check_unit_consistency(session_id: str | None = None) -> dict:
+        return {}
+
+    @srv.tool()
+    def region(session_id: str | None = None) -> dict:
+        return {"acquisition_policy": "check_only", "policies": ["check_only"],
+                "note": 'acquisition_policy="check_only"; do not call check_unit_consistency'}
+
+    arm(home, monkeypatch, "C1")
+    sc = call(srv, "region", client=label("C1")).structured_content
+    assert sc["acquisition_policy"] == "check_only" and sc["policies"] == ["check_only"]
+    assert 'acquisition_policy="check_only"' in sc["note"] and "check_unit_consistency" not in sc["note"]
 
 
 @pytest.mark.parametrize("condition,named,visible", [
@@ -383,7 +421,6 @@ def test_real_discovery_tools_do_not_name_hidden_tools(home, monkeypatch):
     import ai_hydro.mcp  # noqa: F401
 
     arm(home, monkeypatch, "C1")
-    pat = ec.hidden_name_pattern("C1")
 
     async def run():
         async with Client(app.mcp) as c:
@@ -394,6 +431,8 @@ def test_real_discovery_tools_do_not_name_hidden_tools(home, monkeypatch):
                 r = await c.call_tool(name, args, meta={META: {"client": label("C1")}}, raise_on_error=False)
                 out.append((name, json.dumps(r.structured_content) + "".join(b.text for b in r.content)))
             return out
+    pat = ec.hidden_name_pattern("C1", asyncio.run(app.mcp.get_tools()).keys())
+    assert any(n.startswith("check_") for n in asyncio.run(app.mcp.get_tools()))
     for name, blob in asyncio.run(run()):
         assert pat.search(blob) is None, (name, pat.search(blob).group(0))
 
