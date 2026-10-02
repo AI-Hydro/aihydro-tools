@@ -23,13 +23,32 @@ REDACTED_KEY = "redacted_for_privacy"
 # Exported files that must stay byte-identical: sealed/signed content or code.
 _SKIP_DIRS = {"approvals", "data"}
 _SKIP_NAMES = {"run_log.json", "replay.py", "capsule_manifest.json"}
-_TEXT_SUFFIXES = {".md", ".txt", ".bib", ".yml", ".yaml", ".csv"}
+_TEXT_SUFFIXES = {".md", ".txt", ".bib", ".yml", ".yaml", ".csv", ".html", ".svg"}
+
+
+def _verifies(row: dict) -> tuple[bool, dict]:
+    """(record seal holds AND the raw body matches entry_digest, verify detail)."""
+    from ai_hydro.session.run_records import verify_run_log_entry
+
+    v = verify_run_log_entry(row)
+    return bool(v.get("has_record") and v.get("record_ok") and v.get("entry_ok") is not False), v
 
 
 def export_run_log(run_log: dict, workspace_dir: str | Path | None = None) -> tuple[dict, dict]:
-    """Return ``(exportable run log, counts)``; ``counts`` = {"redacted": n, "scrubbed": n}."""
+    """Return ``(exportable run log, counts)``.
+
+    ``counts``: ``redacted`` / ``scrubbed`` / ``seal_mismatch`` numbers and
+    ``redacted_run_ids``. A path-bearing sealed row is verified against its RAW
+    body first; redacting must never hide tampering:
+
+    * verifies   -> ``redacted_for_privacy`` stub (session_id, timestamp,
+                    record_digest, entry_digest and, when it holds no path,
+                    the full ``record`` so replay can still check the seal);
+    * mismatch   -> ``{"integrity": "seal_mismatch_at_export", ...}``, which
+                    replay counts as a failure.
+    """
     out: dict[str, Any] = {}
-    counts = {"redacted": 0, "scrubbed": 0}
+    counts: dict[str, Any] = {"redacted": 0, "scrubbed": 0, "seal_mismatch": 0, "redacted_run_ids": []}
     for run_id, row in (run_log or {}).items():
         if not isinstance(row, dict):
             out[run_id] = row
@@ -40,15 +59,34 @@ def export_run_log(run_log: dict, workspace_dir: str | Path | None = None) -> tu
             continue
         record = row.get("record")
         if isinstance(record, dict) and record.get("record_digest"):
+            ok, detail = _verifies(row)
+            if not ok:
+                counts["seal_mismatch"] += 1
+                out[run_id] = {
+                    "integrity": "seal_mismatch_at_export",
+                    "run_id": run_id,
+                    "tool_name": row.get("tool_name"),
+                    "record_digest": record.get("record_digest"),
+                    "reason": "sealed row did not verify at export (record seal or entry_digest); "
+                              "it also held a local path, so the body is withheld, not hidden",
+                }
+                continue
             counts["redacted"] += 1
-            out[run_id] = {
+            counts["redacted_run_ids"].append(run_id)
+            stub: dict[str, Any] = {
                 REDACTED_KEY: True,
                 "run_id": run_id,
+                "session_id": row.get("session_id"),
+                "timestamp": row.get("timestamp"),
                 "tool_name": row.get("tool_name"),
                 "record_digest": record["record_digest"],
+                "entry_digest": (record.get("extra") or {}).get("entry_digest"),
                 "reason": "legacy sealed row contained an absolute local path; "
                           "a scrubbed copy would not verify, so the body is withheld",
             }
+            if scrub_value(record, workspace_dir) == record:
+                stub["record"] = record
+            out[run_id] = stub
         else:
             counts["scrubbed"] += 1
             out[run_id] = clean

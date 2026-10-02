@@ -194,9 +194,18 @@ def verify_run_log(run_log: dict) -> dict:
                "record_errors": 0, "redacted": 0, "failures": []}
     for run_id, entry in sorted(run_log.items()):
         summary["rows"] += 1
+        if isinstance(entry, dict) and entry.get("integrity") == "seal_mismatch_at_export":
+            summary["failures"].append((run_id, "row did not verify when exported (seal_mismatch_at_export)"))
+            continue
         if isinstance(entry, dict) and entry.get("redacted_for_privacy"):
-            # Legacy sealed row withheld on export (it held a local path): neither verified nor failed.
+            # Legacy sealed row withheld on export (it held a local path): its body is
+            # not verifiable here, but a carried record must still hold its seal.
             summary["redacted"] += 1
+            rec = entry.get("record")
+            if isinstance(rec, dict):
+                if not record_seal_ok(rec) or rec.get("record_digest") != entry.get("record_digest") \
+                        or rec.get("run_id") != run_id:
+                    summary["failures"].append((run_id, "redacted row's record does not verify"))
             continue
         record = entry.get("record") if isinstance(entry, dict) else None
         if not isinstance(record, dict):
@@ -747,10 +756,16 @@ def live_cross_check(capsule_dir: Path, tolerance: float = DEFAULT_TOLERANCE):
 # Reporting
 # --------------------------------------------------------------------------- #
 
-def replay_status(integrity_ok: bool, live: bool, n_comparisons: int, comparisons_ok: bool) -> str:
-    """The strongest level actually reached. Never ``recomputed``."""
+def replay_status(integrity_ok: bool, live: bool, n_comparisons: int, comparisons_ok: bool,
+                  partial: bool = False) -> str:
+    """The strongest level actually reached. Never ``recomputed``.
+
+    ``partial``: some run-log rows were redacted for privacy and cannot be verified here.
+    """
     if not integrity_ok:
         return "not_performed"
+    if partial:
+        return "archive_integrity_partial"
     if live and n_comparisons > 0 and comparisons_ok:
         return "cross_check"
     return "archive_integrity"
@@ -801,7 +816,8 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
     if not hash_results and not (rl_path.exists() and summary["v2_records"]):
         integrity_ok = False        # nothing was actually checked
         out("FAIL  archive has no files and no records; nothing was verified.")
-    status = replay_status(integrity_ok, live, len(comparisons), comparisons_ok)
+    status = replay_status(integrity_ok, live, len(comparisons), comparisons_ok,
+                           partial=bool(rl_path.exists() and summary["redacted"]))
     out(f"\nreplay_status: {status}")
     out("recomputation: not_performed")
     if live:

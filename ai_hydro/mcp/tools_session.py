@@ -689,11 +689,16 @@ def export_session(
         manifest["data_artifacts"] = data_artifacts
         manifest["approvals"] = _approvals_section(capsule_dir, approval_entries)
         manifest["privacy"] = {
-            "legacy_paths_scrubbed_on_export": _priv_counts["redacted"] + _priv_counts["scrubbed"],
+            "legacy_paths_scrubbed_on_export": (_priv_counts["redacted"] + _priv_counts["scrubbed"]
+                                                + _priv_counts["seal_mismatch"]),
             "rows_redacted_for_privacy": _priv_counts["redacted"],
+            "redacted_run_ids": _priv_counts["redacted_run_ids"],
+            "rows_seal_mismatch_at_export": _priv_counts["seal_mismatch"],
             "rows_scrubbed_unsealed": _priv_counts["scrubbed"],
             "files_scrubbed": _priv_files,
         }
+        if _priv_counts["redacted"]:
+            manifest["replay_status"] = "archive_integrity_partial"   # some rows are not verifiable here
         (capsule_dir / _MF).write_text(json.dumps(manifest, indent=2))
         files_written.append(str(capsule_dir / _MF))
 

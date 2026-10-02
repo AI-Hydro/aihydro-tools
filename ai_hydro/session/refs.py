@@ -119,22 +119,46 @@ def _portable_str(s: str, sessions_dir: Path, ws: Path | None, home: Path) -> st
     return s
 
 
-# Absolute path inside free text: quoted (may contain spaces) or bare.
+# Candidate absolute paths inside free text: quoted (may contain spaces) or bare.
+# Candidates are only *candidates*: ``_qualify`` decides whether one is demonstrably
+# a local path. A bare "/x", "+/-", "/s", "/day", "/group/var", "GET /api/v1/x" or a
+# URL/URI path is scientific or protocol text and is never rewritten.
 _TEXT_PATH = re.compile(
     r"""(?P<q>['"])(?P<qp>(?:/|[A-Za-z]:[\\/]|\\\\)[^'"]*)(?P=q)"""
-    r"""|(?<![\w:/.\\~>-])(?P<bp>(?:/[^\s'"<>()\[\],;]+|[A-Za-z]:[\\/][^\s'"<>()\[\],;]*|\\\\[^\s'"<>()\[\],;]+))"""
+    r"""|(?<![\w:/.\\~>+-])(?P<bp>(?:/[^\s'"<>()\[\],;]+|[A-Za-z]:[\\/][^\s'"<>()\[\],;]*|\\\\[^\s'"<>()\[\],;]+))"""
 )
-
 
 _WHOLE_PATH = re.compile(r"""^\s*(?:/|[A-Za-z]:[\\/]|\\\\)[^\n"':,;]*$""")
 
+# POSIX roots that are, in practice, local filesystem locations (need >= 2 segments).
+_LOCAL_ROOTS = frozenset({"Users", "home", "private", "var", "tmp", "opt", "root",
+                          "mnt", "Volumes", "srv", "scratch"})
+
+
+def _qualify(path: str, sessions_dir: Path, ws: Path | None, home: Path) -> str | None:
+    """Replacement for ``path`` if it is demonstrably a local path, else None."""
+    mapped = _portable_str(path, sessions_dir, ws, home)
+    if mapped != path:                        # under the session dir, workspace or home
+        return mapped
+    base = re.split(r"[\\/]+", path.rstrip("\\/"))[-1]
+    if _WIN_ABS.match(path):                  # Windows drive / UNC
+        return "<abs>/" + base if base else "<abs>"
+    parts = [p for p in path.split("/")[1:] if p]
+    if len(parts) >= 2 and parts[0] in _LOCAL_ROOTS and path.startswith("/" + parts[0] + "/"):
+        return "<abs>/" + base
+    return None
+
 
 def scrub_paths(text: str, workspace_dir: str | Path | None = None) -> str:
-    """Free-text scrub: every absolute path becomes a ref, ``~/...`` or ``<abs>/basename``.
+    """Free-text scrub of demonstrably local absolute paths.
 
-    For text that gets sealed (error messages); the sealed digest must never
-    cover a home directory. Session dir -> ``session-data:``, workspace ->
-    ``workspace:``, home -> ``~/``, any other absolute path -> ``<abs>/<basename>``.
+    Under the session dir -> ``session-data:``, workspace -> ``workspace:``, home
+    -> ``~/``; other paths only when rooted in a known local root
+    (``/Users``, ``/home``, ``/private``, ``/var``, ``/tmp``, ``/opt``, ``/root``,
+    ``/mnt``, ``/Volumes``, ``/srv``, ``/scratch``) with >= 2 segments, or a
+    Windows drive/UNC path -> ``<abs>/<basename>``. Everything else (units,
+    ``+/-``, NetCDF group paths, endpoint paths, URLs/URIs) is left untouched.
+    Idempotent.
     """
     from ai_hydro.session import store
 
@@ -142,21 +166,18 @@ def scrub_paths(text: str, workspace_dir: str | Path | None = None) -> str:
     ws = Path(workspace_dir) if workspace_dir else None
     home = Path.home()
 
-    def one(path: str) -> str:
-        out = _portable_str(path, sessions_dir, ws, home)
-        if out != path:
-            return out
-        base = re.split(r"[\\/]+", path.rstrip("\\/"))[-1]
-        return "<abs>/" + base if base else "<abs>"
-
     text = str(text)
     if _WHOLE_PATH.match(text):          # the value IS a path (may contain spaces)
-        return one(text.strip())
+        whole = _qualify(text.strip(), sessions_dir, ws, home)
+        if whole is not None:
+            return whole
 
     def sub(m: re.Match) -> str:
         if m.group("q"):
-            return m.group("q") + one(m.group("qp")) + m.group("q")
-        return one(m.group("bp"))
+            r = _qualify(m.group("qp"), sessions_dir, ws, home)
+            return m.group(0) if r is None else m.group("q") + r + m.group("q")
+        r = _qualify(m.group("bp"), sessions_dir, ws, home)
+        return m.group(0) if r is None else r
 
     return _TEXT_PATH.sub(sub, text)
 

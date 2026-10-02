@@ -376,8 +376,12 @@ def declare_lineage(
     for parent in parents:
         if parent and parent not in capture.parents:
             capture.parents.append(parent)
-    capture.input_refs.extend(dict(r) for r in input_refs)
-    capture.notes.update(notes)
+    # Privacy: free-form notes and refs are sealed into record.extra / input_refs,
+    # so they pass the same path scrubber as run-log row bodies (idempotent).
+    from ai_hydro.session.refs import scrub_value
+
+    capture.input_refs.extend(scrub_value(dict(r)) for r in input_refs)
+    capture.notes.update(scrub_value(notes))
     return True
 
 

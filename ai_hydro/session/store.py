@@ -338,12 +338,31 @@ def _run_log_record_problem(run_id: str, record: Any) -> str | None:
     return None
 
 
+_WS_CACHE: dict[str, tuple[int, str | None]] = {}
+_WS_WARNED: set[str] = set()
+
+
 def _session_workspace_dir(session_id: str) -> str | None:
-    """Workspace dir recorded in the session file, read raw (no HydroSession load)."""
+    """Workspace dir recorded in the session file, read raw (no HydroSession load).
+
+    Cached per (file, mtime): the scrub runs on every row write. When the file
+    is unreadable the workspace cannot be named; that is logged once per session
+    and the path falls back to ``~/`` or ``<abs>/basename``.
+    """
+    sf = _SESSIONS_DIR / f"{_safe_filename_component(session_id)}.json"
+    key = str(sf)
     try:
-        sf = _SESSIONS_DIR / f"{_safe_filename_component(session_id)}.json"
-        return json.loads(sf.read_text()).get("workspace_dir") or None
-    except Exception:
+        mtime = sf.stat().st_mtime_ns
+        hit = _WS_CACHE.get(key)
+        if hit and hit[0] == mtime:
+            return hit[1]
+        ws = json.loads(sf.read_text()).get("workspace_dir") or None
+        _WS_CACHE[key] = (mtime, ws)
+        return ws
+    except Exception as exc:
+        if key not in _WS_WARNED:
+            _WS_WARNED.add(key)
+            log.debug("workspace dir unavailable for row scrub (%s): %s", session_id, exc)
         return None
 
 

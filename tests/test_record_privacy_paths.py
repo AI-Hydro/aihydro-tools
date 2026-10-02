@@ -201,3 +201,111 @@ def test_scrub_is_idempotent_and_whole_path_values():
     once = scrub_value({"a": "/Users/bob/My Docs/x.csv", "b": f"see '/opt/z/q.json' ok", "c": 3})
     assert once["a"] == "<abs>/x.csv" and once["b"] == "see '<abs>/q.json' ok"
     assert scrub_value(once) == once
+
+
+# --- V1: the scrubber must never alter scientific / protocol strings ---------
+_UNCHANGED = [
+    "+/-", "0.5 /- 0.1", "0.5 +/- 0.1", "/day", "/s", "/", "//", "ft3 /s", "m3/s", "mm/day", "1/2",
+    "2020/01/01", "N/A", "and/or", "EPSG:4326", "/group/var", "/nwis/dv", "GET /api/v1/items",
+    "^/api/.*", "/bucket/key", "/ Fish River", "x / y", "USGS 01013500 / Fish River",
+    "Discharge [m3/s]", "https://waterservices.usgs.gov/nwis/dv?sites=01013500&format=json",
+    "https://example.org/Users/alice/profile", "s3://bucket/key", "s3://bucket/Users/a/b",
+    "gs://bucket/home/x/y", "doi:10.1000/xyz123", "USGS/SRTMGL1_003", "projects/ee-x/assets/y",
+    "ftp://host/tmp/a/b", "file name with a/b slash", "ratio 3/4 of flow", "/x", "/tmp", "/opt",
+    "/Users", "/home", "a=/b", "NSE=0.82 (/obs)", "log10(Q)/area", "Q/A", "(m3/s)/km2",
+    "+proj=utm +zone=18 +datum=WGS84", "q_cms/day", "/var", "kg/m2/s", "unit: /yr", "/yr ",
+    "Δ/Δt", "10^-3/s", "/hydrology/streamflow", "/data/obs", "/obs/q",
+]
+
+_SCRUBBED = [
+    ("/Users/bob/secret.csv", "<abs>/secret.csv"),
+    ("open '/Users/bob/My Project/data.csv' failed", "open '<abs>/data.csv' failed"),
+    ("cannot read /home/alice/x/y.nc now", "cannot read <abs>/y.nc now"),
+    ("/private/var/folders/ab/T/x.json", "<abs>/x.json"),
+    ("/tmp/pytest-1/a.json", "<abs>/a.json"),
+    ("C:\\Users\\bob\\p\\a.csv", "<abs>/a.csv"),
+    ("\\\\srv\\share\\b.csv", "<abs>/b.csv"),
+    ("/mnt/data/runs/r1", "<abs>/r1"),
+    ("/Volumes/Disk/x/y.tif", "<abs>/y.tif"),
+]
+
+
+@pytest.mark.parametrize("text", _UNCHANGED)
+def test_scrubber_leaves_scientific_and_protocol_strings_alone(text):
+    from ai_hydro.session.refs import scrub_paths, scrub_value
+    assert scrub_paths(text) == text
+    assert scrub_value({"k": text, "n": [text]}) == {"k": text, "n": [text]}
+
+
+@pytest.mark.parametrize("text,expected", _SCRUBBED)
+def test_scrubber_rewrites_real_local_paths_idempotently(text, expected):
+    from ai_hydro.session.refs import scrub_paths
+    out = scrub_paths(text)
+    assert out == expected
+    assert scrub_paths(out) == out
+
+
+# --- V2: redaction must not hide tampering -----------------------------------
+def _forge_sealed(sid, run_id, body, tamper=None):
+    from ai_hydro.session import run_records as rr, store
+    rec = rr.build_run_record(run_id=run_id, tool="legacy_tool", session_id=sid, entry=body)
+    row = {**body, "record": rec.to_dict()}
+    if tamper:
+        tamper(row)
+    conn = store._run_log_connect(sid)
+    conn.execute("INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?,?,?)",
+                 (run_id, body["timestamp"], json.dumps(row)))
+    conn.commit(); conn.close()
+    return rec
+
+
+def test_tampered_path_bearing_sealed_row_fails_replay_not_redacted(world, tmp_path, monkeypatch):
+    import subprocess, sys
+    server, _ = world
+    sid = _delineate_world(world, monkeypatch, tmp_path)
+    body = {"run_id": "tam_1", "tool_name": "legacy_tool", "session_id": sid,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "key_outputs": {"u": 1.0, "leak": "/Users/bob/secret.csv"}}
+    _forge_sealed(sid, "tam_1", body, tamper=lambda r: r["key_outputs"].update(u=999.0))
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=sid, capsule_path=str(tmp_path / "capsule"))
+    cap = Path(res["capsule_dir"])
+    assert not _scan_capsule(cap, "/Users/bob")
+    rl = json.loads((cap / "run_log.json").read_text())
+    assert rl["tam_1"]["integrity"] == "seal_mismatch_at_export"
+    p = subprocess.run([sys.executable, "replay.py"], cwd=cap, capture_output=True, text=True, timeout=120)
+    assert p.returncode != 0 and "seal_mismatch_at_export" in p.stdout, p.stdout[-1500:]
+
+
+def test_verified_redaction_stub_carries_identity_and_degrades_status(world, tmp_path, monkeypatch):
+    import subprocess, sys
+    server, _ = world
+    sid = _delineate_world(world, monkeypatch, tmp_path)
+    body = {"run_id": "leg_1", "tool_name": "legacy_tool", "session_id": sid,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "key_outputs": {"leak": "/Users/bob/secret.csv"}}
+    rec = _forge_sealed(sid, "leg_1", body)
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=sid, capsule_path=str(tmp_path / "capsule"))
+    cap = Path(res["capsule_dir"])
+    stub = json.loads((cap / "run_log.json").read_text())["leg_1"]
+    assert stub["redacted_for_privacy"] and stub["session_id"] == sid and stub["timestamp"] == body["timestamp"]
+    assert stub["record_digest"] == rec.record_digest and stub["entry_digest"] and stub["record"]["run_id"] == "leg_1"
+    man = json.loads((cap / "capsule_manifest.json").read_text())
+    assert man["privacy"]["redacted_run_ids"] == ["leg_1"] and man["replay_status"] == "archive_integrity_partial"
+    p = subprocess.run([sys.executable, "replay.py"], cwd=cap, capture_output=True, text=True, timeout=120)
+    assert p.returncode == 0 and "replay_status: archive_integrity_partial" in p.stdout, p.stdout[-1500:]
+
+
+# --- V3: free-form lineage notes are scrubbed before sealing -------------------
+def test_declare_lineage_notes_and_refs_are_scrubbed():
+    from ai_hydro.session import run_records as rr
+    cap, tok = rr.begin_capture()
+    try:
+        rr.declare_lineage(input_refs=[{"ref": "/Users/bob/x.json", "digest": "sha256:ab"}],
+                           parent_unresolved="cannot open '/Users/bob/Secret Dir/f.csv'",
+                           internal_acquisitions=[{"note": "read /home/a/b/c.nc", "rate": "m3/s"}])
+    finally:
+        rr.end_capture(tok)
+    blob = json.dumps({"n": cap.notes, "r": cap.input_refs})
+    assert "/Users/bob" not in blob and "/home/a" not in blob and "m3/s" in blob

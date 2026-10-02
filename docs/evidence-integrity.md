@@ -557,3 +557,25 @@ with the row's `record_digest` instead, and `capsule_manifest.json` records
 reports such rows as "redacted for privacy (not verifiable from capsule)":
 neither verified nor failed. A claim approval that cites a redacted row cannot be
 re-derived from the capsule and says so.
+
+**What the scrubber rewrites (and never does).** Only demonstrably local paths:
+under the session dir (`session-data:`), workspace (`workspace:`) or home
+(`~/`); other absolute POSIX paths only when rooted in `/Users`, `/home`,
+`/private`, `/var`, `/tmp`, `/opt`, `/root`, `/mnt`, `/Volumes`, `/srv` or
+`/scratch` with at least two segments; Windows drive and UNC paths (`<abs>/basename`).
+Units (`/day`, `m3/s`), `+/-`, NetCDF/Zarr group paths, endpoint paths and
+anything inside a URL or URI (`https://`, `s3://`, `doi:`) are never touched.
+It is idempotent. It also covers `record.extra` notes and `input_refs` declared
+through `declare_lineage`. Dict keys are scrubbed too (a key that is a path is
+renamed) and tuples become lists before digesting; exported `.html`/`.svg` files
+get the same text scrub, while `approvals/` (human-signed) and `data/` stay
+verbatim by design.
+
+**Redaction cannot hide tampering.** On export a path-bearing sealed row is
+first verified against its raw body (record seal and `entry_digest`). If it does
+not verify it is exported as `{"integrity": "seal_mismatch_at_export", ...}` and
+replay counts it as a FAILURE. A row that verifies becomes a
+`redacted_for_privacy` stub with `session_id`, `timestamp`, `record_digest`,
+`entry_digest` and (when it holds no path) the full `record`, so replay still
+checks the seal. Any redaction makes `replay_status` `archive_integrity_partial`
+and the manifest `privacy` block lists the redacted run ids.
