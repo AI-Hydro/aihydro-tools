@@ -257,10 +257,14 @@ def test_promotion_with_matching_approval_succeeds_and_stamps_the_entry(session)
     rec = approve("appr", "c1", approver="alice")
     res = _promote()
     assert res["status"] == "promoted", res
-    assert res["approval"] == {"record_digest": rec["record_digest"], "approver": "alice",
-                               "channel": "cli_same_user"}
+    # A2: the stamp is verifier-derived. A v1 record verified under the test
+    # suite's explicit development opt-out is labelled as such, never as signed.
+    expected = {"record_digest": rec["record_digest"], "channel": "cli_same_user",
+                "trust_root": None, "principal": None, "signer": None,
+                "policy": "unsigned_opt_out"}
+    assert res["approval"] == {**expected, "approver": "alice"}
     entry, = registry.all_entries()
-    assert entry["approval"] == {"record_digest": rec["record_digest"], "channel": "cli_same_user"}
+    assert entry["approval"] == expected
 
 
 @pytest.mark.parametrize("edit", [
