@@ -21,7 +21,8 @@ from fastmcp import FastMCP, Context
 
 __all__ = [
     "mcp", "Context", "TOOL_TIERS", "get_tool_tiers", "get_tool_tier",
-    "ACTIVE_CHAT_ID", "ACTIVE_WORKSPACE",
+    "ACTIVE_CHAT_ID", "ACTIVE_WORKSPACE", "ACTIVE_STUDY_ID",
+    "ACTIVE_CONTEXT_SOURCE", "ACTIVE_CONTEXT_CLIENT", "CONTEXT_META_KEY",
 ]
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,22 @@ ACTIVE_CHAT_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 ACTIVE_WORKSPACE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "ACTIVE_WORKSPACE", default=None
+)
+# Explicit context (ADR-004): clients send ``_meta["aihydro/context"] =
+# {study_id?, workspace?, chat_id?, client?}`` on tools/call.  ``study_id`` is
+# the session_id (no tool is renamed).  The legacy hidden ``_chat_id`` /
+# ``_workspace`` arguments still work, are read second, and log a one-time
+# deprecation notice.  ACTIVE_CONTEXT_SOURCE is "meta", "legacy_args" or "none"
+# and is stamped into run records as ``extra.context_source``.
+CONTEXT_META_KEY = "aihydro/context"
+ACTIVE_STUDY_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ACTIVE_STUDY_ID", default=None
+)
+ACTIVE_CONTEXT_SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "ACTIVE_CONTEXT_SOURCE", default="none"
+)
+ACTIVE_CONTEXT_CLIENT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ACTIVE_CONTEXT_CLIENT", default=None
 )
 
 # ---------------------------------------------------------------------------
@@ -461,39 +478,99 @@ mcp.read_resource = _read_registered_resource
 from fastmcp.server.middleware import Middleware, MiddlewareContext  # noqa: E402
 
 
-class _ContextInjectionMiddleware(Middleware):
-    """Pop ``_chat_id`` / ``_workspace`` from tool args into ContextVars.
+import logging as _ctx_logging  # noqa: E402
 
-    Runs for EVERY tool call.  When neither key is present (direct Python
-    calls, tests, CLI) it is a cheap no-op that still binds the ContextVars to
-    ``None`` for the duration of the call.
+log = _ctx_logging.getLogger("ai_hydro.mcp.app")
+_legacy_context_warned = False
+
+
+def _request_context_meta(context) -> dict:
+    """The ``aihydro/context`` object from the request ``_meta``, or ``{}``.
+
+    FastMCP 2.14 does not copy ``_meta`` onto the middleware message
+    (``CallToolRequestParams.meta`` is None there); it is on the live request
+    context (``fastmcp_context.request_context.meta``), where unknown keys are
+    pydantic extras.  Anything unreadable yields ``{}``.
+    """
+    try:
+        meta = context.fastmcp_context.request_context.meta
+    except Exception:
+        meta = None
+    if meta is None:
+        meta = getattr(context.message, "meta", None)
+    if meta is None:
+        return {}
+    value = None
+    try:
+        value = meta.get(CONTEXT_META_KEY) if isinstance(meta, dict) else getattr(meta, CONTEXT_META_KEY, None)
+        if value is None:
+            value = (getattr(meta, "model_extra", None) or {}).get(CONTEXT_META_KEY)
+    except Exception:
+        value = None
+    return value if isinstance(value, dict) else {}
+
+
+def _str_or_none(value) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+class _ContextInjectionMiddleware(Middleware):
+    """Bind request context (``_meta`` first, legacy hidden args second).
+
+    Runs for EVERY tool call.  The legacy ``_chat_id`` / ``_workspace`` keys
+    are always stripped from the arguments before validation.  Per field,
+    ``_meta["aihydro/context"]`` wins over the legacy argument; the recorded
+    source is ``meta`` when any field came from ``_meta``, else
+    ``legacy_args`` when any came from a legacy argument, else ``none``.
     """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
-        chat_id: str | None = None
-        workspace: str | None = None
+        global _legacy_context_warned
+        meta_ctx = _request_context_meta(context)
+        chat_id = _str_or_none(meta_ctx.get("chat_id"))
+        workspace = _str_or_none(meta_ctx.get("workspace"))
+        study_id = _str_or_none(meta_ctx.get("study_id"))
+        client = _str_or_none(meta_ctx.get("client"))
+        used_meta = any((chat_id, workspace, study_id, client))
+        used_legacy = False
 
         message = context.message
         args = getattr(message, "arguments", None)
         if args and ("_chat_id" in args or "_workspace" in args):
             args = dict(args)
-            chat_id = args.pop("_chat_id", None)
-            workspace = args.pop("_workspace", None)
-            if not isinstance(chat_id, str):
-                chat_id = None
-            if not isinstance(workspace, str):
-                workspace = None
+            legacy_chat = args.pop("_chat_id", None)
+            legacy_ws = args.pop("_workspace", None)
+            if isinstance(legacy_chat, str) and legacy_chat and chat_id is None:
+                chat_id = legacy_chat
+                used_legacy = True
+            if isinstance(legacy_ws, str) and legacy_ws and workspace is None:
+                workspace = legacy_ws
+                used_legacy = True
             # Mutate the request in place so downstream validation never sees
             # the injected keys.
             message.arguments = args
+            if not _legacy_context_warned:
+                _legacy_context_warned = True
+                log.warning(
+                    "Deprecated: hidden _chat_id/_workspace tool arguments. "
+                    "Send _meta[%r] = {study_id, workspace, chat_id, client} "
+                    "instead; the legacy arguments are read second and will "
+                    "be removed in a later release.", CONTEXT_META_KEY,
+                )
 
-        token_chat = ACTIVE_CHAT_ID.set(chat_id)
-        token_ws = ACTIVE_WORKSPACE.set(workspace)
+        source = "meta" if used_meta else ("legacy_args" if used_legacy else "none")
+        tokens = (
+            (ACTIVE_CHAT_ID, ACTIVE_CHAT_ID.set(chat_id)),
+            (ACTIVE_WORKSPACE, ACTIVE_WORKSPACE.set(workspace)),
+            (ACTIVE_STUDY_ID, ACTIVE_STUDY_ID.set(study_id)),
+            (ACTIVE_CONTEXT_SOURCE, ACTIVE_CONTEXT_SOURCE.set(source)),
+            (ACTIVE_CONTEXT_CLIENT, ACTIVE_CONTEXT_CLIENT.set(client)),
+        )
         try:
             return await call_next(context)
         finally:
-            ACTIVE_CHAT_ID.reset(token_chat)
-            ACTIVE_WORKSPACE.reset(token_ws)
+            for var, token in reversed(tokens):
+                var.reset(token)
 
 
 mcp.add_middleware(_ContextInjectionMiddleware())
@@ -608,6 +685,11 @@ class RunRecordMiddleware(Middleware):
             return await call_next(context)
 
         arguments = dict(getattr(message, "arguments", None) or {})
+        run_context = {
+            "source": ACTIVE_CONTEXT_SOURCE.get(),
+            "study_id": ACTIVE_STUDY_ID.get(),
+            "client": ACTIVE_CONTEXT_CLIENT.get(),
+        }
         capture, token = run_records.begin_capture()
         started = _time.monotonic()
         failure = None
@@ -637,6 +719,7 @@ class RunRecordMiddleware(Middleware):
                 duration_ms=(_time.monotonic() - started) * 1000.0,
                 mcp_client=_mcp_client_label(context),
                 output_bytes=size,
+                context=run_context,
             )
             record_error = outcome.record_error
         except Exception as exc:

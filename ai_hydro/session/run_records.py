@@ -456,35 +456,64 @@ def _session_exists(session_id: str) -> bool:
         return False
 
 
-def resolve_call_session(
-    arguments: Any, result: Any, chat_id: Optional[str], capture: CallCapture
-) -> Optional[str]:
-    """The session a call belongs to, or None. Never creates a session.
+def resolve_call_session_rule(
+    arguments: Any, result: Any, chat_id: Optional[str], capture: CallCapture,
+    meta_study_id: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """``(session_id, rule)`` for a call; ``(None, None)`` when unresolved.
+
+    Never creates a session. ``rule`` is one of ``explicit_arg``, ``meta``,
+    ``chat_binding``, ``result`` or, when the tool recorded how it resolved the
+    session itself (``note_session_resolution``), that rule (``auto_create``...).
 
     Order: the session of any row a writer stored during the call; an explicit
-    ``session_id`` argument; a ``session_id`` in the result; the chat binding.
-    Candidates from the last three must already exist on disk.
+    ``session_id`` argument; the ``study_id`` sent in ``_meta``; a
+    ``session_id`` in the result; the chat binding. Candidates from all but
+    the first must already exist on disk.
     """
-    if capture.rows:
-        return capture.rows[0][0]
-    candidates: List[Any] = []
+    noted = capture.notes.get("session_resolution")
+    candidates: List[Tuple[Any, str]] = []
     if isinstance(arguments, dict):
-        candidates.append(arguments.get("session_id"))
+        candidates.append((arguments.get("session_id"), "explicit_arg"))
+    candidates.append((meta_study_id, "meta"))
+    if capture.rows:
+        sid = capture.rows[0][0]
+        rule = noted
+        if rule is None:
+            rule = next(
+                (r for c, r in candidates
+                 if isinstance(c, str) and c.strip() == sid), None)
+        return sid, rule or "result"
     if isinstance(result, dict):
-        candidates.append(result.get("session_id"))
+        candidates.append((result.get("session_id"), "result"))
     if chat_id:
         try:
             from ai_hydro.session.chat_binding import get_binding_store
 
-            candidates.append(get_binding_store().lookup_study(chat_id))
+            candidates.append((get_binding_store().lookup_study(chat_id), "chat_binding"))
         except Exception:
             pass
-    for candidate in candidates:
+    for candidate, rule in candidates:
         if isinstance(candidate, str) and candidate.strip():
             sid = candidate.strip()
             if sid != "map" and _session_exists(sid):
-                return sid
-    return None
+                return sid, (noted or rule)
+    return None, None
+
+
+def resolve_call_session(
+    arguments: Any, result: Any, chat_id: Optional[str], capture: CallCapture,
+    meta_study_id: Optional[str] = None,
+) -> Optional[str]:
+    """The session a call belongs to, or None. See ``resolve_call_session_rule``."""
+    return resolve_call_session_rule(arguments, result, chat_id, capture, meta_study_id)[0]
+
+
+def note_session_resolution(rule: str) -> None:
+    """Record which ``_resolve_session`` rule a tool call used (first wins)."""
+    capture = _CAPTURE.get()
+    if capture is not None:
+        capture.notes.setdefault("session_resolution", rule)
 
 
 _URL_QUERY = re.compile(r"\?[^\s\"']*")
@@ -567,6 +596,7 @@ def record_call(
     duration_ms: Optional[float] = None,
     mcp_client: Optional[str] = None,
     output_bytes: Optional[int] = None,
+    context: Optional[Dict[str, Any]] = None,
 ) -> RecordOutcome:
     """Attach a sealed v2 record to every row the call wrote, or create one.
 
@@ -578,6 +608,7 @@ def record_call(
             tool=tool, arguments=arguments, result=result, failure=failure,
             capture=capture, chat_id=chat_id, id_factory=id_factory,
             duration_ms=duration_ms, mcp_client=mcp_client, output_bytes=output_bytes,
+            context=context,
         )
     except Exception as exc:
         log.warning("record_call failed for tool %s: %s", tool, exc)
@@ -586,10 +617,12 @@ def record_call(
 
 
 def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_factory,
-                 duration_ms, mcp_client, output_bytes) -> RecordOutcome:
+                 duration_ms, mcp_client, output_bytes, context=None) -> RecordOutcome:
     from ai_hydro.session import store
 
-    session_id = resolve_call_session(arguments, result, chat_id, capture)
+    context = context or {}
+    session_id, resolution = resolve_call_session_rule(
+        arguments, result, chat_id, capture, context.get("study_id"))
     if session_id is None:
         count("no_session")
         return RecordOutcome("no_session")
@@ -626,7 +659,12 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
             extra["duration_ms"] = round(float(duration_ms), 1)
         if mcp_client:
             extra["mcp_client"] = mcp_client
+        extra["context_source"] = context.get("source") or "none"
+        if context.get("client"):
+            extra["context_client"] = context["client"]
         extra.update(capture.notes)
+        if resolution:
+            extra["session_resolution"] = resolution
         stored = False
         for _attempt in range(3):
             entry = store._run_log_read_one(sid, rid)

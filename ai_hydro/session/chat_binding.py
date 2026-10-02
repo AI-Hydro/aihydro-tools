@@ -4,7 +4,8 @@ Chat ↔ Study binding store.
 Persists a flat bidirectional map between Cline chat ULIDs and
 AI-Hydro study (HydroSession) IDs.
 
-Storage: ``~/.aihydro/chat_studies.json`` (atomic write-then-rename)
+Storage: ``<aihydro_home()>/chat_studies.json`` (``$AIHYDRO_HOME`` or
+``~/.aihydro``; atomic write-then-rename)
 
 Schema::
 
@@ -37,7 +38,16 @@ from typing import Any
 
 log = logging.getLogger("ai_hydro.session.chat_binding")
 
-_BINDING_FILE = Path.home() / ".aihydro" / "chat_studies.json"
+_BINDING_NAME = "chat_studies.json"
+
+
+def _binding_file() -> Path:
+    """Resolve the binding file when requested, honouring ``AIHYDRO_HOME``."""
+    from ai_hydro.registry.paths import aihydro_home
+
+    return aihydro_home() / _BINDING_NAME
+
+
 _COMPACT_THRESHOLD = 500  # compact when > N entries in chat_to_study
 
 
@@ -49,7 +59,7 @@ class ChatBindingStore:
     """
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or _BINDING_FILE
+        self._path = path or _binding_file()
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -182,8 +192,13 @@ _store: ChatBindingStore | None = None
 def get_binding_store() -> ChatBindingStore:
     """Return the module-level singleton ``ChatBindingStore``."""
     global _store
-    if _store is None:
-        _store = ChatBindingStore()
+    # Re-resolve when the singleton was created by this function and
+    # AIHYDRO_HOME has since moved (tests, CI). A store injected by a caller
+    # (custom path) is left alone.
+    path = _binding_file()
+    if _store is None or (getattr(_store, "_auto_path", False) and _store._path != path):
+        _store = ChatBindingStore(path)
+        _store._auto_path = True
     return _store
 
 
