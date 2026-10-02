@@ -178,3 +178,25 @@ def test_chat_binding_follows_aihydro_home(tmp_path, monkeypatch):
     assert get_binding_store().lookup_study("c1") is None
     get_binding_store().bind("c2", "s2")
     assert (home_b / "chat_studies.json").exists()
+
+
+def test_writer_row_in_other_session_is_flagged_mismatch(server):
+    from ai_hydro.mcp.helpers import _session_store
+
+    @server.tool()
+    def cross_writer(session_id: str | None = None) -> dict:
+        _session_store(OTHER, "model", {"data": {"v": 1}}, tool_name="cross_writer")
+        return {"data": {"ok": True}}
+
+    call(server, "cross_writer", meta={META: {"study_id": SID}})
+    extra = latest_record(OTHER)["extra"]
+    assert extra["session_resolution"] == "writer_row"
+    assert extra["context_study_id"] == SID
+    assert extra["context_mismatch"] is True
+
+
+def test_no_mismatch_flag_when_resolved_matches(server):
+    call(server, "resolving_tool", meta={META: {"study_id": SID}})
+    extra = latest_record()["extra"]
+    assert extra["context_study_id"] == SID
+    assert "context_mismatch" not in extra

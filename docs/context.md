@@ -32,9 +32,15 @@ Each run record's `extra` carries:
 - `context_source`: `meta` (any field came from `_meta`), `legacy_args`, or
   `none`.
 - `session_resolution`: the rule that selected the session: `explicit_arg`,
-  `meta`, `chat_binding`, `result`, `auto_create`, or `recent_fallback`.
+  `meta`, `chat_binding`, `result`, `writer_row`, `auto_create`, or `recent_fallback`. `writer_row` means
+  the call wrote a run-log row into a session that matched neither the
+  explicit argument nor the `_meta` study.
   A tool that calls `_resolve_session` reports the rule it used; otherwise the
   recording middleware derives it from the same order.
+- `context_study_id` and `context_mismatch: true`: set when the record's
+  session differs from the requested study (the `study_id` in `_meta` or an
+  explicit `session_id` argument), for example a tool that wrote into another
+  session.
 - `context_client`: the `client` label, when sent.
 
 ## Where state lives

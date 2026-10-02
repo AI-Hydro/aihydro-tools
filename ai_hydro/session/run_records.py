@@ -463,7 +463,8 @@ def resolve_call_session_rule(
     """``(session_id, rule)`` for a call; ``(None, None)`` when unresolved.
 
     Never creates a session. ``rule`` is one of ``explicit_arg``, ``meta``,
-    ``chat_binding``, ``result`` or, when the tool recorded how it resolved the
+    ``chat_binding``, ``result``, ``writer_row`` (a row written during the call
+    named a session none of the requested ones matched) or, when the tool recorded how it resolved the
     session itself (``note_session_resolution``), that rule (``auto_create``...).
 
     Order: the session of any row a writer stored during the call; an explicit
@@ -483,7 +484,7 @@ def resolve_call_session_rule(
             rule = next(
                 (r for c, r in candidates
                  if isinstance(c, str) and c.strip() == sid), None)
-        return sid, rule or "result"
+        return sid, rule or "writer_row"
     if isinstance(result, dict):
         candidates.append((result.get("session_id"), "result"))
     if chat_id:
@@ -662,6 +663,16 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         extra["context_source"] = context.get("source") or "none"
         if context.get("client"):
             extra["context_client"] = context["client"]
+        if context.get("study_id"):
+            extra["context_study_id"] = context["study_id"]
+        requested = [
+            v.strip() for v in (
+                (arguments.get("session_id") if isinstance(arguments, dict) else None),
+                context.get("study_id"),
+            ) if isinstance(v, str) and v.strip()
+        ]
+        if any(v != sid for v in requested):
+            extra["context_mismatch"] = True
         extra.update(capture.notes)
         if resolution:
             extra["session_resolution"] = resolution
