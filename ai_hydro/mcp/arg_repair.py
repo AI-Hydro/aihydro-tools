@@ -31,6 +31,7 @@ inherits the behaviour for free.
 from __future__ import annotations
 
 import difflib
+import json
 import logging
 from typing import Any
 
@@ -132,6 +133,24 @@ def repair_arguments(
     return repaired, notes
 
 
+def _is_structured_refusal(exc: Exception) -> bool:
+    """True for a ``ToolError`` a tool raised on purpose with a JSON error envelope.
+
+    Tools whose output schema is an array (``list_claims``, ``list_assumptions``) cannot
+    return the usual error dict, so they raise ``ToolError(json.dumps(envelope))``. That
+    is a deliberate, already-structured refusal, not a malformed call: teaching the
+    caller the input schema would hide it.
+    """
+    from fastmcp.exceptions import ToolError
+    if not isinstance(exc, ToolError):
+        return False
+    try:
+        body = json.loads(str(exc))
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("error") is True and "code" in body
+
+
 class ArgRepairMiddleware(Middleware):
     """FastMCP middleware: repair tool arguments, teach on failure."""
 
@@ -229,6 +248,8 @@ class ArgRepairMiddleware(Middleware):
         except Exception as e:
             if not info:
                 raise  # unknown tool / third-party server — don't interfere
+            if _is_structured_refusal(e):
+                raise  # the tool already produced a structured error envelope
             count = self._failures.get(key, 0) + 1
             self._failures[key] = count
             from fastmcp.tools.tool import ToolResult

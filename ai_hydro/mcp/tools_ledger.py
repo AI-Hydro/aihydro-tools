@@ -6,8 +6,11 @@ within a research session.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
+from fastmcp.exceptions import ToolError as McpToolError
+
 from ai_hydro.mcp.app import mcp
 from ai_hydro.session import HydroSession
 from ai_hydro.session.models import ScientificClaim, Assumption, ClaimScope, EvidenceSpan
@@ -344,30 +347,50 @@ def add_assumption(
         return _tool_error_to_dict(exc)
 
 
+def _load_session_or_raise(session_id: str) -> HydroSession:
+    """Load an EXISTING session, or raise an MCP error carrying the structured envelope.
+
+    ``HydroSession.load`` returns a fresh empty session for an unknown id, which a
+    ``-> list`` tool would report as "no claims". The two list tools cannot return the
+    usual error dict (their output schema is an array), so a missing or unreadable
+    session is raised as ``ToolError`` whose text is the JSON envelope.
+    """
+    try:
+        path = HydroSession._path(session_id)
+        legacy = HydroSession._legacy_raw_path(session_id)
+        if not path.exists() and not (legacy is not None and legacy.exists()):
+            envelope = {
+                "error": True, "code": "SESSION_NOT_FOUND",
+                "message": f"No saved session '{session_id}'; this is not an empty ledger.",
+                "recovery": "Check the session id or call start_session first.",
+                "next_tools": ["start_session", "get_session_summary"],
+            }
+            raise McpToolError(json.dumps(envelope))
+        return HydroSession.load(session_id)
+    except McpToolError:
+        raise
+    except Exception as exc:
+        raise McpToolError(json.dumps(_tool_error_to_dict(exc), default=str)) from exc
+
+
 @mcp.tool()
 def list_claims(session_id: str, status: str | None = None) -> list[dict]:
-    """List all scientific claims in the session."""
-    try:
-        session = HydroSession.load(session_id)
-        claims = list(session.claims.values())
-        if status:
-            claims = [c for c in claims if c["status"] == status]
-        return claims
-    except Exception:
-        return []
+    """List all scientific claims in the session (an error if the session is missing or unreadable)."""
+    session = _load_session_or_raise(session_id)
+    claims = list(session.claims.values())
+    if status:
+        claims = [c for c in claims if c["status"] == status]
+    return claims
 
 
 @mcp.tool()
 def list_assumptions(session_id: str, validated: bool | None = None) -> list[dict]:
-    """List all assumptions in the session."""
-    try:
-        session = HydroSession.load(session_id)
-        assumptions = list(session.assumptions.values())
-        if validated is not None:
-            assumptions = [a for a in assumptions if a["validated"] == validated]
-        return assumptions
-    except Exception:
-        return []
+    """List all assumptions in the session (an error if the session is missing or unreadable)."""
+    session = _load_session_or_raise(session_id)
+    assumptions = list(session.assumptions.values())
+    if validated is not None:
+        assumptions = [a for a in assumptions if a["validated"] == validated]
+    return assumptions
 
 
 @mcp.tool()
