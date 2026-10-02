@@ -498,3 +498,14 @@ and `recomputation: "not_performed"`. See `ai_hydro/capsule/standalone_replay.py
 | `archive_integrity` | Files match their hashes; every v2 record verifies. Nothing recomputed. |
 | `cross_check` | `--live` and at least one comparison, all agreeing within tolerance. Still no recomputation. |
 | `not_performed` | An integrity check failed. |
+
+## No absolute paths in records or capsules
+
+Sealed records reference retained files by a location-independent ref, never by
+absolute path: `session-data:<file name>` (session data directory) or
+`workspace:<relative path>`, via `ai_hydro/session/refs.py`. The recorded digest
+is the file's identity; the ref is only a locator, so a record or capsule leaks
+no home directory and means the same on another machine. Records written before
+this change keep their absolute paths (sealed rows are never rewritten); readers
+resolve them and match capsule files by name, so they still verify. Capsule
+`session.json` rewrites local paths to refs or `~/`.

@@ -1322,7 +1322,11 @@ class HydroSession:
         return out
 
     def to_json(self) -> str:
-        return json.dumps(self._to_raw(), indent=2)
+        # Export form (capsule session.json, export_session): local absolute
+        # paths become location-independent refs so no home dir leaves the machine.
+        from ai_hydro.session.refs import portable
+
+        return json.dumps(portable(self._to_raw(), self.workspace_dir), indent=2)
 
     # ------------------------------------------------------------------
     # Citation management

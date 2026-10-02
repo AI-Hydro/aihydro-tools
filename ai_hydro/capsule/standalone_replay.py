@@ -243,6 +243,11 @@ def verify_hashes(capsule_dir: Path, out=print):
 # --------------------------------------------------------------------------- #
 
 def _retained_name(path: str) -> str:
+    # "session-data:<file>" / "workspace:<rel>" refs (and legacy absolute paths)
+    for scheme in ("session-data:", "workspace:"):
+        if path.startswith(scheme):
+            path = path[len(scheme):]
+            break
     return Path(path).name.split(".data.", 1)[-1]
 
 
