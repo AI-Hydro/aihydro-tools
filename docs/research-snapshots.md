@@ -50,17 +50,36 @@ The JSON envelope contains:
   `history_len` (null/0 when the claim has no history), `revision_error` (set,
   with the other fields null, when only that claim's chain fails verification;
   other claims and the runs are unaffected), and `revision_drift`
-  (`state` `no_history|in_sync|drifted`, `drift`, `changed_fields`,
-  `evidence_checked: false`). Drift compares the claim's current fields with
-  its latest revision; live evidence fingerprints need a loaded session, so
-  evidence drift is not checked here and `revision_drift_reason` says why when
-  the value is null. `approval` is `{state: none|approved|consumed|unverifiable,
-  for_revision_digest, channel, trust_root, principal, policy, record_digest}`
-  for the claim's latest revision. Approvals fail closed (ADR-002b): a record
-  the verifier does not accept (no trust root, bad signature) is
-  `unverifiable`, never `approved`; `consumed` means a registry row cites it.
-  A capsule never reads the live revision store: `revision` is null and
-  approval is `unverifiable`.
+  (`state` `no_history|in_sync|drifted|evidence_unchecked`, `drift`,
+  `changed_fields`, `evidence_checked`).
+  - Evidence is re-read with the same `fingerprint(resolve_source())` promotion
+    uses, from the run log the snapshot already holds, so `in_sync` means the
+    claim fields and the retained run rows it cites both match the latest
+    revision (`evidence_checked: true`). A tampered or missing cited run reads
+    `drifted` with `evidence_versions` in `changed_fields`.
+  - Dataset and paper spans need a loaded session or the passage index and are
+    not checked read-only: `evidence_checked: false`, `revision_drift_reason`
+    says why, and the claim is never `in_sync` (`evidence_unchecked`).
+  - `approval` is `{state, for_revision_digest, channel, trust_root, principal,
+    policy, record_digest}`. `state` is `none`, `approved` (an accepted
+    approval bound to the digest recomputed with live evidence, as the
+    promotion gate reads it), `consumed` (a registry row cites it),
+    `stale_evidence` / `stale_revision` (an approval exists for the recorded
+    revision but retained evidence changed / the claim was edited since;
+    `recorded_state`, `live_digest`), `evidence_unchecked` (accepted approval,
+    evidence not checkable read-only) or `unverifiable` (the verifier does not
+    accept the record: no trust root, bad signature; also corrupt chains and
+    capsules). Approvals fail closed (ADR-002b); only `approved` means the gate
+    would accept it, and it never appears with unchecked or changed evidence.
+  - A capsule never reads the live revision store, and the snapshot does not
+    consult a capsule's own `approvals/`; capsule claims read `unverifiable`.
+- `revision_source`: `sqlite`, `sqlite_immutable`, `absent`, `capsule` or `error`.
+- Reading never writes. SQLite stores open `mode=ro` with no PRAGMA or DDL, so
+  a DELETE-journal store stays DELETE-journal. If that fails (read-only
+  directory, WAL sidecars that cannot be created) the read retries
+  `immutable=1`, which skips locking and ignores an uncheckpointed WAL, and
+  `run_log_source` / `revision_source` say `sqlite_immutable`. A read of a WAL
+  store in a writable directory may still create its `-wal`/`-shm` sidecars.
 - `warnings`: missing-history diagnostics. Nonfinite values are serialized as
   null for strict JSON; null never means zero.
 

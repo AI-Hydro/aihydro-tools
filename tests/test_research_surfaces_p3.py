@@ -72,7 +72,8 @@ def test_claim_revision_fields_and_in_sync(session):
     assert claim["revision_digest"] == rows[-1]["revision_digest"]
     assert claim["history_len"] == 2
     assert claim["revision_drift"]["state"] == "in_sync"
-    assert claim["revision_drift"]["evidence_checked"] is False
+    assert claim["revision_drift"]["evidence_checked"] is True
+    assert claim["revision_drift_reason"] is None
     assert claim["revision_error"] is None
     assert claim["approval"]["state"] == "none"
 
@@ -157,3 +158,123 @@ def test_coverage_counters_and_schema_unchanged(session):
     snap = read_research_snapshot("rev")
     assert snap["schema_version"] == 1
     assert snap["record_coverage"]["run_log_rows"] == 1
+
+
+def _tamper_run(rid="r1"):
+    """Change a retained run row the claim cites, behind the store's back."""
+    import sqlite3 as _sq
+    path = store._run_log_db_path("rev")
+    with _sq.connect(path) as conn:
+        entry = json.loads(conn.execute("SELECT entry_json FROM runs WHERE run_id=?", (rid,)).fetchone()[0])
+        entry["tampered"] = True
+        conn.execute("UPDATE runs SET entry_json=? WHERE run_id=?", (json.dumps(entry), rid))
+
+
+def test_tampered_cited_run_is_stale_evidence_not_approved(session):
+    _add()
+    _supported()
+    approve("rev", "c1")
+    assert _claim()["approval"]["state"] == "approved"
+    _tamper_run()
+    claim = _claim()
+    assert claim["approval"]["state"] == "stale_evidence"
+    assert claim["approval"]["recorded_state"] == "approved"
+    assert claim["revision_drift"]["state"] == "drifted"
+    assert claim["revision_drift"]["evidence_checked"] is True
+    assert "evidence_versions" in claim["revision_drift"]["changed_fields"]
+    # The gate agrees.
+    res = promote_claim_to_registry("rev", "c1", researcher_approved=True)
+    assert res.get("status") != "promoted", res
+
+
+def test_missing_cited_run_is_not_approved(session):
+    _add()
+    _supported()
+    approve("rev", "c1")
+    import sqlite3 as _sq
+    with _sq.connect(store._run_log_db_path("rev")) as conn:
+        conn.execute("DELETE FROM runs WHERE run_id='r1'")
+    claim = _claim()
+    assert claim["approval"]["state"] == "stale_evidence"
+    assert claim["revision_drift"]["state"] == "drifted"
+
+
+def test_unreadable_span_type_is_never_in_sync_or_approved(session):
+    _add(evidence_spans=[{"source_type": "dataset", "source_id": "ds", "metric_ref": "x"}])
+    claim = _claim()
+    assert claim["revision_drift"]["state"] == "evidence_unchecked"
+    assert claim["revision_drift"]["evidence_checked"] is False
+    assert "dataset" in claim["revision_drift_reason"]
+
+
+def test_reapproval_after_evidence_change_reads_approved(session):
+    _add()
+    _supported()
+    _tamper_run()
+    approve("rev", "c1")
+    # Approval is bound to the live digest (computed with live evidence).
+    claim = _claim()
+    assert claim["approval"]["state"] == "approved"
+    assert claim["approval"]["for_revision_digest"] != claim["revision_digest"]
+
+
+def _files(directory):
+    return sorted(p.name for p in directory.iterdir())
+
+
+def test_delete_journal_stores_stay_delete_journal_and_no_new_files(session):
+    import sqlite3 as _sq
+    _add()
+    for path in (store._run_log_db_path("rev"), cr._db_path("rev")):
+        with _sq.connect(path) as conn:
+            conn.execute("PRAGMA journal_mode=DELETE")
+    before = _files(store._SESSIONS_DIR)
+    snap = read_research_snapshot("rev")
+    assert snap["run_log_source"] == "sqlite" and snap["revision_source"] == "sqlite"
+    assert _files(store._SESSIONS_DIR) == before
+    for path in (store._run_log_db_path("rev"), cr._db_path("rev")):
+        with _sq.connect(path) as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+def test_read_only_directory_falls_back_to_immutable(session):
+    import os
+    import stat
+    _add()
+    d = store._SESSIONS_DIR
+    mode = d.stat().st_mode
+    os.chmod(d, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        if os.access(d, os.W_OK):
+            pytest.skip("cannot make a directory read-only here (running as root?)")
+        snap = read_research_snapshot("rev")
+    finally:
+        os.chmod(d, mode)
+    assert snap["revision_source"] in {"sqlite", "sqlite_immutable"}
+    assert snap["run_log_source"] in {"sqlite", "sqlite_immutable"}
+    assert snap["claims"]["c1"]["revision"] == 0 and snap["claims"]["c1"]["revision_error"] is None
+    assert snap["runs"]
+
+
+def test_wal_store_in_read_only_directory_reports_immutable(session):
+    import os
+    import sqlite3 as _sq
+    import stat
+    _add()
+    with _sq.connect(cr._db_path("rev")) as conn:      # writer left it in WAL
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    for sidecar in store._SESSIONS_DIR.glob("*-wal"):
+        sidecar.unlink(missing_ok=True)
+    for sidecar in store._SESSIONS_DIR.glob("*-shm"):
+        sidecar.unlink(missing_ok=True)
+    d = store._SESSIONS_DIR
+    mode = d.stat().st_mode
+    os.chmod(d, stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        if os.access(d, os.W_OK):
+            pytest.skip("cannot make a directory read-only here")
+        snap = read_research_snapshot("rev")
+    finally:
+        os.chmod(d, mode)
+    assert snap["revision_source"] == "sqlite_immutable"
+    assert snap["claims"]["c1"]["revision"] == 0

@@ -90,20 +90,26 @@ def _legacy_runs(value: Any) -> dict:
     return value
 
 
-def _sqlite_runs(path: Path) -> dict:
-    # URI mode=ro never creates a missing DB; no HydroSession.load migration.
-    try:
-        conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5)
+def _sqlite_runs(path: Path) -> tuple[dict, str]:
+    """``(records, source)``. Never writes: ``mode=ro``, no PRAGMA, no DDL.
+
+    A read-only directory (or WAL sidecars SQLite may not create) retries with
+    ``immutable=1`` and reports source ``sqlite_immutable``.
+    """
+    last: Exception | None = None
+    for suffix, source in (("?mode=ro", "sqlite"), ("?mode=ro&immutable=1", "sqlite_immutable")):
         try:
-            rows = conn.execute("SELECT run_id, entry_json FROM runs ORDER BY timestamp, run_id").fetchall()
-        finally:
-            conn.close()
-        records = {}
-        for run_id, payload in rows:
-            records[run_id] = json.loads(payload)
-        return records
-    except (sqlite3.Error, ValueError, TypeError) as exc:
-        raise SnapshotError("RUN_LOG_UNREADABLE", f"Cannot read persisted run log {path}: {exc}") from exc
+            conn = sqlite3.connect(path.resolve().as_uri() + suffix, uri=True, timeout=5)
+            try:
+                rows = conn.execute("SELECT run_id, entry_json FROM runs ORDER BY timestamp, run_id").fetchall()
+            finally:
+                conn.close()
+            return {run_id: json.loads(payload) for run_id, payload in rows}, source
+        except sqlite3.Error as exc:
+            last = exc
+        except (ValueError, TypeError) as exc:      # corrupt row JSON: not an access problem
+            raise SnapshotError("RUN_LOG_UNREADABLE", f"Cannot read persisted run log {path}: {exc}") from exc
+    raise SnapshotError("RUN_LOG_UNREADABLE", f"Cannot read persisted run log {path}: {last}") from last
 
 
 def _normalize_runs(records: dict, session_id: str) -> list[dict]:
@@ -157,6 +163,35 @@ _NO_REVISION = {"revision": None, "revision_digest": None, "history_len": 0,
                 "revision_drift": None, "approval": {"state": "none"}}
 
 
+class _ReadOnlyRunSession:
+    """The two things ``resolve_source`` needs for run spans, from the snapshot's own run log.
+
+    No ``HydroSession.load`` (it migrates and writes); nothing here touches disk.
+    """
+
+    def __init__(self, session_id: str, records: dict):
+        self.session_id, self._records = session_id, records
+
+    def get(self, slot: str):
+        return (self._records or None) if slot == "_run_log" else None
+
+
+def _live_evidence(session_id: str, claim: dict, records: dict) -> tuple[dict | None, str | None]:
+    """``(evidence_versions, None)`` computed from retained runs, else ``(None, reason)``.
+
+    Same ``fingerprint(resolve_source())`` promotion uses. Dataset and paper
+    spans need a loaded session or the passage index and are not checkable here.
+    """
+    from ai_hydro.approval.records import evidence_fingerprints
+    from ai_hydro.session.models import ScientificClaim
+
+    spans = ScientificClaim(**dict(claim)).evidence_spans
+    kinds = sorted({str(s.source_type) for s in spans} - {"run"})
+    if kinds:
+        return None, f"evidence span type(s) {', '.join(kinds)} cannot be checked read-only"
+    return evidence_fingerprints(_ReadOnlyRunSession(session_id, records), spans), None
+
+
 def _approval_state(session_id: str, claim_id: str, digest: str) -> dict:
     """Read-only approval state for exactly this revision digest.
 
@@ -185,7 +220,33 @@ def _approval_state(session_id: str, claim_id: str, digest: str) -> dict:
             "policy": stamp["policy"]}
 
 
-def _claim_surface(session_id: str, claim_id: str, claim: dict, chains: dict, capsule: bool) -> dict:
+def _gate_approval(session_id: str, claim_id: str, recorded: str, live: str | None,
+                   unchecked_reason: str | None, changed: list) -> dict:
+    """Approval state as the promotion gate would read it.
+
+    ``approved`` only when an accepted approval is bound to the digest
+    recomputed with LIVE evidence. An approval for the recorded revision that
+    no longer matches the live claim is ``stale_evidence`` (retained evidence
+    changed) or ``stale_revision`` (claim fields edited); one whose evidence
+    could not be checked read-only is ``evidence_unchecked``. Neither is ever
+    ``approved``.
+    """
+    if live is None:
+        state = _approval_state(session_id, claim_id, recorded)
+        if state["state"] == "approved":
+            return {**state, "state": "evidence_unchecked", "reason": unchecked_reason}
+        return state
+    state = _approval_state(session_id, claim_id, live)
+    if live != recorded and state["state"] == "none":
+        old = _approval_state(session_id, claim_id, recorded)
+        if old["state"] != "none":
+            return {**old, "state": "stale_evidence" if "evidence_versions" in changed else "stale_revision",
+                    "recorded_state": old["state"], "live_digest": live}
+    return state
+
+
+def _claim_surface(session_id: str, claim_id: str, claim: dict, chains: dict, capsule: bool,
+                   records: dict) -> dict:
     """Additive revision/approval fields for one claim; never raises."""
     if capsule:
         return {**_NO_REVISION, "revision_error": None,
@@ -204,48 +265,66 @@ def _claim_surface(session_id: str, claim_id: str, claim: dict, chains: dict, ca
         return {**_NO_REVISION, "revision_error": None, "revision_drift_reason": "no revision history"}
     out = {"revision": last["revision"], "revision_digest": last["revision_digest"],
            "history_len": len(rows), "revision_error": None}
+    live = None
+    changed: list = []
+    unchecked_reason = None
     try:
         from ai_hydro.approval.records import claim_revision_fields
         from ai_hydro.session.claim_revisions import revision_drift
+        from aihydro_core.records import digest as seal_digest
 
-        # Live evidence fingerprints need a loaded session (migrating, writing);
-        # a read-only snapshot compares the claim fields only.
-        fields = claim_revision_fields(claim, last["content"].get("evidence_versions", {}))
-        out["revision_drift"] = {**revision_drift(fields, last), "evidence_checked": False}
-        out["revision_drift_reason"] = None
+        versions, unchecked_reason = _live_evidence(session_id, claim, records)
+        checked = versions is not None
+        fields = claim_revision_fields(
+            claim, versions if checked else last["content"].get("evidence_versions", {}))
+        drift = revision_drift(fields, last)
+        changed = drift.get("changed_fields", [])
+        if checked:
+            live = seal_digest(fields)
+        elif drift["state"] == "in_sync":
+            # Fields match but the evidence was not re-read: not a verdict.
+            drift = {"state": "evidence_unchecked", "drift": None, "revision": last["revision"],
+                     "revision_digest": last["revision_digest"]}
+        out["revision_drift"] = {**drift, "evidence_checked": checked}
+        out["revision_drift_reason"] = None if checked else unchecked_reason
     except Exception as exc:
         out["revision_drift"] = None
         out["revision_drift_reason"] = f"{type(exc).__name__}: {exc}"
+        unchecked_reason = out["revision_drift_reason"]
     try:
-        out["approval"] = _approval_state(session_id, claim_id, last["revision_digest"])
+        out["approval"] = _gate_approval(session_id, claim_id, last["revision_digest"], live,
+                                         unchecked_reason, changed)
     except Exception as exc:
         out["approval"] = {"state": "unverifiable", "reason": f"{type(exc).__name__}: {exc}"}
     return out
 
 
-def _surface_claims(session_id: str, claims: dict, capsule: bool) -> dict:
+def _surface_claims(session_id: str, claims: dict, capsule: bool, records: dict) -> tuple[dict, str]:
+    """``(claims, revision_source)``."""
     chains: dict = {}
     history_error = None
+    source = "capsule" if capsule else "absent"
     if not capsule:
         try:
             from ai_hydro.session import claim_revisions
-            chains = claim_revisions.history(session_id)
+            chains, source = claim_revisions.history_readonly(session_id)
         except Exception as exc:  # store unreadable: per-claim error, snapshot survives
             history_error = f"{type(exc).__name__}: {exc}"
+            source = "error"
     result = {}
     for cid, claim in claims.items():
         if not isinstance(claim, dict):
             result[cid] = claim
             continue
         try:
-            extra = _claim_surface(session_id, cid, claim, chains, capsule)
+            extra = _claim_surface(session_id, cid, claim, chains, capsule, records)
             if history_error:
                 extra.update({**_NO_REVISION, "revision_error": history_error,
                               "approval": {"state": "unverifiable", "reason": history_error}})
         except Exception as exc:
             extra = {**_NO_REVISION, "revision_error": f"{type(exc).__name__}: {exc}"}
         result[cid] = {**claim, **extra}
-    return result
+    return result, source
 
 
 def read_research_snapshot(reference: str, *, home: Path | None = None) -> dict:
@@ -264,8 +343,10 @@ def read_research_snapshot(reference: str, *, home: Path | None = None) -> dict:
     capsule = path.name == "session.json" and path.parent != (home / "sessions").resolve()
     log_path = path.parent / "run_log.json" if capsule else path.with_suffix(".runlog.sqlite3")
     if log_path.exists():
-        records = _legacy_runs(_read_json(log_path)) if capsule else _sqlite_runs(log_path)
-        log_source = "capsule_json" if capsule else "sqlite"
+        if capsule:
+            records, log_source = _legacy_runs(_read_json(log_path)), "capsule_json"
+        else:
+            records, log_source = _sqlite_runs(log_path)
     elif "_run_log" in raw:
         records = _legacy_runs(raw["_run_log"])
         log_source = "legacy_json"
@@ -277,10 +358,11 @@ def read_research_snapshot(reference: str, *, home: Path | None = None) -> dict:
     if not all(isinstance(value, dict) for value in (legacy_claims, claims, experiments)):
         raise SnapshotError("SESSION_INVALID", "Claims and experiment slots must be objects.")
     record_coverage, record_errors = _record_visibility(records)
+    surfaced, revision_source = _surface_claims(sid, {**legacy_claims, **claims}, capsule, records)
     snapshot = {
         "schema_version": 1, "session_id": sid, "session_path": str(path),
         "source": "capsule" if capsule else "session", "run_log_source": log_source,
-        "claims": _surface_claims(sid, {**legacy_claims, **claims}, capsule), "experiments": experiments,
+        "claims": surfaced, "revision_source": revision_source, "experiments": experiments,
         "runs": _normalize_runs(records, sid),
         # Additive (schema_version stays 1): how many rows carry a verifiable
         # aihydro.run/2 record, and which records say a digest is missing.

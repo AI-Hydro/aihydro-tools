@@ -233,6 +233,44 @@ def history(session_id: str) -> Dict[str, Dict[str, Any]]:
         return out
 
 
+def _ro_history(conn: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    ids = [r[0] for r in conn.execute("SELECT DISTINCT claim_id FROM claim_revisions ORDER BY claim_id")]
+    out: Dict[str, Dict[str, Any]] = {}
+    for cid in ids:
+        try:
+            out[cid] = {"ok": True, "rows": [r.to_dict() for r in _rows(conn, cid)]}
+        except Exception as exc:        # corrupt row, bad JSON, broken chain
+            out[cid] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return out
+
+
+def history_readonly(session_id: str) -> tuple:
+    """``(history, source)`` like :func:`history`, but the read never writes.
+
+    Opens ``mode=ro`` with no PRAGMA and no DDL (a DELETE-journal store stays
+    DELETE-journal). If SQLite cannot read it that way (read-only directory,
+    WAL sidecars it may not create) the read is retried ``immutable=1``, which
+    skips locking, and ``source`` is ``"sqlite_immutable"``. ``source`` is
+    ``"absent"`` when the session has no store.
+    """
+    path = _db_path(session_id)
+    if not path.exists():
+        return {}, "absent"
+    last: Optional[Exception] = None
+    for suffix, source in (("?mode=ro", "sqlite"), ("?mode=ro&immutable=1", "sqlite_immutable")):
+        try:
+            conn = sqlite3.connect(path.resolve().as_uri() + suffix, uri=True, timeout=5)
+        except sqlite3.Error as exc:
+            last = exc
+            continue
+        try:
+            with closing(conn):
+                return _ro_history(conn), source
+        except sqlite3.Error as exc:
+            last = exc
+    raise ClaimRevisionError(f"cannot read claim revision store read-only: {last}")
+
+
 def latest(session_id: str, claim_id: str) -> Optional[dict]:
     """Latest verified revision row for the claim, or None when it has no history.
 
