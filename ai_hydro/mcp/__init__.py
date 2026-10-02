@@ -301,8 +301,13 @@ def _tag_tools_with_tier_meta() -> None:
                 return domain
         return "general"
 
-    # FastMCP stores tools in mcp._local_provider._components keyed by tool.key
-    components = getattr(mcp._local_provider, "_components", {})
+    # FastMCP 2.7–2.13 stored components on the local provider; 2.14 moved
+    # them into the tool manager. Keep both layouts supported within v2.
+    local_provider = getattr(mcp, "_local_provider", None)
+    components = getattr(local_provider, "_components", {})
+    if not components:
+        manager = getattr(mcp, "_tool_manager", None)
+        components = getattr(manager, "_tools", {})
     tagged = 0
     for key, comp in components.items():
         if not hasattr(comp, "name") or not hasattr(comp, "meta"):
