@@ -5,6 +5,9 @@ build_manifest() is called by export_session after all files are written.
 verify_manifest() is called by tests and replay.py.
 
 Neither function modifies files; both are pure I/O.
+
+Replay vocabulary: a capsule supports ``archive_integrity`` (files and record
+digests re-verify). It never claims ``recomputed``; see standalone_replay.py.
 """
 from __future__ import annotations
 
@@ -16,6 +19,11 @@ MANIFEST_FILE = "capsule_manifest.json"
 
 # Files never included in the manifest (generated at export time, not data)
 _SKIP_NAMES: frozenset[str] = frozenset({MANIFEST_FILE, "replay.py"})
+
+# The strongest replay level a capsule archive supports (aihydro_core.records
+# ReplayStatus). Hashes and record digests can be re-verified; no computation
+# is re-executed.
+REPLAY_STATUS = "archive_integrity"
 
 # Default tolerance for --live numerical comparison (1 % relative)
 TOLERANCE_DEFAULT: float = 0.01
@@ -34,8 +42,16 @@ def build_manifest(capsule_dir: Path) -> dict:
         {
           "capsule_dir": str,
           "n_files": int,
-          "files": [{"path": str, "sha256": str, "size": int}, ...]
+          "files": [{"path": str, "sha256": str, "size": int}, ...],
+          "replay_status": "archive_integrity",
+          "recomputation": "not_performed",
+          "run_records": {...}          # present when run_log.json exists
         }
+
+    ``replay_status`` is the strongest level the archive itself can support:
+    file hashes and record digests can be re-verified, nothing is recomputed.
+    ``replay.py --live`` may report ``cross_check`` for a given run, but an
+    export never claims more than ``archive_integrity``.
     """
     entries: list[dict] = []
     for p in sorted(capsule_dir.rglob("*")):
@@ -51,11 +67,54 @@ def build_manifest(capsule_dir: Path) -> dict:
                 "size": len(raw),
             }
         )
-    return {
+    manifest = {
         "capsule_dir": str(capsule_dir),
         "n_files": len(entries),
         "files": entries,
+        "replay_status": REPLAY_STATUS,
+        "recomputation": "not_performed",
     }
+    run_records = _run_record_summary(capsule_dir)
+    if run_records is not None:
+        manifest["run_records"] = run_records
+    return manifest
+
+
+def _run_record_summary(capsule_dir: Path) -> dict | None:
+    """Counts of v2 records in the capsule's run log, plus the environment.
+
+    ``environment`` is the fingerprint of the *exporting* process. A record's
+    ``env_digest`` can be matched to it, so ``matches_exporting_environment``
+    says which records were produced under the interpreter that wrote this
+    capsule; the rest only carry a digest.
+    """
+    rl_path = capsule_dir / "run_log.json"
+    if not rl_path.exists():
+        return None
+    try:
+        run_log = json.loads(rl_path.read_text(encoding="utf-8"))
+        records = [e["record"] for e in run_log.values()
+                   if isinstance(e, dict) and isinstance(e.get("record"), dict)]
+        summary: dict = {
+            "schema": "aihydro.run/2",
+            "run_log_rows": len(run_log),
+            "v2_records": len(records),
+            "legacy_unrecorded": len(run_log) - len(records),
+            "records_with_record_error": sum(1 for r in records if r.get("record_error")),
+        }
+        try:
+            from ai_hydro.session.run_records import process_environment
+
+            fingerprint, env_digest = process_environment()
+            summary["environment"] = {"env_digest": env_digest, "fingerprint": fingerprint}
+            summary["matches_exporting_environment"] = sum(
+                1 for r in records if r.get("env_digest") == env_digest
+            )
+        except Exception:
+            summary["environment"] = None
+        return summary
+    except Exception:
+        return None
 
 
 def verify_manifest(capsule_dir: Path) -> tuple[bool, list[dict]]:
@@ -118,72 +177,21 @@ def verify_live(
     tolerance: float = TOLERANCE_DEFAULT,
 ) -> tuple[bool, list[dict]]:
     """
-    Cross-check key_outputs in run_log.json against values in session.json.
+    Cross-check numeric key_outputs in run_log.json against values retained in
+    session.json. Delegates to the standalone verifier written into every
+    capsule as replay.py, so library and script cannot disagree.
 
-    This is a lightweight consistency check, not a full re-execution: it
-    confirms that session.json still contains scalar values within *tolerance*
-    of what was recorded in the run log at export time.
+    This is a consistency check between two stores, not a re-execution
+    (replay level ``cross_check`` at most). Only numeric scalars are compared;
+    private keys (starting with "_"), strings and None are skipped.
 
-    Only numeric (int/float) values are checked; strings, None, and private
-    keys (starting with "_") are skipped.
-
-    Returns (all_pass, results) where each result dict has keys:
-        run_id, key, expected, actual, deviation_pct, status.
+    Returns (all_pass, results). **An empty ``results`` list means nothing was
+    compared**, and ``all_pass`` is then True only in the vacuous sense; the
+    generated replay.py reports this case explicitly and exits 2 under
+    ``--live``. Each result has: run_id, key, expected, actual,
+    deviation_pct, matched_by, status.
     """
-    rl_path = capsule_dir / "run_log.json"
-    sj_path = capsule_dir / "session.json"
-    if not rl_path.exists() or not sj_path.exists():
-        return True, []
+    from ai_hydro.capsule.standalone_replay import live_cross_check
 
-    run_log: dict = json.loads(rl_path.read_text(encoding="utf-8"))
-    session: dict = json.loads(sj_path.read_text(encoding="utf-8"))
-    slots: dict = session.get("slots", {})
-
-    results: list[dict] = []
-    all_pass = True
-
-    # Map tool_name → canonical slot key (best-effort; partial heuristic)
-    _TOOL_TO_SLOT: dict[str, str] = {
-        "extract_hydrological_signatures": "signatures",
-        "extract_geomorphic_parameters": "geomorphic",
-        "compute_twi": "twi",
-        "separate_baseflow": "baseflow",
-        "train_hydro_model": "model",
-        "get_model_results": "model",
-        "delineate_watershed": "watershed",
-        "delineate_watershed_from_point": "watershed",
-        "fetch_streamflow_data": "streamflow",
-    }
-
-    for run_id, entry in run_log.items():
-        tool_name = entry.get("tool_name", "")
-        key_outputs: dict = entry.get("key_outputs", {})
-        slot_key = _TOOL_TO_SLOT.get(tool_name)
-        slot_data: dict = slots.get(slot_key, {}).get("data", {}) if slot_key else {}
-
-        for k, expected in key_outputs.items():
-            if k.startswith("_") or not isinstance(expected, (int, float)):
-                continue
-            actual = slot_data.get(k)
-            if actual is None or not isinstance(actual, (int, float)):
-                continue
-            if expected == 0:
-                dev_pct = 0.0 if abs(actual) < 1e-9 else float("inf")
-            else:
-                dev_pct = abs(actual - expected) / abs(expected)
-
-            ok = dev_pct <= tolerance
-            results.append(
-                {
-                    "run_id": run_id,
-                    "key": k,
-                    "expected": expected,
-                    "actual": actual,
-                    "deviation_pct": round(dev_pct * 100, 3),
-                    "status": "pass" if ok else "fail",
-                }
-            )
-            if not ok:
-                all_pass = False
-
-    return all_pass, results
+    comparisons, _skipped = live_cross_check(capsule_dir, tolerance)
+    return all(c["status"] == "pass" for c in comparisons), comparisons

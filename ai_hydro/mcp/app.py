@@ -497,3 +497,139 @@ class _ContextInjectionMiddleware(Middleware):
 
 
 mcp.add_middleware(_ContextInjectionMiddleware())
+
+
+# ---------------------------------------------------------------------------
+# Run records (ADR-001) — every tool call that resolves a session
+# ---------------------------------------------------------------------------
+# Registered AFTER _ContextInjectionMiddleware, so it runs inside it: the
+# injected _chat_id is already stripped from the arguments and ACTIVE_CHAT_ID
+# is still set when this middleware resolves the session after the call.
+#
+# Contract (see ai_hydro/session/run_records.py for the record itself):
+#   * never breaks a tool call — every failure here is caught and logged;
+#   * never alters the tool's result, except to add ``_record_error`` when a
+#     record could not be built or stored completely;
+#   * tools listed in RECORD_EXEMPT are skipped (catalog, read-only views, UI
+#     state, lifecycle); calls with no resolvable session are counted as
+#     ``no_session`` and not recorded.
+import json as _json  # noqa: E402
+import time as _time  # noqa: E402
+import logging as _logging  # noqa: E402
+
+_record_log = _logging.getLogger("ai_hydro.mcp.run_records")
+
+
+def _tool_result_dict(tool_result):
+    """``(dict_or_None, serialized_bytes)`` for a FastMCP ``ToolResult``."""
+    size = 0
+    text_dict = None
+    for block in getattr(tool_result, "content", None) or []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            size += len(text)
+            if text_dict is None:
+                try:
+                    parsed = _json.loads(text)
+                except ValueError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    text_dict = parsed
+    structured = getattr(tool_result, "structured_content", None)
+    if isinstance(structured, dict):
+        if set(structured) == {"result"} and isinstance(structured["result"], dict):
+            return structured["result"], size
+        return structured, size
+    return text_dict, size
+
+
+def _inject_record_error(tool_result, message: str) -> None:
+    """Add ``_record_error`` to the result the caller sees. Best effort."""
+    try:
+        structured = getattr(tool_result, "structured_content", None)
+        if isinstance(structured, dict):
+            structured["_record_error"] = message
+        for block in getattr(tool_result, "content", None) or []:
+            text = getattr(block, "text", None)
+            if not isinstance(text, str):
+                continue
+            try:
+                parsed = _json.loads(text)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                parsed["_record_error"] = message
+                block.text = _json.dumps(parsed, default=str)
+                return
+    except Exception as exc:  # the result must still go out
+        _record_log.debug("could not inject _record_error: %s", exc)
+
+
+def _mcp_client_label(context) -> str | None:
+    try:
+        info = context.fastmcp_context.session.client_params.clientInfo
+        return f"{info.name}/{info.version}" if info.version else str(info.name)
+    except Exception:
+        return None
+
+
+class RunRecordMiddleware(Middleware):
+    """Attach a sealed ``aihydro.run/2`` record to every recorded tool call."""
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
+        try:
+            from ai_hydro.session import run_records
+        except Exception as exc:  # e.g. aihydro-core without aihydro_core.records
+            _record_log.warning("run recording unavailable: %s", exc)
+            return await call_next(context)
+
+        message = context.message
+        tool = getattr(message, "name", "") or ""
+        if not run_records.is_recorded_tool(tool):
+            run_records.count("exempt")
+            return await call_next(context)
+
+        arguments = dict(getattr(message, "arguments", None) or {})
+        capture, token = run_records.begin_capture()
+        started = _time.monotonic()
+        failure = None
+        tool_result = None
+        try:
+            tool_result = await call_next(context)
+        except Exception as exc:
+            failure = exc
+        finally:
+            run_records.end_capture(token)
+
+        record_error = None
+        try:
+            from ai_hydro.mcp.enforcement import _generate_unique_run_id
+
+            result_dict, size = (None, None) if tool_result is None else _tool_result_dict(tool_result)
+            if failure is not None:
+                result_dict = {"error": True, "message": f"{type(failure).__name__}: {failure}"}
+            outcome = run_records.record_call(
+                tool=tool,
+                arguments=arguments,
+                result=result_dict,
+                failure=failure,
+                capture=capture,
+                chat_id=ACTIVE_CHAT_ID.get(),
+                id_factory=_generate_unique_run_id,
+                duration_ms=(_time.monotonic() - started) * 1000.0,
+                mcp_client=_mcp_client_label(context),
+                output_bytes=size,
+            )
+            record_error = outcome.record_error
+        except Exception as exc:
+            _record_log.warning("run recording failed for %s: %s", tool, exc)
+            record_error = f"recording: {type(exc).__name__}: {exc}"
+
+        if failure is not None:
+            raise failure
+        if record_error:
+            _inject_record_error(tool_result, record_error)
+        return tool_result
+
+
+mcp.add_middleware(RunRecordMiddleware())

@@ -37,7 +37,6 @@ Usage from a Tier 1 tool:
 from __future__ import annotations
 
 import logging
-import re
 import secrets
 from datetime import date, datetime, timezone
 from typing import Callable
@@ -45,8 +44,9 @@ from typing import Callable
 log = logging.getLogger("ai_hydro.enforcement")
 
 # Same secret-shaped-name blocklist family as tools_execution.py::_scrub_env —
-# defence in depth in case a tool's kwargs ever carry an API key/token.
-_SECRET_INPUT_KEY_PATTERN = re.compile(r"(_key$|_token$|_secret$|credential|_password$)", re.IGNORECASE)
+# defence in depth in case a tool's kwargs ever carry an API key/token. One
+# definition, shared with the run-record builder.
+from ai_hydro.session.run_records import SECRET_INPUT_KEY_PATTERN as _SECRET_INPUT_KEY_PATTERN
 _MAX_INPUT_STR_LEN = 500
 
 
@@ -103,19 +103,37 @@ _TOOL_ABBREVS: dict[str, str] = {
 
 def _generate_run_id(tool_name: str, session_id: str) -> str:
     """
-    Generate a stable, sortable, human-readable run identifier.
+    Generate a sortable, human-readable run identifier.
 
-    Format: {tool_abbrev}.{yyyymmdd}.{session_frag8}.{hex4}
-    Example: sigs.20260508.01031500.a3f2
+    Format: {tool_abbrev}.{yyyymmdd}.{session_frag8}.{hex8}
+    Example: sigs.20260508.01031500.a3f2c91e
 
-    The hex suffix provides collision avoidance for multiple calls in the
-    same session on the same day.
+    The hex suffix (32 bits) separates calls in the same session on the same
+    day. It used to be 16 bits, which collides after a few hundred calls per
+    tool and day. Every consumer treats the id as an opaque token
+    (``[A-Za-z0-9._-]+`` in the auditor grammar); none parses the suffix, so
+    older 4-hex ids remain valid. Uniqueness within a session is enforced at
+    generation by ``_generate_unique_run_id`` and again at write time, where a
+    sealed row can never be replaced.
     """
     abbrev = _TOOL_ABBREVS.get(tool_name, tool_name[:5])
     date_str = date.today().strftime("%Y%m%d")
     session_frag = session_id[:8].replace("-", "").replace(".", "")
-    hex4 = secrets.token_hex(2)
-    return f"{abbrev}.{date_str}.{session_frag}.{hex4}"
+    hex8 = secrets.token_hex(4)
+    return f"{abbrev}.{date_str}.{session_frag}.{hex8}"
+
+
+def _generate_unique_run_id(tool_name: str, session_id: str) -> str:
+    """A run id not already present in the session's run log."""
+    from ai_hydro.session.store import _run_log_read_one
+
+    run_id = _generate_run_id(tool_name, session_id)
+    for _ in range(8):
+        if _run_log_read_one(session_id, run_id) is None:
+            return run_id
+        run_id = _generate_run_id(tool_name, session_id)
+    # Eight collisions in a row at 32 bits means something is wrong; widen.
+    return f"{run_id}{secrets.token_hex(4)}"
 
 
 def _write_run_log(
@@ -126,7 +144,7 @@ def _write_run_log(
     inputs: dict | None = None,
 ) -> None:
     """
-    Write a run record to the session's _run_log slot.
+    Write a run-log row for the session.
 
     Never raises — a logging failure must not invalidate a successful tool call.
     Captures key_outputs from result['data'] (small scalars only, no arrays)
@@ -135,10 +153,6 @@ def _write_run_log(
     show what a run was actually called with, not just what it produced.
     """
     try:
-        from ai_hydro.session.store import HydroSession
-        session = HydroSession.load(session_id)
-        run_log: dict = dict(session.get("_run_log") or {})
-
         # Capture scalar outputs only — skip large arrays and private keys
         raw_data = result.get("data") or {}
         key_outputs = {
@@ -164,9 +178,13 @@ def _write_run_log(
         scrubbed_inputs = _scrub_tool_inputs(inputs)
         if scrubbed_inputs:
             entry["inputs"] = scrubbed_inputs
-        run_log[run_id] = entry
-        session.set("_run_log", run_log)
-        session.save()
+        # One row, written directly. The old load -> mutate whole log -> save
+        # cycle re-sent every existing row on each call; insert-only rows make
+        # that both wasteful and a place for a stale snapshot to do harm.
+        from ai_hydro.session.store import _run_log_record
+        status = _run_log_record(session_id, run_id, entry, writer="post_run")
+        if status not in ("inserted", "replaced", "noop"):
+            log.warning("Run log row %s was not stored (%s)", run_id, status)
     except Exception as exc:
         log.warning("Failed to write run log for %s: %s", run_id, exc)
 
@@ -278,7 +296,7 @@ def post_run(tool_name: str, session_id: str, result: dict, inputs: dict | None 
             })
 
     # Generate run_id and persist to session run log for evidence binding
-    run_id = _generate_run_id(tool_name, session_id)
+    run_id = _generate_unique_run_id(tool_name, session_id)
     result["_run_id"] = run_id
     _write_run_log(session_id, run_id, tool_name, result, inputs)
 

@@ -1252,6 +1252,28 @@ def extract_hydrological_signatures(
                     except Exception:
                         pass
 
+        # Lineage: when the streamflow slot supplied the series, name the run
+        # that stored it (the slot carries its run id in meta.run_id) and the
+        # digest of that run's recorded output. Never inferred: a slot without
+        # a run id (stored before slots were stamped) yields no parent edge.
+        if _q_cms:
+            from ai_hydro.session import run_records as _rr
+            _edge = _rr.parent_edge_for_run(
+                session_id, ((session.streamflow or {}).get("meta") or {}).get("run_id")
+            )
+            if _edge:
+                # Two refs: the producer's recorded output (what it returned),
+                # and the series this call actually read (the producer returns
+                # a compact summary; the arrays live in the slot / data file).
+                _refs = [_edge["input_ref"]]
+                from aihydro_core.records import digest_or_error as _doe, input_ref as _iref
+                _series_digest, _ = _doe(list(_q_cms))
+                if _series_digest:
+                    _refs.append(_iref(f"{_edge['parent']}#q_cms", _series_digest, role="served_data"))
+                _rr.declare_lineage(parents=[_edge["parent"]], input_refs=_refs)
+            else:
+                _rr.declare_lineage(parent_unresolved="streamflow slot carries no retained run id")
+
         # gauge_id for USGS fetch; None for global basins (uses q_cms_series)
         usgs_gauge_id: str | None = None
         if _is_usgs:

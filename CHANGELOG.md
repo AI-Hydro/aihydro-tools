@@ -8,6 +8,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Run records for every tool call (ADR-001).** A FastMCP `RunRecordMiddleware` attaches a sealed `aihydro.run/2` record (`aihydro_core.records`) to the run-log row of every tool call that resolves a session: tool and version, input and output digests, environment digest, parents, and an explicit `record_error` when a digest is missing (the tool result gains `_record_error`; the middleware never fails a call). Failed calls are recorded. Catalog, read-only view, UI and lifecycle tools are exempt, each with a reason, in `ai_hydro/session/run_records.py::RECORD_EXEMPT`; `tests/test_run_record_coverage.py` fails when a registered tool is neither recorded nor exempt. Requires an `aihydro-core` that provides `aihydro_core.records`.
+- **Insert-only run-log rows.** A row with a sealed record cannot be changed by a same-id write: identical writes are no-ops, a stale legacy snapshot never drops the record, anything else is refused and logged. Legacy rows and `set("_run_log")` keep working.
+- **First lineage edge.** `extract_hydrological_signatures` records the streamflow run it consumed (`parents`, plus `served_data` input refs with the producer's output digest and the digest of the series read). Streamflow slots carry `meta.run_id`, stamped when stored; older slots carry none and get no edge.
+- Research snapshot: additive `record_coverage` and `record_errors` fields.
+- `capsule_manifest.json`: `replay_status: "archive_integrity"`, `recomputation: "not_performed"`, and a `run_records` summary including the exporting environment.
+
+### Changed
+
+- **`replay.py --live` no longer passes vacuously.** The generated verifier (now `ai_hydro/capsule/standalone_replay.py`, written verbatim into each capsule) reads the real export shape (slots are top-level `session.json` keys, not `session["slots"]`), verifies every v2 record and its binding to its run-log row, prints `replay_status` and the comparison count, and exits 2 when `--live` finds nothing comparable. It never claims recomputation. `capsule.manifest.verify_live` delegates to the same code.
+- `post_run` run ids carry 32 bits of entropy (`{hex8}` suffix, was 4 hex digits) and are checked for uniqueness within the session. Older ids remain valid; no consumer parses the suffix.
+- `post_run` and the legacy `_record_run_log_entry` write one run-log row directly instead of re-sending the whole log.
+
 ### Fixed
 
 - Curve number: NLCD 81 (Pasture/Hay) now uses TR-55 pasture, good condition (39/61/74/80 for groups A-D). It previously used the row-crop values (67/78/85/89), which overstated CN on pasture by 9 to 28 points. (Fix lives in `aihydro-watershed`.)

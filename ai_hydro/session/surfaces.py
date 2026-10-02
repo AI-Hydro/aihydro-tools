@@ -128,6 +128,24 @@ def _normalize_runs(records: dict, session_id: str) -> list[dict]:
     return sorted(entries, key=lambda entry: (entry["timestamp"], entry["run_id"]))
 
 
+def _record_visibility(records: dict) -> tuple[dict | None, list[dict]]:
+    """Record coverage counts and per-run ``record_error`` messages.
+
+    Verification only; never writes. ``(None, [])`` when the record contract
+    (aihydro-core records) is unavailable, so old installs still read.
+    """
+    try:
+        from ai_hydro.session.run_records import coverage_summary
+    except ImportError:
+        return None, []
+    coverage = coverage_summary(records)
+    errors = [{"run_id": rid, "record_error": entry["record"]["record_error"]}
+              for rid, entry in records.items()
+              if isinstance(entry, dict) and isinstance(entry.get("record"), dict)
+              and entry["record"].get("record_error")]
+    return coverage, errors
+
+
 def read_research_snapshot(reference: str, *, home: Path | None = None) -> dict:
     """Read stored claims, active experiment slot and exact recorded runs.
 
@@ -156,11 +174,15 @@ def read_research_snapshot(reference: str, *, home: Path | None = None) -> dict:
     experiments = _slot(raw, "_experiments") or {}
     if not all(isinstance(value, dict) for value in (legacy_claims, claims, experiments)):
         raise SnapshotError("SESSION_INVALID", "Claims and experiment slots must be objects.")
+    record_coverage, record_errors = _record_visibility(records)
     snapshot = {
         "schema_version": 1, "session_id": sid, "session_path": str(path),
         "source": "capsule" if capsule else "session", "run_log_source": log_source,
         "claims": {**legacy_claims, **claims}, "experiments": experiments,
         "runs": _normalize_runs(records, sid),
+        # Additive (schema_version stays 1): how many rows carry a verifiable
+        # aihydro.run/2 record, and which records say a digest is missing.
+        "record_coverage": record_coverage, "record_errors": record_errors,
         "warnings": ["No retained run log is available; current results are not historical runs."] if log_source == "absent" else [],
     }
     return store._json_safe(snapshot)

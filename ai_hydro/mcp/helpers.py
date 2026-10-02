@@ -356,7 +356,7 @@ def _lean_key_outputs(result_dict: dict) -> dict:
 
 
 def _record_run_log_entry(session: Any, slot: str, result_dict: dict, tool_name: str | None = None) -> None:
-    """Append/replace a deterministic run-log entry for a stored result."""
+    """Write a deterministic run-log entry for a stored result (identical rewrites are no-ops)."""
     raw_meta = result_dict.get("meta")
     meta = raw_meta if isinstance(raw_meta, dict) else {}
     resolved_tool = tool_name or meta.get("tool") or slot
@@ -367,8 +367,7 @@ def _record_run_log_entry(session: Any, slot: str, result_dict: dict, tool_name:
         default=str,
     )
     run_id = result_dict.get("run_id") or f"{slot}.{hashlib.sha1(digest_src.encode('utf-8')).hexdigest()[:12]}"
-    run_log = session.get("_run_log") or {}
-    run_log[run_id] = {
+    entry = {
         "run_id": run_id,
         "tool_name": resolved_tool,
         "session_id": session.session_id,
@@ -377,8 +376,11 @@ def _record_run_log_entry(session: Any, slot: str, result_dict: dict, tool_name:
         "slot": slot,
     }
     from ai_hydro.session.evidence import capture_result_evidence
-    run_log[run_id]["evidence"] = capture_result_evidence(result_dict)
-    session.set("_run_log", run_log)
+    entry["evidence"] = capture_result_evidence(result_dict)
+    # One row, written directly: re-sending the whole log would touch every
+    # existing (possibly sealed) row for no reason.
+    from ai_hydro.session.store import _run_log_record
+    _run_log_record(session.session_id, run_id, entry, writer="helpers")
 
 
 def _session_store(

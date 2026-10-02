@@ -247,31 +247,142 @@ def _run_log_connect(session_id: str) -> sqlite3.Connection:
     return conn
 
 
-def _run_log_record(session_id: str, run_id: str, entry: dict) -> None:
+def _run_log_body_json(entry: dict) -> str:
+    """Stable text of a run-log row without its ``record`` (for equality checks).
+
+    ``json.dumps`` rather than ``==`` so a NaN inside ``key_outputs`` compares
+    equal to itself.
     """
-    Atomic upsert of one run-log row. Stores `entry` verbatim as JSON — callers
-    (enforcement.py, mcp/helpers.py, put_result(), and test/bench fixtures) use
-    several different entry shapes (some carry tool_name/timestamp/key_outputs,
-    others — e.g. bench fixtures — store bare {metric: value} dicts resolved
-    directly by json-path), so this must round-trip whatever shape it's given
-    rather than assume one schema. Never raises — a logging failure must not
-    invalidate the tool call that triggered it.
+    return json.dumps(
+        {k: v for k, v in entry.items() if k != "record"}, sort_keys=True, default=str
+    )
+
+
+def _run_log_sealed(entry: Any) -> bool:
+    record = entry.get("record") if isinstance(entry, dict) else None
+    return isinstance(record, dict) and bool(record.get("record_digest"))
+
+
+def _run_log_record_problem(run_id: str, record: Any) -> str | None:
+    """Why an incoming ``record`` must not be stored, or None when it is fine."""
+    if not isinstance(record, dict):
+        return "record is not an object"
+    if record.get("run_id") != run_id:
+        return f"record.run_id {record.get('run_id')!r} does not match row {run_id!r}"
+    try:
+        from aihydro_core.records import RunRecord
+    except ImportError:  # core without records: cannot check, do not block
+        return None
+    if not RunRecord.from_dict(record).verify():
+        return "record_digest does not verify"
+    return None
+
+
+def _run_log_record(
+    session_id: str, run_id: str, entry: dict, *, writer: str | None = None
+) -> str:
+    """
+    Store one run-log row, verbatim as JSON, and return what happened:
+    ``inserted``, ``replaced``, ``noop``, ``refused``, ``stale``, ``skipped``
+    or ``error``. Never raises — a logging failure must not invalidate the tool
+    call that triggered it.
+
+    The entry keeps whatever legacy shape the caller uses (tool_name /
+    timestamp / key_outputs, or bare ``{metric: value}`` bench fixtures, which
+    are resolved directly by json-path), so this round-trips any dict.
+
+    Rows are insert-only once sealed. A row is *sealed* when its ``record``
+    carries a ``record_digest`` (see ``ai_hydro.session.run_records``). For an
+    existing sealed row:
+      - an identical write, or a stale legacy write that lacks the ``record``
+        but has the same other fields, is a no-op (the record is never
+        dropped);
+      - anything else — a different record, or different legacy fields — is
+        refused and logged, never replaced.
+    An unsealed row keeps the legacy upsert behaviour, except that attaching a
+    ``record`` to a row whose other fields changed since the caller read it is
+    reported as ``stale`` and not written, so the caller can rebuild the record
+    against the current row.
+
+    ``writer`` labels the source (``post_run``, ``put_result``, ...) for the
+    per-call capture used by the recording middleware; ``None`` or
+    ``"middleware"`` are not captured.
     """
     if not run_id or not isinstance(entry, dict):
-        return
+        return "skipped"
+    status = "error"
     try:
+        incoming = entry.get("record")
+        if incoming is not None:
+            problem = _run_log_record_problem(run_id, incoming)
+            if problem:
+                log.warning("Refused run-log record for %s in session %s: %s", run_id, session_id, problem)
+                return "refused"
         conn = _run_log_connect(session_id)
         try:
-            timestamp = str(entry.get("timestamp", "") or "")
-            conn.execute(
-                "INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?, ?, ?)",
-                (run_id, timestamp, json.dumps(entry, default=str)),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT entry_json FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            existing = None
+            if row is not None:
+                try:
+                    existing = json.loads(row[0]) if row[0] else {}
+                except json.JSONDecodeError:
+                    existing = {}
+            if existing is None:
+                status = "inserted"
+            elif _run_log_sealed(existing):
+                same_body = _run_log_body_json(existing) == _run_log_body_json(entry)
+                same_record = incoming is None or incoming.get("record_digest") == existing["record"]["record_digest"]
+                if same_body and same_record:
+                    status = "noop"
+                else:
+                    log.warning(
+                        "Refused write to sealed run-log row %s in session %s: %s",
+                        run_id, session_id,
+                        "different record" if not same_record else "other fields differ",
+                    )
+                    status = "refused"
+            elif incoming is not None and _run_log_body_json(existing) != _run_log_body_json(entry):
+                status = "stale"
+            else:
+                status = "replaced"
+            if status in ("inserted", "replaced"):
+                timestamp = str(entry.get("timestamp", "") or "")
+                conn.execute(
+                    "INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?, ?, ?)",
+                    (run_id, timestamp, json.dumps(entry, default=str)),
+                )
             conn.commit()
         finally:
             conn.close()
     except Exception as exc:
         log.warning("Failed to record run-log entry %s for session %s: %s", run_id, session_id, exc)
+        return "error"
+    if writer and writer != "middleware" and status in ("inserted", "replaced", "noop"):
+        try:
+            from ai_hydro.session import run_records
+            run_records.note_row_written(session_id, run_id, writer)
+        except Exception:  # capture is best-effort bookkeeping
+            pass
+    return status
+
+
+def _run_log_read_one(session_id: str, run_id: str) -> dict | None:
+    """One run-log row, or None. Never creates the database."""
+    if not run_id or not _run_log_db_path(session_id).exists():
+        return None
+    try:
+        conn = _run_log_connect(session_id)
+        try:
+            row = conn.execute("SELECT entry_json FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return json.loads(row[0]) if row[0] else {}
+    except Exception as exc:
+        log.warning("Failed to read run-log row %s for session %s: %s", run_id, session_id, exc)
+        return None
 
 
 def _run_log_read_all(session_id: str) -> dict:
@@ -545,6 +656,10 @@ class HydroSession:
         their own accumulated dict), neither call ever deletes a row it
         doesn't know about — the final state is the union of every writer's
         entries, not whichever writer saved last.
+
+        Rows carrying a sealed v2 ``record`` are insert-only (see
+        ``_run_log_record``): re-sending a stale snapshot of such a row is a
+        no-op and never drops its record.
         """
         if not isinstance(run_log_dict, dict):
             return
@@ -743,7 +858,12 @@ class HydroSession:
         }
         from ai_hydro.session.evidence import capture_result_evidence
         entry["evidence"] = capture_result_evidence(value)
-        _run_log_record(self.session_id, run_id, entry)
+        status = _run_log_record(self.session_id, run_id, entry, writer="put_result")
+        if status in ("inserted", "replaced", "noop") and isinstance(raw_meta, dict):
+            # The stored result carries the id of the run-log row that
+            # describes it, so a later tool that consumes this slot can name
+            # the run it consumed (parents / input_refs in its own record).
+            raw_meta["run_id"] = run_id
 
     def put_result(
         self,
