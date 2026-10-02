@@ -1,9 +1,29 @@
 import pytest
-from ai_hydro.skills.registry import list_skills
+from ai_hydro.skills import registry
 
-def test_skill_linter_filters_invalid():
-    # 'broken-skill' has empty description and missing when_to_use
-    skills = list_skills()
+def test_skill_linter_filters_invalid(tmp_path, monkeypatch):
+    monkeypatch.setattr(registry, "_USER_SKILLS_DIR", tmp_path)
+    marketplace = tmp_path / "marketplace"
+    (marketplace / "broken").mkdir(parents=True)
+    (marketplace / "broken" / "SKILL.md").write_text(
+        "---\nname: broken-skill\ndescription: ''\n---\ninvalid fixture\n",
+        encoding="utf-8",
+    )
+    expected = {
+        "flood-frequency-analysis",
+        "snow-hydrology-trends",
+        "ungauged-basin-transcription",
+        "drought-indices-calculation",
+    }
+    for name in expected:
+        directory = marketplace / name
+        directory.mkdir(parents=True)
+        (directory / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: fixture\nwhen_to_use: testing\ndomain: hydrology\n---\nfixture\n",
+            encoding="utf-8",
+        )
+
+    skills = registry.list_skills()
     names = [s["name"] for s in skills]
     
     assert "broken-skill" not in names
@@ -16,11 +36,16 @@ def test_skill_linter_filters_invalid():
     assert "ungauged-basin-transcription" in names
     assert "drought-indices-calculation" in names
 
-def test_skill_count():
-    skills = list_skills()
-    # baseflow: 1
-    # composition: 3 (batch, watershed, ungauged)
-    # frequency: 2 (flood, drought)
-    # interpretation: 2 (signature, snow)
-    # total should be at least 8 (ignoring modelling for now)
-    assert len(skills) >= 8
+def test_skill_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(registry, "_USER_SKILLS_DIR", tmp_path)
+    marketplace = tmp_path / "marketplace"
+    marketplace.mkdir()
+    for index in range(8):
+        directory = marketplace / f"skill-{index}"
+        directory.mkdir()
+        (directory / "SKILL.md").write_text(
+            f"---\nname: skill-{index}\ndescription: fixture\nwhen_to_use: testing\ndomain: hydrology\n---\nfixture\n",
+            encoding="utf-8",
+        )
+
+    assert len(registry.list_skills()) == 8
