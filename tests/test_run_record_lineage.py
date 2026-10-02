@@ -18,7 +18,7 @@ import mcp.types as mcp_types
 import pytest
 from fastmcp import FastMCP
 
-from aihydro_core.records import digest
+from aihydro_core.records import digest, digest_bytes
 
 from ai_hydro.session import run_records as rr
 from ai_hydro.session import store
@@ -32,6 +32,7 @@ pytestmark = pytest.mark.skipif(
 
 SID = "lineage-session"
 Q_CMS = [1.0, 2.5, 4.0, 3.0, 2.0, 1.5] * 10
+PARAMS = {"gauge_id": "global-basin", "start_date": "1989-10-01", "end_date": "2009-09-30"}
 SQUARE = json.dumps({"type": "Polygon", "coordinates": [[[-77.5, 39.2], [-77.4, 39.2], [-77.4, 39.3],
                                                          [-77.5, 39.3], [-77.5, 39.2]]]})
 
@@ -56,6 +57,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "SESSIONS_DIR", tmp_path)
     monkeypatch.setattr(chat_binding, "_store", ChatBindingStore(tmp_path / "chat_studies.json"))
     session = HydroSession(SID)
+    session.site_id = "global-basin"            # not a USGS gauge id
     session.set("watershed", {"data": {"area_km2": 250.0}, "meta": {"tool": "delineate_watershed"}})
     session.save()
 
@@ -72,7 +74,8 @@ def world(tmp_path, monkeypatch):
         data_file = tmp_path / "streamflow.json"
         data_file.write_text(json.dumps({"q_cms": Q_CMS}))
         d = {"data": {"q_cms": list(Q_CMS), "n_days": len(Q_CMS), "_data_file": str(data_file)},
-             "meta": {"tool": "fetch_streamflow_data"}}
+             "meta": {"tool": "fetch_streamflow_data", "params": dict(PARAMS),
+                      "retained_series": {"path": str(data_file), "digest": digest_bytes(data_file.read_bytes())}}}
         _session_store(session_id, "streamflow", d, tool_name="fetch_streamflow_data")
         compact = {"data": {"n_days": len(Q_CMS), "q_mean_cms": 2.3}, "meta": d["meta"]}
         return post_run("fetch_streamflow_data", session_id, compact, inputs={"gauge_id": gauge_id})
@@ -144,7 +147,9 @@ def test_edge_without_a_recorded_producer_is_a_reference_without_a_digest(world,
     data_file = tmp_path / "direct.json"
     data_file.write_text(json.dumps({"q_cms": Q_CMS}))
     _session_store(SID, "streamflow",
-                   {"data": {"q_cms": list(Q_CMS), "_data_file": str(data_file)}, "meta": {"tool": "fetch_streamflow_data"}},
+                   {"data": {"q_cms": list(Q_CMS), "_data_file": str(data_file)},
+                    "meta": {"tool": "fetch_streamflow_data", "params": dict(PARAMS),
+                             "retained_series": {"path": str(data_file), "digest": digest_bytes(data_file.read_bytes())}}},
                    tool_name="fetch_streamflow_data")
     slot_run = HydroSession.load(SID).streamflow["meta"]["run_id"]
     sigs = _signatures(real_mcp)

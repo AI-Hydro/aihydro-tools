@@ -135,6 +135,79 @@ def test_period_mismatch_refetches_and_declares_it_without_a_false_edge(world):
     assert not is_err and not sigs.get("error"), sigs
     child = _rows()[sigs["_run_id"]]["record"]
     assert child["parents"] == [] and child["input_refs"] == []
-    acq = child["extra"]["streamflow_acquisition"]
-    assert acq["mode"] == "internal_nwis_fetch" and "start_date" in acq["reason"]
-    assert "fetched its own" in child["extra"]["parent_unresolved"]
+    acq = {a["role"]: a for a in child["extra"]["internal_acquisitions"]}
+    assert acq["streamflow"]["mode"] == "internal_nwis_fetch"
+    assert "start_date" in acq["streamflow"]["session_slot_not_used_because"]
+    assert "start_date" in child["extra"]["parent_unresolved"]
+
+
+def _fetch(server):
+    is_err, fetched = _call(server, "fetch_streamflow_data",
+                            {"session_id": SID, "gauge_id": GAUGE, "start_date": START, "end_date": END})
+    assert not is_err and not fetched.get("error"), fetched
+    return fetched
+
+
+def _sigs(server, **over):
+    args = {"session_id": SID, "start_date": START, "end_date": END, "geometry_geojson": SQUARE, **over}
+    is_err, body = _call(server, "extract_hydrological_signatures", args)
+    assert not is_err and not body.get("error"), body
+    return _rows()[body["_run_id"]]["record"]
+
+
+def test_fetch_record_binds_the_retained_file_digest(world):
+    from aihydro_core.records import digest_bytes
+    server, _ = world
+    _fetch(server)
+    slot = HydroSession.load(SID).streamflow
+    path = slot["data"]["_data_file"]
+    bound = slot["meta"]["retained_series"]
+    assert bound == {"path": path, "digest": digest_bytes(open(path, "rb").read())}
+    rec = _rows()[slot["meta"]["run_id"]]["record"]
+    assert {"path": path, "digest": bound["digest"], "role": "artifact"} in rec["extra"]["retained_files"]
+
+
+def test_tampered_retained_series_gives_no_edge_and_is_not_consumed(world):
+    server, nwis_calls = world
+    _fetch(server)
+    path = HydroSession.load(SID).streamflow["data"]["_data_file"]
+    tampered = json.load(open(path))
+    tampered["q_cms"][10] += 1000.0
+    json.dump(tampered, open(path, "w"))
+    child = _sigs(server)
+    assert child["parents"] == [] and child["input_refs"] == []
+    assert child["extra"]["parent_unresolved"] == "retained_series_digest_mismatch"
+    assert len(nwis_calls) == 2, "tampered series must not be consumed: signatures refetches"
+    acq = {a["role"]: a for a in child["extra"]["internal_acquisitions"]}
+    assert acq["streamflow"]["mode"] == "internal_nwis_fetch"
+
+
+def test_slot_with_empty_params_is_a_mismatch_not_a_match(world):
+    server, nwis_calls = world
+    _fetch(server)
+    session = HydroSession.load(SID)
+    session.streamflow["meta"]["params"] = {}
+    session.save()
+    child = _sigs(server, start_date="1990-01-01", end_date="1995-12-31")
+    assert child["parents"] == [] and child["input_refs"] == []
+    assert "does not equal requested" in child["extra"]["parent_unresolved"]
+    assert len(nwis_calls) == 2
+
+
+def test_slot_covering_a_superset_period_is_not_used(world):
+    server, nwis_calls = world
+    _fetch(server)                                    # 2000-01-01 .. 2001-12-31
+    child = _sigs(server, start_date="2000-03-01", end_date="2001-06-30")
+    assert child["parents"] == []
+    assert len(nwis_calls) == 2
+
+
+def test_precipitation_acquisition_is_declared_not_silent(world):
+    server, _ = world
+    _fetch(server)
+    child = _sigs(server)
+    acq = {a["role"]: a for a in child["extra"]["internal_acquisitions"]}
+    assert set(acq) == {"precipitation"}               # streamflow came from the slot
+    p = acq["precipitation"]
+    assert (p["start_date"], p["end_date"]) == (START, END)
+    assert p["data_digest"] is None and "not returned by aihydro-watershed" in p["limits"]

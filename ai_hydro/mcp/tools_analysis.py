@@ -1078,6 +1078,17 @@ def fetch_streamflow_data(
         # model training) can reload raw arrays without re-fetching from USGS.
         if saved:
             d["data"]["_data_file"] = saved
+            # Bind the retained series to this run: digest of the file bytes
+            # goes in the slot (a later consumer re-digests the file and
+            # compares) and in this run's record (extra.retained_files).
+            try:
+                from aihydro_core.records import digest_bytes as _dbytes
+                from ai_hydro.session import run_records as _rr0
+                _fdig = _dbytes(Path(saved).read_bytes())
+                d.setdefault("meta", {})["retained_series"] = {"path": saved, "digest": _fdig}
+                _rr0.declare_lineage(retained_files=[{"path": saved, "digest": _fdig, "role": "artifact"}])
+            except Exception as _fe:
+                log.warning("could not digest retained streamflow file: %s", _fe)
         _session_store(session_id, "streamflow", d, tool_name="fetch_streamflow_data")
 
         # Strip raw arrays from response — saved to disk, not needed in context
@@ -1244,72 +1255,87 @@ def extract_hydrological_signatures(
             or (session.site_id and session.site_id.isdigit() and len(session.site_id) >= 7)
         )
 
-        # The streamflow slot is usable for a USGS gauge only when it covers the
-        # gauge and period requested here; otherwise it is a different series
-        # and the signatures function fetches its own (recorded as such below).
-        _slot_params = ((session.streamflow or {}).get("meta") or {}).get("params") or {}
-        _slot_mismatch = None
-        if _is_usgs and _slot_params:
-            for _k, _want in (("start_date", start_date), ("end_date", end_date),
-                              ("gauge_id", session.site_id)):
-                _have = _slot_params.get(_k)
-                if _have not in (None, "") and _want and str(_have) != str(_want):
-                    _slot_mismatch = f"slot {_k}={_have!r} != requested {_want!r}"
-                    break
-
-        if (not _is_usgs or session.streamflow) and not _slot_mismatch:
-            # Load q_cms from session (may have been stripped to disk)
-            sf_data: dict = {}
-            if session.streamflow:
-                sf_data = session.streamflow.get("data", {})
-            _q_cms = sf_data.get("q_cms")
-            if not _q_cms:
-                data_file = sf_data.get("_data_file")
-                if data_file and Path(data_file).exists():
-                    try:
-                        with open(data_file) as _df:
-                            _q_cms = json.load(_df).get("q_cms")
-                    except Exception:
-                        pass
-
-        # Lineage: when the streamflow slot supplied the series, name the run
-        # that stored it (the slot carries its run id in meta.run_id) and the
-        # digest of that run's recorded output. Never inferred: a slot without
-        # a run id (stored before slots were stamped) yields no parent edge.
-        # When the series did NOT come from the slot (USGS gauge, slot absent,
-        # for another period, or its arrays unrecoverable) the signatures
-        # function acquires its own streamflow; that is declared, not hidden.
+        # --- Which streamflow does this call consume? ---------------------
+        # An edge to the fetch run is declared only when ALL hold:
+        #   * the slot's recorded params explicitly equal this request
+        #     (gauge, start_date, end_date: exact equality; a slot that covers
+        #     a superset of the period, or records no params, does NOT match),
+        #   * the slot carries the digest of the retained series file, and the
+        #     file read now still has that digest.
+        # For a USGS gauge a slot that fails these is not consumed at all: the
+        # signatures function acquires its own series and the record says so.
+        # (Non-USGS sessions have no alternative source, so the series is still
+        # consumed, but no edge is declared.)
+        from aihydro_core.records import digest_bytes as _dbytes, digest_or_error as _doe, input_ref as _iref
         from ai_hydro.session import run_records as _rr
-        if _q_cms:
-            _edge = _rr.parent_edge_for_run(
-                session_id, ((session.streamflow or {}).get("meta") or {}).get("run_id")
-            )
+        _sf_meta = (session.streamflow or {}).get("meta") or {}
+        _slot_params = _sf_meta.get("params") or {}
+        _unresolved: str | None = None
+        _slot_mismatch: str | None = None
+        if session.streamflow:
+            for _k, _want in (("gauge_id", session.site_id), ("start_date", start_date),
+                              ("end_date", end_date)):
+                _have = _slot_params.get(_k)
+                if not _have or not _want or str(_have) != str(_want):
+                    _slot_mismatch = f"slot {_k}={_have!r} does not equal requested {_want!r}"
+                    break
+        _sf_data: dict = (session.streamflow or {}).get("data", {}) if session.streamflow else {}
+        _data_file = _sf_data.get("_data_file")
+        _retained = _sf_meta.get("retained_series") if isinstance(_sf_meta.get("retained_series"), dict) else {}
+        _file_digest: str | None = None
+        _digest_problem: str | None = None
+        if _data_file and Path(_data_file).exists():
+            try:
+                _file_digest = _dbytes(Path(_data_file).read_bytes())
+            except Exception:
+                _digest_problem = "retained_series_unreadable"
+            if _file_digest:
+                if not _retained.get("digest") or _retained.get("path") != _data_file:
+                    _digest_problem = "retained_series_digest_missing"
+                elif _retained["digest"] != _file_digest:
+                    _digest_problem = "retained_series_digest_mismatch"
+        elif session.streamflow:
+            _digest_problem = "retained_series_unavailable"
+
+        _consume_slot = bool(session.streamflow) and (
+            not _is_usgs or (_slot_mismatch is None and _digest_problem is None)
+        )
+        if _consume_slot:
+            _q_cms = _sf_data.get("q_cms")
+            if _digest_problem != "retained_series_digest_mismatch" and _data_file \
+                    and Path(_data_file).exists():
+                try:
+                    with open(_data_file) as _df:
+                        _q_cms = json.load(_df).get("q_cms") or _q_cms
+                except Exception:
+                    pass
+            if _digest_problem == "retained_series_digest_mismatch":
+                _q_cms = None          # never consume a series that changed after fetch
+            _unresolved = _slot_mismatch or _digest_problem
+
+        _internal: list[dict] = []
+        if _q_cms and not _unresolved:
+            _edge = _rr.parent_edge_for_run(session_id, _sf_meta.get("run_id"))
             if _edge:
-                # Two refs: the producer's recorded output (what it returned),
-                # and the series this call actually read (the producer returns
-                # a compact summary; the arrays live in the slot / data file).
                 _refs = [_edge["input_ref"]]
-                from aihydro_core.records import digest_or_error as _doe, input_ref as _iref
                 _series_digest, _ = _doe(list(_q_cms))
                 if _series_digest:
                     _refs.append(_iref(f"{_edge['parent']}#q_cms", _series_digest, role="served_data"))
+                if _file_digest:
+                    _refs.append(_iref(str(_data_file), _file_digest, role="served_data"))
                 _rr.declare_lineage(parents=[_edge["parent"]], input_refs=_refs)
             else:
                 _rr.declare_lineage(parent_unresolved="streamflow slot carries no retained run id")
-        elif _is_usgs:
-            if _slot_mismatch:
-                _why = f"session streamflow slot not used ({_slot_mismatch})"
-            elif session.streamflow:
-                _why = "session streamflow slot has no recoverable series"
-            else:
-                _why = "no streamflow slot in session"
-            _rr.declare_lineage(
-                streamflow_acquisition={
-                    "mode": "internal_nwis_fetch", "gauge_id": session.site_id,
-                    "start_date": start_date, "end_date": end_date, "reason": _why,
-                },
-                parent_unresolved="signatures fetched its own NWIS streamflow; no session run supplied it",
-            )
+        elif _is_usgs or _unresolved:
+            _why = _slot_mismatch or _digest_problem or (
+                "no streamflow slot in session" if not session.streamflow else "slot not usable")
+            _rr.declare_lineage(parent_unresolved=_unresolved or _why)
+            if _is_usgs:
+                _internal.append({
+                    "role": "streamflow", "mode": "internal_nwis_fetch",
+                    "gauge_id": session.site_id, "start_date": start_date, "end_date": end_date,
+                    "session_slot_not_used_because": _why,
+                })
 
         # gauge_id for USGS fetch; None for global basins (uses q_cms_series)
         usgs_gauge_id: str | None = None
@@ -1344,6 +1370,25 @@ def extract_hydrological_signatures(
             q_cms_series=_q_cms,
         )
         d = _result_to_dict(result)
+        # Acquisitions made inside the signatures function are declared, never
+        # silent. Limits: aihydro-watershed does not return the precipitation
+        # series or the product it selected, so only the request and the
+        # sources the result's meta cites are recorded, with no data digest.
+        _src = (d.get("data") or {}).get("_streamflow_source") if isinstance(d.get("data"), dict) else None
+        for _e in _internal:
+            if isinstance(_src, dict):
+                _e["observed_source"] = _src
+        _meta_sources = [x.get("name") if isinstance(x, dict) else str(x)
+                         for x in ((d.get("meta") or {}).get("sources") or [])]
+        _internal.append({
+            "role": "precipitation", "mode": "internal_aihydro_data_fetch",
+            "start_date": start_date, "end_date": end_date,
+            "sources_cited_by_result": _meta_sources,
+            "product": None, "data_digest": None,
+            "limits": "product actually served and the precipitation series are not "
+                      "returned by aihydro-watershed; request period and cited sources only",
+        })
+        _rr.declare_lineage(internal_acquisitions=_internal)
         _feature_cache_store(session, "signatures", _feature_id, _key, d,
                              citations=["usgs_nwis"])
         d["feature_id"] = _feature_id
