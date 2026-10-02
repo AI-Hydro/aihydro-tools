@@ -1,0 +1,228 @@
+{
+ "basin_ref_required": {
+  "claim_id": "c1",
+  "code": "BASIN_REF_REQUIRED",
+  "error": true,
+  "message": "Claim 'c1' is scoped to basins ['synthetic'] but carries no basin_refs. Promotion needs canonical basin identity: run delineate_watershed (or delineate_watershed_from_point) in this session, then re-add the claim so it binds to the delineated basin (or pass basin_refs explicitly).",
+  "next_tools": [
+   "delineate_watershed",
+   "delineate_watershed_from_point",
+   "add_claim"
+  ],
+  "recovery": "Delineate the basin in this session, then call add_claim again for the same claim id; labels are never back-filled with identities.",
+  "session_id": "golden"
+ },
+ "basin_ref_unknown": {
+  "claim_id": "c1",
+  "code": "BASIN_REF_UNKNOWN",
+  "error": true,
+  "message": "basin_refs ['aihydro:basin:sha256:a62d0f81f1e17da8e36b89836109cec7f8ae1c0861fd6b8fee37ab415fdc8f34'] do not name a verified BasinRef retained in this session. Delineate the basin in this session (its basin_ref is then retained), or pass the full basin_ref dict returned by the delineation tool.",
+  "next_tools": [
+   "delineate_watershed",
+   "delineate_watershed_from_point",
+   "add_claim"
+  ],
+  "recovery": "Delineate the basin in this session, then call add_claim again.",
+  "session_id": "golden"
+ },
+ "claim_not_found": {
+  "code": "UNEXPECTED_ERROR",
+  "docs_anchor": "",
+  "error": true,
+  "message": "Claim 'missing' not found.",
+  "next_tools": [
+   "aihydro_describe_capability",
+   "data_doctor"
+  ],
+  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+ },
+ "evidence_check_failed": {
+  "code": "EVIDENCE_CHECK_FAILED",
+  "error": true,
+  "message": "Evidence 'r1' records a failed analysis or validation check.",
+  "next_tools": [
+   "update_claim_status"
+  ],
+  "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
+  "source_id": "r1"
+ },
+ "evidence_identity_mismatch": {
+  "code": "EVIDENCE_IDENTITY_MISMATCH",
+  "error": true,
+  "message": "Run 'r1' has conflicting session/run identity.",
+  "next_tools": [
+   "update_claim_status"
+  ],
+  "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
+  "source_id": "r1"
+ },
+ "evidence_metric_unavailable": {
+  "code": "EVIDENCE_METRIC_UNAVAILABLE",
+  "error": true,
+  "message": "Metric 'nse' is missing or is not a finite scalar in 'r1'.",
+  "next_tools": [
+   "update_claim_status"
+  ],
+  "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
+  "source_id": "r1"
+ },
+ "evidence_uncertainty_invalid": {
+  "code": "EVIDENCE_UNCERTAINTY_INVALID",
+  "error": true,
+  "message": "Uncertainty for 'nse' lacks finite ordered bounds, a method, sample count or confidence level.",
+  "next_tools": [
+   "update_claim_status"
+  ],
+  "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
+  "source_id": "r1"
+ },
+ "evidence_uncertainty_mismatch": {
+  "code": "EVIDENCE_UNCERTAINTY_MISMATCH",
+  "error": true,
+  "message": "Uncertainty estimate for 'nse' does not match its persisted point estimate.",
+  "next_tools": [
+   "update_claim_status"
+  ],
+  "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
+  "source_id": "r1"
+ },
+ "evidence_uncertainty_unavailable": {
+  "code": "EVIDENCE_UNCERTAINTY_UNAVAILABLE",
+  "error": true,
+  "message": "No persisted uncertainty for metric 'nse' in 'r1'.",
+  "next_tools": [
+   "update_claim_status"
+  ],
+  "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
+  "source_id": "r1"
+ },
+ "evidence_unresolved": {
+  "code": "EVIDENCE_UNRESOLVED",
+  "error": true,
+  "message": "Run 'invented-run' is not retained in this session.",
+  "next_tools": [
+   "update_claim_status"
+  ],
+  "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
+  "source_id": "invented-run"
+ },
+ "invalid_claim_id": {
+  "claim_id": "bad id!",
+  "code": "INVALID_ID",
+  "error": true,
+  "kind": "claim_id",
+  "message": "claim_id 'bad id!' is not a valid id: it must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ (letters, digits, '.', '_', '-'; at most 128 characters; starting with a letter or digit). It was stored before ids were restricted: it stays readable as a label but cannot be promoted, because the approval command cannot be built safely for it. Re-add the claim under a new, valid id.",
+  "next_tools": [
+   "add_claim"
+  ],
+  "recovery": "Use a claim_id matching ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$.",
+  "session_id": "golden"
+ },
+ "invalid_session_id": {
+  "claim_id": "c1",
+  "code": "INVALID_ID",
+  "error": true,
+  "kind": "session_id",
+  "message": "session_id 'bad id!' is not a valid id: it must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ (letters, digits, '.', '_', '-'; at most 128 characters; starting with a letter or digit). It was stored before ids were restricted: it stays readable as a label but cannot be promoted, because the approval command cannot be built safely for it. Re-add the claim under a new, valid id.",
+  "next_tools": [
+   "add_claim"
+  ],
+  "recovery": "Use a session_id matching ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$.",
+  "session_id": "bad id!"
+ },
+ "metric_mismatch": {
+  "code": "EVIDENCE_METRIC_MISMATCH",
+  "error": true,
+  "message": "The scope metric does not match any referenced evidence metric.",
+  "next_tools": [
+   "update_claim_status"
+  ],
+  "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
+  "source_id": "c1"
+ },
+ "metric_ref_missing_on_metric_claim": {
+  "code": "EVIDENCE_METRIC_UNAVAILABLE",
+  "error": true,
+  "message": "Metric-scoped claims require an explicit metric_ref on their evidence.",
+  "next_tools": [
+   "update_claim_status"
+  ],
+  "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
+  "source_id": "c1"
+ },
+ "modelled_signature_no_limitation": {
+  "code": "UNEXPECTED_ERROR",
+  "docs_anchor": "",
+  "error": true,
+  "message": "Claim references a hydrology-signature metric (e.g. baseflow index, flood frequency, flow-duration-curve slope) that may be computed from modelled streamflow (e.g. GEOGLOWS routing on a gauge-less basin) rather than gauge observations. Promotion requires a limitation that acknowledges this \u2014 e.g. 'Signature computed from modelled GEOGLOWS discharge, not gauge observations.' If the underlying data is confirmed gauge-observed, add a limitation stating that explicitly instead.",
+  "next_tools": [
+   "aihydro_describe_capability",
+   "data_doctor"
+  ],
+  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+ },
+ "no_evidence_spans": {
+  "code": "UNEXPECTED_ERROR",
+  "docs_anchor": "",
+  "error": true,
+  "message": "Promotion requires at least one evidence_span. Add a typed EvidenceSpan (run, paper, or dataset) via add_claim or update_claim_status.",
+  "next_tools": [
+   "aihydro_describe_capability",
+   "data_doctor"
+  ],
+  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+ },
+ "no_limitations": {
+  "code": "UNEXPECTED_ERROR",
+  "docs_anchor": "",
+  "error": true,
+  "message": "Promotion requires at least one limitation to be listed.",
+  "next_tools": [
+   "aihydro_describe_capability",
+   "data_doctor"
+  ],
+  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+ },
+ "not_requested": {
+  "approval_command": "aihydro-approve golden c1",
+  "claim_id": "c1",
+  "code": "APPROVAL_REQUIRED",
+  "error": true,
+  "message": "Researcher approval is required to promote a claim to global knowledge. researcher_approved=False: promotion was not requested, and a human approval record is also required (see approval_command).",
+  "next_tools": [],
+  "recovery": "Promotion needs a human approval record bound to this exact claim revision. Ask the researcher to run, in their own interactive terminal: `aihydro-approve golden c1`. Then request promotion again. Editing the claim or its retained evidence afterwards invalidates the approval, and an approval authorises one promotion only. Tools cannot create approvals.",
+  "session_id": "golden"
+ },
+ "ok_but_no_approval": {
+  "approval_command": "aihydro-approve golden c1",
+  "claim_id": "c1",
+  "code": "APPROVAL_REQUIRED",
+  "error": true,
+  "message": "No human approval record exists for the current revision of this claim or its retained evidence (never approved, or the claim or evidence changed after approval). researcher_approved=True does not substitute for one.",
+  "next_tools": [],
+  "recovery": "Promotion needs a human approval record bound to this exact claim revision. Ask the researcher to run, in their own interactive terminal: `aihydro-approve golden c1`. Then request promotion again. Editing the claim or its retained evidence afterwards invalidates the approval, and an approval authorises one promotion only. Tools cannot create approvals.",
+  "session_id": "golden"
+ },
+ "status_not_eligible": {
+  "code": "UNEXPECTED_ERROR",
+  "docs_anchor": "",
+  "error": true,
+  "message": "Claim status 'proposed' is not eligible for promotion.",
+  "next_tools": [
+   "aihydro_describe_capability",
+   "data_doctor"
+  ],
+  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+ },
+ "uncertainty_not_verified": {
+  "code": "UNEXPECTED_ERROR",
+  "docs_anchor": "",
+  "error": true,
+  "message": "Metric-scoped empirical claim cannot be promoted without uncertainty_verified=True. Call update_claim_status(uncertainty_verified=True) after confirming that an uncertainty estimate is available for the referenced metric.",
+  "next_tools": [
+   "aihydro_describe_capability",
+   "data_doctor"
+  ],
+  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+ }
+}

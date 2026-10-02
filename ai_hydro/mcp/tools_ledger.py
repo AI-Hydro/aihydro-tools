@@ -18,76 +18,14 @@ from ai_hydro import identity
 
 log = logging.getLogger("ai_hydro.mcp")
 
-# Metric/keyword markers for hydrology signatures that MAY derive from
-# modelled (not observed) streamflow — e.g. GEOGLOWS-routed BFI, flood
-# frequency, or flow-duration-curve slope on a gauge-less basin. See
-# _claim_touches_hydrology_signature_metric() docstring for why this is a
-# name-based heuristic rather than a true evidence-provenance lookup.
-_MODELLED_HYDROLOGY_METRIC_MARKERS = (
-    "baseflow_index", "bfi", "flood_freq", "flood frequency", "fdc_slope",
-    "flow duration", "q_mean", "q5", "q95", "high_flow", "low_flow",
-    "runoff_ratio", "stream_elas", "hfd", "half_flow_date", "flow timing",
+# The promotion policy (checks, markers and the modelled-signature heuristic) lives in
+# ai_hydro.claims.promotion_policy; these aliases keep the old private names importable.
+from ai_hydro.claims.promotion_policy import (  # noqa: E402
+    claim_requires_uncertainty as _claim_requires_uncertainty,
+    claim_touches_hydrology_signature_metric as _claim_touches_hydrology_signature_metric,
+    evaluate_promotion,
+    promotion_check,
 )
-_MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS = (
-    "model", "geoglows", "ungauged", "simulat", "unobserved", "no gauge",
-)
-# USGS gauge IDs are 8-15 digit numeric strings (ai_hydro.identity owns the rule).
-# A claim scoped entirely to basins that look like USGS gauge IDs, or bound to a
-# BasinRef with a usgs alias, is very likely CONUS observed streamflow — the
-# common, legitimate case — and should not be flagged.
-
-
-def _claim_requires_uncertainty(claim_dict: dict) -> bool:
-    """Return whether an empirical claim is explicitly tied to a metric.
-
-    ``ScientificClaim.claim_type`` has no ``quantitative`` value. Quantitative
-    intent is instead made explicit by ``scope.metric`` or an evidence span's
-    ``metric_ref``. Keeping the rule tied to those structured fields avoids
-    guessing from numbers in prose (which may be dates, gauge IDs, or sample
-    counts) and makes the gate reachable through the public schema.
-    """
-    if claim_dict.get("claim_type") not in {"empirical_result", "negative_result"}:
-        return False
-    scope = claim_dict.get("scope") or {}
-    if scope.get("metric"):
-        return True
-    return any(
-        isinstance(span, dict) and bool(span.get("metric_ref"))
-        for span in claim_dict.get("evidence_spans", [])
-    )
-
-
-def _claim_touches_hydrology_signature_metric(claim_dict: dict, refs_by_id: dict | None = None) -> bool:
-    """
-    Heuristic: does this claim's scope.metric or statement reference a
-    hydrology-signature metric that may be computed from modelled (not
-    observed) streamflow?
-
-    This is a name-based heuristic, not a true evidence-provenance lookup.
-    aihydro-lsh's AttributeResult.provenance[family].is_observed and
-    value_provenance already record the real answer per attribute value —
-    but the lsh_attributes MCP tool does not take a session_id or write to
-    the session run log, so a promoted claim's EvidenceSpan cannot currently
-    be resolved back to that provenance. Wiring the lsh MCP tool surface into
-    the session/run-log system so promotion can do a real lookup is a
-    separate, larger architectural task (tracked in audits/STATUS.md as N-12).
-    Until then, this keyword gate is the safety net.
-
-    Deliberately does NOT flag a claim whose scope.basins are all
-    USGS-gauge-shaped IDs (8-15 digits) — that is the common, legitimate
-    CONUS-observed case (e.g. "Q_mean for 01013500"), and flagging it would
-    make the gate noise researchers learn to route around rather than a
-    signal they act on.
-    """
-    scope = claim_dict.get("scope") or {}
-    basins = scope.get("basins") or []
-    if identity.gauge_shaped(basins, scope.get("basin_refs"), refs_by_id):
-        return False
-    haystack = " ".join([
-        str(scope.get("metric") or ""),
-        str(claim_dict.get("claim", claim_dict.get("statement", "")) or ""),
-    ]).lower()
-    return any(marker in haystack for marker in _MODELLED_HYDROLOGY_METRIC_MARKERS)
 
 
 def _resolve_basin_refs(session, basins: list[str], basin_refs: list[dict] | None,
@@ -234,6 +172,11 @@ def add_claim(
     prereg_id: if this claim was anticipated in a pre-registered research plan,
         pass the prereg_id returned by register_research_plan. Marks the claim as
         confirmatory (planned) vs exploratory (post-hoc) in the defensibility report.
+
+    Returns `promotion_check`: every violation (`code`, `message`, `family`,
+    `blocking`) that promote_claim_to_registry would raise on this claim as stored.
+    It is advisory here; an empty list means no blocking evidence/limitation gate applies
+    (the human approval step is separate).
     """
     try:
         identity.require_safe_ids(session_id, claim_id)
@@ -280,6 +223,8 @@ def add_claim(
         if entries:
             out["basin_refs"] = entries
             out["auto_bound"] = auto_bound
+        # C2 advisory: what promotion would block on this claim as stored (same policy).
+        out["promotion_check"] = promotion_check(session, claim_dict, claim_id=claim_id)
         return out
     except Exception as exc:
         return _tool_error_to_dict(exc)
@@ -301,6 +246,8 @@ def update_claim_status(
         empirical claim has an associated uncertainty estimate. Required when
         status='supported' and the claim has scope.metric or an evidence-span
         metric_ref; the tool returns a teaching error otherwise.
+
+    Returns `promotion_check` (violations promotion would raise; advisory).
     """
     try:
         session = HydroSession.load(session_id)
@@ -358,7 +305,9 @@ def update_claim_status(
             claim_type=claim_type,
             confidence=confidence,
         )
-        return {"id": claim_id, "status": "updated"}
+        # C2 advisory: what promotion would block on this claim as stored (same policy).
+        return {"id": claim_id, "status": "updated",
+                "promotion_check": promotion_check(session, claim_dict, claim_id=claim_id)}
     except Exception as exc:
         return _tool_error_to_dict(exc)
 
@@ -476,67 +425,23 @@ def promote_claim_to_registry(
                 "record is also required (see approval_command).")
 
         # ── Promotion gate ────────────────────────────────────────────────────
-        # Canonical place identity first (slice 3, fail closed): labels alone never promote.
-        if claim.scope.basins and not claim.scope.basin_refs:
-            raise identity.BasinRefRequiredError(claim_id, claim.scope.basins, session_id)
-        retained = identity.retained_refs(session, claim_dict)
-        unknown = [e["id"] for e in claim.scope.basin_refs or [] if e["id"] not in retained]
-        if unknown:
-            raise identity.BasinRefUnknownError(unknown, session_id, claim_id)
-        if not claim.evidence_spans:
-            raise ValueError(
-                "Promotion requires at least one evidence_span. "
-                "Add a typed EvidenceSpan (run, paper, or dataset) via add_claim or update_claim_status."
-            )
-        if not claim.limitations:
-            raise ValueError("Promotion requires at least one limitation to be listed.")
-        if claim.status not in ["supported", "weakly_supported"]:
-            raise ValueError(f"Claim status '{claim.status}' is not eligible for promotion.")
-        if _claim_requires_uncertainty(claim_dict) and not claim_dict.get("uncertainty_verified"):
-            raise ValueError(
-                "Metric-scoped empirical claim cannot be promoted without uncertainty_verified=True. "
-                "Call update_claim_status(uncertainty_verified=True) after confirming "
-                "that an uncertainty estimate is available for the referenced metric."
-            )
-        if _claim_touches_hydrology_signature_metric(claim_dict, identity.retained_refs(session, claim_dict)):
-            limitations_text = " ".join(claim.limitations).lower()
-            if not any(w in limitations_text for w in _MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS):
-                raise ValueError(
-                    "Claim references a hydrology-signature metric (e.g. baseflow index, "
-                    "flood frequency, flow-duration-curve slope) that may be computed from "
-                    "modelled streamflow (e.g. GEOGLOWS routing on a gauge-less basin) rather "
-                    "than gauge observations. Promotion requires a limitation that acknowledges "
-                    "this — e.g. 'Signature computed from modelled GEOGLOWS discharge, not gauge "
-                    "observations.' If the underlying data is confirmed gauge-observed, add a "
-                    "limitation stating that explicitly instead."
-                )
-
-        # ── Snapshot evidence versions ────────────────────────────────────────
+        # One pure policy (ai_hydro.claims.promotion_policy): production refuses on the
+        # FIRST blocking violation with that violation's own exception, so every code
+        # and message is what the inline checks produced before the policy was extracted.
         from ai_hydro.registry.store import (
             ApprovalAlreadyConsumed,
             append as _reg_append,
             build_registry_id,
             find_by_session,
         )
+        from ai_hydro.registry.evidence import fingerprint
 
+        evaluation = evaluate_promotion(session, claim_dict, claim_id=claim_id)
+        blocked = evaluation.first_blocking
+        if blocked is not None:
+            raise blocked.exception
         spans = [s if isinstance(s, dict) else s.model_dump() for s in claim.evidence_spans]
-        from ai_hydro.registry.evidence import EvidenceError, verified_versions, fingerprint
-        requires_uncertainty = _claim_requires_uncertainty(claim_dict)
-        metric_spans = [span for span in spans if span.get("metric_ref")]
-        if requires_uncertainty and not metric_spans:
-            raise EvidenceError("EVIDENCE_METRIC_UNAVAILABLE", claim_id,
-                                "Metric-scoped claims require an explicit metric_ref on their evidence.")
-        if claim.scope.metric:
-            def metric_name(name):
-                for prefix in ("metric.", "key_outputs.", "data."):
-                    if name.startswith(prefix):
-                        return name[len(prefix):]
-                return name
-            if not any(metric_name(span["metric_ref"]) == metric_name(claim.scope.metric)
-                       for span in metric_spans):
-                raise EvidenceError("EVIDENCE_METRIC_MISMATCH", claim_id,
-                                    "The scope metric does not match any referenced evidence metric.")
-        evidence_versions = verified_versions(session, spans, require_uncertainty=requires_uncertainty)
+        evidence_versions = evaluation.evidence_versions
 
         # ── Human approval (ADR-002a) ─────────────────────────────────────────
         # Checked last so the researcher is only asked to approve a claim that
