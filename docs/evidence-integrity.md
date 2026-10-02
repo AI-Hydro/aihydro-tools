@@ -159,6 +159,80 @@ report label them `approval: self_asserted` at read time.
 The record does not say the claim is true: it records that a named person ran
 the CLI for this exact revision of the claim and its retained evidence.
 
+## Claim revisions (`aihydro.claim_revision_record/1`)
+
+Added in 2040 slice 2. Every authority-bearing change to a session claim
+appends exactly one sealed row to `<sessions_dir>/<session_id>.claims.sqlite3`.
+`ai_hydro/session/claim_revisions.py` is the only writer.
+
+A row carries `session_id`, `claim_id`, `revision` (from 0), `supersedes` (the
+previous row's `revision_digest`), `revision_digest`, `content`, `cause`
+(`{tool, reason, run_id?, ...}`), `actor`, `recorded_at` and `record_digest`
+(`aihydro_core.records.ClaimRevision`). `revision_digest` is the same
+`aihydro.claim_revision/2` digest an approval binds to, including the retained
+evidence fingerprints, so a revision and an approval name the same thing.
+
+| `cause.reason` | Written by |
+|---|---|
+| `created`, `redefined` | `add_claim` (`redefined` when the id already existed) |
+| `status_update` | `update_claim_status` |
+| `promotion` | `promote_claim_to_registry`, after the registry row is written. Promotion is outside the digest, so the row repeats the approved `revision_digest` and records `registry_id` |
+| `staleness` | `check_registry_staleness` when it sets `status: stale` |
+| `evidence_drift` | promotion found that the retained evidence differs from the latest stored revision. The revision is written, then promotion is refused unless an unused approval already binds the new revision |
+| `out_of_band_edit` | promotion found claim fields that differ from the latest revision for another reason (the session JSON was edited outside the tools) |
+| `legacy_unrecorded` | first touch of a claim that predates the store |
+
+Rules:
+
+- **Insert-only.** `PRIMARY KEY (claim_id, revision)`, plain `INSERT`, and
+  `BEFORE UPDATE`/`BEFORE DELETE` triggers that abort. Read-modify-insert runs in
+  `BEGIN IMMEDIATE`, so concurrent writers get consecutive numbers.
+- **Fail closed.** Every read verifies each seal and the chain; a failing row
+  raises instead of being skipped, and promotion therefore errors.
+- **Record before save.** The revision is written before `session.save()`. A
+  change that cannot be recorded is not persisted.
+- **No unchanged rows.** An update that moves no authority field (same
+  `revision_digest`) writes nothing.
+- **Promotion** requires the approval's `claim_revision_digest` to equal the
+  latest stored revision's `revision_digest`. Registry rows gain
+  `claim_revision_digest` and `claim_revision` (the approved revision number).
+  `registry_id` is unchanged and legacy rows are not recomputed.
+- **Legacy claims** get revision 0 with `legacy_unrecorded` on first touch,
+  recording the state when first seen. Earlier history is never back-filled.
+
+A seal proves integrity, not origin: a process running as the same OS user can
+rewrite the SQLite file and re-seal. Signed approvals (ADR-002b) address origin.
+
+**There is no external anchor for the chain itself.** Truncating the tail, or
+editing the latest row and re-sealing it, cannot be detected from the SQLite
+file alone. Each seal covers only its own row, and each row links backwards.
+
+The anchor that exists today is the registry. Promotion stamps
+`claim_revision_digest` and `claim_revision` on the registry row.
+`check_registry_staleness` compares every stamped row with the session's chain
+and returns `revision_chain_mismatches`, each flagged
+`revision_chain_mismatch` with a reason: `missing_revision` (tail truncated
+below the promoted revision), `different_digest` (the revision was rewritten and
+re-sealed) or `chain_corrupt`. This detects tampering only for claims that were
+promoted and only at or below the promoted revision. Registry rows written
+before this change carry no stamp and are skipped. The check reports and does
+not change claim status.
+
+**Reading.** `history(session_id)` returns, per claim, `{ok: true, rows}` or
+`{ok: false, error}`, so one corrupt chain does not hide the others. `latest`
+and `get_revision` raise for a corrupt chain, so anything that gates authority
+fails closed. `revision_drift(current_fields, latest_row)` is a pure helper that
+reports whether a claim's current fields (with live evidence fingerprints) still
+match its latest revision.
+
+**Reverting to an approved state reuses the approval.** An approval binds a
+revision digest, not a point in time. If a claim is edited and then edited back to
+fields whose digest equals an approved, unconsumed revision, the old approval
+matches again and promotion can use it (once). The chain shows the round trip as
+two new revisions that repeat the earlier digest, so a reviewer can see it. The
+approval is still single use, and any difference in the claim or its retained
+evidence breaks the match.
+
 ## State isolation
 
 Scope: the registry (`$AIHYDRO_HOME/registry/claims.jsonl`) and approval paths

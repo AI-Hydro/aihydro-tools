@@ -90,6 +90,30 @@ def _claim_touches_hydrology_signature_metric(claim_dict: dict) -> bool:
     return any(marker in haystack for marker in _MODELLED_HYDROLOGY_METRIC_MARKERS)
 
 
+def _revision_fields(session, claim_id: str):
+    """``claim_revision_fields`` of a loaded session claim, or None if it cannot be projected."""
+    from ai_hydro.approval.records import session_claim_revision
+    try:
+        return session_claim_revision(session, claim_id)[2]
+    except Exception:
+        return None
+
+
+def _record_revision(session, claim_id: str, *, tool: str, reason: str, before=None,
+                     bookkeeping: bool = False, extra_cause: dict | None = None):
+    """Write the sealed revision for the claim's current state (the only claim writer).
+
+    Called after the in-memory claim is mutated and before ``session.save()``,
+    so a claim change that cannot be recorded is never persisted.
+    """
+    from ai_hydro.approval.records import session_claim_revision
+    from ai_hydro.session import claim_revisions
+    after = session_claim_revision(session, claim_id)[2]
+    return claim_revisions.record_change(
+        session.session_id, claim_id, after, tool=tool, reason=reason, before=before,
+        bookkeeping=bookkeeping, extra_cause=extra_cause)
+
+
 def _normalize_evidence_spans(evidence_spans: list[dict] | None, evidence: list[dict] | None) -> list[dict]:
     """Return typed EvidenceSpan-compatible dicts from preferred or legacy evidence inputs."""
     raw = evidence_spans if evidence_spans is not None else evidence
@@ -172,7 +196,11 @@ def add_claim(
         claim_dict = claim.model_dump()
         if prereg_id:
             claim_dict["prereg_id"] = prereg_id
+        existed = claim_id in session.claims
+        before = _revision_fields(session, claim_id) if existed else None
         session.claims[claim_id] = claim_dict
+        _record_revision(session, claim_id, tool="add_claim", before=before,
+                         reason="redefined" if existed else "created")
         session.save()
         push_claim_event(
             change_type="added",
@@ -243,6 +271,7 @@ def update_claim_status(
                 },
             }
 
+        before = _revision_fields(session, claim_id)
         claim_dict["status"] = status
         claim_dict["confidence"] = confidence
         claim_dict["confidence_rationale"] = rationale
@@ -250,6 +279,8 @@ def update_claim_status(
         if uncertainty_verified:
             claim_dict["uncertainty_verified"] = True
 
+        _record_revision(session, claim_id, tool="update_claim_status",
+                         reason="status_update", before=before)
         session.save()
         push_claim_event(
             change_type="updated",
@@ -437,6 +468,35 @@ def promote_claim_to_registry(
         # unconsumed (single use). A tool argument can request but never confer
         # this.
         claim_rev = claim_revision_digest(claim_dict, evidence_versions)
+
+        # ── Revision chain (slice 2) ──────────────────────────────────────────
+        # Approvals bind to the claim's latest *stored* revision. A claim with no
+        # history gets a legacy_unrecorded revision 0 now. If the claim as it is
+        # now (including retained-evidence fingerprints) differs from the latest
+        # stored revision, record why; the old approval cannot cover that state.
+        from ai_hydro.approval.records import claim_revision_fields
+        from ai_hydro.session import claim_revisions
+        now_fields = claim_revision_fields(claim_dict, evidence_versions)
+        stored = claim_revisions.ensure_baseline(
+            session_id, claim_id, now_fields, tool="promote_claim_to_registry").to_dict()
+        if stored["revision_digest"] != claim_rev:
+            only_evidence = {k: v for k, v in stored["content"].items() if k != "evidence_versions"} \
+                == {k: v for k, v in now_fields.items() if k != "evidence_versions"}
+            stored = claim_revisions.record_change(
+                session_id, claim_id, now_fields, tool="promote_claim_to_registry",
+                reason="evidence_drift" if only_evidence else "out_of_band_edit").to_dict()
+            # The old approval cannot cover the new revision. An approval that
+            # already binds the new revision (the researcher approved the live
+            # state) is honoured below; otherwise refuse.
+            if find_approval(session_id, claim_id, claim_rev, unconsumed_only=True) is None:
+                raise ApprovalRequiredError(
+                    session_id, claim_id, claim_rev,
+                    ("The retained evidence this claim cites changed since its last recorded "
+                     "revision; a new revision was recorded with cause evidence_drift. Promotion "
+                     "needs a fresh human approval for the new revision."
+                     if only_evidence else
+                     "The claim changed outside the recorded revision chain; a new revision was "
+                     "recorded. Promotion needs a fresh human approval for the new revision."))
         approval = find_approval(session_id, claim_id, claim_rev, unconsumed_only=True)
         if approval is None:
             already = find_approval(session_id, claim_id, claim_rev) is not None
@@ -448,6 +508,11 @@ def promote_claim_to_registry(
                  "No human approval record exists for the current revision of this claim or its "
                  "retained evidence (never approved, or the claim or evidence changed after "
                  "approval). researcher_approved=True does not substitute for one."))
+
+        if approval["claim_revision_digest"] != stored["revision_digest"]:   # defence in depth
+            raise ApprovalRequiredError(
+                session_id, claim_id, claim_rev,
+                "The approval is not bound to the latest stored revision of this claim.")
 
         promoted_at = datetime.now(timezone.utc).isoformat()
         revision = fingerprint({"statement": claim.claim, "scope": claim.scope.model_dump(),
@@ -487,6 +552,8 @@ def promote_claim_to_registry(
             "scope": claim.scope.model_dump(),
             "evidence_verification": verification,
             "approval": {"record_digest": approval["record_digest"], "channel": CHANNEL},
+            "claim_revision_digest": stored["revision_digest"],
+            "claim_revision": stored["revision"],
             "staleness": None,
         }
         try:
@@ -498,6 +565,13 @@ def promote_claim_to_registry(
         claim_dict["promoted"] = True
         claim_dict["promoted_at"] = promoted_at
         claim_dict["registry_id"] = registry_id
+        # Promotion is outside the revision digest, so this row repeats the
+        # approved revision_digest; it records the bookkeeping event itself.
+        claim_revisions.record_change(
+            session_id, claim_id, now_fields, tool="promote_claim_to_registry",
+            reason="promotion", bookkeeping=True,
+            extra_cause={"registry_id": registry_id,
+                         "approval_record_digest": approval["record_digest"]})
         session.save()
 
         return {
@@ -566,8 +640,12 @@ def check_registry_staleness(session_id: str) -> dict:
                 # Update session claim status
                 claim_dict = session.claims.get(cid)
                 if claim_dict and claim_dict.get("registry_id", rid) == rid:
+                    before = _revision_fields(session, cid)
                     claim_dict["status"] = "stale"
                     claim_dict["staleness_detected_at"] = datetime.now(timezone.utc).isoformat()
+                    _record_revision(session, cid, tool="check_registry_staleness",
+                                     reason="staleness", before=before,
+                                     extra_cause={"registry_id": rid, "stale_sources": list(stale_sources)})
                 stale_results.append({
                     "claim_id": cid,
                     "registry_id": rid,
@@ -580,7 +658,30 @@ def check_registry_staleness(session_id: str) -> dict:
         if stale_results:
             session.save()
 
+        # Registry rows are the only external anchor of the revision chain:
+        # compare the revision each row was promoted at with what the chain holds.
+        from ai_hydro.session import claim_revisions
+        mismatches = []
+        for entry in entries:
+            rev_no, rev_digest = entry.get("claim_revision"), entry.get("claim_revision_digest")
+            if rev_no is None or not rev_digest:
+                continue                      # row predates revision stamping
+            reason = None
+            try:
+                row = claim_revisions.get_revision(session_id, entry["claim_id"], rev_no)
+                if row is None:
+                    reason = "missing_revision"
+                elif row["revision_digest"] != rev_digest:
+                    reason = "different_digest"
+            except claim_revisions.ClaimRevisionError:
+                reason = "chain_corrupt"
+            if reason:
+                mismatches.append({"claim_id": entry["claim_id"], "registry_id": entry.get("registry_id"),
+                                   "claim_revision": rev_no, "reason": reason,
+                                   "flag": "revision_chain_mismatch"})
+
         return {
+            "revision_chain_mismatches": mismatches,
             "n_checked": len(promoted),
             "n_stale": len(stale_results),
             "n_already_stale": len(already_stale),
