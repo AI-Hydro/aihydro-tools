@@ -72,6 +72,15 @@ def world(tmp_path, monkeypatch):
     import dataretrieval.nwis as nwis
     monkeypatch.setattr(nwis, "get_dv", fake_get_dv)
 
+    def fake_get_info(sites=None, **kw):
+        # Site-metadata lookup made by the internal NWIS fetch (the other NWIS
+        # HTTP entry point); mocked so the refetch path never leaves the box.
+        df = pd.DataFrame({"site_no": [str(sites)], "station_nm": ["Synthetic test gauge"],
+                           "dec_lat_va": [45.0], "dec_long_va": [-68.5]})
+        return df, object()
+
+    monkeypatch.setattr(nwis, "get_info", fake_get_info)
+
     def fake_precip(geom, start_date, end_date):
         idx = pd.date_range(start_date, end_date, freq="D")
         return pd.Series(np.full(len(idx), 3.0), index=idx)
