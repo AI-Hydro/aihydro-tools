@@ -159,6 +159,20 @@ def test_snap_outlet_nldi_conus():
     from ai_hydro.analysis.delineation.nldi_point import snap_outlet_nldi
 
     lat, lon = 35.03, -120.48
+    snapped = gpd.GeoDataFrame(geometry=[Point(-120.479, 35.031)], crs=4326)
+    with patch("pynhd.NLDI") as client:
+        client.return_value.comid_byloc.return_value = snapped
+        lat2, lon2, ok = snap_outlet_nldi(lat, lon)
+        client.return_value.comid_byloc.assert_called_once_with((lon, lat))
+    assert ok
+    assert (lat2, lon2) == (35.031, -120.479)
+
+
+@pytest.mark.live
+def test_snap_outlet_nldi_conus_live():
+    from ai_hydro.analysis.delineation.nldi_point import snap_outlet_nldi
+
+    lat, lon = 35.03, -120.48
     lat2, lon2, ok = snap_outlet_nldi(lat, lon)
     assert ok
     assert abs(lat2 - lat) + abs(lon2 - lon) > 0
