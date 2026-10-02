@@ -28,7 +28,7 @@ from ai_hydro.mcp.tools_ledger import (
     list_registry_claims,
 )
 from ai_hydro.session.store import HydroSession
-from approval_helpers import approve, basin_ref
+from approval_helpers import approve, basin_ref, basin_ref_full, retained
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +69,7 @@ def _promoted_claim_dict(claim_id: str = "c-001") -> dict:
         ],
         "limitations": ["Single basin only"],
         "uncertainty_verified": True,
+        "basin_ref_records": retained("01013500"),
     }
 
 
@@ -353,6 +354,7 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
                 "claim": "baseflow_index for the Amazon headwaters basin is 0.31",
                 "scope": {"basins": ["amazon-headwaters"], "period": "1990-2020",
                           "basin_refs": [basin_ref("amazon-headwaters")]},
+                "basin_ref_records": retained("amazon-headwaters"),
                 "limitations": ["Single basin only"],  # no modelled/geoglows acknowledgement
             }
             s.claims["c-hydro-modelled"] = cd
@@ -372,6 +374,7 @@ class TestPromoteClaimToRegistry(unittest.TestCase):
                 "claim": "baseflow_index for the Amazon headwaters basin is 0.31",
                 "scope": {"basins": ["amazon-headwaters"], "period": "1990-2020",
                           "basin_refs": [basin_ref("amazon-headwaters")]},
+                "basin_ref_records": retained("amazon-headwaters"),
                 "limitations": [
                     "Signature computed from modelled GEOGLOWS discharge, not gauge observations."
                 ],

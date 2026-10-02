@@ -90,23 +90,22 @@ def _claim_touches_hydrology_signature_metric(claim_dict: dict, refs_by_id: dict
     return any(marker in haystack for marker in _MODELLED_HYDROLOGY_METRIC_MARKERS)
 
 
-def _slot_refs_by_id(session) -> dict:
-    """``{basin id: BasinRef dict}`` for the session's watershed slot (empty if none)."""
-    ref = identity.session_basin_ref(session)
-    return {ref["id"]: ref} if ref and ref.get("id") else {}
+def _resolve_basin_refs(session, basins: list[str], basin_refs: list[dict] | None,
+                        session_id=None, claim_id=None):
+    """``(entries, auto_bound, records)`` for ``ClaimScope.basin_refs``.
 
-
-def _resolve_basin_refs(session, basins: list[str], basin_refs: list[dict] | None):
-    """``(entries, auto_bound)`` for ``ClaimScope.basin_refs``.
-
-    Supplied entries are either full BasinRef dicts (verified: schema and id must
-    match the anchor) or ``{id, label}``. With none supplied, a watershed-slot ref
-    whose usgs alias, id or gauge label matches a basin label is bound (reported
-    as ``auto_bound``). Labels are never turned into identities.
+    Supplied entries are full BasinRef dicts (verified: schema and id must match the
+    anchor; kept as ``records`` so the claim retains what it was bound to) or
+    ``{id, label}``, whose id must equal a verified ref the session retains
+    (BASIN_REF_UNKNOWN otherwise: a well-formed but unbacked id is just a label).
+    With none supplied, a retained ref that a basin label names (bare digits match
+    only ``usgs`` aliases; other schemes only as ``scheme:id``) is bound and reported
+    as ``auto_bound``. Labels are never turned into identities.
     """
     from aihydro_core.records.place import verify_basin_ref_dict
+    retained = identity.retained_refs(session)
     if basin_refs:
-        entries = []
+        entries, records, unknown = [], {}, []
         for item in basin_refs:
             if not isinstance(item, dict):
                 raise ValueError("basin_refs entries must be dicts")
@@ -115,20 +114,30 @@ def _resolve_basin_refs(session, basins: list[str], basin_refs: list[dict] | Non
                     raise ValueError(
                         f"basin_refs entry {item.get('id')!r} failed verification: its id does not "
                         "match its anchor (or the schema is not aihydro.basin_ref/1).")
+                records[item["id"]] = dict(item)
                 usgs = sorted(identity.usgs_ids_of_ref(item))
                 entries.append({"id": item["id"], "label": str(item.get("label") or (usgs[0] if usgs else item["id"]))})
             else:
-                entries.append({"id": item.get("id"), "label": str(item.get("label") or item.get("id"))})
-        return entries, False
-    ref = identity.session_basin_ref(session)
-    if not basins or not ref or not identity.is_basin_id(ref.get("id")) \
-            or not verify_basin_ref_dict(ref):
-        return None, False
-    gauge = str((session.watershed.get("data") or {}).get("gauge_id") or "")
-    for label in basins:
-        if identity.ref_matches_label(ref, label) or (gauge and str(label).strip() == gauge):
-            return [{"id": ref["id"], "label": str(label)}], True
-    return None, False
+                rid = item.get("id")
+                if rid not in retained:
+                    unknown.append(rid)
+                entries.append({"id": rid, "label": str(item.get("label") or rid)})
+        if unknown:
+            raise identity.BasinRefUnknownError(unknown, session_id, claim_id)
+        return entries, False, records
+    if not basins:
+        return None, False, {}
+    active = identity.session_basin_ref(session)
+    gauge = str(((getattr(session, "watershed", None) or {}).get("data") or {}).get("gauge_id") or "")
+    ordered = ([retained[active["id"]]] if active and active.get("id") in retained else []) \
+        + [r for i, r in retained.items() if not active or i != active.get("id")]
+    for ref in ordered:
+        is_active = bool(active) and ref["id"] == active.get("id")
+        for label in basins:
+            if identity.ref_matches_label(ref, label) or (
+                    is_active and gauge and str(label).strip() == gauge):
+                return [{"id": ref["id"], "label": str(label)}], True, {}
+    return None, False, {}
 
 
 def _revision_fields(session, claim_id: str):
@@ -230,7 +239,7 @@ def add_claim(
         identity.require_safe_ids(session_id, claim_id)
         session = HydroSession.load(session_id)
 
-        entries, auto_bound = _resolve_basin_refs(session, basins, basin_refs)
+        entries, auto_bound, records = _resolve_basin_refs(session, basins, basin_refs, session_id, claim_id)
         scope = ClaimScope(basins=basins, period=period, metric=metric, basin_refs=entries)
         normalized_spans = _normalize_evidence_spans(evidence_spans, evidence)
         claim = ScientificClaim(
@@ -248,6 +257,8 @@ def add_claim(
         claim_dict = claim.model_dump()
         if prereg_id:
             claim_dict["prereg_id"] = prereg_id
+        if records:
+            claim_dict["basin_ref_records"] = records   # retained verified refs; outside the revision digest
         existed = claim_id in session.claims
         before = _revision_fields(session, claim_id) if existed else None
         session.claims[claim_id] = claim_dict
@@ -468,6 +479,10 @@ def promote_claim_to_registry(
         # Canonical place identity first (slice 3, fail closed): labels alone never promote.
         if claim.scope.basins and not claim.scope.basin_refs:
             raise identity.BasinRefRequiredError(claim_id, claim.scope.basins, session_id)
+        retained = identity.retained_refs(session, claim_dict)
+        unknown = [e["id"] for e in claim.scope.basin_refs or [] if e["id"] not in retained]
+        if unknown:
+            raise identity.BasinRefUnknownError(unknown, session_id, claim_id)
         if not claim.evidence_spans:
             raise ValueError(
                 "Promotion requires at least one evidence_span. "
@@ -483,7 +498,7 @@ def promote_claim_to_registry(
                 "Call update_claim_status(uncertainty_verified=True) after confirming "
                 "that an uncertainty estimate is available for the referenced metric."
             )
-        if _claim_touches_hydrology_signature_metric(claim_dict, _slot_refs_by_id(session)):
+        if _claim_touches_hydrology_signature_metric(claim_dict, identity.retained_refs(session, claim_dict)):
             limitations_text = " ".join(claim.limitations).lower()
             if not any(w in limitations_text for w in _MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS):
                 raise ValueError(

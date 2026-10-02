@@ -84,35 +84,73 @@ def usgs_ids_of_ref(ref: Optional[Mapping[str, Any]]) -> set[str]:
 
 
 def session_basin_ref(session: Any) -> Optional[dict]:
-    """The BasinRef dict held by the session's watershed slot, or None."""
+    """The BasinRef dict held by the session's (active) watershed slot, or None."""
     ws = getattr(session, "watershed", None)
     data = (ws or {}).get("data") if isinstance(ws, Mapping) else None
     ref = (data or {}).get("basin_ref") if isinstance(data, Mapping) else None
     return ref if isinstance(ref, Mapping) else None
 
 
+def retained_refs(session: Any, claim: Optional[Mapping[str, Any]] = None) -> dict[str, dict]:
+    """``{id: BasinRef dict}`` of every verified ref the session retains.
+
+    Sources: the ``basin_ref`` of every watershed result in the session (all
+    features, not only the active one) and the verified full refs a claim carried
+    when it was added (``claim["basin_ref_records"]``). An id that no retained,
+    verified ref carries is not retained, whatever it looks like.
+    """
+    from aihydro_core.records.place import verify_basin_ref_dict
+    cands: list[Any] = [session_basin_ref(session)]
+    slots = getattr(session, "_slots", None)
+    if isinstance(slots, Mapping):
+        for by_key in (slots.get("watershed") or {}).values():
+            for res in (by_key or {}).values():
+                data = res.get("data") if isinstance(res, Mapping) else None
+                if isinstance(data, Mapping):
+                    cands.append(data.get("basin_ref"))
+    if claim:
+        cands.extend((claim.get("basin_ref_records") or {}).values())
+    out: dict[str, dict] = {}
+    for ref in cands:
+        if isinstance(ref, Mapping) and is_basin_id(ref.get("id")) and verify_basin_ref_dict(ref):
+            out[ref["id"]] = dict(ref)
+    return out
+
+
 def ref_matches_label(ref: Mapping[str, Any], label: str) -> bool:
-    """A label (usgs site id, ref id or alias id) names the same place as ``ref``."""
+    """A label names the same place as ``ref``.
+
+    A bare digit label matches only a ``usgs`` alias (COMIDs and other schemes
+    look like site ids and must never bind by shape). Other schemes match only
+    as an explicit CURIE ``scheme:id``; the ref id matches as itself.
+    """
     label = str(label).strip()
-    if label == ref.get("id") or label in usgs_ids_of_ref(ref):
+    if label == ref.get("id"):
         return True
-    return any(isinstance(a, Mapping) and str(a.get("id")) == label for a in ref.get("aliases") or [])
+    if label in usgs_ids_of_ref(ref):
+        return True
+    if ":" in label:
+        scheme, _, ident = label.partition(":")
+        return any(isinstance(a, Mapping) and a.get("scheme") == scheme and str(a.get("id")) == ident
+                   for a in ref.get("aliases") or [])
+    return False
 
 
 def claim_covered_ids(scope: Mapping[str, Any], refs_by_id: Optional[Mapping[str, Mapping[str, Any]]] = None) -> set[str]:
-    """Every label a claim scope covers: ``basins`` labels, ``basin_refs`` ids/labels,
-    and the usgs alias ids of any ref in ``refs_by_id`` the scope binds to.
+    """Every label a claim scope covers: ``basins`` labels, the bound ref ids, and the
+    ``usgs`` alias ids of each bound ref that is actually retained. An entry's free-text
+    label counts only if it genuinely names its ref (``ref_matches_label``).
     """
     covered = {str(b).strip() for b in scope.get("basins") or []}
     for entry in scope.get("basin_refs") or []:
-        if not isinstance(entry, Mapping):
+        if not isinstance(entry, Mapping) or not entry.get("id"):
             continue
-        for key in ("id", "label"):
-            if entry.get(key):
-                covered.add(str(entry[key]).strip())
-        ref = (refs_by_id or {}).get(entry.get("id"))
+        covered.add(str(entry["id"]).strip())
+        ref = (refs_by_id or {}).get(entry["id"])
         if ref:
             covered |= usgs_ids_of_ref(ref)
+            if entry.get("label") and ref_matches_label(ref, entry["label"]):
+                covered.add(str(entry["label"]).strip())
     return covered
 
 
@@ -128,6 +166,27 @@ def gauge_shaped(basins: Iterable[Any], basin_refs: Optional[Iterable[Mapping[st
     ref_dicts = [(refs_by_id or {}).get(e.get("id")) for e in bound if isinstance(e, Mapping)]
     ref_usgs = set().union(*(usgs_ids_of_ref(r) for r in ref_dicts if r)) if ref_dicts else set()
     return all(is_usgs_site_id(b) or b.strip() in ref_usgs for b in basins)
+
+
+BASIN_REF_UNKNOWN = "BASIN_REF_UNKNOWN"
+
+
+class BasinRefUnknownError(ValueError):
+    """A bound basin id is not a verified ref retained by the session."""
+    code = BASIN_REF_UNKNOWN
+
+    def __init__(self, ids: list, session_id: Any = None, claim_id: Any = None):
+        self.ids, self.session_id, self.claim_id = list(ids), session_id, claim_id
+        super().__init__(
+            f"basin_refs {self.ids} do not name a verified BasinRef retained in this session. "
+            "Delineate the basin in this session (its basin_ref is then retained), or pass the "
+            "full basin_ref dict returned by the delineation tool.")
+
+    def to_dict(self) -> dict:
+        return {"error": True, "code": BASIN_REF_UNKNOWN, "session_id": self.session_id,
+                "claim_id": self.claim_id, "message": str(self),
+                "recovery": "Delineate the basin in this session, then call add_claim again.",
+                "next_tools": ["delineate_watershed", "delineate_watershed_from_point", "add_claim"]}
 
 
 class BasinRefRequiredError(ValueError):

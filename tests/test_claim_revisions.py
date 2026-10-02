@@ -24,7 +24,7 @@ from ai_hydro.registry import store as registry
 from ai_hydro.session import claim_revisions as cr
 from ai_hydro.session import store
 from ai_hydro.session.store import HydroSession
-from approval_helpers import approve, basin_ref
+from approval_helpers import approve, basin_ref, basin_ref_full, retained
 from test_approval import _claim, _run_record
 
 
@@ -47,7 +47,7 @@ def _add(**over):
                 claim_type="empirical_result", status="proposed", confidence="low",
                 confidence_rationale="Synthetic regression fixture only.",
                 basins=["synthetic"], period="2000-2001", metric="nse",
-                basin_refs=[basin_ref("synthetic")],
+                basin_refs=[basin_ref_full("synthetic")],
                 limitations=["Synthetic regression case, no real research conclusion."],
                 evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}])
     args.update(over)

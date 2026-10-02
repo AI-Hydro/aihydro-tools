@@ -85,10 +85,9 @@ def check_scope_overreach(
     # (basins labels, plus basin_refs ids/labels and the usgs alias ids of the
     # session's delineated BasinRef when a claim binds to it)
     covered: set[str] = set()
-    slot_ref = identity.session_basin_ref(session)
-    refs_by_id = {slot_ref["id"]: slot_ref} if slot_ref and slot_ref.get("id") else {}
     for claim_dict in session.claims.values():
-        covered |= identity.claim_covered_ids(claim_dict.get("scope", {}), refs_by_id)
+        covered |= identity.claim_covered_ids(claim_dict.get("scope", {}),
+                                              identity.retained_refs(session, claim_dict))
 
     # Skip the check entirely if no claims have basin scopes
     if not covered:

@@ -8,6 +8,19 @@ the per-test isolated ``AIHYDRO_HOME`` (see ``conftest.py``).
 from __future__ import annotations
 
 
+def basin_ref_full(label: str = "synthetic") -> dict:
+    """The full BasinRef dict behind ``basin_ref(label)``: what a delineation retains."""
+    from aihydro_core.records.place import BasinAnchor, BasinRef
+    return BasinRef(anchor=BasinAnchor("network_element", "test-network", "1", label),
+                    method="test_fixture").to_dict()
+
+
+def retained(label: str = "synthetic") -> dict:
+    """``{id: full ref}`` for a claim dict's ``basin_ref_records`` (promotion re-verifies it)."""
+    full = basin_ref_full(label)
+    return {full["id"]: full}
+
+
 def basin_ref(label: str = "synthetic") -> dict:
     """A well-formed ``ClaimScope.basin_refs`` entry (slice 3): promotion of a basin-scoped
     claim now requires one. Test setup only; the id is derived, not minted by a delineation."""

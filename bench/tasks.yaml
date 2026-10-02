@@ -431,6 +431,7 @@ tasks:
           scope: {basins: ["02361000"], period: "2005-2010", basin_refs: [{id: "aihydro:basin:sha256:e41ddd1daea6daad6a401301ebc6d60ae4c89bb91a27e0617649f235dcc02604", label: "02361000"}]}
           evidence_spans: []
           limitations: ["Single basin"]
+          basin_ref_records: {"aihydro:basin:sha256:e41ddd1daea6daad6a401301ebc6d60ae4c89bb91a27e0617649f235dcc02604": {"schema": "aihydro.basin_ref/1", "id": "aihydro:basin:sha256:e41ddd1daea6daad6a401301ebc6d60ae4c89bb91a27e0617649f235dcc02604", "anchor": {"kind": "network_element", "network": "bench-fixture", "network_version": "1", "element": "02361000"}, "method": "bench_fixture", "geometry_algorithm": "aihydro.geom/1", "aliases": [], "minted_by": {}, "quality_flags": []}}
     call:
       tool: promote_claim_to_registry
       kwargs:
@@ -494,6 +495,7 @@ tasks:
             - "Calibrated on humid temperate basin only — not validated for semi-arid"
             - "HBV-light does not simulate glacier dynamics"
           uncertainty_verified: true
+          basin_ref_records: {"aihydro:basin:sha256:637dfcbea1a19215a4bf060db1d3bc4bb48ee230a906a139bf883a16bc435843": {"schema": "aihydro.basin_ref/1", "id": "aihydro:basin:sha256:637dfcbea1a19215a4bf060db1d3bc4bb48ee230a906a139bf883a16bc435843", "anchor": {"kind": "network_element", "network": "bench-fixture", "network_version": "1", "element": "01031500"}, "method": "bench_fixture", "geometry_algorithm": "aihydro.geom/1", "aliases": [], "minted_by": {}, "quality_flags": []}}
     call:
       tool: promote_claim_to_registry
       kwargs:
@@ -1429,6 +1431,7 @@ tasks:
               source_id: streamflow
               metric_ref: null
               description: "20-yr USGS NWIS daily discharge record"
+          basin_ref_records: {"aihydro:basin:sha256:6cf7e58c552feb22cd3338f735a2876abe052c61428359540668c365090bf333": {"schema": "aihydro.basin_ref/1", "id": "aihydro:basin:sha256:6cf7e58c552feb22cd3338f735a2876abe052c61428359540668c365090bf333", "anchor": {"kind": "network_element", "network": "bench-fixture", "network_version": "1", "element": "01013500"}, "method": "bench_fixture", "geometry_algorithm": "aihydro.geom/1", "aliases": [], "minted_by": {}, "quality_flags": []}}
           evidence: []
           contradictions: []
           citations: []

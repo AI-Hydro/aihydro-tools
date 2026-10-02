@@ -11,7 +11,7 @@ from ai_hydro.registry import store as registry
 from ai_hydro.registry.evidence import EvidenceError, verified_versions
 from ai_hydro.session import store
 from ai_hydro.session.store import HydroSession
-from approval_helpers import approve, basin_ref
+from approval_helpers import approve, basin_ref, basin_ref_full, retained
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +46,7 @@ def claim():
                       "basin_refs": [basin_ref("synthetic")]},
             "evidence_spans": [{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}],
             "limitations": ["Synthetic regression case, no real research conclusion."],
-            "uncertainty_verified": True}
+            "uncertainty_verified": True, "basin_ref_records": retained("synthetic")}
 
 
 @pytest.fixture

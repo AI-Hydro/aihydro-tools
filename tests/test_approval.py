@@ -35,7 +35,7 @@ from ai_hydro.mcp.tools_ledger import list_registry_claims, promote_claim_to_reg
 from ai_hydro.registry import store as registry
 from ai_hydro.session import store
 from ai_hydro.session.store import HydroSession
-from approval_helpers import approve, basin_ref
+from approval_helpers import approve, basin_ref, basin_ref_full, retained
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -56,6 +56,7 @@ def _claim(**over):
         "evidence_spans": [{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}],
         "limitations": ["Synthetic regression case, no real research conclusion."],
         "uncertainty_verified": True,
+        "basin_ref_records": retained("synthetic"),
     }
     base.update(over)
     return base

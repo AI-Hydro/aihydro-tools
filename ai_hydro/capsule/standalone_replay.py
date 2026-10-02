@@ -451,6 +451,11 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str):
         versions[sid] = _run_fingerprint(row)
         norm_spans.append({"source_type": kind, "source_id": sid, "metric_ref": span.get("metric_ref"),
                            "page": span.get("page"), "passage_hash": span.get("passage_hash")})
+    out_scope = {"basins": list(scope["basins"]), "period": scope["period"],
+                 "forcing": scope.get("forcing"), "metric": scope.get("metric"),
+                 "model_versions": scope.get("model_versions") or {}}
+    if scope.get("basin_refs") is not None:     # same omission-when-None rule as ClaimScope (slice 3)
+        out_scope["basin_refs"] = [dict(e) for e in scope["basin_refs"]]
     fields = {
         "schema": REVISION_SCHEMA,
         "text": claim["claim"],
@@ -458,9 +463,7 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str):
         "status": claim["status"],
         "confidence": claim["confidence"],
         "confidence_rationale": rationale,
-        "scope": {"basins": list(scope["basins"]), "period": scope["period"],
-                  "forcing": scope.get("forcing"), "metric": scope.get("metric"),
-                  "model_versions": scope.get("model_versions") or {}},
+        "scope": out_scope,
         "evidence_spans": norm_spans,
         "evidence_versions": versions,
         "limitations": list(claim.get("limitations") or []),

@@ -251,3 +251,99 @@ def test_refusal_envelopes_have_session_and_claim_id():
     res = promote_claim_to_registry("env2", "c1", researcher_approved=False)
     _assert_envelope(res, "APPROVAL_REQUIRED", "env2", "c1")
     assert res["approval_command"].startswith("aihydro-approve ")
+
+
+# --- T1: alias spoofing (COMID shaped like a USGS site id) -----------------
+
+def _comid_ref():
+    """Basin whose COMID alias is 13294314 and whose USGS site is 01013500."""
+    return _ref(site="01013500", comid="13294314")
+
+
+def test_bare_digit_label_binds_only_to_usgs_aliases():
+    ref = _comid_ref()
+    assert identity.ref_matches_label(ref, "01013500")
+    assert not identity.ref_matches_label(ref, "13294314")          # COMID, bare
+    assert identity.ref_matches_label(ref, "comid:13294314")        # explicit CURIE
+    assert not identity.ref_matches_label(ref, "usgs:13294314")
+
+
+def test_comid_collision_does_not_autobind_or_cover():
+    ref = _comid_ref()
+    _session_with_slot("sp", ref)
+    res = _add("sp", basins=["13294314"])                 # a USGS site that equals the COMID
+    assert "auto_bound" not in res
+    assert "basin_refs" not in HydroSession.load("sp").claims["c1"]["scope"]
+    # gauge-shape and skeptic coverage: a bound entry must not launder the COMID
+    refs = {ref["id"]: ref}
+    assert not identity.gauge_shaped(["13294314x"], [{"id": ref["id"], "label": "13294314"}], refs)
+    scope = {"basins": ["01013500"], "basin_refs": [{"id": ref["id"], "label": "13294314"}]}
+    covered = identity.claim_covered_ids(scope, refs)
+    assert "13294314" not in covered and "01013500" in covered
+    issues = check_scope_overreach(
+        _Sess({"c": {"scope": scope}}, {"data": {"basin_ref": ref}}), "Gauge 13294314 is flashy.")
+    assert [i.issue_type for i in issues] == ["scope_overreach"]
+
+
+# --- T2: ids must be backed by a retained, verified ref --------------------
+
+def test_invented_id_is_refused_at_add_claim():
+    HydroSession("inv").save()
+    fake = "aihydro:basin:sha256:" + "0" * 64
+    res = _add("inv", basin_refs=[{"id": fake, "label": "x"}])
+    assert res["code"] == "BASIN_REF_UNKNOWN" and res["session_id"] == "inv"
+
+
+def test_id_of_retained_ref_accepted_and_reverified_at_promotion():
+    ref = _ref()
+    _session_with_slot("ret", ref)
+    ok = _add("ret", basin_refs=[{"id": ref["id"], "label": "x"}])
+    assert ok["status"] == "recorded"
+    # slot cleared after binding: promotion re-verifies and refuses
+    s = HydroSession.load("ret")
+    s._slots.pop("watershed")
+    s.save()
+    res = promote_claim_to_registry("ret", "c1", researcher_approved=True)
+    assert res["code"] == "BASIN_REF_UNKNOWN"
+
+
+def test_forged_claim_entry_refused_at_promotion():
+    HydroSession("forge").save()
+    s = HydroSession.load("forge")
+    s.claims["c1"] = {**GOLDEN_CLAIM, "scope": {**GOLDEN_CLAIM["scope"], "basin_refs": [
+        {"id": "aihydro:basin:sha256:" + "0" * 64, "label": "01013500"}]}}
+    s.save()
+    res = promote_claim_to_registry("forge", "c1", researcher_approved=True)
+    assert res["code"] == "BASIN_REF_UNKNOWN" and res["claim_id"] == "c1"
+
+
+def test_full_ref_dict_is_retained_with_the_claim():
+    HydroSession("full").save()
+    ref = _ref()
+    _add("full", basin_refs=[ref])
+    claim = HydroSession.load("full").claims["c1"]
+    assert claim["basin_ref_records"] == {ref["id"]: ref}
+    assert identity.retained_refs(HydroSession.load("full"), claim) == {ref["id"]: ref}
+
+
+# --- T3: replay recompute equals the backend digest ------------------------
+
+def test_replay_recompute_includes_basin_refs():
+    from ai_hydro.approval.records import claim_revision_digest
+    from ai_hydro.capsule.standalone_replay import _run_fingerprint, recompute_claim_revision
+    row = {"run_id": "run1", "session_id": "s", "key_outputs": {"kge": 0.8}}
+    ev = {"run1": _run_fingerprint(row)}
+    ref = _ref()
+    for scope in (GOLDEN_CLAIM["scope"],
+                  {**GOLDEN_CLAIM["scope"], "basin_refs": [{"id": ref["id"], "label": "01013500"}]}):
+        claim = {**GOLDEN_CLAIM, "scope": scope}
+        got, why = recompute_claim_revision({"session_id": "s", "claims": {"c1": claim}},
+                                            {"run1": row}, "c1")
+        assert why is None and got == claim_revision_digest(claim, ev)
+    # unbound claims still replay to the pre-slice-3 golden value shape (omission rule)
+    unbound, _ = recompute_claim_revision({"session_id": "s", "claims": {"c1": GOLDEN_CLAIM}},
+                                          {"run1": row}, "c1")
+    bound, _ = recompute_claim_revision({"session_id": "s", "claims": {"c1": {
+        **GOLDEN_CLAIM, "scope": {**GOLDEN_CLAIM["scope"], "basin_refs": [{"id": ref["id"], "label": "x"}]}}}},
+        {"run1": row}, "c1")
+    assert unbound != bound
