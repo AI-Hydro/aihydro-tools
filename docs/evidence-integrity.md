@@ -295,6 +295,24 @@ recorded value. A mismatch sets `status: "exported_with_inconsistency"`. These a
 not a replay: `replay_status` stays `archive_integrity` and `recomputation` stays
 `not_performed`. A reader recomputes from the CSV with their own code.
 
+**Binding of the exported series.** Each `data_artifacts` entry has a
+`binding`. `producer_sealed`: the producing run's sealed record lists the
+retained file's digest (`extra.retained_files`, recorded by `fetch_streamflow_data`)
+and the exported file matches it. `replay.py` re-checks this from `run_log.json`
+(not from the manifest), so a swapped series fails replay with exit 1 even if the
+manifest is regenerated, and it also checks that the CSV equals the retained JSON.
+`self_attested`: nothing sealed names the series (sessions fetched before
+fetch-time sealing, a series that no longer matches its sealed digest, a slot
+array, or a re-query); the capsule then vouches only for itself, and the README
+and `replay.py` say so. A re-query (`aihydro_data_refetch`) is never attributed to
+the run: `produced_by_run_id` is null, `requested_by_run_id` names the run that
+triggered it, status is `exported_requeried` (provider queried again) or
+`exported_from_cache`, and the README says "re-queried at export; may differ from
+what the run consumed". The refetch's product is compared with the slot's recorded
+`_aihydro_data_product`; a mismatch, a differing BFI or any sealed-digest mismatch
+sets `exported_with_inconsistency`. Every consumer `<run_id>#q_cms` ref is
+compared, not only the last. The manifest carries relative paths only.
+
 **Replay.** The `replay.py` written into a capsule verifies file hashes and every
 v2 record (the seal, and the binding to its run-log row), prints
 `replay_status`, and never claims recomputation. `--live` additionally

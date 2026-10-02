@@ -556,10 +556,16 @@ def export_session(
             readme += ["", "## Data"]
             for a in data_artifacts:
                 if a.get("path"):
+                    if a.get("requested_by_run_id") is not None or a["retrieval"]["mechanism"] == "aihydro_data_refetch":
+                        who = ("re-queried at export; may differ from what the run consumed "
+                               f"(requested by run `{a.get('requested_by_run_id') or 'unrecorded'}`)")
+                    else:
+                        who = f"run `{a.get('produced_by_run_id') or 'unrecorded'}`"
+                    bind = ("bound to the producer's sealed record" if a["binding"] == "producer_sealed"
+                            else "self-attested: no sealed producer digest names this series")
                     readme.append(
                         f"- `{a['path']}` ({a['n_rows']} rows, sha256 `{a['sha256'][:16]}...`, "
-                        f"run `{a.get('produced_by_run_id') or 'unrecorded'}`, "
-                        f"{a['retrieval']['mechanism']})"
+                        f"{who}, {a['retrieval']['mechanism']}; {bind}; status {a['status']})"
                     )
                 else:
                     readme.append(f"- {a['variable']}: unavailable ({a.get('reason')})")

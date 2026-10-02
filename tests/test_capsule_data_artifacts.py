@@ -101,8 +101,24 @@ def _build_and_export(mode, tmp_path, monkeypatch):
     df = _series()
     calls = []
 
+    retained_path = tmp_path / "sessions" / f"{SID}.data.streamflow_{GAUGE}.json"
+
     def stub_fetch(variable, geometry, start, end, **kw):
         calls.append((variable, geometry, start, end))
+        if mode.startswith("retained") and len(calls) == 1:
+            # What fetch_streamflow_data does with no workspace: persist the
+            # served series beside the session file and seal its digest into
+            # this run's record (extra.retained_files, role "artifact").
+            from aihydro_core.records import digest_bytes
+            from ai_hydro.session import run_records as rr
+
+            retained_path.write_text(json.dumps({
+                "gauge_id": GAUGE, "dates": df["date"].dt.strftime("%Y-%m-%d").tolist(),
+                "q_cms": [None if v != v else float(v) for v in df["streamflow"].tolist()],
+            }))
+            rr.declare_lineage(retained_files=[{
+                "path": str(retained_path), "digest": digest_bytes(retained_path.read_bytes()),
+                "role": "artifact"}])
         return SimpleNamespace(data=df, product="NWIS_STREAMFLOW", source="direct_api",
                                citation="USGS NWIS (stub)", cache_hit=True,
                                fetched_at="2026-10-02T00:00:00+00:00", cache_key="stubkey")
@@ -125,19 +141,17 @@ def _build_and_export(mode, tmp_path, monkeypatch):
     # The slot really lost the series: this is the defect being fixed.
     assert not HydroSession.load(SID).streamflow["data"].get("q_cms")
 
-    if mode == "retained":
-        # What the fetch tool now does with no workspace: persist the served
-        # series beside the session file and point the slot's _data_file at it.
+    if mode.startswith("retained"):
         slot = HydroSession.load(SID)
-        retained = tmp_path / "sessions" / f"{SID}.data.streamflow_{GAUGE}.json"
-        retained.write_text(json.dumps({
-            "gauge_id": GAUGE, "dates": df["date"].dt.strftime("%Y-%m-%d").tolist(),
-            "q_cms": [None if v != v else float(v) for v in df["streamflow"].tolist()],
-        }))
         entry = slot.streamflow
-        entry["data"]["_data_file"] = str(retained)
+        entry["data"]["_data_file"] = str(retained_path)
         slot.set("streamflow", entry)
         slot.save()
+        if mode == "retained_swapped":
+            # the retained file is replaced after the fetch sealed its digest
+            body = json.loads(retained_path.read_text())
+            body["q_cms"] = [None if v is None else v * 1.5 for v in body["q_cms"]]
+            retained_path.write_text(json.dumps(body))
 
         def boom(*a, **k):
             raise AssertionError("must consume the retained artifact, not refetch")
@@ -156,6 +170,15 @@ def _build_and_export(mode, tmp_path, monkeypatch):
     err, body = call(app.mcp, "extract_hydrological_signatures",
                      {"session_id": SID})
     assert not err and not body.get("error"), body
+
+    if mode.startswith("refetch_diff"):
+        other = df.copy()
+        if mode == "refetch_diff_data":
+            other["streamflow"] = [v * (1.0 + 0.5 * ((i // 30) % 2)) for i, v in enumerate(other["streamflow"])]
+        monkeypatch.setattr(aihydro_data, "fetch", lambda *a, **k: SimpleNamespace(
+            data=other, product="OTHER_PRODUCT" if mode == "refetch_diff_product" else "NWIS_STREAMFLOW",
+            source="direct_api", citation="x", cache_hit=False,
+            fetched_at="2026-10-03T00:00:00+00:00", cache_key="k2"))
 
     import ai_hydro.mcp.tools_session as ts
 
@@ -185,9 +208,19 @@ def test_series_csv_in_capsule_with_manifest_digest(exported):
     assert art["role"] == "served_data" and art["columns"] == ["date", "q_cms"]
     assert art["n_rows"] == len(df) and art["n_missing"] == 1
     slot_run = HydroSession.load(SID).streamflow["meta"]["run_id"]
-    assert art["produced_by_run_id"] == slot_run
     run_log = json.loads((cap / "run_log.json").read_text())
-    assert art["producer_record_digest"] == run_log[slot_run]["record"]["record_digest"]
+    if "retained_artifact" in art:
+        assert art["produced_by_run_id"] == slot_run
+        assert art["producer_record_digest"] == run_log[slot_run]["record"]["record_digest"]
+        assert art["binding"] == "producer_sealed" and art["status"] == "exported"
+        assert art["consistency_checks"]["producer_sealed_digest"]["status"] == "agrees"
+    else:
+        # a re-query is never attributed to the run that was merely its trigger
+        assert art["produced_by_run_id"] is None and art["requested_by_run_id"] == slot_run
+        assert "producer_record_digest" not in art
+        assert art["binding"] == "self_attested" and art["status"] == "exported_from_cache"
+        assert "re-queried at export; may differ" in (cap / "README.md").read_text()
+        assert art["consistency_checks"]["product_vs_slot"]["status"] == "agrees"
     if "retained_artifact" in art:
         assert art["retrieval"]["mechanism"] == "retained_data_file"
         ra = art["retained_artifact"]
@@ -249,3 +282,60 @@ def test_unobtainable_series_is_stated_not_omitted(tmp_path, monkeypatch):
     assert art["status"] == "unavailable" and "path" not in art
     assert not list((Path(result["capsule_dir"]) / "data").glob("served_*"))
     assert "unavailable" in (Path(result["capsule_dir"]) / "README.md").read_text()
+
+
+def test_replay_binds_retained_series_to_the_sealed_record(tmp_path, monkeypatch):
+    cap, _, _ = _build_and_export("retained", tmp_path, monkeypatch)
+    proc = subprocess.run([sys.executable, str(cap / "replay.py")], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout
+    assert "matches the digest sealed by" in proc.stdout and "equals the retained series" in proc.stdout
+
+
+def test_swapped_series_in_capsule_fails_replay_even_with_regenerated_manifest(tmp_path, monkeypatch):
+    from ai_hydro.capsule.manifest import build_manifest
+
+    cap, _, _ = _build_and_export("retained", tmp_path, monkeypatch)
+    ra = cap / "data" / f"streamflow_{GAUGE}.json"
+    body = json.loads(ra.read_text())
+    body["q_cms"] = [None if v is None else v * 2 for v in body["q_cms"]]
+    ra.write_text(json.dumps(body))
+    # swap the derived CSV too and regenerate the manifest, as a same-user attacker would
+    csv_p = cap / "data" / f"served_streamflow_{GAUGE}.csv"
+    lines = csv_p.read_text().splitlines()
+    csv_p.write_text("\n".join([lines[0]] + [
+        f"{ln.split(',')[0]},{'' if ln.split(',')[1] == '' else repr(float(ln.split(',')[1]) * 2)}"
+        for ln in lines[1:]]) + "\n")
+    (cap / "capsule_manifest.json").write_text(json.dumps(build_manifest(cap)))
+    proc = subprocess.run([sys.executable, str(cap / "replay.py")], capture_output=True, text=True)
+    assert proc.returncode == 1 and "differs from the digest sealed by" in proc.stdout
+
+
+def test_series_swapped_before_export_is_flagged_not_bound(tmp_path, monkeypatch):
+    cap, _, _ = _build_and_export("retained_swapped", tmp_path, monkeypatch)
+    (art,) = json.loads((cap / "capsule_manifest.json").read_text())["data_artifacts"]
+    assert art["status"] == "exported_with_inconsistency" and art["binding"] == "self_attested"
+    assert art["consistency_checks"]["producer_sealed_digest"]["status"] == "differs"
+    proc = subprocess.run([sys.executable, str(cap / "replay.py")], capture_output=True, text=True)
+    assert proc.returncode == 1 and "differs from the digest sealed by" in proc.stdout
+
+
+def test_refetch_that_differs_from_what_the_run_saw_is_inconsistent(tmp_path, monkeypatch):
+    cap, _, _ = _build_and_export("refetch_diff_data", tmp_path, monkeypatch)
+    (art,) = json.loads((cap / "capsule_manifest.json").read_text())["data_artifacts"]
+    assert art["status"] == "exported_with_inconsistency"
+    assert art["produced_by_run_id"] is None and art["requested_by_run_id"]
+    assert art["consistency_checks"]["baseflow_index"]["status"] == "differs"
+    assert art["retrieval"]["cache_hit"] is False
+    assert "re-queried at export; may differ" in (cap / "README.md").read_text()
+
+
+def test_refetch_from_a_different_product_is_flagged(tmp_path, monkeypatch):
+    cap, _, _ = _build_and_export("refetch_diff_product", tmp_path, monkeypatch)
+    (art,) = json.loads((cap / "capsule_manifest.json").read_text())["data_artifacts"]
+    assert art["consistency_checks"]["product_vs_slot"]["status"] == "differs"
+    assert art["status"] == "exported_with_inconsistency"
+
+
+def test_manifest_has_no_absolute_capsule_dir(exported):
+    cap, _, _ = exported
+    assert "capsule_dir" not in json.loads((cap / "capsule_manifest.json").read_text())

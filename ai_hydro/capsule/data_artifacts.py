@@ -56,6 +56,37 @@ BFI_TOLERANCE = 1e-6
 
 SERIES_COLUMNS = ["date", "q_cms"]
 
+# Binding of the exported series to the run that produced it.
+#   producer_sealed  the producing run's sealed record lists the retained file's
+#                    digest (``extra.retained_files``) and the exported file
+#                    matches it; a regenerated manifest cannot hide a swap.
+#   self_attested    nothing sealed names the series (sessions fetched before
+#                    fetch-time sealing, or a re-query); the capsule vouches
+#                    for itself only.
+BINDING_SEALED = "producer_sealed"
+BINDING_SELF = "self_attested"
+
+
+def retained_name(path: str | Path) -> str:
+    """Capsule file name for a retained file ("<session>.data.<name>" -> <name>)."""
+    return Path(path).name.split(".data.", 1)[-1]
+
+
+def sealed_retained_files(record: dict | None) -> list[dict]:
+    """``extra.retained_files`` of a producer record, only if that record's seal holds."""
+    if not isinstance(record, dict):
+        return []
+    from ai_hydro.capsule.standalone_replay import record_seal_ok
+
+    if not record_seal_ok(record):
+        return []
+    files = (record.get("extra") or {}).get("retained_files") or []
+    return [f for f in files if isinstance(f, dict) and f.get("digest") and f.get("path")]
+
+
+def file_digest(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
 
 def lyne_hollick_bfi(q: list[float], alpha: float = LH_ALPHA, passes: int = LH_PASSES) -> float:
     """Baseflow index sum(baseflow)/sum(q), alternating forward/backward sweeps."""
@@ -174,16 +205,16 @@ def _served_digest_check(session: Any, run_id: str | None, q: list[float | None]
     try:
         from aihydro_core.records import digest_or_error
 
-        recorded = None
+        recorded = []
         for row in (session.get("_run_log") or {}).values():
             for ref in ((row or {}).get("record") or {}).get("input_refs") or []:
                 if ref.get("ref") == f"{run_id}#q_cms" and ref.get("digest"):
-                    recorded = ref["digest"]
-        if recorded is None:
+                    recorded.append(ref["digest"])
+        if not recorded:
             return None
         got, err = digest_or_error(list(q))
         return {"recorded": recorded, "from_exported_series": got,
-                "status": "agrees" if got == recorded else "differs"}
+                "status": "agrees" if all(got == r for r in recorded) else "differs"}
     except Exception:
         return None
 
@@ -232,6 +263,7 @@ def collect_data_artifacts(session: Any, capsule_dir: Path) -> list[dict]:
         "produced_by_run_id": run_id,
         "producer_record_digest": _record_digest(session, run_id),
         "units": data.get("units") or "m3/s",
+        "binding": BINDING_SELF,
     }
 
     series = None
@@ -246,6 +278,10 @@ def collect_data_artifacts(session: Any, capsule_dir: Path) -> list[dict]:
         if fetched is not None:
             series, info = fetched
             entry["retrieval"] = {"mechanism": "aihydro_data_refetch", **info}
+            # A re-query is not the run's output: do not attribute it to the run.
+            entry["requested_by_run_id"] = run_id
+            entry["requested_by_record_digest"] = entry.pop("producer_record_digest")
+            entry["produced_by_run_id"] = None
     if series is None:
         entry.update(status="unavailable",
                      reason="series not in the session slot or workspace, and not retrievable "
@@ -260,7 +296,7 @@ def collect_data_artifacts(session: Any, capsule_dir: Path) -> list[dict]:
     if retained is not None:
         # Verbatim copy of the run's own retained bytes. The session-side file
         # is named "<session>.data.<name>"; keep only <name>.
-        name = retained.name.split(".data.", 1)[-1]
+        name = retained_name(retained)
         dest = capsule_dir / "data" / name
         if dest != path:
             shutil.copy2(retained, dest)
@@ -270,6 +306,25 @@ def collect_data_artifacts(session: Any, capsule_dir: Path) -> list[dict]:
                 "note": "verbatim copy of the file the fetch tool retained when it served the series",
             }
     checks = _consistency(session, data, q_valid)
+    if retained is not None:
+        # Bind to the producer's SEALED digest of the retained file, when it has one.
+        row = (session.get("_run_log") or {}).get(run_id) or {}
+        sealed = [f for f in sealed_retained_files(row.get("record"))
+                  if f["path"] == str(retained) or retained_name(f["path"]) == retained_name(retained)]
+        if sealed:
+            got_digest = file_digest(retained)
+            entry["producer_sealed_digest"] = sealed[0]["digest"]
+            ok = got_digest == sealed[0]["digest"]
+            checks["producer_sealed_digest"] = {
+                "sealed": sealed[0]["digest"], "retained_file": got_digest,
+                "status": "agrees" if ok else "differs"}
+            entry["binding"] = BINDING_SEALED if ok else BINDING_SELF
+    prod_slot = data.get("_aihydro_data_product")
+    ret = entry["retrieval"]
+    if ret["mechanism"] == "aihydro_data_refetch" and prod_slot and ret.get("product"):
+        checks["product_vs_slot"] = {
+            "slot": prod_slot, "refetch": ret["product"],
+            "status": "agrees" if prod_slot == ret["product"] else "differs"}
     served = _served_digest_check(session, run_id, q)
     if served is not None:
         checks["served_series_digest"] = served
@@ -278,8 +333,14 @@ def collect_data_artifacts(session: Any, capsule_dir: Path) -> list[dict]:
         c = checks["n_rows_vs_recorded_n_days"]
         c["status"] = "agrees" if c["recorded"] == c["exported"] else "differs"
     bad = [k for k, v in checks.items() if v.get("status") == "differs"]
+    if bad:
+        status = "exported_with_inconsistency"
+    elif ret["mechanism"] == "aihydro_data_refetch":
+        status = "exported_from_cache" if ret.get("cache_hit") else "exported_requeried"
+    else:
+        status = "exported"
     entry.update(
-        status="exported" if not bad else "exported_with_inconsistency",
+        status=status,
         path=rel,
         columns=SERIES_COLUMNS,
         n_rows=len(q),
