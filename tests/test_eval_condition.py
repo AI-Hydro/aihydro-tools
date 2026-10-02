@@ -277,6 +277,117 @@ def test_kernel_output_identical_across_arms(server, home, monkeypatch):
     assert len({json.dumps(v, sort_keys=True) for v in seen.values()}) == 1, seen
 
 
+# ---------------------------------------------------------------- recursive strip (S2)
+
+def test_strip_fields_is_recursive_and_covers_underscore_variants():
+    tree = {"data": {"x": 1, "_quality_flags": [1], "inner": [{"quality_flags": [], "keep": 2,
+            "deep": {"_promotion_check": 1, "_next_steps": 2, "_skeptic_x": 3, "Skeptic": 4}}]},
+            "_run_id": "r1", "__quality_flags": 1, "skeptic_verdict": 1}
+    out = ec.strip_fields(tree)
+    assert out == {"data": {"x": 1, "inner": [{"keep": 2, "deep": {"Skeptic": 4}}]}, "_run_id": "r1"}
+    assert "_quality_flags" in tree["data"]                  # input untouched
+
+
+def _keys(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield k
+            yield from _keys(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _keys(v)
+
+
+def test_c1_result_tree_has_no_stripped_key_at_any_depth(home, monkeypatch):
+    from ai_hydro.mcp.enforcement import post_run
+
+    srv = FastMCP(name="eval-nested")
+    srv.add_middleware(app._ContextInjectionMiddleware())
+    srv.add_middleware(ec.EvalConditionMiddleware())
+    srv.add_middleware(app.RunRecordMiddleware())
+
+    @srv.tool()
+    def nested(session_id: str | None = None) -> dict:
+        r = post_run("nested", SID, {"data": {"x": 1.0}, "key_outputs": {"x": 1.0},
+                                     "quality_flags": [{"validator": "v", "status": "ok"}]})
+        r["rows"] = [{"_quality_flags": [1], "sub": {"promotion_check": [], "ok": 1,
+                                                       "list": [{"_skeptic_note": "n", "next_steps": []}]}}]
+        return r
+
+    arm(home, monkeypatch, "C1")
+    res = call(srv, "nested", client=label("C1"))
+    assert not res.is_error and res.structured_content["rows"][0]["sub"]["ok"] == 1
+    bad = [k for k in _keys(res.structured_content) if ec._is_stripped(k)]
+    assert bad == []
+    assert not any(t in json.dumps([b.text for b in res.content]) for t in
+                   ("quality_flags", "promotion_check", "next_steps", "skeptic"))
+
+
+# ---------------------------------------------------------------- hidden-name scrub (S1)
+
+def test_scrub_hidden_names_is_generic_and_recursive():
+    pat = ec.hidden_name_pattern("C1")
+    tree = {"_instruction": "Next call write_research_interpretation, then run_skeptic or check_record_length.",
+            "next_tools": ["add_claim", "promote_claim_to_registry", "check_stationarity"],
+            "by_name": {"run_skeptic": 1, "keep": "see add_claim"},
+            "nested": [{"hint": "use register_research_plan"}], "n": 3}
+    out = ec.scrub_hidden_names(tree, pat)
+    flat = json.dumps(out)
+    for name in ("write_research_interpretation", "run_skeptic", "check_record_length", "check_stationarity",
+                 "promote_claim_to_registry", "register_research_plan"):
+        assert name not in flat
+    assert out["next_tools"] == ["add_claim"] and out["by_name"] == {"keep": "see add_claim"} and out["n"] == 3
+    # per-arm: C3 hides only the all-arm tools, C2 adds the registry
+    assert ec.hidden_name_pattern("C3").search("promote_claim_to_registry") is None
+    assert ec.hidden_name_pattern("C3").search("run_python")
+    assert ec.hidden_name_pattern("C2").search("promote_claim_to_registry")
+    assert ec.hidden_name_pattern("C2").search("run_skeptic") is None
+    assert ec.hidden_name_pattern("C1").search("my_check_record") is None      # no partial-word hits
+
+
+@pytest.mark.parametrize("condition,named,visible", [
+    ("C1", ["write_research_interpretation", "run_skeptic", "promote_claim_to_registry"], ["add_claim"]),
+    ("C2", ["write_research_interpretation", "promote_claim_to_registry"], ["run_skeptic", "add_claim"]),
+    ("C3", ["write_research_interpretation", "run_python"], ["run_skeptic", "promote_claim_to_registry"]),
+])
+def test_results_never_name_hidden_tools(home, monkeypatch, condition, named, visible):
+    srv = FastMCP(name="eval-scrub")
+    srv.add_middleware(app._ContextInjectionMiddleware())
+    srv.add_middleware(ec.EvalConditionMiddleware())
+    srv.add_middleware(app.RunRecordMiddleware())
+
+    @srv.tool()
+    def describe(session_id: str | None = None) -> dict:
+        return {"_instruction": "call " + ", ".join(named + visible), "tools": named + visible}
+
+    arm(home, monkeypatch, condition)
+    res = call(srv, "describe", client=label(condition))
+    assert not res.is_error
+    blob = json.dumps(res.structured_content) + "".join(b.text for b in res.content)
+    assert not any(n in blob for n in named), blob
+    assert all(v in blob for v in visible)
+    assert res.structured_content["tools"] == visible
+
+
+def test_real_discovery_tools_do_not_name_hidden_tools(home, monkeypatch):
+    import ai_hydro.mcp  # noqa: F401
+
+    arm(home, monkeypatch, "C1")
+    pat = ec.hidden_name_pattern("C1")
+
+    async def run():
+        async with Client(app.mcp) as c:
+            out = []
+            for name, args in (("aihydro_describe_capability", {"domain": "claims"}),
+                               ("list_available_tools", {}),
+                               ("get_session_raw_state", {"session_id": SID})):
+                r = await c.call_tool(name, args, meta={META: {"client": label("C1")}}, raise_on_error=False)
+                out.append((name, json.dumps(r.structured_content) + "".join(b.text for b in r.content)))
+            return out
+    for name, blob in asyncio.run(run()):
+        assert pat.search(blob) is None, (name, pat.search(blob).group(0))
+
+
 # ---------------------------------------------------------------- context sealing
 
 @pytest.mark.parametrize("client", [None, "", "p1eval/C2/" + ec.nonce_digest(NONCE),

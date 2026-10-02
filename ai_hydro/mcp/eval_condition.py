@@ -25,9 +25,13 @@ What each arm gets (the kernel is identical; only the surface differs)::
               and run_python (arbitrary same-user code execution; see below)
     C1, C2    hide the registry tools (promote_claim_to_registry, list_registry_claims,
               check_registry_staleness)
+    all arms  never name a hidden tool in a result: ``scrub_hidden_names`` drops the name from
+              lists/keys and replaces it inside text (discovery tools such as
+              ``aihydro_describe_capability`` and ``_instruction`` hints would otherwise
+              send the agent to tools it cannot call)
     C1        also hide every ``check_*`` validator, run_skeptic, audit_interpretation,
-              register_research_plan; and strip from every agent-visible result
-              ``quality_flags``, ``promotion_check``, ``next_steps`` and the skeptic
+              register_research_plan; and strip at every depth from every agent-visible result
+              ``quality_flags``/``_quality_flags``, ``promotion_check``, ``next_steps`` and the skeptic
               fields (``skeptic*`` / ``_skeptic*``). ``_run_id`` is kept.
     C3        nothing more: the production gate surface.
 
@@ -55,6 +59,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -141,21 +146,74 @@ def hidden_tools(condition: str, tool_names: Any) -> set:
     return hidden & names
 
 
-def _is_stripped(key: str) -> bool:
-    return key in STRIPPED_FIELDS or key.startswith(_SKEPTIC_PREFIXES)
+def _is_stripped(key: Any) -> bool:
+    """True for a stripped advisory key, with or without any leading underscores."""
+    if not isinstance(key, str):
+        return False
+    bare = key.lstrip("_")
+    return bare in STRIPPED_FIELDS or bare.startswith("skeptic")
 
 
 def strip_fields(value: Any) -> Any:
-    """Copy of a result dict without the C1-hidden advisory fields (``_run_id`` is kept)."""
-    if not isinstance(value, dict):
-        return value
-    return {k: v for k, v in value.items() if not _is_stripped(k)}
+    """Copy of ``value`` without the C1-hidden advisory fields at every depth.
+
+    Recurses through dicts and lists; ``_run_id`` is kept. A key is stripped when its
+    name, ignoring leading underscores, is a stripped field (``quality_flags``,
+    ``_quality_flags``, ...) or starts with ``skeptic``.
+    """
+    if isinstance(value, dict):
+        return {k: strip_fields(v) for k, v in value.items() if not _is_stripped(k)}
+    if isinstance(value, list):
+        return [strip_fields(v) for v in value]
+    return value
 
 
-def _strip_tool_result(tool_result: ToolResult) -> ToolResult:
-    """A new ``ToolResult`` with the advisory fields removed; the original is untouched."""
+UNAVAILABLE = "[tool unavailable in this configuration]"
+
+
+def hidden_name_pattern(condition: str) -> "re.Pattern[str]":
+    """Regex matching the name of any tool arm ``condition`` hides (``check_*`` for C1)."""
+    names = set(HIDDEN_ALL_ARMS)
+    if condition in ("C1", "C2"):
+        names |= REGISTRY_TOOLS
+    if condition == "C1":
+        names |= C1_ONLY_HIDDEN
+    alternatives = [re.escape(n) for n in sorted(names)]
+    if condition == "C1":
+        alternatives.append(r"check_[A-Za-z0-9_]+")
+    return re.compile(r"(?<![A-Za-z0-9_])(?:" + "|".join(alternatives) + r")(?![A-Za-z0-9_])")
+
+
+def scrub_hidden_names(value: Any, pattern: "re.Pattern[str]") -> Any:
+    """Copy of ``value`` that never names a hidden tool, at any depth.
+
+    A string that IS a hidden name is dropped from lists and from dict keys; a hidden
+    name inside longer text is replaced by ``UNAVAILABLE``. This is a generic discovery
+    scrub, not a per-tool rule: every hidden tool is treated the same wherever it is named.
+    """
+    if isinstance(value, str):
+        return pattern.sub(UNAVAILABLE, value)
+    if isinstance(value, dict):
+        return {k: scrub_hidden_names(v, pattern) for k, v in value.items()
+                if not (isinstance(k, str) and pattern.fullmatch(k))}
+    if isinstance(value, list):
+        return [scrub_hidden_names(v, pattern) for v in value
+                if not (isinstance(v, str) and pattern.fullmatch(v))]
+    return value
+
+
+def _sanitize(value: Any, state: EvalState) -> Any:
+    if state.condition == "C1":
+        value = strip_fields(value)
+    return scrub_hidden_names(value, hidden_name_pattern(state.condition))
+
+
+def _sanitize_tool_result(tool_result: ToolResult, state: EvalState) -> ToolResult:
+    """A new ``ToolResult`` with advisory fields removed (C1) and hidden tool names
+    scrubbed (every arm); the original, already sealed, result is untouched."""
     structured = getattr(tool_result, "structured_content", None)
-    new_structured = strip_fields(copy.deepcopy(structured)) if isinstance(structured, dict) else structured
+    new_structured = _sanitize(copy.deepcopy(structured), state) if isinstance(structured, dict) else structured
+    pattern = hidden_name_pattern(state.condition)
     blocks = []
     for block in getattr(tool_result, "content", None) or []:
         text = getattr(block, "text", None)
@@ -164,9 +222,11 @@ def _strip_tool_result(tool_result: ToolResult) -> ToolResult:
                 parsed = json.loads(text)
             except ValueError:
                 parsed = None
-            if isinstance(parsed, dict):
-                blocks.append(TextContent(type="text", text=json.dumps(strip_fields(parsed), default=str)))
-                continue
+            if isinstance(parsed, (dict, list)):
+                blocks.append(TextContent(type="text", text=json.dumps(_sanitize(parsed, state), default=str)))
+            else:
+                blocks.append(TextContent(type="text", text=pattern.sub(UNAVAILABLE, text)))
+            continue
         blocks.append(block)
     return ToolResult(content=blocks, structured_content=new_structured,
                       meta=getattr(tool_result, "meta", None))
@@ -214,10 +274,8 @@ class EvalConditionMiddleware(Middleware):
                 f"(expected {state.client_label!r}).")
 
         result = await call_next(context)
-        if state.condition == "C1":
-            try:
-                return _strip_tool_result(result)
-            except Exception as exc:   # never hand back a half-stripped result
-                log.warning("eval strip failed for %s: %s", name, exc)
-                return _refusal(f"could not strip advisory fields: {exc}")
-        return result
+        try:
+            return _sanitize_tool_result(result, state)
+        except Exception as exc:   # never hand back a half-sanitised result
+            log.warning("eval sanitise failed for %s: %s", name, exc)
+            return _refusal(f"could not sanitise the result: {exc}")
