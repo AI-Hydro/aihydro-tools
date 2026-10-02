@@ -27,6 +27,7 @@ Exit code: 0 = all checks passed, 1 = a check failed,
 """
 from __future__ import annotations
 
+import decimal
 import hashlib
 import json
 import math
@@ -51,18 +52,28 @@ _LEGACY_TOOL_TO_SLOT = {
 
 
 # --------------------------------------------------------------------------- #
-# aihydro.c14n/1 for JSON-pure values (record dicts read back from JSON)
+# aihydro.c14n/1 for JSON-native values (record dicts read back from JSON):
+# tagging (non-finite floats, ints beyond 2**53, "$"-keyed dicts) followed by
+# RFC 8785 (JCS) serialisation. Copied from aihydro_core.records.canonical;
+# tests assert it reproduces core's golden vectors and digests.
 # --------------------------------------------------------------------------- #
 
+_MAX_SAFE_INT = 2 ** 53
+
+
 def _encode(value):
-    if value is None or isinstance(value, (bool, int, str)):
+    if value is None or isinstance(value, (bool, str)):
         return value
+    if isinstance(value, int):
+        if -_MAX_SAFE_INT <= value <= _MAX_SAFE_INT:
+            return value
+        return {"$int": str(int(value))}
     if isinstance(value, float):
         if math.isnan(value):
             return {"$float": "nan"}
         if math.isinf(value):
             return {"$float": "inf" if value > 0 else "-inf"}
-        return value
+        return float(value)
     if isinstance(value, dict):
         out = {}
         for key, item in value.items():
@@ -76,10 +87,70 @@ def _encode(value):
     raise TypeError(f"cannot encode {type(value).__name__}")
 
 
+def _es_number(x):
+    """ECMAScript Number::toString for a finite double (RFC 8785 3.2.2.3)."""
+    if x == 0:
+        return "0"
+    if x < 0:
+        return "-" + _es_number(-x)
+    sign, digit_tuple, exp = decimal.Decimal(repr(x)).as_tuple()
+    digits = "".join(map(str, digit_tuple)).rstrip("0") or "0"
+    k = len(digits)
+    n = len(digit_tuple) + exp
+    if k <= n <= 21:
+        return digits + "0" * (n - k)
+    if 0 < n <= 21:
+        return digits[:n] + "." + digits[n:]
+    if -6 < n <= 0:
+        return "0." + "0" * (-n) + digits
+    e = n - 1
+    exp_str = ("+" if e >= 0 else "-") + str(abs(e))
+    if k == 1:
+        return digits + "e" + exp_str
+    return digits[0] + "." + digits[1:] + "e" + exp_str
+
+
+_ESCAPES = {'"': '\\"', "\\": "\\\\", "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _es_string(s):
+    out = ['"']
+    for ch in s:
+        if ch in _ESCAPES:
+            out.append(_ESCAPES[ch])
+        elif ord(ch) < 0x20:
+            out.append("\\u%04x" % ord(ch))
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _serialize(v):
+    if v is None:
+        return "null"
+    if v is True:
+        return "true"
+    if v is False:
+        return "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return _es_number(v)
+    if isinstance(v, str):
+        return _es_string(v)
+    if isinstance(v, list):
+        return "[" + ",".join(_serialize(i) for i in v) + "]"
+    items = sorted(v.items(), key=lambda kv: kv[0].encode("utf-16-be", "surrogatepass"))
+    return "{" + ",".join(_es_string(k) + ":" + _serialize(val) for k, val in items) + "}"
+
+
+def canonical_bytes(value) -> bytes:
+    return _serialize(_encode(value)).encode("utf-8")
+
+
 def c14n_digest(value) -> str:
-    text = json.dumps(_encode(value), sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False, allow_nan=False)
-    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
 _RECORD_DEFAULTS = (

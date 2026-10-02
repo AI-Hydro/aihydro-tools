@@ -249,7 +249,7 @@ def _random_json(rng: random.Random, depth: int = 0):
     if kind == "bool":
         return rng.random() < 0.5
     if kind == "int":
-        return rng.randint(-10**12, 10**12)
+        return rng.choice([rng.randint(-10**12, 10**12), rng.randint(-10**20, 10**20), 2**53, 2**53 + 1])
     if kind == "float":
         return rng.uniform(-1e6, 1e6)
     if kind == "str":
@@ -289,3 +289,15 @@ def test_embedded_seal_check_agrees_with_core_verify():
     for case in cases:
         round_tripped = json.loads(json.dumps(case))
         assert sr.record_seal_ok(round_tripped) == RunRecord.from_dict(round_tripped).verify(), case
+
+
+CORE_VECTORS = Path(__import__("aihydro_core").__file__).resolve().parent.parent / "tests" / "data" / "c14n_vectors.json"
+
+
+@pytest.mark.skipif(not CORE_VECTORS.exists(), reason="core golden vectors not on this path")
+def test_standalone_reproduces_every_core_golden_vector():
+    vectors = json.loads(CORE_VECTORS.read_text(encoding="utf-8"))
+    assert vectors["canonicalization"] == "aihydro.c14n/1" and vectors["cases"]
+    for case in vectors["cases"]:
+        assert sr.canonical_bytes(case["input"]).decode("utf-8") == case["canonical"], case["name"]
+        assert sr.c14n_digest(case["input"]) == case["digest"], case["name"]
