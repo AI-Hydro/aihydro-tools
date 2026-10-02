@@ -152,6 +152,7 @@ dev = [
 aihydro-mcp = "ai_hydro.mcp:main"
 aihydro-gee = "ai_hydro.gee.cli:main"
 aihydro-bench = "bench.gen_scorecard:main"
+aihydro-approve = "ai_hydro.approval.cli:main"
 
 # Community plugin tool entry point namespace.
 # Third-party packages add tools in their own pyproject.toml:

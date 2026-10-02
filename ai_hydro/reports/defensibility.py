@@ -19,8 +19,17 @@ Sections
 7. Pre-registration Plan — locked hypothesis and planned analyses (if filed);
    plan-vs-executed diff showing which planned analyses were actually run
 
-Pure function: no file I/O, no MCP imports, no network.
-Callers (export_session) handle writing to disk.
+Pure function apart from one read-only lookup: no file writes, no MCP
+imports, no network. When the session has promoted claims, the report reads the
+global registry (or uses ``registry_entries`` if the caller supplies them) to
+show each promotion's human-approval stamp. Callers (export_session) handle
+writing to disk.
+
+Approval labelling (ADR-002a): a promoted claim whose registry entry carries
+``approval.record_digest`` is shown as approved by that record; an entry without
+one (legacy, or the registry row is missing) is shown as ``approval:
+self_asserted`` / ``unknown``. The report never re-verifies the record; it
+reports what the registry row says.
 """
 from __future__ import annotations
 
@@ -51,10 +60,44 @@ _STATUS_EMOJI = {
 }
 
 
+def _promotion_approvals(
+    claims: dict, session_id: str, registry_entries: list[dict] | None
+) -> list[dict]:
+    """One row per session claim that was promoted: its registry approval label."""
+    promoted = {cid: c for cid, c in claims.items()
+                if isinstance(c, dict) and (c.get("promoted") or c.get("registry_id"))}
+    if not promoted:
+        return []
+    if registry_entries is None:
+        try:
+            from ai_hydro.registry.store import find_by_session
+            registry_entries = find_by_session(session_id)
+        except Exception as exc:  # report must not fail on registry trouble
+            log.warning("Registry lookup failed in defensibility report (non-fatal): %s", exc)
+            registry_entries = []
+    by_id = {e.get("registry_id"): e for e in registry_entries}
+    rows = []
+    for cid, c in sorted(promoted.items()):
+        rid = c.get("registry_id")
+        entry = by_id.get(rid)
+        if entry is None:
+            label = "unknown (registry entry not found)"
+        else:
+            approval = entry.get("approval")
+            if isinstance(approval, dict) and approval.get("record_digest"):
+                channel = approval.get("channel", "unspecified")
+                label = f"approved (channel {channel}), record {approval['record_digest']}"
+            else:
+                label = "self_asserted"
+        rows.append({"claim_id": cid, "registry_id": rid or "—", "approval": label})
+    return rows
+
+
 def build_defensibility_report(
     session: "HydroSession",
     session_id: str,
     today: str,
+    registry_entries: list[dict] | None = None,
 ) -> tuple[str, dict]:
     """
     Build a Markdown defensibility report for the given session.
@@ -77,6 +120,8 @@ def build_defensibility_report(
         n_confirmatory_claims   int         — claims with prereg_id set
         n_planned_analyses      int         — analyses listed in the plan (0 if no plan)
         n_executed_planned      int         — planned analyses that were actually run
+        n_promoted_claims       int         — session claims promoted to the registry
+        n_self_asserted_promotions int      — promotions without a human approval stamp
     """
     lines: list[str] = []
     run_log: dict[str, dict] = session.get("_run_log") or {}
@@ -209,6 +254,7 @@ def build_defensibility_report(
     lines += ["---", "", "## 4. Claims Register", ""]
 
     claims = session.claims or {}
+    promotion_rows: list[dict] = []
     n_claims = len(claims)
     n_confirmatory_claims = sum(
         1 for c in claims.values() if c.get("prereg_id")
@@ -249,6 +295,20 @@ def build_defensibility_report(
             f"{n_expl} exploratory  ",
             "",
         ]
+        promotion_rows = _promotion_approvals(claims, session_id, registry_entries)
+        if promotion_rows:
+            lines += [
+                "### Registry promotions and approval",
+                "",
+                "| Claim | Registry ID | Approval |",
+                "|-------|-------------|----------|",
+            ]
+            for row in promotion_rows:
+                lines.append(
+                    f"| `{row['claim_id'][:16]}` | `{row['registry_id']}` "
+                    f"| `approval: {row['approval']}` |"
+                )
+            lines.append("")
     else:
         lines += [
             "_No claims registered. Call `add_claim` to record scientific conclusions._",
@@ -459,5 +519,8 @@ def build_defensibility_report(
         "n_confirmatory_claims": n_confirmatory_claims,
         "n_planned_analyses": n_planned_analyses,
         "n_executed_planned": n_executed_planned,
+        "n_promoted_claims": len(promotion_rows),
+        "n_self_asserted_promotions": sum(
+            1 for r in promotion_rows if r["approval"] == "self_asserted"),
     }
     return markdown, summary

@@ -1,9 +1,10 @@
 """
 Global claim registry — JSONL store with status updates.
 
-File layout:
-    ~/.aihydro/registry/claims.jsonl     ← one JSON object per line
-    ~/.aihydro/registry/claims.jsonl.tmp ← atomic write temp (auto-removed)
+File layout (``$AIHYDRO_HOME`` defaults to ``~/.aihydro``; resolved at call time):
+    $AIHYDRO_HOME/registry/claims.jsonl      ← one JSON object per line
+    $AIHYDRO_HOME/registry/claims.jsonl.tmp  ← atomic write temp (auto-removed)
+    $AIHYDRO_HOME/registry/claims.jsonl.lock ← cross-process write lock
 
 Each entry is a dict with at minimum:
     registry_id     — "reg.{session_frag}.{date}.{hash6}"
@@ -14,10 +15,19 @@ Each entry is a dict with at minimum:
     promoted_at     — ISO-8601 UTC
     evidence_versions  — {source_id: content_hash_hex} captured at promotion time
     staleness       — None or {reason, detected_at, stale_sources: [source_id, ...]}
+    approval        — {record_digest, channel}: the human approval record
+                      (ADR-002a) the promotion was bound to. Single use: a
+                      second row citing the same record_digest is refused. Rows written before approval
+                      records existed have no ``approval`` key; listings label
+                      them ``approval: self_asserted`` at read time (rows are
+                      never rewritten to add the label).
 
 The file is rewritten atomically via write-then-rename so readers always see
-a consistent snapshot.  Rename does not serialize concurrent read/modify/write operations. Multi-writer
-transaction safety is separate outstanding work; this store is not append-only.
+a consistent snapshot.  Every read-modify-write runs under an exclusive
+cross-process lock (``fcntl.flock`` on POSIX; see ``locking.py`` for the
+Windows and no-lock fallbacks), so concurrent writers serialise instead of
+losing updates.  This store is still not append-only: stale/retracted marks
+rewrite the file.
 """
 from __future__ import annotations
 
@@ -28,10 +38,41 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .locking import file_lock
+from .paths import aihydro_home
+
 log = logging.getLogger("ai_hydro.registry")
 
-REGISTRY_DIR = Path.home() / ".aihydro" / "registry"
-CLAIMS_FILE = REGISTRY_DIR / "claims.jsonl"
+# Explicit path overrides, ``None`` by default. Production resolves the paths
+# at call time from ``$AIHYDRO_HOME`` (see ``registry_dir`` / ``claims_file``);
+# a test may still pin either attribute to a temp location.
+REGISTRY_DIR: Path | None = None
+CLAIMS_FILE: Path | None = None
+
+
+def registry_dir() -> Path:
+    """Registry directory: explicit override, else ``$AIHYDRO_HOME/registry``."""
+    return REGISTRY_DIR if REGISTRY_DIR is not None else aihydro_home() / "registry"
+
+
+def claims_file() -> Path:
+    """Registry claims file: explicit override, else ``<registry_dir>/claims.jsonl``."""
+    return CLAIMS_FILE if CLAIMS_FILE is not None else registry_dir() / "claims.jsonl"
+
+
+class ApprovalAlreadyConsumed(ValueError):
+    """A different registry row already cites this approval record."""
+
+    def __init__(self, record_digest: str, registry_id: str):
+        self.record_digest, self.registry_id = record_digest, registry_id
+        super().__init__(f"Approval {record_digest} already authorised promotion {registry_id}; "
+                         "an approval is single-use, so a fresh approval is required.")
+
+
+def _lock():
+    """Exclusive cross-process lock held around every read-modify-write."""
+    path = claims_file()
+    return file_lock(path.with_name(path.name + ".lock"))
 
 
 # ---------------------------------------------------------------------------
@@ -39,15 +80,16 @@ CLAIMS_FILE = REGISTRY_DIR / "claims.jsonl"
 # ---------------------------------------------------------------------------
 
 def _ensure_dir() -> None:
-    REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
+    claims_file().parent.mkdir(parents=True, exist_ok=True)
 
 
 def _read_all() -> list[dict]:
     """Return every entry from the registry, oldest first."""
-    if not CLAIMS_FILE.exists():
+    path = claims_file()
+    if not path.exists():
         return []
     entries = []
-    with open(CLAIMS_FILE, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if line:
@@ -61,11 +103,12 @@ def _read_all() -> list[dict]:
 def _write_all(entries: list[dict]) -> None:
     """Atomically rewrite the full registry file."""
     _ensure_dir()
-    tmp = CLAIMS_FILE.with_suffix(".jsonl.tmp")
+    path = claims_file()
+    tmp = path.with_suffix(".jsonl.tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
         for entry in entries:
             fh.write(json.dumps(entry, sort_keys=True, default=str) + "\n")
-    os.replace(tmp, CLAIMS_FILE)  # atomic on POSIX and Windows
+    os.replace(tmp, path)  # atomic on POSIX and Windows
 
 
 # ---------------------------------------------------------------------------
@@ -76,20 +119,49 @@ def append(entry: dict) -> None:
     """
     Append a new entry to the registry.
 
-    Reads current state, deduplicates by registry_id (returns early if the
-    exact registry_id already exists), then rewrites atomically.
+    Under the cross-process lock: reads current state, deduplicates by
+    registry_id (returns early if the exact registry_id already exists), then
+    rewrites atomically.
     """
     _ensure_dir()
-    entries = _read_all()
-    if any(e.get("registry_id") == entry.get("registry_id") for e in entries):
-        return  # idempotent: same registry_id already present
-    entries.append(entry)
-    _write_all(entries)
+    with _lock():
+        entries = _read_all()
+        if any(e.get("registry_id") == entry.get("registry_id") for e in entries):
+            return  # idempotent: same registry_id already present
+        # Single-use approvals, enforced under the same lock as the write so
+        # two concurrent promotions cannot both consume one record.
+        approval = entry.get("approval")
+        if isinstance(approval, dict) and approval.get("record_digest"):
+            for existing in entries:
+                other = existing.get("approval")
+                if isinstance(other, dict) and other.get("record_digest") == approval["record_digest"]:
+                    raise ApprovalAlreadyConsumed(approval["record_digest"], existing.get("registry_id", "?"))
+        entries.append(entry)
+        _write_all(entries)
 
 
 def all_entries() -> list[dict]:
     """Return all registry entries, oldest first."""
     return _read_all()
+
+
+SELF_ASSERTED = "self_asserted"
+
+
+def approval_label(entry: dict) -> Any:
+    """Approval stamp of an entry, or ``"self_asserted"`` for legacy rows.
+
+    Read-time only: stored rows are never rewritten to add the label.
+    """
+    approval = entry.get("approval")
+    return approval if isinstance(approval, dict) and approval.get("record_digest") else SELF_ASSERTED
+
+
+def with_approval_label(entry: dict) -> dict:
+    """Shallow copy of ``entry`` whose ``approval`` field is always present."""
+    out = dict(entry)
+    out["approval"] = approval_label(entry)
+    return out
 
 
 def find_by_claim_id(claim_id: str) -> list[dict]:
@@ -112,35 +184,39 @@ def mark_stale(registry_id: str, stale_sources: list[str], reason: str = "eviden
 
     Returns True if the entry was found and updated, False otherwise.
     """
-    entries = _read_all()
-    updated = False
-    for entry in entries:
-        if entry.get("registry_id") == registry_id:
-            entry["status"] = "stale"
-            entry["staleness"] = {
-                "reason": reason,
-                "detected_at": datetime.now(timezone.utc).isoformat(),
-                "stale_sources": stale_sources,
-            }
-            updated = True
-    if updated:
-        _write_all(entries)
+    _ensure_dir()
+    with _lock():
+        entries = _read_all()
+        updated = False
+        for entry in entries:
+            if entry.get("registry_id") == registry_id:
+                entry["status"] = "stale"
+                entry["staleness"] = {
+                    "reason": reason,
+                    "detected_at": datetime.now(timezone.utc).isoformat(),
+                    "stale_sources": stale_sources,
+                }
+                updated = True
+        if updated:
+            _write_all(entries)
     return updated
 
 
 def mark_retracted(registry_id: str, reason: str = "") -> bool:
     """Mark an entry as retracted (researcher withdrew the claim)."""
-    entries = _read_all()
-    updated = False
-    for entry in entries:
-        if entry.get("registry_id") == registry_id:
-            entry["status"] = "retracted"
-            entry["retracted_at"] = datetime.now(timezone.utc).isoformat()
-            if reason:
-                entry["retraction_reason"] = reason
-            updated = True
-    if updated:
-        _write_all(entries)
+    _ensure_dir()
+    with _lock():
+        entries = _read_all()
+        updated = False
+        for entry in entries:
+            if entry.get("registry_id") == registry_id:
+                entry["status"] = "retracted"
+                entry["retracted_at"] = datetime.now(timezone.utc).isoformat()
+                if reason:
+                    entry["retraction_reason"] = reason
+                updated = True
+        if updated:
+            _write_all(entries)
     return updated
 
 

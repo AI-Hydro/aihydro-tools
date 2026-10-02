@@ -11,6 +11,7 @@ from ai_hydro.registry import store as registry
 from ai_hydro.registry.evidence import EvidenceError, verified_versions
 from ai_hydro.session import store
 from ai_hydro.session.store import HydroSession
+from approval_helpers import approve
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +58,10 @@ def session():
 
 
 def promote():
+    # A human approval for the claim's current revision is part of the
+    # fixture (ADR-002a): these tests isolate the evidence gates, which run
+    # before the approval check, so a blocked result is still the evidence's.
+    approve("integrity", "c1")
     return promote_claim_to_registry("integrity", "c1", researcher_approved=True)
 
 
