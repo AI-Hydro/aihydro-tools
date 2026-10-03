@@ -155,7 +155,12 @@ def _export(root: Path, session_id: str, workspace_dir, claim_entries, live: boo
     if structural:
         raise CrateExportError("bundle does not match the capsule files: "
                                + "; ".join(f"{f.rule}: {f.message}" for f in structural[:3]))
-    if unexplained or not assessment["integrity_ok"]:
+    if unexplained:
+        # only a privacy-withheld row is acceptable partiality; a seal mismatch, foreign session or missing
+        # body must not be turned into "declared partial coverage" by the exporter (fault matrix F7)
+        raise CrateExportError("records fail verification for a reason other than privacy withholding, so no "
+                               f"crate is written: {unexplained[:5]}")
+    if not assessment["integrity_ok"]:
         checked = "not_performed"
     cov = make_coverage(probe.records_verified, probe.records_total, bad)
 
@@ -226,6 +231,13 @@ def convert_capsule(src: "str | Path", dst: "str | Path", *, live: bool = True,
     before = _tree_digest(src)
     shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=False)
     clean_outputs(dst)
+    try:                                    # the converted copy now has a crate: say so, so its deletion is seen
+        mp = dst / MANIFEST_FILE
+        man = json.loads(mp.read_text(encoding="utf-8"))
+        man["crate"] = {"expected": True, "files": list(_OWN_OUTPUTS), "converted": True}
+        mp.write_text(json.dumps(man, indent=2), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
     (dst / REPLAY_FILE).write_text(sr.source_text(), encoding="utf-8")
     try:
         session = json.loads((dst / "session.json").read_text(encoding="utf-8"))

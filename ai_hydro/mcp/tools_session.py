@@ -718,6 +718,11 @@ def export_session(
             "rows_scrubbed_unsealed": _priv_counts["scrubbed"],
             "files_scrubbed": _priv_files,
         }
+        manifest["session_id"] = session_id
+        # written before the crate step so a deleted crate is a failure, not "predates the crate export";
+        # rewritten below if the crate could not be built
+        manifest["crate"] = {"expected": True, "files": ["bundle.json", "ro-crate-metadata.json",
+                                                         "manifest-sha256.txt"]}
         manifest["claim_revisions"] = {
             "schema": "aihydro.capsule.claim_revisions/1",
             "file": "records/claim_revisions.json" if claim_entries else None,
@@ -758,8 +763,11 @@ def export_session(
                                       workspace_dir=session.workspace_dir, claim_entries=claim_entries)
             files_written += [crate_info["bundle_file"], crate_info["crate_file"], crate_info["bagit_file"]]
         except CrateExportError as exc:
-            crate_error = str(exc)
+            from ai_hydro.session.refs import scrub_paths as _scrub_paths
+            crate_error = _scrub_paths(str(exc), session.workspace_dir)
             log.warning("export_session: crate not written: %s", exc)
+            manifest["crate"] = {"expected": False, "error": crate_error[:300]}
+            (capsule_dir / _MF).write_text(json.dumps(manifest, indent=2))     # not in any hash that exists yet
 
         needs_interp = not session.interpretation
         return {

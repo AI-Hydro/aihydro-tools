@@ -1040,6 +1040,8 @@ def live_cross_check(capsule_dir: Path, tolerance: float = DEFAULT_TOLERANCE):
 #       run record seals, claim revision seals, basin ids from their anchors,
 #       content digests, aihydro.entry/1 body bindings (and the sealed
 #       extra.entry_digest), and per-claim revision chains;
+#   VER-UNVERIFIABLE       a record declared unverifiable must be a privacy-withheld stub
+#       (redacted_for_privacy); any other defect (seal, foreign session, missing body) fails;
 #   VER-COVERAGE           the unverifiable set equals the bundle's declared one;
 #   VER-BAGIT              manifest-sha256.txt covers every file and each digest holds.
 # What it does NOT check: it does not regenerate ro-crate-metadata.json and
@@ -1312,6 +1314,8 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
     not_ok = {}
     revisions = {}
     content_checks = []
+    stub_runs = set()          # run rows withheld for privacy (the only acceptable partiality)
+    stub_claims = set()        # claims with a privacy-withheld revision row
     for e in records:
         kind, eid = e["kind"], e["id"]
         key = (kind, eid)
@@ -1325,6 +1329,8 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
                 else:
                     not_ok[key] = ("VER-BINDING", f"body unresolvable: {why}")
                 continue
+        if kind == "run" and isinstance(body, dict) and body.get("redacted_for_privacy") is True:
+            stub_runs.add(eid)
         if e.get("binding") is not None and not binding_ok(body, e["binding"]):
             if kind in _UNSEALED_KINDS:
                 fail("VER-BINDING", "body does not match its aihydro.entry/1 binding", label)
@@ -1337,6 +1343,8 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
         if not okr or not isinstance(rec, dict):
             not_ok[key] = ("VER-RECORD-SEAL", f"record unresolvable: {why}")
             continue
+        if kind == "claim_revision" and rec.get("redacted_for_privacy") is True:
+            stub_claims.add(eid.rpartition("@")[0])
         if kind in ("run", "claim_revision") and rec.get("session_id") != bundle["session_id"]:
             not_ok[key] = ("VER-SESSION", "record session_id differs from the bundle's session_id")
         elif kind == "run":
@@ -1423,7 +1431,14 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
     declared = cov.get("unverifiable_ids", [])
     for (kind, eid), (rule, why) in sorted(not_ok.items()):
         if eid in declared:
-            res["notes"].append(f"{kind}:{eid} declared unverifiable ({rule}: {why})")
+            withheld = (kind == "run" and eid in stub_runs) or (
+                kind == "claim_revision" and eid.rpartition("@")[0] in stub_claims)
+            if withheld:
+                res["notes"].append(f"{kind}:{eid} declared unverifiable ({rule}: {why})")
+            else:
+                # a declaration cannot launder a defect: only a privacy-withheld row is acceptable partiality
+                fail("VER-UNVERIFIABLE", f"declared unverifiable but not withheld for privacy ({rule}: {why})",
+                     f"{kind}:{eid}")
         else:
             fail(rule, why, f"{kind}:{eid}")
     if cov.get("records_total") != res["records_total"] or cov.get("records_verified") != res["records_verified"] \
@@ -1464,6 +1479,8 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
     if not crate.is_file():
         fail("VER-CRATE-REGEN", f"{_CRATE_FILE} is missing")
     bag = capsule_dir / _BAGIT_FILE
+    if not bag.is_file():
+        fail("VER-BAGIT", f"{_BAGIT_FILE} is missing (the exporter always writes it)")
     if bag.is_file():
         listed_bag = {}
         for line in bag.read_text(encoding="utf-8").splitlines():
@@ -1531,6 +1548,112 @@ def check_manifest_run_counts(capsule_dir: Path, run_log: dict) -> str:
         return ""
     return ", ".join(f"{k}: manifest {m} vs observed {o}" for k, (m, o) in sorted(bad.items())) + \
         " (a sealed row may have been downgraded to legacy, or rows removed or added)"
+
+
+def crate_marker_ok(capsule_dir: Path, out=print) -> bool:
+    """A capsule with no bundle.json is "pre-crate" only if nothing says a crate was written.
+
+    The exporter writes ``manifest["crate"] = {"expected": true}`` before the crate step (and rewrites it
+    to ``{"expected": false, "error": ...}`` if the crate could not be built). Claim revisions are carried
+    only by exporters that also write a crate. So a missing bundle next to either marker is a deletion,
+    not an old capsule. An attacker who also edits the manifest back to the pre-crate shape is
+    indistinguishable from a genuine old capsule inside the capsule; only an external anchor helps.
+    """
+    try:
+        manifest = json.loads((capsule_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = {}
+    marker = manifest.get("crate") if isinstance(manifest, dict) else None
+    expected = isinstance(marker, dict) and marker.get("expected") is True
+    carried = (capsule_dir / "records" / "claim_revisions.json").exists() or (
+        isinstance(manifest.get("claim_revisions"), dict) and manifest["claim_revisions"].get("file"))
+    declined = isinstance(marker, dict) and marker.get("expected") is False
+    present = [n for n in (_BUNDLE_FILE, _CRATE_FILE, _BAGIT_FILE) if (capsule_dir / n).exists()]
+    if expected or (carried and not declined) or present:
+        why = ("the manifest says a crate was written" if expected else
+               "claim revisions are carried" if carried and not declined else "other crate files exist")
+        out(f"FAIL  {_BUNDLE_FILE} is missing but {why}: the crate files were removed or never completed")
+        return False
+    if declined:
+        out(f"NOTE  no bundle.json: the exporter recorded that the crate was not written "
+            f"({str(marker.get('error'))[:120]})")
+    else:
+        out("Bundle: no bundle.json (this capsule predates the crate export)")
+    return True
+
+
+def check_session_ids(capsule_dir: Path, run_log: dict, out=print) -> list:
+    """Every sealed run row and claim revision must name this capsule's session.
+
+    The expected id is the manifest's ``session_id`` (written at export) or, for older capsules,
+    ``session.json``'s. Outside the bundle path nothing else compared them (fault matrix F8).
+    """
+    expected = None
+    try:
+        expected = json.loads((capsule_dir / MANIFEST_FILE).read_text(encoding="utf-8")).get("session_id")
+    except (OSError, ValueError):
+        pass
+    if not isinstance(expected, str) or not expected:
+        try:
+            expected = json.loads((capsule_dir / "session.json").read_text(encoding="utf-8")).get("session_id")
+        except (OSError, ValueError):
+            expected = None
+    if not isinstance(expected, str) or not expected:
+        return []
+    bad = []
+    for rid, row in sorted(run_log.items()):
+        rec = row.get("record") if isinstance(row, dict) else None
+        if isinstance(rec, dict) and rec.get("session_id") != expected:
+            bad.append(f"run {rid}")
+    cpath = capsule_dir / "records" / "claim_revisions.json"
+    if cpath.exists():
+        try:
+            doc = json.loads(cpath.read_text(encoding="utf-8"))
+        except ValueError:
+            doc = {}
+        for cid, item in sorted((doc.get("claims") or {}).items()):
+            for row in (item.get("rows") or []) if isinstance(item, dict) else []:
+                if isinstance(row, dict) and row.get("session_id") != expected:
+                    bad.append(f"claim {cid}@{row.get('revision')}")
+    for what in bad:
+        out(f"FAIL  {what} names a session other than this capsule's ({expected})")
+    return bad
+
+
+_HEAD_FIELDS = (("claim", "text"), ("claim_type", "claim_type"), ("status", "status"),
+                ("confidence", "confidence"), ("confidence_rationale", "confidence_rationale"),
+                ("limitations", "limitations"))
+
+
+def check_claims_against_heads(capsule_dir: Path, out=print) -> list:
+    """session.json's claim must agree with its sealed head revision on the authority fields.
+
+    Editing the claim text in the capsule and regenerating the manifest and bundle changes nothing the
+    other checks compare (fault matrix M06e). The head revision is sealed in the chain; the session
+    claim is a mutable working copy. Only fields the revision projects are compared; a head carried as
+    a privacy stub, or a claim without a chain, is skipped.
+    """
+    try:
+        doc = json.loads((capsule_dir / "records" / "claim_revisions.json").read_text(encoding="utf-8"))
+        claims = json.loads((capsule_dir / "session.json").read_text(encoding="utf-8")).get("claims")
+    except (OSError, ValueError):
+        return []
+    if not isinstance(claims, dict):
+        return []
+    bad = []
+    for cid, item in sorted((doc.get("claims") or {}).items()):
+        rows = item.get("rows") if isinstance(item, dict) and item.get("status") == "ok" else None
+        claim = claims.get(cid)
+        if not rows or not isinstance(claim, dict) or not isinstance(rows[-1], dict) \
+                or rows[-1].get(REDACTED_KEY) or not isinstance(rows[-1].get("content"), dict):
+            continue
+        head = rows[-1]["content"]
+        diff = [sk for sk, hk in _HEAD_FIELDS if sk in claim and hk in head and claim[sk] != head[hk]]
+        if diff:
+            bad.append((cid, diff))
+            out(f"FAIL  claim {cid}: session.json differs from the sealed head revision "
+                f"{rows[-1].get('revision')} in {', '.join(diff)} (edited after the last revision?)")
+    return bad
 
 
 def verify_claims(capsule_dir: Path, heads=None, out=print):
@@ -1622,6 +1745,11 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
         out("Run records: run_log.json not found")
 
     bindings_ok = verify_data_bindings(capsule_dir, out=out)
+    session_bad = check_session_ids(capsule_dir, json.loads(rl_path.read_text(encoding="utf-8"))
+                                    if rl_path.exists() else {}, out=out)
+    head_bad = check_claims_against_heads(capsule_dir, out=out)
+    if session_bad or head_bad:
+        records_ok = False
 
     bundle_res = verify_bundle(capsule_dir) if check_crate else None
     heads = bundle_res["claim_heads"] if bundle_res else None
@@ -1661,7 +1789,7 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
             except Exception:
                 pass
     elif check_crate:
-        out("Bundle: no bundle.json (this capsule predates the crate export)")
+        crate_ok = crate_marker_ok(capsule_dir, out)
 
     out("")
     approvals_ok = verify_approvals(capsule_dir, allowed_signers, out=out)["failed"] == 0

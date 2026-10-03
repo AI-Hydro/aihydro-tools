@@ -565,21 +565,16 @@ def _mark_claim_corrupt(cap: Path):
     (cap / MANIFEST_FILE).write_text(json.dumps(build_manifest(cap), indent=2))
 
 
-def test_a_claim_corrupt_at_export_is_a_failed_store_stub_not_a_working_view(exported, tmp_path):
+def test_a_claim_corrupt_at_export_gets_no_crate_and_no_working_view(exported, tmp_path):
+    """A failed store is not privacy withholding (F7): the exporter refuses the crate instead of declaring partial
+    coverage. (Earlier versions wrote a failed-store stub; core still renders one if a bundle carries it.)"""
     cap = _copy(exported[0], tmp_path, "t_corrupt")
     for name in _NEW:
         (cap / name).unlink()
     _mark_claim_corrupt(cap)
-    out = export_crate(cap, session_id=SID)
-    crate = (cap / "ro-crate-metadata.json").read_text()
-    assert "working view, unsealed" not in crate                  # session.json still holds the claim text
-    assert ("revision store failed verification at export" in crate
-            or "Claim c1 revision failed-store (unverifiable)" in crate)      # core cbeedd9 / older wording
-    bundle = json.loads((cap / "bundle.json").read_text())
-    assert "c1@failed-store" in bundle["coverage"]["unverifiable_ids"]
-    assert not any(r["kind"] == "claim_view" and r["id"] == "c1" for r in bundle["records"])
-    assert bundle["replay"]["checked_status"] == "not_performed" and out["claims_not_carried"]
-    assert verify_crate(cap).ok
+    with pytest.raises(CrateExportError, match="other than privacy withholding"):
+        export_crate(cap, session_id=SID)
+    assert not any((cap / n).exists() for n in _NEW)
 
 
 def test_a_sealed_row_downgraded_to_legacy_fails_replay(exported, tmp_path):
@@ -657,3 +652,124 @@ def test_redaction_alongside_real_sealed_rows_satisfies_the_run_rows_range(expor
     assert rr_["sealed"] >= 1 and rr_["withheld_for_privacy"] == 1
     assert verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
     assert _replay(cap, isolated_python=True)[0] == 0
+
+
+# ---------------------------------------------------------------- fault-matrix-2 follow-ups (M15, M14b, M02e, M06e)
+def _forge_run(sid: str, run_id: str, *, record_session: str, mutate=None):
+    from ai_hydro.session import run_records as rr
+    body = {"run_id": run_id, "tool_name": "legacy_tool", "session_id": sid,
+            "timestamp": "2026-01-01T00:00:00+00:00", "key_outputs": {"v": 1.0}}
+    rec = rr.build_run_record(run_id=run_id, tool="legacy_tool", session_id=record_session, entry=body)
+    row = {**body, "record": rec.to_dict()}
+    if mutate:
+        mutate(row)
+    conn = store._run_log_connect(sid)
+    conn.execute("INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?,?,?)",
+                 (run_id, body["timestamp"], json.dumps(row)))
+    conn.commit()
+    conn.close()
+
+
+def test_M15_deleting_the_crate_files_fails_replay(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_m15")
+    man = json.loads((cap / MANIFEST_FILE).read_text())
+    assert man["crate"]["expected"] is True and man["session_id"] == SID
+    for name in _NEW:
+        (cap / name).unlink()
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 1 and "bundle.json is missing but the manifest says a crate was written" in out, out
+    # just the bundle, or just the BagIt list
+    cap2 = _copy(exported[0], tmp_path, "t_m15b")
+    (cap2 / "manifest-sha256.txt").unlink()
+    assert _replay(cap2, isolated_python=True)[0] == 1
+    # claims carried but the manifest marker also removed: still a failure (claim revisions imply a crate)
+    cap3 = _copy(exported[0], tmp_path, "t_m15c")
+    for name in _NEW:
+        (cap3 / name).unlink()
+    m3 = json.loads((cap3 / MANIFEST_FILE).read_text())
+    m3.pop("crate")
+    (cap3 / MANIFEST_FILE).write_text(json.dumps(m3, indent=2))
+    assert _replay(cap3, isolated_python=True)[0] == 1
+
+
+def test_a_failed_crate_is_recorded_so_its_absence_is_not_a_failure(exported, tmp_path, monkeypatch):
+    import ai_hydro.capsule.rocrate_export as re_
+    import ai_hydro.mcp.tools_session as ts
+    monkeypatch.setattr(re_, "to_rocrate", lambda *a, **k: (_ for _ in ()).throw(CrateExportError("synthetic")))
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "nocrate"))
+    cap = Path(res["capsule_dir"])
+    assert res["crate_error"] == "synthetic" and not (cap / "bundle.json").exists()
+    assert json.loads((cap / MANIFEST_FILE).read_text())["crate"]["expected"] is False
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 0 and "crate was not written" in out, out
+
+
+def test_M14b_foreign_session_record_is_refused_by_the_exporter_and_by_replay(world, tmp_path):
+    server, _tp = world
+    _call(server, "extract_hydrological_signatures", {"session_id": SID})
+    _session_with_claim()
+    _forge_run(SID, "foreign_1", record_session="some-other-session")
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "m14b"))
+    cap = Path(res["capsule_dir"])
+    assert "other than privacy withholding" in res["crate_error"] and "foreign_1" in res["crate_error"]
+    assert not (cap / "bundle.json").exists()
+    code, out = _replay(cap, isolated_python=True)          # F8: caught without any bundle
+    assert code == 1 and "run foreign_1 names a session other than this capsule's" in out, out
+
+
+def test_M02e_edited_row_body_with_the_seal_kept_gets_no_crate(world, tmp_path):
+    server, _tp = world
+    _call(server, "extract_hydrological_signatures", {"session_id": SID})
+    _session_with_claim()
+    _forge_run(SID, "edited_1", record_session=SID, mutate=lambda r: r["key_outputs"].update(v=2.0))
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "m02e"))
+    assert "other than privacy withholding" in res["crate_error"]
+    # (the export itself already turned the unbound-body row into a seal_mismatch stub or refused it)
+
+
+def test_declaring_a_defect_unverifiable_does_not_make_it_partial_coverage(exported, tmp_path, monkeypatch):
+    """An attacker with the exporter: pretend every failing row is privacy-withheld so the crate declares it.
+    The stdlib verifier fails it (VER-UNVERIFIABLE); core still accepts declared partiality (to route to core)."""
+    import ai_hydro.capsule.rocrate_export as re_
+    cap = _copy(exported[0], tmp_path, "t_launder")
+    for name in _NEW:
+        (cap / name).unlink()
+    log = json.loads((cap / "run_log.json").read_text())
+    rid = next(r for r, row in sorted(log.items()) if isinstance(row.get("record"), dict) and
+               row["record"].get("extra", {}).get("entry_digest"))
+    log[rid]["key_outputs"] = {**log[rid].get("key_outputs", {}), "tampered": 1}
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    (cap / MANIFEST_FILE).write_text(json.dumps({**json.loads((cap / MANIFEST_FILE).read_text()),
+                                                 **{k: v for k, v in build_manifest(cap).items()
+                                                    if k in ("files", "n_files", "run_records")}}, indent=2))
+    real = re_.build_bundle
+
+    def lying(*a, **k):
+        bundle, recs, bods, info = real(*a, **k)
+        info["redacted_ids"] = sorted(set(info["redacted_ids"]) | {rid})
+        return bundle, recs, bods, info
+
+    monkeypatch.setattr(re_, "build_bundle", lying)
+    export_crate(cap, session_id=SID, live=False)
+    res = sr.verify_bundle(cap)
+    assert not res["ok"] and "VER-UNVERIFIABLE" in {r for r, _e, _m in res["failures"]}
+
+
+def test_M06e_session_claim_edited_after_the_last_revision_is_flagged(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_m06e")
+    for name in _NEW:
+        (cap / name).unlink()
+    sess = json.loads((cap / "session.json").read_text())
+    sess["claims"]["c1"]["claim"] = sess["claims"]["c1"]["claim"] + " (and much stronger than shown)"
+    (cap / "session.json").write_text(json.dumps(sess, indent=2))
+    (cap / MANIFEST_FILE).write_text(json.dumps({**json.loads((cap / MANIFEST_FILE).read_text()),
+                                                 **{k: v for k, v in build_manifest(cap).items()
+                                                    if k in ("files", "n_files", "run_records")}}, indent=2))
+    export_crate(cap, session_id=SID, live=False)           # honest re-export of the edited capsule: bundle regenerated
+    assert verify_crate(cap).ok                              # core sees a consistent crate
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 1 and "claim c1: session.json differs from the sealed head revision" in out and "claim" in out, out
+    # an untouched export is unaffected
+    assert _replay(exported[0], isolated_python=True)[0] == 0
