@@ -1,0 +1,2010 @@
+{
+ "schema": "aihydro.test.claim_chain_vectors/1",
+ "vectors": [
+  {
+   "chain_ok": true,
+   "name": "valid_chain",
+   "row_ok": [
+    true,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": true,
+   "name": "single_revision",
+   "row_ok": [
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    }
+   ]
+  },
+  {
+   "chain_ok": true,
+   "name": "tail_truncated_still_valid",
+   "row_ok": [
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    }
+   ]
+  },
+  {
+   "chain_ok": true,
+   "name": "unknown_fields_roundtrip",
+   "row_ok": [
+    true,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "future_field": {
+      "a": [
+       1,
+       2.5,
+       null
+      ]
+     },
+     "record_digest": "sha256:ee9bae85a7e8dee9d2ecd1b9b913291a8991c2e9188f068f09a255664da3753c",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "future_field": {
+      "a": [
+       1,
+       2.5,
+       null
+      ]
+     },
+     "record_digest": "sha256:d74a1c167006b9324c630e67f1839e5f6a8110bf430eb9de6e26108e3f43a88c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "future_field": {
+      "a": [
+       1,
+       2.5,
+       null
+      ]
+     },
+     "record_digest": "sha256:0ac720ac5591b95a360b7d04537d70557976d916989f5e0f3122102db57e5497",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": true,
+   "name": "numeric_edge_content",
+   "row_ok": [
+    true,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "$k": {
+       "$m": 1
+      },
+      "big": 1152921504606846976,
+      "huge": 1e+30,
+      "neg0": -0.0,
+      "s": "\u00e9\u2028\n",
+      "tiny": 1e-09,
+      "x": 1.0
+     },
+     "record_digest": "sha256:734a4e028628d3d0d5c66c0f46210f006a91af373258417465060b5aa80b2819",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:435be29ca29d7ff9569b84c974f1ce814748552b1f5da644c5bd52e4fb0f97c4",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "$k": {
+       "$m": 1
+      },
+      "big": 1152921504606846976,
+      "huge": 1e+30,
+      "neg0": -0.0,
+      "s": "\u00e9\u2028\n",
+      "tiny": 1e-09,
+      "x": 1.0
+     },
+     "record_digest": "sha256:8a7ba9bc37a9425a1a9e50d2b6510e790d0bb5019cae4568de50db1113086d8c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:435be29ca29d7ff9569b84c974f1ce814748552b1f5da644c5bd52e4fb0f97c4",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:435be29ca29d7ff9569b84c974f1ce814748552b1f5da644c5bd52e4fb0f97c4"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "$k": {
+       "$m": 1
+      },
+      "big": 1152921504606846976,
+      "huge": 1e+30,
+      "neg0": -0.0,
+      "s": "\u00e9\u2028\n",
+      "tiny": 1e-09,
+      "x": 1.0
+     },
+     "record_digest": "sha256:d932598f54a2d4709a79a9187ea228553889bdf8577b599eec8945b06d946be3",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:435be29ca29d7ff9569b84c974f1ce814748552b1f5da644c5bd52e4fb0f97c4",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:435be29ca29d7ff9569b84c974f1ce814748552b1f5da644c5bd52e4fb0f97c4"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "content_edited",
+   "row_ok": [
+    true,
+    false,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "supported"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "actor_edited",
+   "row_ok": [
+    true,
+    true,
+    false
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "someone-else",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "middle_dropped",
+   "row_ok": [
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "reordered",
+   "row_ok": [
+    true,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "empty_chain",
+   "row_ok": [],
+   "rows": []
+  },
+  {
+   "chain_ok": false,
+   "name": "bad_supersedes_resealed_no",
+   "row_ok": [
+    true,
+    false,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "mixed_claim_id",
+   "row_ok": [
+    true,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c2",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:142cb0c603c791c95d932317ddddc019bd2ba357bb9ecf748adc634e588b8a2f",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "mixed_session_id",
+   "row_ok": [
+    true,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:b4c8a39b01261dbe8f24f07e27f2690b31942d86c7bb357d0a56eab3543261d7",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s2",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "bad_actor_kind",
+   "row_ok": [
+    false,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "robot"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "missing_recorded_at",
+   "row_ok": [
+    true,
+    false,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "bad_record_digest",
+   "row_ok": [
+    true,
+    true,
+    false
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "not-a-digest",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "unsealed",
+   "row_ok": [
+    false,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": null,
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "revision_is_bool",
+   "row_ok": [
+    false,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": true,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "later_revision_no_supersedes",
+   "row_ok": [
+    true,
+    false,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": null
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "rev0_supersedes",
+   "row_ok": [
+    false,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "empty_cause_tool",
+   "row_ok": [
+    true,
+    false,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "x",
+      "tool": ""
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "empty_run_id",
+   "row_ok": [
+    true,
+    false,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "run_id": "",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "missing_actor",
+   "row_ok": [
+    false,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "content_not_dict",
+   "row_ok": [
+    true,
+    false,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": [
+      "not",
+      "a",
+      "dict"
+     ],
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "schema_changed",
+   "row_ok": [
+    false,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/9",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "unknown_field_added",
+   "row_ok": [
+    false,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "added_unknown": 1,
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  },
+  {
+   "chain_ok": false,
+   "name": "empty_session_id",
+   "row_ok": [
+    false,
+    true,
+    true
+   ],
+   "rows": [
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "created",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 0",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:008b3612e12008b91bfbef28d8c331de7da54f0042ec0b2c44b915a6745c1c43",
+     "recorded_at": "2026-01-01T00:00:00+00:00",
+     "revision": 0,
+     "revision_digest": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": ""
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 1",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:9d79a1d0777f90d26238ff426de842f6a3d2af69bbffb44b069462cb61296b0c",
+     "recorded_at": "2026-01-02T00:00:00+00:00",
+     "revision": 1,
+     "revision_digest": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:116c34364bf8709ff949b60d521937e87071502e53e70550d3e2dacefaa6b407"
+    },
+    {
+     "actor": {
+      "id": "aihydro-tools",
+      "kind": "package"
+     },
+     "canonicalization": "aihydro.c14n/1",
+     "cause": {
+      "reason": "redefined",
+      "tool": "add_claim"
+     },
+     "claim_id": "c1",
+     "content": {
+      "statement": "synthetic 2",
+      "status": "proposed"
+     },
+     "record_digest": "sha256:1a16b727233243ff56eff31db584d8ca637d91d771235016bae885e66c796173",
+     "recorded_at": "2026-01-03T00:00:00+00:00",
+     "revision": 2,
+     "revision_digest": "sha256:98b1525f7e0ab416c84c106fda289413e99b3dc91eea187835ff22cf582123f9",
+     "schema": "aihydro.claim_revision_record/1",
+     "session_id": "s1",
+     "supersedes": "sha256:9b63583a9d4333cf9f1ea6e00c8353871d325b391cfa096b01aff0785a53b131"
+    }
+   ]
+  }
+ ]
+}
