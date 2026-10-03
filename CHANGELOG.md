@@ -8,6 +8,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-03
+
+This release is the pin for e2e proof 2.
+
+- It covers everything listed under "Unreleased" below, which was merged
+  since 2.1.0: the P1 evaluation layer, structured errors, the run-log
+  re-seal, sha256-v3 evidence fingerprints, `EVIDENCE_SEAL_INVALID`, ledger
+  revision events, and the slice-5 Bundle/RO-Crate export.
+- **Version bump.** Before this bump, `tool_version` stayed at `2.1.0`
+  across all of those merges, so sealed run records could not tell the code
+  apart.
+- **Environment digest.** `ENV_DISTRIBUTIONS` now includes
+  `dataretrieval`, the NWIS client.
+
+
 ### Added
 
 - **Fixed: `list_claims` / `list_assumptions` no longer report a missing or unreadable session as "no claims".** They swallowed every exception and returned `[]`. A session with no saved file now fails with `SESSION_NOT_FOUND`, a corrupt one with the load error, both as a `ToolError` whose text is the JSON error envelope (an array-output tool cannot return the error dict); a genuinely empty saved session still lists `[]`. `ArgRepairMiddleware` now re-raises such a deliberate structured `ToolError` instead of turning it into an input-schema "teaching" success (which for these tools was then rejected by output-schema validation). Also `_list_tools_sync` no longer depends on `asyncio.get_event_loop()` (it returned `[]` in processes where an earlier `asyncio.run` had cleared the loop, silently skipping `tools.md`). Tests: `tests/test_ledger_list_errors.py`.
