@@ -78,7 +78,7 @@ def test_promotion_gate():
         claim_id="c2",
         statement="Supported claim",
         claim_type="empirical_result",
-        status="supported",
+        status="weakly_supported",   # add_claim cannot set 'supported' on a metric claim; see update below
         confidence="high",
         confidence_rationale="Validated across ten years of daily streamflow data with KGE > 0.7.",
         basins=["b1"],
@@ -151,7 +151,7 @@ def test_metric_scoped_empirical_claim_cannot_be_promoted_without_uncertainty():
         claim_id="c-promote-metric",
         statement="The evaluation produced a metric-scoped empirical result.",
         claim_type="empirical_result",
-        status="supported",
+        status="weakly_supported",
         confidence="medium",
         confidence_rationale="The point estimate is recorded but its uncertainty is not verified.",
         basins=["01031500"],
@@ -161,13 +161,18 @@ def test_metric_scoped_empirical_claim_cannot_be_promoted_without_uncertainty():
         limitations=["Synthetic regression case for one basin."],
         evidence_spans=[{"source_type": "run", "source_id": "run-2", "metric_ref": "kge"}],
     )
+    # A claim stored as 'supported' without verified uncertainty (add_claim and
+    # update_claim_status can no longer produce one; sessions stored earlier can hold it).
+    legacy = HydroSession.load(session_id)
+    legacy.claims["c-promote-metric"]["status"] = "supported"
+    legacy.save()
 
     result = promote_claim_to_registry(
         session_id=session_id,
         claim_id="c-promote-metric",
         researcher_approved=True,
     )
-    assert result["error"] is True
+    assert result["error"] is True and result["code"] == "UNCERTAINTY_NOT_VERIFIED"
     assert "cannot be promoted without uncertainty_verified=True" in result["message"]
 
 
@@ -334,7 +339,7 @@ def test_promotion_emits_an_invalidation_event_only_on_success(monkeypatch):
             "value": 0.8, "ci_low": 0.7, "ci_high": 0.9, "ci_level": 0.95,
             "n": 30, "method": "synthetic_fixture"}}}}})
     add_claim(session_id=sid, claim_id="c2", statement="Supported claim",
-              claim_type="empirical_result", status="supported", confidence="high",
+              claim_type="empirical_result", status="weakly_supported", confidence="high",
               confidence_rationale="Validated across ten years of daily streamflow data with KGE > 0.7.",
               basins=["b1"], basin_refs=[basin_ref_full("b1")], period="p1",
               limitations=["Only tested on one basin"],

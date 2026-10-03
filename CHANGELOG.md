@@ -8,6 +8,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Promotion policy refusals now carry their own stable code.** `promote_claim_to_registry`
+  surfaced `EVIDENCE_REQUIRED`, `LIMITATIONS_REQUIRED`, `STATUS_NOT_ELIGIBLE`,
+  `UNCERTAINTY_NOT_VERIFIED` and `MODELLED_LIMITATION_REQUIRED` (and a missing claim) as
+  `UNEXPECTED_ERROR` with a `_traceback`, because the policy raised bare `ValueError`s. They
+  now raise `PolicyRefusal` (same messages) and the envelope's `code` is the first blocking
+  violation's code, with every violation in `violations` and no traceback; a missing claim is
+  `CLAIM_NOT_FOUND`. `tests/fixtures/promotion_refusals_golden.json` pinned the old
+  `UNEXPECTED_ERROR` envelopes; that pin recorded the defect and was updated deliberately.
+  Policy refusals from the other families also gain `violations`.
+- **The uncertainty gate no longer depends on which tool sets the status.** `add_claim`
+  accepted `status="supported"` for a metric-scoped empirical claim without verified
+  uncertainty while `update_claim_status` refused it. Both (and redefinition of an existing id
+  through `add_claim`) now call one shared check and return the same `uncertainty_gate`
+  teaching error; `add_claim` cannot assert `uncertainty_verified`, so record the claim with
+  another status and call `update_claim_status(uncertainty_verified=True)`. The gate is in
+  every evaluation arm. Claims already stored as supported without verified uncertainty are
+  not rewritten: `promotion_check` flags them and promotion refuses them as before.
+
 ## [2.2.0] - 2026-10-03
 
 This release is the pin for e2e proof 2.

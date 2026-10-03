@@ -27,6 +27,7 @@ log = logging.getLogger("ai_hydro.mcp")
 from ai_hydro.claims.promotion_policy import (  # noqa: E402
     claim_requires_uncertainty as _claim_requires_uncertainty,
     claim_touches_hydrology_signature_metric as _claim_touches_hydrology_signature_metric,
+    PolicyRefusal,
     evaluate_promotion,
     promotion_check,
 )
@@ -140,6 +141,47 @@ def _normalize_evidence_spans(evidence_spans: list[dict] | None, evidence: list[
     return [EvidenceSpan(**span).model_dump() for span in spans]
 
 
+def _uncertainty_gate(claim_id: str, claim_dict: dict, status: str,
+                      uncertainty_verified: bool) -> dict | None:
+    """The teaching refusal when ``status`` may not be set on this claim, else ``None``.
+
+    Metric-scoped empirical claims need verified uncertainty to reach 'supported'. The
+    structured metric fields make this rule reachable without inferring quantitative
+    intent from prose. This is the ONE place the rule lives: every path that sets a
+    claim's status (``update_claim_status``, ``add_claim`` for a new or redefined id)
+    calls it, so the gate cannot depend on which tool was used. It does not depend on the
+    evaluation arm either. Claims already stored as 'supported' without verified
+    uncertainty are not rewritten; they are flagged by ``promotion_check`` and refused
+    at promotion (UNCERTAINTY_NOT_VERIFIED).
+    """
+    if status != "supported" or uncertainty_verified or not _claim_requires_uncertainty(claim_dict):
+        return None
+    return {
+        "error": "uncertainty_gate",
+        "claim_id": claim_id,
+        "claim_type": claim_dict.get("claim_type", ""),
+        "requested_status": status,
+        "teaching_error": {
+            "rule": "quantitative_claims_require_uncertainty",
+            "explanation": (
+                "A metric-scoped empirical claim cannot reach 'supported' status "
+                "without a verified uncertainty estimate. "
+                "Confirm that the underlying run results include bootstrap CIs "
+                "(check result._uncertainty or run the analysis with "
+                "uncertainty output enabled), then re-call with "
+                "uncertainty_verified=True."
+            ),
+            "how_to_fix": (
+                "1. Verify that extract_hydrological_signatures / the relevant "
+                "   analysis tool returned an '_uncertainty' key in its result.\n"
+                "2. Include uncertainty bounds in the claim statement or confidence_rationale.\n"
+                "3. Call update_claim_status with uncertainty_verified=True "
+                "(add_claim cannot set it: record the claim with another status first)."
+            ),
+        },
+    }
+
+
 @mcp.tool()
 def add_claim(
     session_id: str,
@@ -177,6 +219,13 @@ def add_claim(
         pass the prereg_id returned by register_research_plan. Marks the claim as
         confirmatory (planned) vs exploratory (post-hoc) in the defensibility report.
 
+    status="supported" on a metric-scoped empirical claim (scope.metric or an evidence
+    metric_ref) is refused with the same `uncertainty_gate` teaching error as
+    update_claim_status: add_claim cannot assert uncertainty_verified, so record the claim
+    with another status and call update_claim_status(uncertainty_verified=True). The rule
+    applies to a new or redefined id alike; claims already stored as supported without it
+    are not rewritten (promotion_check flags them; promotion refuses them).
+
     Returns `promotion_check`: every violation (`code`, `message`, `family`,
     `blocking`) that promote_claim_to_registry would raise on this claim as stored.
     It is advisory here; an empty list means no blocking evidence/limitation gate applies
@@ -202,6 +251,9 @@ def add_claim(
         )
 
         claim_dict = claim.model_dump()
+        gate = _uncertainty_gate(claim_id, claim_dict, status, False)   # add_claim cannot assert it
+        if gate is not None:
+            return gate
         if prereg_id:
             claim_dict["prereg_id"] = prereg_id
         if records:
@@ -263,33 +315,9 @@ def update_claim_status(
         claim_dict = session.claims[claim_id]
         claim_type = claim_dict.get("claim_type", "")
 
-        # Metric-scoped empirical claims need verified uncertainty to reach
-        # 'supported'. The structured metric fields make this rule reachable
-        # without inferring quantitative intent from prose.
-        if status == "supported" and _claim_requires_uncertainty(claim_dict) and not uncertainty_verified:
-            return {
-                "error": "uncertainty_gate",
-                "claim_id": claim_id,
-                "claim_type": claim_type,
-                "requested_status": status,
-                "teaching_error": {
-                    "rule": "quantitative_claims_require_uncertainty",
-                    "explanation": (
-                        "A metric-scoped empirical claim cannot reach 'supported' status "
-                        "without a verified uncertainty estimate. "
-                        "Confirm that the underlying run results include bootstrap CIs "
-                        "(check result._uncertainty or run the analysis with "
-                        "uncertainty output enabled), then re-call with "
-                        "uncertainty_verified=True."
-                    ),
-                    "how_to_fix": (
-                        "1. Verify that extract_hydrological_signatures / the relevant "
-                        "   analysis tool returned an '_uncertainty' key in its result.\n"
-                        "2. Include uncertainty bounds in the claim statement or confidence_rationale.\n"
-                        "3. Re-call update_claim_status with uncertainty_verified=True."
-                    ),
-                },
-            }
+        gate = _uncertainty_gate(claim_id, claim_dict, status, uncertainty_verified)
+        if gate is not None:
+            return gate
 
         before = _revision_fields(session, claim_id)
         claim_dict["status"] = status
@@ -441,7 +469,7 @@ def promote_claim_to_registry(
         session = HydroSession.load(session_id)
         claim_dict = session.claims.get(claim_id)
         if not claim_dict:
-            raise ValueError(f"Claim '{claim_id}' not found.")
+            raise PolicyRefusal("CLAIM_NOT_FOUND", f"Claim '{claim_id}' not found.")
 
         claim = ScientificClaim(**claim_dict)
 
@@ -469,7 +497,10 @@ def promote_claim_to_registry(
                                         like=latest_bound_versions(session_id, claim_id))
         blocked = evaluation.first_blocking
         if blocked is not None:
-            raise blocked.exception
+            # The first blocking violation's own envelope (stable code, no traceback), plus
+            # every violation the policy found.
+            return {**_tool_error_to_dict(blocked.exception),
+                    "violations": [v.to_dict() for v in evaluation.violations]}
         spans = [s if isinstance(s, dict) else s.model_dump() for s in claim.evidence_spans]
         evidence_versions = evaluation.evidence_versions
 

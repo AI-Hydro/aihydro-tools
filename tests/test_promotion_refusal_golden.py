@@ -7,6 +7,12 @@ diagnostic ``_traceback`` (it carries source line numbers). Error codes AND mess
 must stay identical: the policy function may reorganise the checks, never reword or
 reorder what an agent sees.
 
+Deliberate change (promotion-errors): the checks that used to raise a bare ``ValueError``
+(no evidence span, no limitation, status not eligible, uncertainty not verified, modelled
+signature, claim not found) were pinned here as ``UNEXPECTED_ERROR``. That pin recorded a
+defect, not a contract: they now carry their own stable codes, and every policy refusal
+adds the full ``violations`` list. See CHANGELOG.
+
 Regenerate only deliberately: ``GENERATE_PROMOTION_GOLDEN=1 pytest <this file>``.
 """
 from __future__ import annotations

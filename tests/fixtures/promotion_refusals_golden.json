@@ -10,7 +10,15 @@
    "add_claim"
   ],
   "recovery": "Delineate the basin in this session, then call add_claim again for the same claim id; labels are never back-filled with identities.",
-  "session_id": "golden"
+  "session_id": "golden",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "BASIN_REF_REQUIRED",
+    "family": "basin_identity",
+    "message": "Claim 'c1' is scoped to basins ['synthetic'] but carries no basin_refs. Promotion needs canonical basin identity: run delineate_watershed (or delineate_watershed_from_point) in this session, then re-add the claim so it binds to the delineated basin (or pass basin_refs explicitly)."
+   }
+  ]
  },
  "basin_ref_unknown": {
   "claim_id": "c1",
@@ -23,18 +31,24 @@
    "add_claim"
   ],
   "recovery": "Delineate the basin in this session, then call add_claim again.",
-  "session_id": "golden"
+  "session_id": "golden",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "BASIN_REF_UNKNOWN",
+    "family": "basin_identity",
+    "message": "basin_refs ['aihydro:basin:sha256:a62d0f81f1e17da8e36b89836109cec7f8ae1c0861fd6b8fee37ab415fdc8f34'] do not name a verified BasinRef retained in this session. Delineate the basin in this session (its basin_ref is then retained), or pass the full basin_ref dict returned by the delineation tool."
+   }
+  ]
  },
  "claim_not_found": {
-  "code": "UNEXPECTED_ERROR",
-  "docs_anchor": "",
+  "code": "CLAIM_NOT_FOUND",
   "error": true,
   "message": "Claim 'missing' not found.",
   "next_tools": [
-   "aihydro_describe_capability",
-   "data_doctor"
+   "list_claims"
   ],
-  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+  "recovery": "Check the claim id; list_claims shows the claims in the session."
  },
  "evidence_check_failed": {
   "code": "EVIDENCE_CHECK_FAILED",
@@ -44,7 +58,15 @@
    "update_claim_status"
   ],
   "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
-  "source_id": "r1"
+  "source_id": "r1",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_CHECK_FAILED",
+    "family": "evidence",
+    "message": "Evidence 'r1' records a failed analysis or validation check."
+   }
+  ]
  },
  "evidence_identity_mismatch": {
   "code": "EVIDENCE_IDENTITY_MISMATCH",
@@ -54,7 +76,15 @@
    "update_claim_status"
   ],
   "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
-  "source_id": "r1"
+  "source_id": "r1",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_IDENTITY_MISMATCH",
+    "family": "evidence",
+    "message": "Run 'r1' has conflicting session/run identity."
+   }
+  ]
  },
  "evidence_metric_unavailable": {
   "code": "EVIDENCE_METRIC_UNAVAILABLE",
@@ -64,7 +94,15 @@
    "update_claim_status"
   ],
   "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
-  "source_id": "r1"
+  "source_id": "r1",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_METRIC_UNAVAILABLE",
+    "family": "evidence",
+    "message": "Metric 'nse' is missing or is not a finite scalar in 'r1'."
+   }
+  ]
  },
  "evidence_uncertainty_invalid": {
   "code": "EVIDENCE_UNCERTAINTY_INVALID",
@@ -74,7 +112,15 @@
    "update_claim_status"
   ],
   "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
-  "source_id": "r1"
+  "source_id": "r1",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_UNCERTAINTY_INVALID",
+    "family": "evidence",
+    "message": "Uncertainty for 'nse' lacks finite ordered bounds, a method, sample count or confidence level."
+   }
+  ]
  },
  "evidence_uncertainty_mismatch": {
   "code": "EVIDENCE_UNCERTAINTY_MISMATCH",
@@ -84,7 +130,15 @@
    "update_claim_status"
   ],
   "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
-  "source_id": "r1"
+  "source_id": "r1",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_UNCERTAINTY_MISMATCH",
+    "family": "evidence",
+    "message": "Uncertainty estimate for 'nse' does not match its persisted point estimate."
+   }
+  ]
  },
  "evidence_uncertainty_unavailable": {
   "code": "EVIDENCE_UNCERTAINTY_UNAVAILABLE",
@@ -94,7 +148,15 @@
    "update_claim_status"
   ],
   "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
-  "source_id": "r1"
+  "source_id": "r1",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_UNCERTAINTY_UNAVAILABLE",
+    "family": "evidence",
+    "message": "No persisted uncertainty for metric 'nse' in 'r1'."
+   }
+  ]
  },
  "evidence_unresolved": {
   "code": "EVIDENCE_UNRESOLVED",
@@ -104,7 +166,15 @@
    "update_claim_status"
   ],
   "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
-  "source_id": "invented-run"
+  "source_id": "invented-run",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_UNRESOLVED",
+    "family": "evidence",
+    "message": "Run 'invented-run' is not retained in this session."
+   }
+  ]
  },
  "invalid_claim_id": {
   "claim_id": "bad id!",
@@ -138,7 +208,15 @@
    "update_claim_status"
   ],
   "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
-  "source_id": "c1"
+  "source_id": "c1",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_METRIC_MISMATCH",
+    "family": "metric_binding",
+    "message": "The scope metric does not match any referenced evidence metric."
+   }
+  ]
  },
  "metric_ref_missing_on_metric_claim": {
   "code": "EVIDENCE_METRIC_UNAVAILABLE",
@@ -148,40 +226,90 @@
    "update_claim_status"
   ],
   "recovery": "Retain the originating result with its exact metric, uncertainty and checks; correct the evidence reference, then request promotion again. The session claim remains available for investigation.",
-  "source_id": "c1"
+  "source_id": "c1",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_METRIC_UNAVAILABLE",
+    "family": "metric_binding",
+    "message": "Metric-scoped claims require an explicit metric_ref on their evidence."
+   },
+   {
+    "blocking": true,
+    "code": "EVIDENCE_METRIC_MISMATCH",
+    "family": "metric_binding",
+    "message": "The scope metric does not match any referenced evidence metric."
+   }
+  ]
  },
  "modelled_signature_no_limitation": {
-  "code": "UNEXPECTED_ERROR",
-  "docs_anchor": "",
+  "code": "MODELLED_LIMITATION_REQUIRED",
   "error": true,
   "message": "Claim references a hydrology-signature metric (e.g. baseflow index, flood frequency, flow-duration-curve slope) that may be computed from modelled streamflow (e.g. GEOGLOWS routing on a gauge-less basin) rather than gauge observations. Promotion requires a limitation that acknowledges this \u2014 e.g. 'Signature computed from modelled GEOGLOWS discharge, not gauge observations.' If the underlying data is confirmed gauge-observed, add a limitation stating that explicitly instead.",
   "next_tools": [
-   "aihydro_describe_capability",
-   "data_doctor"
+   "add_claim"
   ],
-  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+  "recovery": "Add a limitation stating whether the signature is modelled or gauge-observed, then request promotion again.",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "MODELLED_LIMITATION_REQUIRED",
+    "family": "observed_modelled",
+    "message": "Claim references a hydrology-signature metric (e.g. baseflow index, flood frequency, flow-duration-curve slope) that may be computed from modelled streamflow (e.g. GEOGLOWS routing on a gauge-less basin) rather than gauge observations. Promotion requires a limitation that acknowledges this \u2014 e.g. 'Signature computed from modelled GEOGLOWS discharge, not gauge observations.' If the underlying data is confirmed gauge-observed, add a limitation stating that explicitly instead."
+   },
+   {
+    "blocking": true,
+    "code": "EVIDENCE_METRIC_MISMATCH",
+    "family": "metric_binding",
+    "message": "The scope metric does not match any referenced evidence metric."
+   }
+  ]
  },
  "no_evidence_spans": {
-  "code": "UNEXPECTED_ERROR",
-  "docs_anchor": "",
+  "code": "EVIDENCE_REQUIRED",
   "error": true,
   "message": "Promotion requires at least one evidence_span. Add a typed EvidenceSpan (run, paper, or dataset) via add_claim or update_claim_status.",
   "next_tools": [
-   "aihydro_describe_capability",
-   "data_doctor"
+   "add_claim"
   ],
-  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+  "recovery": "Attach a typed evidence span (run, paper or dataset) with add_claim or update_claim_status, then request promotion again.",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "EVIDENCE_REQUIRED",
+    "family": "evidence",
+    "message": "Promotion requires at least one evidence_span. Add a typed EvidenceSpan (run, paper, or dataset) via add_claim or update_claim_status."
+   },
+   {
+    "blocking": true,
+    "code": "EVIDENCE_METRIC_UNAVAILABLE",
+    "family": "metric_binding",
+    "message": "Metric-scoped claims require an explicit metric_ref on their evidence."
+   },
+   {
+    "blocking": true,
+    "code": "EVIDENCE_METRIC_MISMATCH",
+    "family": "metric_binding",
+    "message": "The scope metric does not match any referenced evidence metric."
+   }
+  ]
  },
  "no_limitations": {
-  "code": "UNEXPECTED_ERROR",
-  "docs_anchor": "",
+  "code": "LIMITATIONS_REQUIRED",
   "error": true,
   "message": "Promotion requires at least one limitation to be listed.",
   "next_tools": [
-   "aihydro_describe_capability",
-   "data_doctor"
+   "add_claim"
   ],
-  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+  "recovery": "List at least one limitation on the claim, then request promotion again.",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "LIMITATIONS_REQUIRED",
+    "family": "limitations",
+    "message": "Promotion requires at least one limitation to be listed."
+   }
+  ]
  },
  "not_requested": {
   "approval_command": "aihydro-approve golden c1",
@@ -204,25 +332,37 @@
   "session_id": "golden"
  },
  "status_not_eligible": {
-  "code": "UNEXPECTED_ERROR",
-  "docs_anchor": "",
+  "code": "STATUS_NOT_ELIGIBLE",
   "error": true,
   "message": "Claim status 'proposed' is not eligible for promotion.",
   "next_tools": [
-   "aihydro_describe_capability",
-   "data_doctor"
+   "update_claim_status"
   ],
-  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+  "recovery": "Promotion needs status 'supported' or 'weakly_supported'; set it with update_claim_status when the evidence justifies it.",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "STATUS_NOT_ELIGIBLE",
+    "family": "status",
+    "message": "Claim status 'proposed' is not eligible for promotion."
+   }
+  ]
  },
  "uncertainty_not_verified": {
-  "code": "UNEXPECTED_ERROR",
-  "docs_anchor": "",
+  "code": "UNCERTAINTY_NOT_VERIFIED",
   "error": true,
   "message": "Metric-scoped empirical claim cannot be promoted without uncertainty_verified=True. Call update_claim_status(uncertainty_verified=True) after confirming that an uncertainty estimate is available for the referenced metric.",
   "next_tools": [
-   "aihydro_describe_capability",
-   "data_doctor"
+   "update_claim_status"
   ],
-  "recovery": "This is an unexpected internal error. Check the tool arguments and try again. If it persists, call data_doctor() or check the server log."
+  "recovery": "Confirm the metric has an uncertainty estimate, then call update_claim_status(uncertainty_verified=True).",
+  "violations": [
+   {
+    "blocking": true,
+    "code": "UNCERTAINTY_NOT_VERIFIED",
+    "family": "uncertainty",
+    "message": "Metric-scoped empirical claim cannot be promoted without uncertainty_verified=True. Call update_claim_status(uncertainty_verified=True) after confirming that an uncertainty estimate is available for the referenced metric."
+   }
+  ]
  }
 }

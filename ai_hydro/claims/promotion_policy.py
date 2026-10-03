@@ -32,9 +32,11 @@ Families (stable labels) and their order of evaluation
                        (these codes are ``registry.evidence.EvidenceError`` codes)
 ``evidence`` (advisory, non-blocking) EVIDENCE_QUALITY_WARNING
 
-Codes of checks that previously raised a bare ``ValueError`` are new, stable names
-for the policy; the production envelope for those refusals is unchanged
-(``UNEXPECTED_ERROR`` with the same message), carried by ``Violation.exception``.
+Every violation carries the exception production raises for it (``Violation.exception``),
+and every one of them has ``to_dict()``, so the refusal envelope's ``code`` is the
+violation's own stable code. Checks that used to raise a bare ``ValueError`` raise
+``PolicyRefusal`` (same message); before that change they surfaced as
+``UNEXPECTED_ERROR`` with a ``_traceback``, which hid the real reason from the agent.
 
 The revision-chain / evidence-drift / approval checks are not here: they need the
 approval store and record a revision row, so they follow the policy in production.
@@ -62,6 +64,35 @@ _MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS = (
 
 PROMOTABLE_STATUSES = ("supported", "weakly_supported")
 _NON_PASS_FLAG_STATUSES = {"warning", "insufficient_data"}
+
+
+_RECOVERY = {
+    "EVIDENCE_REQUIRED": ("Attach a typed evidence span (run, paper or dataset) with add_claim or "
+                          "update_claim_status, then request promotion again.", ["add_claim"]),
+    "LIMITATIONS_REQUIRED": ("List at least one limitation on the claim, then request promotion "
+                             "again.", ["add_claim"]),
+    "STATUS_NOT_ELIGIBLE": ("Promotion needs status 'supported' or 'weakly_supported'; set it with "
+                            "update_claim_status when the evidence justifies it.", ["update_claim_status"]),
+    "UNCERTAINTY_NOT_VERIFIED": ("Confirm the metric has an uncertainty estimate, then call "
+                                 "update_claim_status(uncertainty_verified=True).", ["update_claim_status"]),
+    "MODELLED_LIMITATION_REQUIRED": ("Add a limitation stating whether the signature is modelled or "
+                                     "gauge-observed, then request promotion again.", ["add_claim"]),
+    "CLAIM_NOT_FOUND": ("Check the claim id; list_claims shows the claims in the session.",
+                        ["list_claims"]),
+}
+
+
+class PolicyRefusal(ValueError):
+    """An expected promotion refusal: a stable ``code``, the policy message, a recovery hint."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+    def to_dict(self) -> dict:
+        recovery, next_tools = _RECOVERY.get(self.code, ("Fix the reported problem and retry.", []))
+        return {"error": True, "code": self.code, "message": str(self),
+                "recovery": recovery, "next_tools": list(next_tools)}
 
 
 @dataclass(frozen=True)
@@ -214,26 +245,26 @@ def evaluate_promotion(session: Any, claim: dict, *, claim_id: str | None = None
         out.append(_from_exc(identity.BASIN_REF_UNKNOWN, "basin_identity", exc))
 
     if not model.evidence_spans:
-        out.append(_from_exc("EVIDENCE_REQUIRED", "evidence", ValueError(
+        out.append(_from_exc("EVIDENCE_REQUIRED", "evidence", PolicyRefusal("EVIDENCE_REQUIRED", 
             "Promotion requires at least one evidence_span. "
             "Add a typed EvidenceSpan (run, paper, or dataset) via add_claim or update_claim_status.")))
     if not model.limitations:
-        out.append(_from_exc("LIMITATIONS_REQUIRED", "limitations", ValueError(
+        out.append(_from_exc("LIMITATIONS_REQUIRED", "limitations", PolicyRefusal("LIMITATIONS_REQUIRED", 
             "Promotion requires at least one limitation to be listed.")))
     if model.status not in PROMOTABLE_STATUSES:
-        out.append(_from_exc("STATUS_NOT_ELIGIBLE", "status", ValueError(
+        out.append(_from_exc("STATUS_NOT_ELIGIBLE", "status", PolicyRefusal("STATUS_NOT_ELIGIBLE", 
             f"Claim status '{model.status}' is not eligible for promotion.")))
 
     requires_uncertainty = claim_requires_uncertainty(claim)
     if requires_uncertainty and not claim.get("uncertainty_verified"):
-        out.append(_from_exc("UNCERTAINTY_NOT_VERIFIED", "uncertainty", ValueError(
+        out.append(_from_exc("UNCERTAINTY_NOT_VERIFIED", "uncertainty", PolicyRefusal("UNCERTAINTY_NOT_VERIFIED", 
             "Metric-scoped empirical claim cannot be promoted without uncertainty_verified=True. "
             "Call update_claim_status(uncertainty_verified=True) after confirming "
             "that an uncertainty estimate is available for the referenced metric.")))
     if claim_touches_hydrology_signature_metric(claim, identity.retained_refs(session, claim)):
         limitations_text = " ".join(model.limitations).lower()
         if not any(w in limitations_text for w in _MODELLED_LIMITATION_ACKNOWLEDGEMENT_MARKERS):
-            out.append(_from_exc("MODELLED_LIMITATION_REQUIRED", "observed_modelled", ValueError(
+            out.append(_from_exc("MODELLED_LIMITATION_REQUIRED", "observed_modelled", PolicyRefusal("MODELLED_LIMITATION_REQUIRED", 
                 "Claim references a hydrology-signature metric (e.g. baseflow index, "
                 "flood frequency, flow-duration-curve slope) that may be computed from "
                 "modelled streamflow (e.g. GEOGLOWS routing on a gauge-less basin) rather "
