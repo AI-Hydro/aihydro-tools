@@ -26,6 +26,10 @@ Limits of the seal (read before relying on a record):
 - A writer that pre-seals its own record, including ``run_python`` code or any
   same-user process, authors its own provenance. The middleware leaves an
   already-sealed row untouched and does not overwrite it.
+- A row the middleware could not read or seal within the lock budget is retried
+  on the next recorded call of the session and by ``export_session`` (see
+  "Lazy re-seal" below), only while its body is unchanged. Otherwise it is
+  marked ``record_status: unsealable``. The retry set is process-local.
 - ``input_digest`` covers the arguments as received, not the effective
   parameters after defaults, so a call that omits a default and one that
   passes it explicitly digest differently.
@@ -43,6 +47,7 @@ import json
 import logging
 import re
 import threading
+import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from aihydro_core.records import (
@@ -295,12 +300,16 @@ def verify_run_log_entry(entry: Any) -> Dict[str, Any]:
 
 def coverage_summary(run_log: Dict[str, Any]) -> Dict[str, Any]:
     """Record coverage of a ``{run_id: entry}`` run log (additive snapshot field)."""
-    total = recorded = verified = unbound = with_error = 0
+    total = recorded = verified = unbound = with_error = unsealable = 0
     problems: List[Dict[str, Any]] = []
     for run_id, entry in (run_log or {}).items():
         total += 1
         check = verify_run_log_entry(entry)
         if not check["has_record"]:
+            if isinstance(entry, dict) and entry.get("record_status") == "unsealable":
+                unsealable += 1
+                problems.append({"run_id": run_id, "problem": "unsealable",
+                                 "reason": entry.get("record_status_reason")})
             continue
         recorded += 1
         if check["record_ok"] and check["entry_ok"] is True:
@@ -319,7 +328,8 @@ def coverage_summary(run_log: Dict[str, Any]) -> Dict[str, Any]:
         "v2_records": recorded,
         "v2_verified": verified,
         "v2_unbound": unbound,
-        "legacy_unrecorded": total - recorded,
+        "legacy_unrecorded": total - recorded,   # includes the unsealable rows below
+        "unsealable": unsealable,
         "record_errors": with_error,
         "coverage": round(recorded / total, 4) if total else None,
         "problems": problems[:50],
@@ -339,6 +349,7 @@ class CallCapture:
     input_refs: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
     notes: Dict[str, Any] = dataclasses.field(default_factory=dict)
     failed_rows: List[Tuple[str, str, str, str]] = dataclasses.field(default_factory=list)  # (session, run, writer, reason)
+    refused_rows: List[Tuple[str, str, str, str]] = dataclasses.field(default_factory=list)  # (session, run, writer, outcome)
 
 
 _CAPTURE: contextvars.ContextVar[Optional[CallCapture]] = contextvars.ContextVar(
@@ -367,6 +378,14 @@ def note_row_failed(session_id: str, run_id: str, writer: str, reason: str) -> N
     capture = _CAPTURE.get()
     if capture is not None:
         capture.failed_rows.append((session_id, run_id, writer or "unknown", reason))
+
+
+def note_row_refused(session_id: str, run_id: str, writer: str, outcome: str) -> None:
+    """Called by the run-log writer when a sealed row kept its body against the
+    writer's different one (``refused``/``stale``). No-op outside a call."""
+    capture = _CAPTURE.get()
+    if capture is not None:
+        capture.refused_rows.append((session_id, run_id, writer or "unknown", outcome))
 
 
 def declare_lineage(
@@ -490,8 +509,10 @@ def resolve_call_session_rule(
     if isinstance(arguments, dict):
         candidates.append((arguments.get("session_id"), "explicit_arg"))
     candidates.append((meta_study_id, "meta"))
-    if capture.rows:
-        sid = capture.rows[0][0]
+    # A row a writer lost or was refused still names its session.
+    written = capture.rows or [r[:3] for r in capture.failed_rows] or [r[:3] for r in capture.refused_rows]
+    if written:
+        sid = written[0][0]
         rule = noted
         if rule is None:
             rule = next(
@@ -664,6 +685,12 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         if (sid, rid) not in seen:
             seen.add((sid, rid))
             rows.append((sid, rid, writer))
+    refused: Dict[Tuple[str, str], str] = {}
+    for sid, rid, writer, outcome in capture.refused_rows:
+        refused[(sid, rid)] = outcome
+        if (sid, rid) not in seen:
+            seen.add((sid, rid))
+            rows.append((sid, rid, writer))
     created = False
     if not rows:
         rows.append((session_id, id_factory(tool, session_id), "middleware"))
@@ -708,16 +735,25 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         known = [f"writer_row_lost: {lost_reason}"] if lost_reason else []
         if lost_reason:
             problems.append(f"{rid}: writer_row_lost: {lost_reason}")
+        refused_outcome = refused.get((sid, rid))
+        if refused_outcome:
+            problems.append(f"{rid}: writer_row_refused: the tool wrote a different body after "
+                            f"the row was sealed ({refused_outcome}); the sealed body was kept")
+        row_absent = False
         for _attempt in range(3):
             try:
                 entry = store._run_log_read_one(sid, rid, deadline=deadline, strict=True)
             except Exception as exc:
                 # Could not look: never write a minimal row over a row we cannot see.
-                problems.append(f"{rid}: record_not_stored (row unreadable: {scrub_error_text(exc)})")
+                reason = f"row unreadable: {scrub_error_text(exc)}"
+                problems.append(f"{rid}: record_not_stored ({reason})")
+                _register_pending(sid, rid, body=None, record=None, row_absent=False,
+                                  reason=f"body not observed when the call finished ({reason})")
                 break
             if entry is None:
                 entry = _minimal_entry(rid, tool, sid, result, failure)
                 extra["entry"] = "minimal"
+                row_absent = True
             if _run_log_has_record(entry):
                 stored = True          # already sealed; never touch it
                 break
@@ -742,11 +778,22 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
                 break
             if outcome != "stale":
                 problems.append(f"{rid}: record_not_stored ({outcome})")
+                if outcome == "error":      # transient (lock/IO): keep the finished seal to retry
+                    _register_pending(sid, rid, body={k: v for k, v in entry.items() if k != "record"},
+                                      record=record.to_dict(), row_absent=row_absent,
+                                      reason=f"record_not_stored ({outcome})")
                 break
         else:
             problems.append(f"{rid}: record_not_stored (row kept changing)")
+            _register_pending(sid, rid, body=None, record=None, row_absent=False,
+                              reason="row kept changing during the call; no body could be bound")
         if stored:
             run_ids.append(rid)
+
+    # Lazy re-seal of earlier rows of this session, bounded and inside this
+    # call's single deadline (skipped when the budget is already spent).
+    reseal_unsealed_rows(session_id, deadline=deadline, limit=RESEAL_PER_CALL,
+                         exclude=[rid for _sid, rid, _w in rows])
 
     count("recorded", len(run_ids))
     if created:
@@ -759,6 +806,147 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         run_ids=run_ids,
         record_error="; ".join(problems) if problems else None,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Lazy re-seal of rows the middleware could not seal (skeptic-slice3 R2)
+# --------------------------------------------------------------------------- #
+#
+# When a call's row cannot be read or sealed within the lock budget, the
+# material the seal needs exists only in that call: the arguments and result.
+# It is kept here (process-local, bounded) as a finished, already-sealed record
+# bound to the exact row body observed at the time. A later retry stores that
+# same record only if the stored row body is still byte-for-byte that body.
+# Nothing is recomputed, so no digest of an unobserved input or output can be
+# invented. If the body was never observed (the read failed) or has changed, a
+# faithful seal is impossible and the row is marked ``record_status:
+# unsealable`` with the reason, so a capsule says so instead of showing a
+# silent legacy row. The marker is only written to an unsealed row; a sealed
+# body is never rewritten.
+#
+# Limit: the pending set does not survive a process restart. A row that was
+# left unsealed by a process that is gone stays an ordinary unsealed row.
+
+RESEAL_PER_CALL = 4          # rows retried per _record_call, after its own work
+PENDING_MAX_PER_SESSION = 64
+
+_PENDING_LOCK = threading.Lock()
+_PENDING: Dict[str, Dict[str, "_PendingSeal"]] = {}
+
+
+@dataclasses.dataclass
+class _PendingSeal:
+    run_id: str
+    body: Optional[Dict[str, Any]]      # scrubbed row body observed (no ``record``), or None
+    record: Optional[Dict[str, Any]]    # the sealed record built against ``body``, or None
+    row_absent: bool                    # the middleware's own minimal row; the row did not exist
+    reason: str                         # why it was not stored / why it cannot be sealed
+
+
+def _register_pending(session_id: str, run_id: str, *, body: Optional[Dict[str, Any]],
+                      record: Optional[Dict[str, Any]], row_absent: bool, reason: str) -> None:
+    with _PENDING_LOCK:
+        bucket = _PENDING.setdefault(session_id, {})
+        if run_id not in bucket and len(bucket) >= PENDING_MAX_PER_SESSION:
+            bucket.pop(next(iter(bucket)))         # drop the oldest; it stays an unsealed row
+            count("reseal_pending_dropped")
+        bucket[run_id] = _PendingSeal(run_id, body, record, row_absent, reason)
+
+
+def pending_seal_ids(session_id: str) -> List[str]:
+    with _PENDING_LOCK:
+        return list(_PENDING.get(session_id, {}))
+
+
+def reset_pending() -> None:
+    with _PENDING_LOCK:
+        _PENDING.clear()
+
+
+def reseal_unsealed_rows(
+    session_id: str, *, deadline: Optional[float] = None, limit: Optional[int] = None,
+    exclude: Iterable[str] = (),
+) -> Dict[str, Any]:
+    """Retry sealing rows this process failed to seal; never raises.
+
+    ``deadline`` is an absolute monotonic deadline (one per operation, as in
+    ``_record_call``); default is a fresh lock-wait budget. ``limit`` caps the
+    rows tried. Returns ``{"resealed": [...], "unsealable": [...],
+    "pending": [...]}`` (run ids).
+    """
+    out: Dict[str, Any] = {"resealed": [], "unsealable": [], "pending": []}
+    try:
+        from ai_hydro.session import store
+
+        if deadline is None:
+            deadline = store._new_deadline()
+        skip = set(exclude)
+        with _PENDING_LOCK:
+            todo = [p for rid, p in _PENDING.get(session_id, {}).items() if rid not in skip]
+        tried = 0
+        for p in todo:
+            if limit is not None and tried >= limit:
+                break
+            if time.monotonic() >= deadline:
+                break
+            tried += 1
+            done = _reseal_one(store, session_id, p, deadline)
+            if done == "resealed":
+                out["resealed"].append(p.run_id)
+            elif done == "unsealable":
+                out["unsealable"].append(p.run_id)
+            if done in ("resealed", "unsealable", "gone"):
+                with _PENDING_LOCK:
+                    _PENDING.get(session_id, {}).pop(p.run_id, None)
+        with _PENDING_LOCK:
+            out["pending"] = list(_PENDING.get(session_id, {}))
+        if out["resealed"]:
+            count("resealed", len(out["resealed"]))
+        if out["unsealable"]:
+            count("unsealable", len(out["unsealable"]))
+    except Exception as exc:
+        log.warning("reseal_unsealed_rows(%s): %s", session_id, exc)
+    return out
+
+
+def _reseal_one(store, session_id: str, p: "_PendingSeal", deadline: float) -> str:
+    """``resealed`` | ``unsealable`` | ``gone`` (nothing left to do) | ``retry``."""
+    try:
+        row = store._run_log_read_one(session_id, p.run_id, deadline=deadline, strict=True)
+    except Exception:
+        return "retry"                      # transient; keep it pending
+    if row is not None and _run_log_has_record(row):
+        return "gone"                       # somebody sealed it; never touch it
+    if p.record is None or p.body is None:
+        # The body was never observed (or kept changing): no seal can be bound to it.
+        if row is None:
+            return "gone"
+        outcome = store._run_log_mark_unsealable(
+            session_id, p.run_id, store._run_log_body_json(row), p.reason, deadline=deadline)
+        return "unsealable" if outcome in ("marked", "noop") else "retry"
+    expected = store._run_log_body_json(p.body)
+    if row is None:
+        if not p.row_absent:
+            return "gone"                   # the row vanished; nothing to seal
+    else:
+        same = (store._run_log_body_json(row) == expected
+                or store._run_log_body_json(store._scrub_row_body(session_id, row)) == expected)
+        if not same or p.row_absent:
+            reason = ("row appeared after the call; its body was never observed" if p.row_absent
+                      else "row body changed after the call that could not seal it")
+            outcome = store._run_log_mark_unsealable(
+                session_id, p.run_id, store._run_log_body_json(row), reason, deadline=deadline)
+            return "unsealable" if outcome in ("marked", "noop") else "retry"
+    outcome = store._run_log_record(session_id, p.run_id, {**p.body, "record": p.record},
+                                    writer="middleware", deadline=deadline)
+    if outcome in ("inserted", "replaced", "noop"):
+        return "resealed"
+    if outcome in ("stale", "refused"):
+        outcome = store._run_log_mark_unsealable(
+            session_id, p.run_id, store._run_log_body_json(row),
+            "row body changed after the call that could not seal it", deadline=deadline)
+        return "unsealable" if outcome in ("marked", "noop") else "retry"
+    return "retry"
 
 
 def _run_log_has_record(entry: Any) -> bool:

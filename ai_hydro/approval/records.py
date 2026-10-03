@@ -58,7 +58,7 @@ defaults do not matter):
     text, claim_type, status, confidence, confidence_rationale
     scope           basins, period, forcing, metric, model_versions
     evidence_spans  every EvidenceSpan
-    evidence_versions  source_id -> ``sha256-v2`` fingerprint of the retained
+    evidence_versions  source_id -> ``sha256-v3`` (v2 for older bindings) fingerprint of the retained
                     record each span resolves to (registry/evidence.py), as
                     computed at promotion time; ``unresolved:<code>`` if a span
                     cannot be resolved
@@ -122,21 +122,25 @@ def approvals_lock_file() -> Path:
 # Claim revision digest
 # ---------------------------------------------------------------------------
 
-def evidence_fingerprints(session: Any, spans: Iterable[Any]) -> dict:
-    """``source_id -> sha256-v2`` of the retained record each span resolves to.
+def evidence_fingerprints(session: Any, spans: Iterable[Any], like: dict | None = None) -> dict:
+    """``source_id -> sha256-v3`` of the retained record each span resolves to
+    (v2 for a source whose entry in ``like`` is v2: a stored fingerprint is
+    recomputed in its own version, so old bindings do not drift).
 
     Same fingerprints promotion computes through ``verified_versions``
     (``resolve_source`` then ``fingerprint``), without validating the metric.
     A span that cannot be resolved binds as ``unresolved:<code>``; promotion
     refuses such a claim on evidence grounds before it ever checks approval.
     """
-    from ai_hydro.registry.evidence import EvidenceError, fingerprint, resolve_source
+    from ai_hydro.registry.evidence import EvidenceError, evidence_fingerprint, resolve_source
 
     out = {}
     for span in spans:
         span = span if isinstance(span, dict) else span.model_dump()
         try:
-            out[span["source_id"]] = fingerprint(resolve_source(session, span))
+            out[span["source_id"]] = evidence_fingerprint(
+                resolve_source(session, span), span.get("source_type"),
+                like=(like or {}).get(span["source_id"]))
         except EvidenceError as exc:
             out[span["source_id"]] = f"unresolved:{exc.code}"
     return out
@@ -174,12 +178,28 @@ def claim_revision_digest(claim: Any, evidence_versions: dict) -> str:
     return digest(claim_revision_fields(claim, evidence_versions))
 
 
+def latest_bound_versions(session_id: Any, claim_id: str) -> dict:
+    """``evidence_versions`` of the claim's latest stored revision, or ``{}``.
+
+    Used only to pick each fingerprint's version; a missing or unreadable chain
+    means a new binding (current version). Never raises.
+    """
+    try:
+        from ai_hydro.session import claim_revisions
+
+        last = claim_revisions.latest(session_id, claim_id) if session_id else None
+        return dict((last or {}).get("content", {}).get("evidence_versions") or {})
+    except Exception:
+        return {}
+
+
 def session_claim_revision(session: Any, claim_id: str) -> tuple:
     """``(claim, evidence_versions, fields, digest)`` for a claim in a loaded session."""
     claim = session.claims[claim_id]
     from ai_hydro.session.models import ScientificClaim
     spans = ScientificClaim(**dict(claim)).evidence_spans
-    ev = evidence_fingerprints(session, spans)
+    ev = evidence_fingerprints(session, spans, like=latest_bound_versions(
+        getattr(session, "session_id", None), claim_id))
     fields = claim_revision_fields(claim, ev)
     return claim, ev, fields, digest(fields)
 

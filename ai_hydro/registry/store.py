@@ -230,14 +230,17 @@ def build_registry_id(session_id: str, claim_id: str, revision: str = "") -> str
     return f"reg.{session_frag}.{date_str}.{digest}"
 
 
-def snapshot_evidence_versions(session: Any, evidence_spans: list[dict]) -> dict[str, str]:
+def snapshot_evidence_versions(session: Any, evidence_spans: list[dict],
+                               like: dict | None = None) -> dict[str, str]:
     """Fingerprint exact retained sources; raise on unresolved evidence.
 
     The v2 prefix distinguishes real content fingerprints from legacy run-ID
     self-hashes and dataset hashes that could have come from metadata alone.
     """
-    from .evidence import resolve_source, fingerprint
-    return {span["source_id"]: fingerprint(resolve_source(session, span))
+    from .evidence import resolve_source, evidence_fingerprint
+    return {span["source_id"]: evidence_fingerprint(
+                resolve_source(session, span), span.get("source_type"),
+                like=(like or {}).get(span["source_id"]))
             for span in evidence_spans}
 
 
@@ -251,16 +254,17 @@ def check_evidence_staleness(
     Never upgrade a legacy snapshot by hashing the current result: that would
     invent evidence of what was present at the time of original promotion.
     """
-    from .evidence import EvidenceError, resolve_source, fingerprint
+    from .evidence import EvidenceError, resolve_source, evidence_fingerprint, fingerprint_version
     stale: list[str] = []
     for span in evidence_spans:
         sid = span.get("source_id", "")
         stored = evidence_versions.get(sid, "")
         try:
-            current = fingerprint(resolve_source(session, span))
+            # recomputed in the stored fingerprint's own version
+            current = evidence_fingerprint(resolve_source(session, span), span.get("source_type"), like=stored)
         except (EvidenceError, TypeError, ValueError, OSError):
             current = None
-        if not str(stored).startswith("sha256-v2:") or current != stored:
+        if fingerprint_version(stored) is None or current != stored:
             if sid not in stale:
                 stale.append(sid)
     for sid in evidence_versions:

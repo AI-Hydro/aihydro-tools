@@ -58,7 +58,8 @@ cannot supply uncertainty missing from a historical run. Other uncertainty
 formats need an explicit producer adapter; they are not guessed into this one.
 
 New registry entries carry `evidence_schema_version: 2` and full
-`sha256-v2:` content fingerprints. Missing, changed or unresolvable records are
+content fingerprints (`sha256-v3:` for new bindings, see below; entries bound
+with `sha256-v2:` stay valid). Missing, changed or unresolvable records are
 marked stale by `check_registry_staleness`. Legacy self-ID hashes, empty hashes
 and unverifiable metadata snapshots receive the reason
 `legacy_evidence_unverifiable`; their historical versions are preserved.
@@ -122,8 +123,9 @@ claim text, `claim_type`, status, confidence, `confidence_rationale`, scope
 (basins, period, forcing, metric, model versions), every evidence span,
 `evidence_versions`, limitations, `prereg_id`, `uncertainty_verified`,
 normalised through `ScientificClaim`. `evidence_versions` maps each span's
-`source_id` to the `sha256-v2` fingerprint of the retained record it resolves
-to (`registry/evidence.py`), computed at promotion time. So editing the claim,
+`source_id` to the `sha256-v3` fingerprint (or `sha256-v2` for bindings made
+before v3) of the retained record it resolves to (`registry/evidence.py`),
+computed at promotion time. So editing the claim,
 or mutating a retained run, dataset result or passage after approval, changes
 the digest and invalidates the approval. A span that cannot be resolved binds as
 `unresolved:<code>`; promotion refuses it on evidence grounds first. Not bound:
@@ -380,6 +382,23 @@ advisory and the registry file is still rewritten whole, not append-only.
 `tests/test_registry_fingerprint_golden.py` pins one legacy `sha256-v2` evidence
 fingerprint, so changes to the algorithm that would silently re-stale or re-bless
 existing rows fail loudly.
+
+### Fingerprint versions
+
+- `sha256-v2`: hash of the whole retained record. For a run-log row that
+  includes its `record` seal and any `record_status*` keys, so sealing a row
+  later (lazy re-seal) or marking it `record_status: unsealable` changes it.
+- `sha256-v3`: identical, except a run row is hashed over its body only; the
+  seal and every `record_status*` key are excluded (one rule,
+  `registry.evidence.is_run_row_metadata_key`, mirrored in
+  `capsule/standalone_replay.py` and pinned by a test). Datasets and passages
+  are hashed whole. All new bindings use v3.
+- A stored fingerprint is always recomputed in its own version, so existing
+  v2 claims, approvals and registry rows do not drift. A v2 binding to a row
+  that is later sealed or marked still reads as changed (the limit of v2).
+- The capsule does not record each source's version, so stdlib replay tries the
+  v3 and v2 choice per source (only sources where the two differ) and accepts
+  the digest the approval signed.
 
 No real claims are migrated or promoted by installing this change. All
 regression fixtures use isolated temporary sessions, registry files and passage

@@ -98,6 +98,10 @@ def _run_record_summary(capsule_dir: Path) -> dict | None:
             "run_log_rows": len(run_log),
             "v2_records": len(records),
             "legacy_unrecorded": len(run_log) - len(records),
+            # rows the recorder could not seal and says so (a subset of the above)
+            "unsealable": sum(1 for e in run_log.values()
+                              if isinstance(e, dict) and not isinstance(e.get("record"), dict)
+                              and e.get("record_status") == "unsealable"),
             "records_with_record_error": sum(1 for r in records if r.get("record_error")),
         }
         try:
