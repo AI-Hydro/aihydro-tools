@@ -22,7 +22,8 @@ REDACTED_KEY = "redacted_for_privacy"
 
 # Exported files that must stay byte-identical: sealed/signed content or code.
 _SKIP_DIRS = {"approvals", "data"}
-_SKIP_NAMES = {"run_log.json", "replay.py", "capsule_manifest.json"}
+_SKIP_NAMES = {"run_log.json", "replay.py", "capsule_manifest.json",
+               "bundle.json", "ro-crate-metadata.json", "manifest-sha256.txt"}
 _TEXT_SUFFIXES = {".md", ".txt", ".bib", ".yml", ".yaml", ".csv", ".html", ".svg"}
 
 

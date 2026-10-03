@@ -17,6 +17,13 @@ prints exactly which level it reached:
                        in session.json. Still no recomputation.
     not_performed      an integrity check failed; no level is established.
 
+Partial coverage (rows or claim revisions withheld for privacy) is reported as a
+"coverage:" line, not as a level. When the capsule carries records/claim_revisions.json
+each claim's revision chain is verified; when it carries bundle.json the bundle,
+its records and manifest-sha256.txt are verified by a stdlib mirror of
+aihydro_core.export.verify_crate (which does NOT regenerate and byte-compare the
+crate; if aihydro_core is importable that check is run too). Integrity is not origin.
+
 Usage:
     python replay.py                     # archive integrity
     python replay.py --live              # also cross-check run log vs session
@@ -41,6 +48,7 @@ import hashlib
 import json
 import base64
 import math
+import os
 import re
 import shutil
 import struct
@@ -92,14 +100,18 @@ def _encode(value):
     if isinstance(value, dict):
         out = {}
         for key, item in value.items():
+            if isinstance(key, bool) or not isinstance(key, (str, int)):
+                raise TypeError("dict key has no canonical form")
             skey = key if isinstance(key, str) else str(key)
+            if skey in out:
+                raise TypeError("dict keys collide after stringification")
             out[skey] = _encode(item)
         if any(k.startswith("$") for k in out):
             return {"$map": out}
         return out
     if isinstance(value, (list, tuple)):
         return [_encode(v) for v in value]
-    raise TypeError(f"cannot encode {type(value).__name__}")
+    raise TypeError("cannot encode %s" % type(value).__name__)
 
 
 def _es_number(x):
@@ -164,8 +176,195 @@ def canonical_bytes(value) -> bytes:
     return _serialize(_encode(value)).encode("utf-8")
 
 
-def c14n_digest(value) -> str:
-    return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
+def c14n_digest(value):
+    """``sha256:<64 hex>`` of the canonical encoding (raises on unencodable input)."""
+    return "sha256:" + hashlib.sha256(_serialize(_encode(value)).encode("utf-8")).hexdigest()
+
+
+# --------------------------------------------------------------------------- #
+# Claim revision chains: vendored verbatim from ai_hydro/capsule/claim_chain_verify.py
+# (a test pins that the functions below are source-identical to that module, and
+# that both agree with aihydro_core on shared golden vectors).
+# --------------------------------------------------------------------------- #
+
+CLAIM_REVISION_SCHEMA = "aihydro.claim_revision_record/1"
+CANONICALIZATION = "aihydro.c14n/1"
+ACTOR_KINDS = ("human", "agent", "package", "system")
+REDACTED_KEY = "redacted_for_privacy"
+_KNOWN_FIELDS = (
+    "schema", "canonicalization", "session_id", "claim_id", "revision", "supersedes",
+    "revision_digest", "content", "cause", "actor", "recorded_at", "record_digest",
+)
+_HEX = "0123456789abcdef"
+
+
+def is_digest(value):
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        return False
+    hexpart = value[7:]
+    return len(hexpart) == 64 and all(c in _HEX for c in hexpart)
+
+
+# --------------------------------------------------------------- ClaimRevision mirror
+def _valid(d):
+    """The ClaimRevision constructor's checks (after ``from_dict`` fills defaults)."""
+    if not d["session_id"] or not d["claim_id"]:
+        return False
+    revision = d["revision"]
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        return False
+    if not is_digest(d["revision_digest"]):
+        return False
+    if d.get("record_digest") is not None and not is_digest(d["record_digest"]):
+        return False
+    supersedes = d.get("supersedes")
+    if supersedes is not None and not is_digest(supersedes):
+        return False
+    if revision == 0 and supersedes is not None:
+        return False
+    if revision > 0 and supersedes is None:
+        return False
+    if not isinstance(d["content"], dict) or not isinstance(d["cause"], dict):
+        return False
+    cause = d["cause"]
+    if not isinstance(cause.get("tool"), str) or not cause["tool"]:
+        return False
+    if not isinstance(cause.get("reason"), str) or not cause["reason"]:
+        return False
+    run_id = cause.get("run_id")
+    if run_id is not None and (not isinstance(run_id, str) or not run_id):
+        return False
+    actor = d["actor"]
+    if not isinstance(actor, dict) or actor.get("kind") not in ACTOR_KINDS or not actor.get("id"):
+        return False
+    return True
+
+
+def verify_claim_revision(d):
+    """True iff ``d`` is a valid, sealed, unmodified claim revision row.
+
+    Mirrors ``aihydro_core.records.verify_claim_revision_dict`` (never trusts the
+    declared digest; any constructor failure is False).
+    """
+    try:
+        if not isinstance(d, dict):
+            return False
+        # from_dict: known fields present in d; defaults for the rest. recorded_at has
+        # a clock default in core, so a row without it cannot match its digest.
+        row = {k: d[k] for k in _KNOWN_FIELDS if k in d}
+        if "recorded_at" not in row:
+            return False
+        row.setdefault("schema", CLAIM_REVISION_SCHEMA)
+        row.setdefault("canonicalization", CANONICALIZATION)
+        for required in ("session_id", "claim_id", "revision", "revision_digest",
+                         "content", "cause", "actor"):
+            if required not in row:
+                return False
+        if not _valid(row):
+            return False
+        if row.get("record_digest") is None:
+            return False
+        payload = {k: v for k, v in row.items() if v is not None and k != "record_digest"}
+        for key, value in d.items():            # unknown fields round-trip into the digest
+            if key not in _KNOWN_FIELDS:
+                payload.setdefault(key, value)
+        return c14n_digest(payload) == row["record_digest"]
+    except Exception:
+        return False
+
+
+def verify_chain(rows):
+    """True iff ``rows`` is one claim's complete, intact chain (mirrors core).
+
+    Each row verifies, shares ``session_id`` and ``claim_id``, counts
+    ``revision`` 0, 1, 2, ... in order, and ``supersedes`` equals the previous
+    row's ``revision_digest``. An empty chain is False.
+    """
+    try:
+        if not rows:
+            return False
+        first = rows[0]
+        prev = None
+        for i, row in enumerate(rows):
+            if not verify_claim_revision(row) or row["revision"] != i:
+                return False
+            if row["session_id"] != first["session_id"] or row["claim_id"] != first["claim_id"]:
+                return False
+            if prev is not None and row.get("supersedes") != prev["revision_digest"]:
+                return False
+            prev = row
+        return True
+    except Exception:
+        return False
+
+
+# --------------------------------------------------------------- exported-file check
+def verify_exported(doc, expected_heads=None):
+    """Per-claim verdicts for a ``records/claim_revisions.json`` document.
+
+    Returns ``{claim_id: {"status": ..., "revisions": n, "detail": str}}`` with
+    status one of:
+
+    * ``verified``: whole chain verifies (and matches ``expected_heads`` if given);
+    * ``partial``: chain links hold and every non-redacted row verifies, but
+      privacy-redacted stubs cannot be re-sealed from the capsule;
+    * ``corrupt_at_export``: the source store failed its own check at export;
+    * ``failed``: a seal, link, ordering or anchor check failed.
+
+    ``expected_heads`` maps ``claim_id -> revision_digest`` pinned outside the
+    chain; a tail that was cut or re-sealed then fails instead of verifying.
+    Every row's ``session_id`` must equal the document's.
+    """
+    out = {}
+    claims = doc.get("claims") if isinstance(doc, dict) else None
+    if not isinstance(claims, dict):
+        return out
+    heads = expected_heads or {}
+    for cid in sorted(claims):
+        entry = claims[cid]
+        rows = entry.get("rows") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict) or entry.get("status") == "corrupt":
+            out[cid] = {"status": "corrupt_at_export", "revisions": 0,
+                        "detail": "source store failed verification at export; rows withheld"}
+            continue
+        if not isinstance(rows, list) or not rows:
+            out[cid] = {"status": "failed", "revisions": 0, "detail": "no rows"}
+            continue
+        stubs = [r for r in rows if isinstance(r, dict) and r.get(REDACTED_KEY)]
+        foreign = [r.get("revision") for r in rows
+                   if not isinstance(r, dict) or r.get("session_id") != doc.get("session_id")]
+        if foreign:
+            out[cid] = {"status": "failed", "revisions": len(rows),
+                        "detail": "row session_id differs from the document's (revision(s) %s)" % foreign}
+            continue
+        if not stubs:
+            ok = verify_chain(rows)
+            detail = "chain verifies" if ok else "seal, link or ordering check failed"
+        else:
+            ok, detail = _verify_with_stubs(rows)
+        status = "failed" if not ok else ("partial" if stubs else "verified")
+        if ok and cid in heads and rows[-1].get("revision_digest") != heads[cid]:
+            status, detail = "failed", "head revision does not match the pinned anchor (tail cut or re-sealed)"
+        out[cid] = {"status": status, "revisions": len(rows), "detail": detail}
+    return out
+
+
+def _verify_with_stubs(rows):
+    first = rows[0]
+    prev = None
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict) or row.get("revision") != i:
+            return False, "revision numbering broken at position %d" % i
+        if row.get("session_id") != first.get("session_id") or row.get("claim_id") != first.get("claim_id"):
+            return False, "mixed session or claim at revision %d" % i
+        if not row.get(REDACTED_KEY) and not verify_claim_revision(row):
+            return False, "seal failed at revision %d" % i
+        if prev is not None and row.get("supersedes") != prev.get("revision_digest"):
+            return False, "link broken at revision %d" % i
+        if not is_digest(row.get("revision_digest")):
+            return False, "bad revision_digest at revision %d" % i
+        prev = row
+    return True, "links hold; redacted rows cannot be re-sealed from the capsule"
 
 
 _RECORD_DEFAULTS = (
@@ -792,6 +991,473 @@ def live_cross_check(capsule_dir: Path, tolerance: float = DEFAULT_TOLERANCE):
 
 
 # --------------------------------------------------------------------------- #
+# Bundle and crate: stdlib mirror of aihydro_core.export.verify_crate
+# --------------------------------------------------------------------------- #
+#
+# What this checks (rule ids match aihydro_core.export.rocrate_verify):
+#   VER-BUNDLE-IDENTITY / VER-BUNDLE-SEAL  bundle.json names {schema, session_id,
+#       objects, records}, is in canonical order, and its seal holds;
+#   VER-FILE-DIGEST        every bundle object's bytes equal its sealed digest/size;
+#   VER-OBJECTS-MANIFEST   bundle.objects equals capsule_manifest.json files plus the
+#       manifest itself and replay.py; VER-UNLISTED-FILE any other file or a symlink;
+#   VER-ASSESSOR / VER-REPLAY-MANIFEST  the verifier the bundle names is a capsule file and
+#       the bundle's replay level is anchored to the on-disk manifest and to what was checked;
+#   VER-GATES              declared gates equal those derived from verified, sealed-bound bodies;
+#   VER-RECORD-SEAL / VER-RECORD-DIGEST / VER-BINDING / VER-CHAIN
+#       run record seals, claim revision seals, basin ids from their anchors,
+#       content digests, aihydro.entry/1 body bindings (and the sealed
+#       extra.entry_digest), and per-claim revision chains;
+#   VER-COVERAGE           the unverifiable set equals the bundle's declared one;
+#   VER-BAGIT              manifest-sha256.txt covers every file and each digest holds.
+# What it does NOT check: it does not regenerate ro-crate-metadata.json and
+# byte-compare it (that needs the projection code, which lives in aihydro_core),
+# so a crate edited consistently with nothing else is not caught here; the BagIt
+# manifest only shows the crate is the file that was shipped. It does not run
+# the constructor validation of every bundle field (types of optional fields,
+# SPDX strings, gate codes) and not core's structural/honesty validator
+# (VER-VALIDATE). When aihydro_core.export is importable, replay.py also runs its
+# verify_crate and reports every rule, including VER-CRATE-REGEN and VER-VALIDATE.
+
+_CRATE_FILE = "ro-crate-metadata.json"
+_BAGIT_FILE = "manifest-sha256.txt"
+_BUNDLE_FILE = "bundle.json"
+_BUNDLE_SCHEMA = "aihydro.bundle/1"
+_ENTRY_BINDING = "aihydro.entry/1"
+_UNSEALED_KINDS = ("claim_view",)
+_ANCHOR_KINDS = ("gauge_index", "network_element", "grid_cell")
+_BASIN_ANCHOR_SCHEMA = "aihydro.basin_anchor/1"
+_BASIN_ID_PREFIX = "aihydro:basin:"
+_GATE_CODES = ("APPROVAL_REQUIRED",)
+_LEVELS = ("not_performed", "archive_integrity", "cross_check", "recomputed", "independently_replicated")
+
+
+def entry_digest(obj) -> str:
+    """``aihydro.entry/1``: the c14n digest of ``obj`` minus its top-level ``record``."""
+    return c14n_digest({k: v for k, v in obj.items() if k != "record"})
+
+
+def _unescape_token(token):
+    out, i = [], 0
+    while i < len(token):
+        ch = token[i]
+        if ch == "~":
+            nxt = token[i + 1] if i + 1 < len(token) else ""
+            if nxt not in ("0", "1"):
+                raise ValueError("bad JSON Pointer escape")
+            out.append("~" if nxt == "0" else "/")
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def split_location(location):
+    """``(file, tokens)`` for ``'<file>#<RFC 6901 pointer>'``; ValueError when malformed."""
+    if not isinstance(location, str) or "#" not in location:
+        raise ValueError("location must be '<file>#<pointer>'")
+    path, _, pointer = location.partition("#")
+    if (not path or path.startswith("/") or "\\" in path or "\x00" in path
+            or any(seg in ("", ".", "..") for seg in path.split("/"))):
+        raise ValueError("bad location file part")
+    if pointer == "":
+        return path, []
+    if not pointer.startswith("/"):
+        raise ValueError("JSON Pointer must be empty or start with '/'")
+    return path, [_unescape_token(t) for t in pointer[1:].split("/")]
+
+
+def resolve_tokens(doc, tokens):
+    cur = doc
+    for tok in tokens:
+        if isinstance(cur, dict):
+            if tok not in cur:
+                raise ValueError("pointer token not found")
+            cur = cur[tok]
+        elif isinstance(cur, list):
+            if not tok.isdigit() or (len(tok) > 1 and tok[0] == "0") or int(tok) >= len(cur):
+                raise ValueError("bad array index")
+            cur = cur[int(tok)]
+        else:
+            raise ValueError("cannot descend into a scalar")
+    return cur
+
+
+def scan_files(capsule_dir: Path) -> dict:
+    """Every regular, non-symlink file except the crate and the BagIt manifest."""
+    out = {}
+    for p in sorted(capsule_dir.rglob("*")):
+        if not p.is_file() or p.is_symlink():
+            continue
+        rel = p.relative_to(capsule_dir).as_posix()
+        if rel in (_CRATE_FILE, _BAGIT_FILE):
+            continue
+        data = p.read_bytes()
+        out[rel] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+    return out
+
+
+def find_symlinks(capsule_dir: Path) -> list:
+    found = []
+    for dirpath, dirnames, filenames in os.walk(capsule_dir, followlinks=False):
+        for name in list(dirnames) + list(filenames):
+            full = Path(dirpath) / name
+            if full.is_symlink():
+                found.append(full.relative_to(capsule_dir).as_posix())
+    return sorted(found)
+
+
+def _basin_ref_ok(rec, eid) -> bool:
+    try:
+        anchor = rec["anchor"]
+        if not isinstance(anchor, dict) or set(anchor) != {"kind", "network", "network_version", "element"}:
+            return False
+        if anchor["kind"] not in _ANCHOR_KINDS or not all(
+                isinstance(anchor[k], str) and anchor[k] for k in ("network", "network_version", "element")):
+            return False
+        expected = _BASIN_ID_PREFIX + c14n_digest({"schema": _BASIN_ANCHOR_SCHEMA, **anchor})
+        return rec.get("schema") == "aihydro.basin_ref/1" and rec.get("id") == expected == eid
+    except Exception:
+        return False
+
+
+def verify_bundle(capsule_dir: Path) -> dict | None:
+    """Verify ``bundle.json`` and what it points at. ``None`` when there is no bundle.
+
+    Returns ``{ok, failures: [(rule, entity, message)], notes, unverifiable_ids,
+    records_verified, records_total, coverage, replay, claim_heads}``.
+    """
+    bpath = capsule_dir / _BUNDLE_FILE
+    if not bpath.exists():
+        return None
+    res = {"ok": True, "failures": [], "notes": [], "unverifiable_ids": [], "records_verified": 0,
+           "records_total": 0, "coverage": None, "replay": None, "claim_heads": {}}
+
+    def fail(rule, message, entity=None):
+        res["failures"].append((rule, entity, message))
+        res["ok"] = False
+
+    try:
+        bundle = json.loads(bpath.read_text(encoding="utf-8"))
+        assert isinstance(bundle, dict) and bundle.get("schema") == _BUNDLE_SCHEMA
+        objects, records = bundle["objects"], bundle["records"]
+        assert isinstance(objects, list) and isinstance(records, list)
+        assert isinstance(bundle.get("session_id"), str) and bundle["session_id"]
+        assert all(isinstance(o, dict) and isinstance(o.get("ref"), str) for o in objects)
+        assert all(isinstance(r, dict) and isinstance(r.get("kind"), str) and isinstance(r.get("id"), str)
+                   for r in records)
+    except Exception as exc:
+        fail("VER-BUNDLE-SEAL", f"cannot read a valid {_BUNDLE_FILE}: {type(exc).__name__}")
+        return res
+    res["coverage"], res["replay"] = bundle.get("coverage"), bundle.get("replay")
+    res["claim_heads"] = bundle.get("claim_heads") if isinstance(bundle.get("claim_heads"), dict) else {}
+
+    ordered = (objects == sorted(objects, key=lambda o: o["ref"])
+               and records == sorted(records, key=lambda r: (r["kind"], r["id"])))
+    try:
+        ident = c14n_digest({"schema": bundle["schema"], "session_id": bundle["session_id"],
+                             "objects": objects, "records": records})
+        identity_ok = ordered and bundle.get("bundle_id") == ident
+    except Exception:
+        identity_ok = False
+    if not identity_ok:
+        fail("VER-BUNDLE-IDENTITY",
+             "bundle_id does not name {schema, session_id, objects, records} (or order is not canonical)")
+    try:
+        payload = {k: v for k, v in bundle.items() if k != "record_digest" and v is not None}
+        payload.setdefault("canonicalization", CANONICALIZATION)
+        seal_ok = bundle.get("record_digest") is not None and c14n_digest(payload) == bundle["record_digest"]
+    except Exception:
+        seal_ok = False
+    if not seal_ok:
+        fail("VER-BUNDLE-SEAL", "bundle record_digest does not match its content")
+
+    for link in find_symlinks(capsule_dir):
+        fail("VER-UNLISTED-FILE", "symlinks are never part of a capsule", link)
+    files = scan_files(capsule_dir)
+    by_ref = {o["ref"]: o for o in objects}
+    for path in sorted(set(files) - set(by_ref) - {_BUNDLE_FILE}):
+        fail("VER-UNLISTED-FILE", "file is in the capsule but is not a bundle object (remove it, or re-export)", path)
+    for ref, o in sorted(by_ref.items()):
+        f = files.get(ref)
+        if f is None:
+            fail("VER-FILE-DIGEST", "bundle object is missing from the capsule", ref)
+        elif "sha256:" + f["sha256"] != o.get("digest") or f["size"] != o.get("size"):
+            fail("VER-FILE-DIGEST", "file bytes differ from the digest/size the bundle sealed", ref)
+    mpath = capsule_dir / MANIFEST_FILE
+    manifest = None
+    if mpath.is_file():
+        try:
+            manifest = json.loads(mpath.read_text(encoding="utf-8"))
+            listed = {m["path"]: ("sha256:" + m["sha256"], m["size"]) for m in manifest["files"]}
+        except Exception as exc:
+            manifest = None
+            fail("VER-OBJECTS-MANIFEST", f"cannot read files from {MANIFEST_FILE}: {type(exc).__name__}")
+        else:
+            mine = {r: (o.get("digest"), o.get("size")) for r, o in by_ref.items()}
+            for path in sorted(set(listed) | set(mine)):
+                if path in (MANIFEST_FILE, "replay.py"):
+                    continue
+                if listed.get(path) != mine.get(path):
+                    fail("VER-OBJECTS-MANIFEST", "bundle.objects and the manifest files disagree", path)
+            for path in (MANIFEST_FILE, "replay.py"):
+                if path not in by_ref:
+                    fail("VER-OBJECTS-MANIFEST", f"{path} must be a bundle object", path)
+    else:
+        fail("VER-OBJECTS-MANIFEST", f"{MANIFEST_FILE} is missing")
+    rp = bundle.get("replay") if isinstance(bundle.get("replay"), dict) else {}
+    assessor = rp.get("assessor") if isinstance(rp.get("assessor"), dict) else None
+    sha = assessor.get("sha256") if assessor else None
+    if sha and not any(f["sha256"] == sha for f in files.values()):
+        fail("VER-ASSESSOR", "replay.assessor.sha256 matches no file in the capsule")
+    try:
+        rank = _LEVELS.index(rp["status"])
+        if rank > _LEVELS.index(rp["checked_status"]) or rank > _LEVELS.index(rp["manifest_status"]):
+            fail("VER-REPLAY-MANIFEST", "replay.status exceeds replay.manifest_status or replay.checked_status")
+        if manifest is not None:
+            m_raw = manifest.get("replay_status")
+            m_level, m_complete = ("archive_integrity", False) if m_raw == "archive_integrity_partial" else (m_raw, True)
+            if rp["manifest_status"] != m_level:
+                fail("VER-REPLAY-MANIFEST", f"replay.manifest_status {rp['manifest_status']!r} differs from "
+                                            f"the manifest's {m_level!r}")
+            if rank > _LEVELS.index(m_level):
+                fail("VER-REPLAY-MANIFEST", "replay.status exceeds the level the on-disk manifest states")
+            cv = bundle.get("coverage") if isinstance(bundle.get("coverage"), dict) else {}
+            if not m_complete and cv.get("records_verified") == cv.get("records_total"):
+                fail("VER-REPLAY-MANIFEST", "the manifest states a partial result but the bundle claims "
+                                            "complete coverage")
+    except (KeyError, ValueError, TypeError):
+        fail("VER-REPLAY-MANIFEST", "cannot establish the replay level")
+
+    docs = {}
+
+    def locate(loc):
+        try:
+            path, tokens = split_location(loc)
+        except ValueError as exc:
+            return False, None, str(exc)
+        if path not in by_ref:
+            return False, None, f"location file {path!r} is not a sealed bundle object"
+        if path not in docs:
+            try:
+                docs[path] = json.loads((capsule_dir / path).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                docs[path] = None
+        if docs[path] is None:
+            return False, None, f"location file {path!r} is unreadable"
+        try:
+            return True, resolve_tokens(docs[path], tokens), ""
+        except ValueError as exc:
+            return False, None, str(exc)
+
+    def binding_ok(body, binding):
+        if not isinstance(body, dict) or not isinstance(binding, dict) or binding.get("scheme") != _ENTRY_BINDING:
+            return False
+        try:
+            return entry_digest(body) == binding.get("digest")
+        except Exception:
+            return False
+
+    not_ok = {}
+    revisions = {}
+    content_checks = []
+    for e in records:
+        kind, eid = e["kind"], e["id"]
+        key = (kind, eid)
+        label = f"{kind}:{eid}"
+        body = None
+        if e.get("body_location"):
+            okb, body, why = locate(e["body_location"])
+            if not okb:
+                if kind in _UNSEALED_KINDS:
+                    fail("VER-BINDING", f"body unresolvable: {why}", label)
+                else:
+                    not_ok[key] = ("VER-BINDING", f"body unresolvable: {why}")
+                continue
+        if e.get("binding") is not None and not binding_ok(body, e["binding"]):
+            if kind in _UNSEALED_KINDS:
+                fail("VER-BINDING", "body does not match its aihydro.entry/1 binding", label)
+            else:
+                not_ok[key] = ("VER-BINDING", "body does not match its aihydro.entry/1 binding")
+            continue
+        if kind in _UNSEALED_KINDS:
+            continue
+        okr, rec, why = locate(e.get("record_location"))
+        if not okr or not isinstance(rec, dict):
+            not_ok[key] = ("VER-RECORD-SEAL", f"record unresolvable: {why}")
+            continue
+        if kind == "run":
+            if not record_seal_ok(rec):
+                not_ok[key] = ("VER-RECORD-SEAL", "run record seal does not verify")
+            elif rec.get("record_digest") != e.get("record_digest"):
+                not_ok[key] = ("VER-RECORD-DIGEST", "record_digest differs from the bundle entry")
+            elif rec.get("run_id") != eid:
+                not_ok[key] = ("VER-RECORD-DIGEST", "record run_id differs from the bundle entry id")
+            elif e.get("binding") is not None and (
+                    not isinstance(rec.get("extra"), dict) or not isinstance(e["binding"], dict)
+                    or rec["extra"].get("entry_digest") != e["binding"].get("digest")):
+                not_ok[key] = ("VER-BINDING", "the declared binding is not the sealed one: the record's "
+                                              "extra.entry_digest is missing or differs from the binding digest")
+            elif body is not None and isinstance(rec.get("extra"), dict) and rec["extra"].get("entry_digest") \
+                    and entry_digest(body) != rec["extra"]["entry_digest"]:
+                not_ok[key] = ("VER-BINDING", "body does not match the sealed extra.entry_digest")
+        elif kind == "claim_revision":
+            if not verify_claim_revision(rec):
+                not_ok[key] = ("VER-RECORD-SEAL", "claim revision seal does not verify")
+            elif rec.get("record_digest") != e.get("record_digest"):
+                not_ok[key] = ("VER-RECORD-DIGEST", "record_digest differs from the bundle entry")
+            elif eid != f"{rec.get('claim_id')}@{rec.get('revision')}":
+                not_ok[key] = ("VER-RECORD-DIGEST", "claim revision id differs from claim_id@revision")
+            else:
+                revisions.setdefault(rec["claim_id"], []).append((key, rec))
+        elif kind == "basin_ref":
+            try:
+                digest_ok = c14n_digest(rec) == e.get("record_digest")
+            except Exception:
+                digest_ok = False
+            if not digest_ok or not _basin_ref_ok(rec, eid):
+                not_ok[key] = ("VER-RECORD-SEAL", "basin reference does not verify (digest, anchor id)")
+            else:
+                content_checks.append(key)
+        else:   # approval and any later content-addressed kind: content digest only
+            try:
+                digest_ok = c14n_digest(rec) == e.get("record_digest")
+            except Exception:
+                digest_ok = False
+            if not digest_ok:
+                not_ok[key] = ("VER-RECORD-SEAL", "content digest differs from the bundle entry")
+            else:
+                content_checks.append(key)
+
+    # content-addressed kinds are not seals: they must lie inside a run body bound to a sealed record
+    # that verified in this same pass
+    bound_prefixes = []
+    for e in records:
+        if e["kind"] == "run" and ("run", e["id"]) not in not_ok and e.get("binding") and e.get("body_location"):
+            try:
+                bound_prefixes.append(split_location(e["body_location"]))
+            except ValueError:
+                pass
+    for key in content_checks:
+        entry = next(x for x in records if (x["kind"], x["id"]) == key)
+        path, toks = split_location(entry["record_location"])
+        if not any(path == bp and toks[:len(bt)] == bt for bp, bt in bound_prefixes):
+            not_ok[key] = ("VER-RECORD-SEAL", "content-addressed record does not lie inside a body bound to a "
+                                              "verified sealed record")
+
+    for claim_id, items in sorted(revisions.items()):
+        items.sort(key=lambda it: it[1]["revision"])
+        if not verify_chain([r for _k, r in items]):
+            for k, _r in items:
+                not_ok[k] = ("VER-CHAIN", f"claim {claim_id}: revision chain is broken, truncated at the head "
+                                          "or has a gap")
+        else:
+            head = res["claim_heads"].get(claim_id)
+            if head is not None and items[-1][1].get("revision_digest") != head:
+                for k, _r in items:
+                    not_ok[k] = ("VER-CHAIN", f"claim {claim_id}: head revision does not match the head the "
+                                              "bundle pinned (tail cut or re-sealed)")
+
+    sealed = [e for e in records if e["kind"] not in _UNSEALED_KINDS]
+    bad_ids = sorted({eid for (_k, eid) in not_ok})
+    res["records_total"] = len(sealed)
+    res["records_verified"] = len(sealed) - len(not_ok)
+    res["unverifiable_ids"] = bad_ids
+    cov = bundle.get("coverage") if isinstance(bundle.get("coverage"), dict) else {}
+    declared = cov.get("unverifiable_ids", [])
+    for (kind, eid), (rule, why) in sorted(not_ok.items()):
+        if eid in declared:
+            res["notes"].append(f"{kind}:{eid} declared unverifiable ({rule}: {why})")
+        else:
+            fail(rule, why, f"{kind}:{eid}")
+    if cov.get("records_total") != res["records_total"] or cov.get("records_verified") != res["records_verified"] \
+            or sorted(declared) != bad_ids:
+        fail("VER-COVERAGE", f"declared coverage {cov.get('records_verified')}/{cov.get('records_total')} "
+                             f"differs from recomputed {res['records_verified']}/{res['records_total']}")
+
+    # gates are derived from verified, sealed-bound bodies; the declared list must equal them
+    derived = set()
+    for e in records:
+        if e["kind"] != "run" or ("run", e["id"]) in not_ok or not e.get("binding") or not e.get("body_location"):
+            continue
+        okb, body, _w = locate(e["body_location"])
+        okr, rec, _w = locate(e.get("record_location"))
+        if (okb and okr and isinstance(rec, dict) and isinstance(rec.get("extra"), dict)
+                and binding_ok(body, e["binding"]) and rec["extra"].get("entry_digest") == e["binding"].get("digest")
+                and body.get("error_summary") in _GATE_CODES):
+            derived.add((e["id"], body["error_summary"]))
+    declared_g = {(g.get("run_id"), g.get("code")) for g in (bundle.get("gates") or []) if isinstance(g, dict)}
+    if derived != declared_g:
+        fail("VER-GATES", f"declared gates {sorted(declared_g)} differ from gates derived from the verified "
+                          f"row bodies {sorted(derived)}")
+
+    crate = capsule_dir / _CRATE_FILE
+    if not crate.is_file():
+        fail("VER-CRATE-REGEN", f"{_CRATE_FILE} is missing")
+    bag = capsule_dir / _BAGIT_FILE
+    if bag.is_file():
+        listed_bag = {}
+        for line in bag.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                h, _, p = line.partition("  ")
+                listed_bag[p] = h
+        actual = {p: f["sha256"] for p, f in files.items()}
+        if crate.is_file():
+            actual[_CRATE_FILE] = hashlib.sha256(crate.read_bytes()).hexdigest()
+        for p in sorted(set(listed_bag) | set(actual)):
+            if listed_bag.get(p) != actual.get(p):
+                fail("VER-BAGIT", f"{_BAGIT_FILE} and the files disagree", p)
+    return res
+
+
+def verify_bundle_with_core(capsule_dir: Path):
+    """``aihydro_core.export.verify_crate`` when importable (adds crate regeneration), else ``None``."""
+    try:
+        from aihydro_core.export import verify_crate
+    except Exception:
+        return None
+    try:
+        return verify_crate(capsule_dir)
+    except Exception as exc:                      # pragma: no cover - defensive
+        class _Err:
+            ok = False
+            failures = [type("F", (), {"rule": "VER-CRATE-REGEN", "message": f"{type(exc).__name__}: {exc}",
+                                       "entity": None})()]
+        return _Err()
+
+
+def verify_claims(capsule_dir: Path, heads=None, out=print):
+    """Verify ``records/claim_revisions.json`` chain by chain. ``None`` when the capsule has none."""
+    path = capsule_dir / "records" / "claim_revisions.json"
+    if not path.exists():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        out("FAIL  records/claim_revisions.json is not valid JSON")
+        return {"verified": 0, "partial": 0, "failed": 1, "corrupt": 0, "claims": 0, "failures": 1}
+    verdicts = verify_exported(doc, heads)
+    s = {"verified": 0, "partial": 0, "failed": 0, "corrupt": 0, "claims": len(verdicts), "failures": 0}
+    for cid, v in sorted(verdicts.items()):
+        st = v["status"]
+        if st == "verified":
+            s["verified"] += 1
+            out(f"PASS  claim {cid}: {v['revisions']} revision(s), {v['detail']}")
+        elif st == "partial":
+            s["partial"] += 1
+            out(f"NOTE  claim {cid}: {v['detail']}; redacted for privacy (neither verified nor failed)")
+        elif st == "corrupt_at_export":
+            s["corrupt"] += 1
+            s["failures"] += 1
+            out(f"FAIL  claim {cid}: {v['detail']}")
+        else:
+            s["failed"] += 1
+            s["failures"] += 1
+            out(f"FAIL  claim {cid}: {v['detail']}")
+    return s
+
+
+# --------------------------------------------------------------------------- #
 # Reporting
 # --------------------------------------------------------------------------- #
 
@@ -799,25 +1465,33 @@ def replay_status(integrity_ok: bool, live: bool, n_comparisons: int, comparison
                   partial: bool = False) -> str:
     """The strongest level actually reached. Never ``recomputed``.
 
-    ``partial``: some run-log rows were redacted for privacy and cannot be verified here.
+    ``partial`` is accepted for compatibility and ignored: partial coverage (some
+    rows redacted for privacy) is reported as coverage, not as a level, so a
+    partially redacted capsule can still report a successful cross-check (R2).
+    The legacy persisted string ``archive_integrity_partial`` reads as
+    ``archive_integrity`` with coverage below 1.
     """
     if not integrity_ok:
         return "not_performed"
-    if partial:
-        return "archive_integrity_partial"
     if live and n_comparisons > 0 and comparisons_ok:
         return "cross_check"
     return "archive_integrity"
 
 
-def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERANCE, out=print,
-        allowed_signers=None) -> int:
+def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERANCE, out=print,
+           allowed_signers=None, check_crate: bool = True) -> dict:
+    """Run every check and return the assessment (``run`` prints it and maps it to an exit code).
+
+    ``check_crate=False`` skips the bundle/crate checks (used by the exporter before the
+    bundle exists). The exporter and replay.py therefore share one code path.
+    """
     hashes_ok, hash_results = verify_hashes(capsule_dir, out=out)
     n_pass = sum(1 for r in hash_results if r["status"] == "pass")
     n_bad = sum(1 for r in hash_results if r["status"] != "pass")
     out(f"\nHash check: {n_pass} pass, {n_bad} fail")
 
     records_ok = True
+    summary = None
     rl_path = capsule_dir / "run_log.json"
     if rl_path.exists():
         summary = verify_run_log(json.loads(rl_path.read_text(encoding="utf-8")))
@@ -838,6 +1512,32 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
 
     bindings_ok = verify_data_bindings(capsule_dir, out=out)
 
+    bundle_res = verify_bundle(capsule_dir) if check_crate else None
+    heads = bundle_res["claim_heads"] if bundle_res else None
+    claims = verify_claims(capsule_dir, heads, out=out)
+    claims_ok = claims is None or claims["failures"] == 0
+    crate_ok = True
+    coverage = None
+    if bundle_res is not None:
+        out("")
+        for rule, entity, message in bundle_res["failures"]:
+            out(f"FAIL  {rule}{' ' + entity if entity else ''}: {message}")
+        for note in bundle_res["notes"]:
+            out(f"NOTE  {note}")
+        crate_ok = bundle_res["ok"]
+        coverage = bundle_res["coverage"]
+        out(f"Bundle: {bundle_res['records_verified']} of {bundle_res['records_total']} sealed records verify "
+            f"({'ok' if crate_ok else 'FAILED'}); crate regeneration is not checked by this stdlib mirror")
+        core_res = verify_bundle_with_core(capsule_dir)
+        if core_res is not None:
+            for f in core_res.failures:
+                out(f"FAIL  {f.rule}{' ' + f.entity if getattr(f, 'entity', None) else ''}: {f.message}")
+            crate_ok = crate_ok and core_res.ok
+            out("Crate regenerated by aihydro_core and byte-compared: "
+                + ("ok" if core_res.ok else "FAILED"))
+    elif check_crate:
+        out("Bundle: no bundle.json (this capsule predates the crate export)")
+
     out("")
     approvals_ok = verify_approvals(capsule_dir, allowed_signers, out=out)["failed"] == 0
 
@@ -854,20 +1554,34 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
         for run_id, why in skipped:
             out(f"SKIP  {run_id}: {why}")
 
-    integrity_ok = hashes_ok and records_ok and bindings_ok
-    if not hash_results and not (rl_path.exists() and summary["v2_records"]):
+    integrity_ok = hashes_ok and records_ok and bindings_ok and claims_ok and crate_ok
+    if not hash_results and not (summary is not None and summary["v2_records"]):
         integrity_ok = False        # nothing was actually checked
         out("FAIL  archive has no files and no records; nothing was verified.")
-    status = replay_status(integrity_ok, live, len(comparisons), comparisons_ok,
-                           partial=bool(rl_path.exists() and summary["redacted"]))
+    status = replay_status(integrity_ok, live, len(comparisons), comparisons_ok)
+    partial = bool((summary and summary["redacted"]) or (claims and claims["partial"])
+                   or (coverage and coverage.get("records_verified") != coverage.get("records_total")))
     out(f"\nreplay_status: {status}")
+    if integrity_ok and coverage:
+        out(f"coverage: {coverage.get('records_verified')} of {coverage.get('records_total')} sealed records "
+            f"verified" + ("; partial: some records are withheld or unverifiable (see NOTE lines)" if partial else ""))
+    elif integrity_ok and partial:
+        out("coverage: partial: some records are withheld for privacy and are neither verified nor failed")
     out("recomputation: not_performed")
     if live:
         out(f"comparisons: {len(comparisons)}")
+    return {"status": status, "integrity_ok": integrity_ok, "approvals_ok": approvals_ok,
+            "comparisons": comparisons, "comparisons_ok": comparisons_ok, "live": live,
+            "partial": partial, "coverage": coverage, "hashes_ok": hashes_ok, "records_ok": records_ok,
+            "claims": claims, "bundle": bundle_res}
 
-    if not (integrity_ok and comparisons_ok and approvals_ok):
+
+def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERANCE, out=print,
+        allowed_signers=None) -> int:
+    a = assess(capsule_dir, live, tolerance, out, allowed_signers)
+    if not (a["integrity_ok"] and a["comparisons_ok"] and a["approvals_ok"]):
         return 1
-    if live and not comparisons:
+    if live and not a["comparisons"]:
         out("FAIL  --live found no comparable values; nothing was cross-checked.")
         return 2
     return 0

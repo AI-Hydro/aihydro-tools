@@ -465,7 +465,12 @@ def export_session(
         verifies file hashes and run-record digests (replay status
         ``archive_integrity``); ``--live`` also cross-checks the run log
         against session.json and exits 2 if nothing could be compared. No
-        computation is re-executed.
+        computation is re-executed. records/claim_revisions.json carries each
+        claim's sealed revision chain (replay.py verifies the chains);
+        bundle.json, ro-crate-metadata.json (RO-Crate 1.3 / Process Run Crate
+        0.6 projection) and manifest-sha256.txt are written last, and the result
+        returns crate_file and bundle_id (crate_error says why a crate was not
+        written). A crate shows integrity, not origin.
     format='defensibility_report': Markdown accountability report — claims
         table, audit summary, uncertainty coverage, validator flags, and numbers
         manifest (every cited numeric bound to its run_id).
@@ -691,6 +696,11 @@ def export_session(
         from ai_hydro.capsule.approvals import collect_approvals, manifest_section as _approvals_section
         approval_entries = collect_approvals(session, session_id, capsule_dir)
 
+        # records/claim_revisions.json — the sealed claim revision chains (read-only
+        # from the store), so a reader can re-verify each claim's history from the capsule
+        from ai_hydro.capsule.claim_records import collect_claim_revisions
+        claim_entries, claim_counts = collect_claim_revisions(session_id, capsule_dir, session.workspace_dir)
+
         # capsule_manifest.json — SHA-256 of every data file for integrity checking
         from ai_hydro.capsule.manifest import build_manifest, MANIFEST_FILE as _MF
         manifest = build_manifest(capsule_dir)
@@ -708,13 +718,29 @@ def export_session(
             "rows_scrubbed_unsealed": _priv_counts["scrubbed"],
             "files_scrubbed": _priv_files,
         }
+        manifest["claim_revisions"] = {
+            "schema": "aihydro.capsule.claim_revisions/1",
+            "file": "records/claim_revisions.json" if claim_entries else None,
+            **claim_counts,
+            "claims": claim_entries,
+            "note": ("A chain cannot show that its own tail was cut; head_revision_digest is the anchor to "
+                     "compare with the registry stamp. Rows redacted for privacy keep their digests and "
+                     "are neither verified nor failed."),
+        }
+        if claim_counts.get("corrupt"):
+            # a claim whose store failed its own check cannot be exported or verified: replay fails it
+            manifest["replay_status"] = "not_performed"
+            manifest["integrity_failures_at_export"] = (manifest.get("integrity_failures_at_export", 0)
+                                                        + claim_counts["corrupt"])
         if _priv_counts["seal_mismatch"]:
             # A row failed verification at export: the archive cannot be
             # integrity-checked, and replay will report a failure. The manifest
             # must never claim more than replay will find.
             manifest["replay_status"] = "not_performed"
-            manifest["integrity_failures_at_export"] = _priv_counts["seal_mismatch"]
-        elif _priv_counts["redacted"]:
+            manifest["integrity_failures_at_export"] = (manifest.get("integrity_failures_at_export", 0)
+                                                        - claim_counts.get("corrupt", 0)
+                                                        + _priv_counts["seal_mismatch"])
+        elif (_priv_counts["redacted"] or claim_counts.get("redacted")) and manifest["replay_status"] == "archive_integrity":
             manifest["replay_status"] = "archive_integrity_partial"   # some rows are not verifiable here
         (capsule_dir / _MF).write_text(json.dumps(manifest, indent=2))
         files_written.append(str(capsule_dir / _MF))
@@ -722,6 +748,20 @@ def export_session(
         # replay.py — standalone stdlib verifier; does not depend on ai_hydro
         (capsule_dir / "replay.py").write_text(_REPLAY_PY_TEMPLATE)
         files_written.append(str(capsule_dir / "replay.py"))
+
+        # bundle.json + ro-crate-metadata.json + manifest-sha256.txt, written last (never in the
+        # manifest, never scrubbed afterwards). A crate that cannot be built honestly is not written;
+        # the capsule itself stands and the reason is returned.
+        crate_info: dict = {}
+        crate_error = None
+        from ai_hydro.capsule.rocrate_export import CrateExportError, export_crate
+        try:
+            crate_info = export_crate(capsule_dir, session_id=session_id,
+                                      workspace_dir=session.workspace_dir, claim_entries=claim_entries)
+            files_written += [crate_info["bundle_file"], crate_info["crate_file"], crate_info["bagit_file"]]
+        except CrateExportError as exc:
+            crate_error = str(exc)
+            log.warning("export_session: crate not written: %s", exc)
 
         needs_interp = not session.interpretation
         return {
@@ -737,6 +777,12 @@ def export_session(
             "recomputation": manifest["recomputation"],
             "data_artifacts": data_artifacts,
             "approvals": manifest["approvals"],
+            "claim_revisions": manifest["claim_revisions"],
+            "crate_file": crate_info.get("crate_file"),
+            "bundle_id": crate_info.get("bundle_id"),
+            "crate_replay_status": crate_info.get("replay_status"),
+            "crate_coverage": crate_info.get("coverage"),
+            **({"crate_error": crate_error} if crate_error else {}),
             "_note": (
                 "NEXT: call get_session_raw_state then write_research_interpretation "
                 "to author the scientific interpretation, then export again to embed it in README.md."
