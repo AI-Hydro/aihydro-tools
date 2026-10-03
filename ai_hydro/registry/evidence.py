@@ -33,8 +33,10 @@ def run_row_seal_problem(run_id: str, row: dict) -> str | None:
 
     A v3 evidence fingerprint covers the row body only, so the seal is checked
     here, at the one point every evidence resolution goes through. A row with
-    no ``record`` (legacy/unsealed) is not checked. Privacy stubs
-    (``redacted_for_privacy``) have no body to bind; only their seal is checked.
+    no ``record`` (legacy/unsealed) is not checked. There is no exemption for
+    ``redacted_for_privacy``: that flag is settable by anyone who can edit a
+    session run log (stubs exist only in exported capsules, where replay has
+    its own handling), so it cannot excuse a body that no longer matches.
     """
     record = row.get("record")
     if record is None:
@@ -50,7 +52,7 @@ def run_row_seal_problem(run_id: str, row: dict) -> str | None:
         return "record_digest mismatch"
     if record.get("run_id") != run_id:
         return "record.run_id does not match the row"
-    if check["entry_ok"] is False and not row.get("redacted_for_privacy"):
+    if check["entry_ok"] is False:
         return "row body changed after its record was sealed"
     return None
 

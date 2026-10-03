@@ -91,3 +91,10 @@ def test_snapshot_surface_flags_the_forged_seal(session):
     records = {"r1": _row()}
     versions, reason = surfaces._live_evidence("rev", HydroSession.load("rev").claims["c1"], records)
     assert versions["r1"] == "unresolved:EVIDENCE_SEAL_INVALID"
+
+
+def test_redacted_flag_does_not_excuse_a_tampered_body(session):
+    row = _row()
+    rec = _sealed(row)                                         # valid seal of the original body
+    _raw_write({**row, "key_outputs": {"nse": 0.99}, "redacted_for_privacy": True, "record": rec})
+    assert _code(HydroSession.load("rev")) == "EVIDENCE_SEAL_INVALID"
