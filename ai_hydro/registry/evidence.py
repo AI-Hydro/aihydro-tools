@@ -231,15 +231,21 @@ def verified_versions(session: Any, spans: list[dict], *, require_uncertainty: b
                             like=like, like_seals=like_seals)[0]
 
 
-def bind_seal(row: Any, kind: str | None, sid: str, like: dict | None, like_seals: dict | None) -> str | None:
+def bind_seal(row: Any, kind: str | None, sid: str, like: dict | None, like_seals: dict | None,
+              for_new_revision: bool = False) -> str | None:
     """The seal digest to bind for a run source, or None.
 
     An existing binding keeps what it recorded (a source bound while unsealed
     stays unbound, so a later seal is neutral); a source with no binding yet
-    records the seal the row carries now.
+    records the seal the row carries now. ``for_new_revision``: a revision being
+    written now binds the row's CURRENT seal even for a source that was
+    unsealed at an earlier bind (otherwise a late seal would never be bound);
+    verifying an existing revision keeps its stored binding.
     """
     if kind != "run":
         return None
+    if for_new_revision:
+        return row_seal_digest(row)
     if like_seals and like_seals.get(sid):
         return like_seals[sid]
     if like and sid in like:

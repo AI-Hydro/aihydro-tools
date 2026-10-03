@@ -123,7 +123,7 @@ def approvals_lock_file() -> Path:
 # ---------------------------------------------------------------------------
 
 def evidence_binding(session: Any, spans: Iterable[Any], like: dict | None = None,
-                     like_seals: dict | None = None) -> tuple:
+                     like_seals: dict | None = None, for_new_revision: bool = False) -> tuple:
     """``(evidence_versions, evidence_seals)`` for the spans' retained sources.
 
     ``evidence_seals`` maps a run source to the ``record_digest`` its row carried
@@ -141,7 +141,7 @@ def evidence_binding(session: Any, spans: Iterable[Any], like: dict | None = Non
         try:
             row = resolve_source(session, span, (like_seals or {}).get(sid))
             versions[sid] = evidence_fingerprint(row, span.get("source_type"), like=(like or {}).get(sid))
-            bound = bind_seal(row, span.get("source_type"), sid, like, like_seals)
+            bound = bind_seal(row, span.get("source_type"), sid, like, like_seals, for_new_revision)
             if bound:
                 seals[sid] = bound
         except EvidenceError as exc:
@@ -226,13 +226,13 @@ def latest_bound_versions(session_id: Any, claim_id: str) -> dict:
         return {}
 
 
-def session_claim_revision(session: Any, claim_id: str) -> tuple:
+def session_claim_revision(session: Any, claim_id: str, for_new_revision: bool = False) -> tuple:
     """``(claim, evidence_versions, fields, digest)`` for a claim in a loaded session."""
     claim = session.claims[claim_id]
     from ai_hydro.session.models import ScientificClaim
     spans = ScientificClaim(**dict(claim)).evidence_spans
     bound_v, bound_s = latest_bound_state(getattr(session, "session_id", None), claim_id)
-    ev, seals = evidence_binding(session, spans, bound_v, bound_s)
+    ev, seals = evidence_binding(session, spans, bound_v, bound_s, for_new_revision)
     fields = claim_revision_fields(claim, ev, seals)
     return claim, ev, fields, digest(fields)
 

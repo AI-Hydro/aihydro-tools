@@ -110,3 +110,30 @@ def test_late_seal_on_a_row_unsealed_at_bind_is_neutral(session):
     _, ev2, fields2, rev2 = session_claim_revision(s2, "c1")
     assert rev2 == rev and "evidence_seals" not in fields2 and ev2 == ev
     assert find_approval("rev", "c1", rev2) is not None
+
+
+def test_c2_rerevising_after_a_late_seal_binds_the_current_seal(session):
+    s, ev, fields, rev = _bind(sealed=False)                      # bound while unsealed
+    _seal_row_in_place()
+    assert "evidence_seals" not in session_claim_revision(HydroSession.load("rev"), "c1")[2]
+    from ai_hydro.mcp.tools_ledger import update_claim_status
+    update_claim_status("rev", "c1", "supported", "high", "Synthetic regression fixture, raised.",
+                        uncertainty_verified=True)                # a real change: new revision
+    last = cr.latest("rev", "c1")
+    assert last["revision"] >= 1
+    assert last["content"]["evidence_seals"] == {"r1": _row()["record"]["record_digest"]}
+    # verification of that revision keeps the stored binding and is in sync
+    assert session_claim_revision(HydroSession.load("rev"), "c1")[3] == last["revision_digest"]
+    # and deleting the now-bound seal is detected
+    _raw_write({k: v for k, v in _row().items() if k != "record"})
+    assert session_claim_revision(HydroSession.load("rev"), "c1")[1]["r1"] == "unresolved:EVIDENCE_SEAL_INVALID"
+
+
+def test_no_spurious_revision_when_only_a_late_seal_differs(session):
+    _bind(sealed=False)
+    _seal_row_in_place()
+    n = len(cr.history("rev")["c1"]["rows"])
+    from ai_hydro.mcp.tools_ledger import update_claim_status
+    update_claim_status("rev", "c1", "supported", "medium", "Synthetic regression fixture only.",
+                        uncertainty_verified=True)                # no authority-bearing change
+    assert len(cr.history("rev")["c1"]["rows"]) == n

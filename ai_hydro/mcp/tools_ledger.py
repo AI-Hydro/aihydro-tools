@@ -101,6 +101,19 @@ def _record_revision(session, claim_id: str, *, tool: str, reason: str, before=N
     from ai_hydro.approval.records import session_claim_revision
     from ai_hydro.session import claim_revisions
     after = session_claim_revision(session, claim_id)[2]
+    if not bookkeeping:
+        # A revision written because something moved binds the row's CURRENT
+        # seal (a row sealed late is bound from here on). When nothing else
+        # moved, keep the stored binding so no spurious revision is written.
+        fresh = session_claim_revision(session, claim_id, for_new_revision=True)[2]
+        if fresh != after:
+            from aihydro_core.records import digest as _digest
+            try:
+                last = claim_revisions.latest(session.session_id, claim_id)
+            except Exception:
+                last = None
+            if last is None or last["revision_digest"] != _digest(after):
+                after = fresh
     return claim_revisions.record_change(
         session.session_id, claim_id, after, tool=tool, reason=reason, before=before,
         bookkeeping=bookkeeping, extra_cause=extra_cause)
