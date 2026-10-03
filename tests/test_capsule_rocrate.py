@@ -333,10 +333,6 @@ def test_redacted_run_is_partial_coverage_and_a_cross_check_is_still_reportable(
     _session_with_claim()
     _forge_path_row(SID, "leg_1", "/Users/zz-someone/secret.csv")
     cap, result = _export(tmp_path)
-    if "VER-RUN-ROWS" in str(result.get("crate_error")):
-        pytest.xfail("core defect (slice5-core-c cbeedd9): VER-RUN-ROWS demands run_rows.sealed == run entries, but a "
-                     "privacy-withheld stub is a run entry AND the Bundle invariant counts it under "
-                     "withheld_for_privacy, not sealed; the two cannot both hold when withheld_for_privacy > 0")
     assert not result.get("crate_error"), result
     bundle = json.loads((cap / "bundle.json").read_text())
     assert bundle["coverage"]["unverifiable_ids"] == ["leg_1"]
@@ -347,6 +343,15 @@ def test_redacted_run_is_partial_coverage_and_a_cross_check_is_still_reportable(
     code, out = _replay(cap, isolated_python=True)
     assert code == 0, out
     assert "partial" in out and "archive_integrity_partial" not in out
+    assert "VER-RUN-ROWS" not in out
+    assert validate_errors(validate_crate(cap)) == []
+    code_core, out_core = _replay(cap)                          # with core importable as well
+    assert code_core == 0 and "byte-compared: ok" in out_core, out_core
+    if os.environ.get(VALIDATOR_ENV):                          # real redacted export, external validator
+        p = subprocess.run([os.environ[VALIDATOR_ENV], "validate", "--profile-identifier", "ro-crate-1.3",
+                            "--requirement-severity", "REQUIRED", "--no-paging", str(cap)],
+                           capture_output=True, text=True, timeout=600)
+        assert p.returncode == 0, p.stdout[-2000:]
     # R2: the legacy partial string is coverage, so it no longer hides a successful cross-check
     assert sr.replay_status(True, True, 3, True, partial=True) == "cross_check"
     assert sr.replay_status(True, False, 0, True, partial=True) == "archive_integrity"
@@ -639,3 +644,16 @@ def test_replacing_a_sealed_row_with_a_forged_one_is_seen_by_the_counts(exported
     code, out = _replay(cap, isolated_python=True)
     assert code == 1, out
     assert "matches_exporting_environment: manifest" in out
+
+
+def test_redaction_alongside_real_sealed_rows_satisfies_the_run_rows_range(exported, tmp_path):
+    """Real sealed rows (middleware) plus one privacy-withheld row: sealed <= entries <= sealed + withheld."""
+    _forge_path_row(SID, "leg_2", "/Users/zz-someone/secret.csv")
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "mixed"))
+    assert not res.get("crate_error"), res
+    cap = Path(res["capsule_dir"])
+    rr_ = json.loads((cap / "bundle.json").read_text())["run_rows"]
+    assert rr_["sealed"] >= 1 and rr_["withheld_for_privacy"] == 1
+    assert verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
+    assert _replay(cap, isolated_python=True)[0] == 0

@@ -1004,7 +1004,7 @@ def live_cross_check(capsule_dir: Path, tolerance: float = DEFAULT_TOLERANCE):
 #       the bundle's replay level is anchored to the on-disk manifest and to what was checked;
 #   VER-SESSION            every run and claim record names the bundle's session_id (the
 #       mirror only; core does not yet compare them);
-#   VER-RUN-ROWS           run_rows.sealed equals the number of run entries the bundle lists;
+#   VER-RUN-ROWS           sealed <= run entries <= sealed + withheld_for_privacy;
 #   VER-GATES              declared gates equal those derived from verified, sealed-bound bodies;
 #   VER-RECORD-SEAL / VER-RECORD-DIGEST / VER-BINDING / VER-CHAIN
 #       run record seals, claim revision seals, basin ids from their anchors,
@@ -1404,13 +1404,15 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
     rr = bundle.get("run_rows")
     if isinstance(rr, dict):                  # core VER-RUN-ROWS: run_rows.sealed equals the run entries listed
         n_runs = sum(1 for x in records if x["kind"] == "run")
-        # deliberately not core cbeedd9's sealed == n_runs: that cannot hold together with the run_rows
-        # invariant (run_log_rows == sealed + legacy + withheld) when a privacy-withheld row is itself a
-        # run entry. Here the withheld entries are subtracted; parity returns once core is corrected.
-        withheld = rr.get("withheld_for_privacy") if isinstance(rr.get("withheld_for_privacy"), int) else 0
-        if rr.get("sealed") != n_runs - withheld:
-            fail("VER-RUN-ROWS", f"run_rows.sealed is {rr.get('sealed')} but the bundle lists {n_runs} run records "
-                                 f"of which {withheld} are withheld for privacy")
+        # core VER-RUN-ROWS (0.2.5): a withheld row with a digest is a run entry counted under
+        # withheld_for_privacy, not sealed; one without a digest has no entry. So
+        # sealed <= run entries <= sealed + withheld_for_privacy.
+        sealed_n = rr.get("sealed") if isinstance(rr.get("sealed"), int) else 0
+        withheld_n = rr.get("withheld_for_privacy") if isinstance(rr.get("withheld_for_privacy"), int) else 0
+        if not sealed_n <= n_runs <= sealed_n + withheld_n:
+            fail("VER-RUN-ROWS", f"run_rows says {sealed_n} sealed and {withheld_n} withheld rows, which cannot "
+                                 f"account for the {n_runs} run records the bundle lists "
+                                 f"(need sealed <= entries <= sealed + withheld_for_privacy)")
 
     # gates are derived from verified, sealed-bound bodies; the declared list must equal them
     derived = set()
