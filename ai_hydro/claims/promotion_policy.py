@@ -26,7 +26,7 @@ Families (stable labels) and their order of evaluation
 ``observed_modelled``  MODELLED_LIMITATION_REQUIRED    name-based modelled-signature gate
 ``metric_binding``     EVIDENCE_METRIC_UNAVAILABLE (metric claim, no metric_ref),
                        EVIDENCE_METRIC_MISMATCH
-``evidence``           EVIDENCE_UNRESOLVED / _IDENTITY_MISMATCH / _CHECK_FAILED /
+``evidence``           EVIDENCE_UNRESOLVED / _IDENTITY_MISMATCH / _SEAL_INVALID / _CHECK_FAILED /
                        _METRIC_UNAVAILABLE / _UNCERTAINTY_UNAVAILABLE / _INVALID /
                        _MISMATCH                       first failing retained span
                        (these codes are ``registry.evidence.EvidenceError`` codes)

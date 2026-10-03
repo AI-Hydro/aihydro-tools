@@ -28,6 +28,33 @@ class EvidenceError(ValueError):
         }
 
 
+def run_row_seal_problem(run_id: str, row: dict) -> str | None:
+    """Why a run row's ``record`` seal must not be trusted, or None.
+
+    A v3 evidence fingerprint covers the row body only, so the seal is checked
+    here, at the one point every evidence resolution goes through. A row with
+    no ``record`` (legacy/unsealed) is not checked. Privacy stubs
+    (``redacted_for_privacy``) have no body to bind; only their seal is checked.
+    """
+    record = row.get("record")
+    if record is None:
+        return None
+    if not isinstance(record, dict):
+        return "record is not an object"
+    try:
+        from ai_hydro.session.run_records import verify_run_log_entry
+    except ImportError:  # core without records: cannot check, do not block
+        return None
+    check = verify_run_log_entry(row)
+    if not check["record_ok"]:
+        return "record_digest mismatch"
+    if record.get("run_id") != run_id:
+        return "record.run_id does not match the row"
+    if check["entry_ok"] is False and not row.get("redacted_for_privacy"):
+        return "row body changed after its record was sealed"
+    return None
+
+
 def resolve_source(session: Any, span: dict) -> dict:
     kind, sid = span.get("source_type"), span.get("source_id", "")
     if kind == "run":
@@ -36,6 +63,9 @@ def resolve_source(session: Any, span: dict) -> dict:
             raise EvidenceError("EVIDENCE_UNRESOLVED", sid, f"Run '{sid}' is not retained in this session.")
         if record.get("session_id", session.session_id) != session.session_id or record.get("run_id", sid) != sid:
             raise EvidenceError("EVIDENCE_IDENTITY_MISMATCH", sid, f"Run '{sid}' has conflicting session/run identity.")
+        problem = run_row_seal_problem(sid, record)
+        if problem:
+            raise EvidenceError("EVIDENCE_SEAL_INVALID", sid, f"Run '{sid}' carries a record seal that does not verify: {problem}.")
         return record
     if kind == "dataset":
         # An artifact manifest records a digest but does not retain its payload.

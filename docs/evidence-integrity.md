@@ -393,6 +393,12 @@ existing rows fail loudly.
   `registry.evidence.is_run_row_metadata_key`, mirrored in
   `capsule/standalone_replay.py` and pinned by a test). Datasets and passages
   are hashed whole. All new bindings use v3.
+- Because v3 attests the body only, the seal is checked where evidence is
+  resolved (`resolve_source`): a run row whose `record` is present but does not
+  verify (digest mismatch, wrong run id, or the body no longer matches the
+  sealed `entry_digest`) is refused with `EVIDENCE_SEAL_INVALID`. Promotion
+  refuses it, claim bindings and snapshot drift show `unresolved:EVIDENCE_SEAL_INVALID`,
+  and registry staleness lists it. Unsealed legacy rows are unchanged.
 - A stored fingerprint is always recomputed in its own version, so existing
   v2 claims, approvals and registry rows do not drift. A v2 binding to a row
   that is later sealed or marked still reads as changed (the limit of v2).
