@@ -42,7 +42,7 @@ See docs/architecture.md or https://ai-hydro.github.io/AI-Hydro/architecture/
 # Single source of truth for the package version (kept equal to pyproject.toml
 # ``version`` by tests/test_package_version.py). Not read from distribution
 # metadata: an editable install's dist-info goes stale when the source is bumped.
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 __author__ = "Mohammad Galib"
 __email__ = "mgalib@purdue.edu"
 

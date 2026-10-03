@@ -81,6 +81,7 @@ TRANSPORT_KEYS = frozenset({"_run_id", "_record_error", "quality_flags", "next_s
 ENV_DISTRIBUTIONS = (
     "aihydro-tools", "aihydro-core", "aihydro-data", "aihydro-watershed",
     "aihydro-lsh", "aihydro-modelling", "numpy", "pandas", "scipy", "xarray",
+    "dataretrieval",
 )
 
 
