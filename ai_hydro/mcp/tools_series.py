@@ -58,6 +58,8 @@ def _source_echo(rs, prefix: str = "") -> dict:
         f"{prefix}series_source_tool": rs.tool,
         f"{prefix}series_file_digest": rs.file_digest,
         f"{prefix}units": rs.meta.get("units"),
+        f"{prefix}units_spec": rs.meta.get("units_spec"),
+        f"{prefix}units_declared": rs.meta.get("units_declared"),
         f"{prefix}product": rs.meta.get("product"),
         f"{prefix}variable": rs.meta.get("variable"),
         f"{prefix}timestep": rs.meta.get("timestep"),

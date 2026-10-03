@@ -101,7 +101,11 @@ def _retain(session_id: str, result: dict, variable: str) -> dict | None:
             return None
         # Descriptors as the caller saw them in this call's result take precedence
         # over what the cache entry reconstructs.
-        for k in ("units", "timestep", "product", "source", "spatial_support", "aggregation_actual"):
+        # ``units`` is the provider-declared unit when the payload declared one;
+        # ``units_spec`` / ``units_declared`` are carried as recorded (absent on
+        # an aihydro-data that predates them).
+        for k in ("units", "units_spec", "units_declared", "timestep", "product", "source",
+                  "spatial_support", "aggregation_actual"):
             if result.get(k) not in (None, ""):
                 payload[k] = result[k]
         from aihydro_core.records import digest as _digest

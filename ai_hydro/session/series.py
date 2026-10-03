@@ -36,6 +36,8 @@ _VALUE_KEYS = ("values", "q_cms")
 #: Recorded descriptors echoed verbatim (first present key wins).
 _META_KEYS = {
     "units": ("units",),
+    "units_spec": ("units_spec",),
+    "units_declared": ("units_declared",),
     "product": ("product", "_aihydro_data_product"),
     "source": ("source", "_aihydro_data_source"),
     "variable": ("variable",),

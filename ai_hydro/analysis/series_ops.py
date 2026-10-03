@@ -419,7 +419,10 @@ _UNITS: dict[str, tuple[str, float, float]] = {
 
 
 def _unit_key(u: Optional[str]) -> Optional[str]:
-    return u.strip().lower().replace(" ", "") if isinstance(u, str) and u.strip() else None
+    if not (isinstance(u, str) and u.strip()):
+        return None
+    k = u.strip().lower().replace(" ", "").replace("\u00b3", "3").replace("^", "").replace("**", "")
+    return {"m3s-1": "m3/s", "ft3s-1": "ft3/s", "m3/sec": "m3/s", "ft3/sec": "ft3/s"}.get(k, k)
 
 
 def convert_values(values: np.ndarray, from_units: Optional[str], to_units: str) -> tuple[np.ndarray, dict]:

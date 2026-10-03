@@ -576,3 +576,31 @@ def test_zero_variance_inputs_give_none_components(serve, mcp_server):
     err, out = run(mcp_server, "compare_series", series_a=a["_run_id"], series_b=b["_run_id"])
     d = out["data"]
     assert d["r"] is None and d["sd_ratio"] is None and d["kge"] is None
+
+
+# ------------------------------------------------ provider-declared units carried through
+
+def test_unit_spellings_with_superscripts_convert(mcp_server):
+    from ai_hydro.analysis.series_ops import convert_values
+
+    out, info = convert_values(np.array([1.0]), "ft³/s", "m³/s")
+    assert out[0] == pytest.approx(0.028316846592) and info["dimension"] == "discharge"
+    assert convert_values(np.array([2.0]), "m3 s-1", "m3/s")[0][0] == 2.0
+
+
+def test_retained_series_carries_declared_and_spec_units(serve, mcp_server, monkeypatch):
+    """units_declared / units_spec in the fetch result are written to the retained file and echoed."""
+    import aihydro_data.mcp as adm
+
+    real = adm._data_fetch
+
+    def with_units(**kw):
+        out = real(**kw)
+        out.update({"units": "ft3/s", "units_spec": "m3/s", "units_declared": "ft3/s"})
+        return out
+
+    monkeypatch.setattr(adm, "_data_fetch", with_units)
+    body = serve(days("2020-01-01", 4), [1.0, 2.0, 3.0, 4.0], units="m3/s")
+    err, out = run(mcp_server, "summarize_series", series=body["_run_id"])
+    d = out["data"]
+    assert (d["units"], d["units_spec"], d["units_declared"]) == ("ft3/s", "m3/s", "ft3/s")
