@@ -16,6 +16,30 @@ from ai_hydro.mcp.helpers import _tool_error_to_dict
 log = logging.getLogger("ai_hydro.mcp")
 
 
+# Plausible long-term runoff-ratio (Q/P) range for the water-balance check.
+# Engineering bound, not a literature constant: CAMELS basin runoff ratios
+# (Addor et al. 2017) sit roughly in 0 to ~1.5 (values > 1 occur with snow
+# undercatch, groundwater import or karst); anything below 1e-3 or above 3 is
+# treated as a defective input (fill values, unit error) rather than climate.
+# Ratios in (1, 3] still produce the existing > 1.0 warning.
+RUNOFF_RATIO_MIN = 1e-3
+RUNOFF_RATIO_MAX = 3.0
+
+
+def _non_physical_scalar(value, lo: float, hi: float) -> str | None:
+    """Return a reason if ``value`` is not a finite number inside [lo, hi]."""
+    import math
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "it is not a number"
+    if not math.isfinite(value):
+        return "it is not finite"
+    if value <= 0:
+        return "it is not positive"
+    if not (lo <= value <= hi):
+        return f"it is outside the plausible range [{lo:g}, {hi:g}]"
+    return None
+
+
 @mcp.tool()
 def check_water_balance_consistency(session_id: str) -> dict:
     """
@@ -23,6 +47,10 @@ def check_water_balance_consistency(session_id: str) -> dict:
     
     Runoff ratio > 1.0 indicates a potential error or significant 
     non-precipitation water source (snowmelt, groundwater).
+
+    Reports ``insufficient_data`` (never ``pass``) when the runoff ratio is
+    missing, non-finite, <= 0, outside [1e-3, 3.0], or was derived from
+    precipitation the signatures record marks as not used.
     """
     try:
         session = HydroSession.load(session_id)
@@ -36,13 +64,35 @@ def check_water_balance_consistency(session_id: str) -> dict:
                 recommendation="Run extract_hydrological_signatures first."
             ).model_dump()
 
-        rr = sigs.get("data", {}).get("runoff_ratio")
+        sig_data = sigs.get("data", {}) or {}
+        rr = sig_data.get("runoff_ratio")
         if rr is None:
+            _pr = sig_data.get("_precipitation")
+            _why = (f" Precipitation status: {_pr.get('status')} ({_pr.get('reason')})."
+                    if isinstance(_pr, dict) and _pr.get("status") not in (None, "used") else "")
             return ValidatorResult(
                 validator="water_balance_consistency",
                 status="insufficient_data",
-                message="Runoff ratio missing from signatures data.",
+                message="Runoff ratio missing from signatures data." + _why,
                 affected_slots=["signatures"]
+            ).model_dump()
+
+        # General rule: a validator never passes on a non-physical input.
+        _bad = _non_physical_scalar(rr, RUNOFF_RATIO_MIN, RUNOFF_RATIO_MAX)
+        if _bad is None:
+            _pr = sig_data.get("_precipitation")
+            if isinstance(_pr, dict) and _pr.get("status") not in (None, "used"):
+                _bad = (f"it was derived from precipitation that was not usable "
+                        f"(status {_pr.get('status')}: {_pr.get('reason')})")
+        if _bad is not None:
+            return ValidatorResult(
+                validator="water_balance_consistency",
+                status="insufficient_data",
+                message=f"Runoff ratio {rr!r} cannot be checked: {_bad}.",
+                recommendation="Restore a precipitation source and re-run "
+                               "extract_hydrological_signatures.",
+                affected_slots=["signatures"],
+                metadata={"plausible_range": [RUNOFF_RATIO_MIN, RUNOFF_RATIO_MAX]},
             ).model_dump()
 
         if rr > 1.0:

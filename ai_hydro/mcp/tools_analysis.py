@@ -1378,23 +1378,40 @@ def extract_hydrological_signatures(
         )
         d = _result_to_dict(result)
         # Acquisitions made inside the signatures function are declared, never
-        # silent. Limits: aihydro-watershed does not return the precipitation
-        # series or the product it selected, so only the request and the
-        # sources the result's meta cites are recorded, with no data digest.
-        _src = (d.get("data") or {}).get("_streamflow_source") if isinstance(d.get("data"), dict) else None
+        # silent. aihydro-watershed reports the precipitation it received in
+        # ``data["_precipitation"]`` (status, product, digest, reason); that
+        # is declared verbatim. A watershed that predates the field is
+        # recorded as "not reported" -- never as a product that was used.
+        _dd = d.get("data") if isinstance(d.get("data"), dict) else {}
+        _src = _dd.get("_streamflow_source")
         for _e in _internal:
             if isinstance(_src, dict):
                 _e["observed_source"] = _src
         _meta_sources = [x.get("name") if isinstance(x, dict) else str(x)
                          for x in ((d.get("meta") or {}).get("sources") or [])]
-        _internal.append({
+        _prec = _dd.get("_precipitation")
+        _prec_entry = {
             "role": "precipitation", "mode": "internal_aihydro_data_fetch",
             "start_date": start_date, "end_date": end_date,
             "sources_cited_by_result": _meta_sources,
-            "product": None, "data_digest": None,
-            "limits": "product actually served and the precipitation series are not "
-                      "returned by aihydro-watershed; request period and cited sources only",
-        })
+        }
+        if isinstance(_prec, dict):
+            _prec_entry.update({
+                "status": _prec.get("status"),
+                "product": _prec.get("product"),
+                "data_digest": _prec.get("digest"),
+                "digest_scheme": _prec.get("digest_scheme"),
+                "n_days": _prec.get("n_days"),
+                "reason": _prec.get("reason"),
+                "dependent_signatures": _prec.get("dependent_signatures"),
+            })
+        else:
+            _prec_entry.update({
+                "status": "not_reported", "product": None, "data_digest": None,
+                "limits": "aihydro-watershed did not report the precipitation "
+                          "it received; request period and cited sources only",
+            })
+        _internal.append(_prec_entry)
         _rr.declare_lineage(internal_acquisitions=_internal)
         _feature_cache_store(session, "signatures", _feature_id, _key, d,
                              citations=["usgs_nwis"])

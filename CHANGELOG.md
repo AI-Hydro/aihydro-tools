@@ -8,6 +8,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- D4: `check_water_balance_consistency` never passes on a missing or
+  non-physical runoff ratio. `None`, non-numeric, non-finite, <= 0 or outside
+  [1e-3, 3.0] (engineering bound; > 1 still warns) reports `insufficient_data`,
+  as does a ratio whose signatures record marks the precipitation as not used.
+  Previously `runoff_ratio = 2.3e-33` passed ("Runoff Ratio: 0.00").
+- D4: the signatures run record declares the precipitation the signatures
+  received (`status`, `product`, `data_digest`, `reason`) instead of a fixed
+  `product: None, data_digest: None`. Requires aihydro-watershed with the
+  `_precipitation` result field; older watershed records `status: not_reported`.
+
 ## [2.3.1] - 2026-10-03
 
 The q5/q95 fix release (defect P2-D0).

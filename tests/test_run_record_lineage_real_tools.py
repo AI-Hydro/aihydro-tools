@@ -221,4 +221,42 @@ def test_precipitation_acquisition_is_declared_not_silent(world):
     assert set(acq) == {"precipitation"}               # streamflow came from the slot
     p = acq["precipitation"]
     assert (p["start_date"], p["end_date"]) == (START, END)
-    assert p["data_digest"] is None and "not returned by aihydro-watershed" in p["limits"]
+    # D4: the precipitation the signatures received is declared with a digest
+    # (the fixture serves a constant 3.0 mm/day series; product not reported).
+    assert p["status"] == "used" and p["reason"] is None
+    assert p["data_digest"] and p["data_digest"].startswith("sha256:")
+    assert p["n_days"] == 731
+
+
+def test_unavailable_precipitation_is_declared_as_absent(world, monkeypatch):
+    server, _ = world
+    monkeypatch.setattr("aihydro_watershed.signatures.signatures._fetch_precipitation_data_bygeom",
+                        lambda *a, **k: None)
+    _fetch(server)
+    child = _sigs(server)
+    p = {a["role"]: a for a in child["extra"]["internal_acquisitions"]}["precipitation"]
+    assert p["status"] == "unavailable" and p["data_digest"] is None and p["reason"]
+
+
+def test_fill_valued_precipitation_is_rejected_and_validator_does_not_pass(world, monkeypatch):
+    server, _ = world
+
+    def fill(geom, start_date, end_date):
+        idx = pd.date_range(start_date, end_date, freq="D")
+        return pd.Series(np.full(len(idx), 4.3e32), index=idx)
+
+    monkeypatch.setattr("aihydro_watershed.signatures.signatures._fetch_precipitation_data_bygeom", fill)
+    _fetch(server)
+    is_err, body = _call(server, "extract_hydrological_signatures",
+                         {"session_id": SID, "start_date": START, "end_date": END,
+                          "geometry_geojson": SQUARE})
+    assert not is_err and not body.get("error"), body
+    child = _rows()[body["_run_id"]]["record"]
+    p = {a["role"]: a for a in child["extra"]["internal_acquisitions"]}["precipitation"]
+    assert p["status"] == "rejected" and p["data_digest"]
+    assert body["data"]["runoff_ratio"] is None and body["data"]["stream_elas"] is None
+    assert body["data"]["_precipitation"]["status"] == "rejected"
+    wb = [f for f in body["quality_flags"] if f.get("validator") == "water_balance_consistency"]
+    assert wb and all(f["status"] == "insufficient_data" for f in wb), wb
+    flags = json.dumps(body)
+    assert "Runoff Ratio: 0.00" not in flags
