@@ -418,11 +418,39 @@ _UNITS: dict[str, tuple[str, float, float]] = {
 }
 
 
+_SUPERSCRIPTS = str.maketrans({"\u00b3": "3", "\u00b2": "2", "\u00b9": "1", "\u207b": "-", "\u00b0": "deg",
+                               "\u00b5": "u", "\u2212": "-"})
+_UNIT_ALIASES = {
+    # discharge
+    "m3s-1": "m3/s", "m3/sec": "m3/s", "m3sec-1": "m3/s", "cubicmeterspersecond": "m3/s",
+    "cubicmetrespersecond": "m3/s", "cubicmeterpersecond": "m3/s", "cubicmetrepersecond": "m3/s",
+    "ft3s-1": "ft3/s", "ft3/sec": "ft3/s", "cubicfeetpersecond": "ft3/s", "cubicfootpersecond": "ft3/s",
+    "cuft/s": "ft3/s", "ls-1": "l/s", "litrespersecond": "l/s", "literspersecond": "l/s",
+    # depth and depth rate
+    "millimeters": "mm", "millimetres": "mm", "inches": "in",
+    "mmd-1": "mm/day", "mmday-1": "mm/day", "mm/d": "mm/day", "millimetersperday": "mm/day",
+    "millimetresperday": "mm/day", "ind-1": "in/day", "inchesperday": "in/day",
+    # temperature
+    "degreec": "degc", "degreesc": "degc", "degreescelsius": "degc", "degreecelsius": "degc",
+    "celsius": "degc", "kelvin": "k", "degreesf": "degf", "degreesfahrenheit": "degf",
+    "fahrenheit": "degf",
+}
+
+
 def _unit_key(u: Optional[str]) -> Optional[str]:
+    """General spelling normalisation of a unit string (no scientific judgement).
+
+    Lower-cases; folds superscripts and the degree sign; drops spaces, underscores,
+    ``^`` and ``**``; maps common spelled-out and negative-exponent forms to the
+    table's keys. An unrecognised spelling is returned normalised and will simply
+    not be found in the table.
+    """
     if not (isinstance(u, str) and u.strip()):
         return None
-    k = u.strip().lower().replace(" ", "").replace("\u00b3", "3").replace("^", "").replace("**", "")
-    return {"m3s-1": "m3/s", "ft3s-1": "ft3/s", "m3/sec": "m3/s", "ft3/sec": "ft3/s"}.get(k, k)
+    k = u.strip().translate(_SUPERSCRIPTS).lower()
+    for ch in (" ", "_", "^", "*"):
+        k = k.replace(ch, "")
+    return _UNIT_ALIASES.get(k, k)
 
 
 def convert_values(values: np.ndarray, from_units: Optional[str], to_units: str) -> tuple[np.ndarray, dict]:

@@ -604,3 +604,17 @@ def test_retained_series_carries_declared_and_spec_units(serve, mcp_server, monk
     err, out = run(mcp_server, "summarize_series", series=body["_run_id"])
     d = out["data"]
     assert (d["units"], d["units_spec"], d["units_declared"]) == ("ft3/s", "m3/s", "ft3/s")
+
+
+@pytest.mark.parametrize("spelling,target,expected", [
+    ("cubic meters per second", "m3/s", 1.0), ("m³ s⁻¹", "m3/s", 1.0),
+    ("m3 s^-1", "m3/s", 1.0), ("cubic feet per second", "m3/s", 0.028316846592),
+    ("ft3 s-1", "m3/s", 0.028316846592), ("mm d-1", "mm/day", 1.0), ("mm/day", "mm d-1", 1.0),
+    ("deg_C", "K", 274.15), ("°C", "K", 274.15), ("degrees Celsius", "degF", 33.8),
+    ("m3/s", "cubic metres per second", 1.0),
+])
+def test_unit_alias_spellings(spelling, target, expected):
+    from ai_hydro.analysis.series_ops import convert_values
+
+    out, _ = convert_values(np.array([1.0]), spelling, target)
+    assert out[0] == pytest.approx(expected)

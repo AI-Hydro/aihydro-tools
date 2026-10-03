@@ -14,6 +14,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Wider unit-spelling normalisation for `compare_series(convert_to=...)`.** Spelled-out and exponent forms (`cubic meters per second`, `m\u00b3 s\u207b\u00b9`, `m3 s^-1`, `cubic feet per second`, `mm d-1`, `deg_C`, `\u00b0C`, degrees Celsius/Fahrenheit) fold to the table's units; unrecognised spellings are unchanged.
+
 - **Declared units are carried into the retained series.** The `data_fetch` wrapper writes `units_spec` and `units_declared` (from an aihydro-data that provides them; `vision2040/payload-units`) beside `units`, and the series tools echo all three; unit spellings such as `ft\u00b3/s`, `m\u00b3/s`, `m3 s-1` are recognised by `compare_series(convert_to=...)`.
 
 - **Series tools refuse a producer whose sealed record fails verification** (`RETAINED_SERIES_RECORD_INVALID`; legacy unsealed producers unchanged). Inline GeoJSON in `measure_feature` is capped (depth 12, 5,000,000 vertices, unparseable nesting) with a plain `INVALID_INPUT`. `compare_series` documents that zero-variance inputs give r/sd_ratio/kge = None. Tests assert the `data_fetch` wrapper signature is a superset of aihydro-data's `_data_fetch` and that `data_fetch` results carry `_run_id`.
