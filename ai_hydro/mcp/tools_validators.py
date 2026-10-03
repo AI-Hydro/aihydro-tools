@@ -16,6 +16,30 @@ from ai_hydro.mcp.helpers import _tool_error_to_dict
 log = logging.getLogger("ai_hydro.mcp")
 
 
+# Plausible long-term runoff-ratio (Q/P) range for the water-balance check.
+# Engineering bound, not a literature constant: CAMELS basin runoff ratios
+# (Addor et al. 2017) sit roughly in 0 to ~1.5 (values > 1 occur with snow
+# undercatch, groundwater import or karst); anything below 1e-3 or above 3 is
+# treated as a defective input (fill values, unit error) rather than climate.
+# Ratios in (1, 3] still produce the existing > 1.0 warning.
+RUNOFF_RATIO_MIN = 1e-3
+RUNOFF_RATIO_MAX = 3.0
+
+
+def _non_physical_scalar(value, lo: float, hi: float) -> str | None:
+    """Return a reason if ``value`` is not a finite number inside [lo, hi]."""
+    import math
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "it is not a number"
+    if not math.isfinite(value):
+        return "it is not finite"
+    if value <= 0:
+        return "it is not positive"
+    if not (lo <= value <= hi):
+        return f"it is outside the plausible range [{lo:g}, {hi:g}]"
+    return None
+
+
 @mcp.tool()
 def check_water_balance_consistency(session_id: str) -> dict:
     """
@@ -23,6 +47,10 @@ def check_water_balance_consistency(session_id: str) -> dict:
     
     Runoff ratio > 1.0 indicates a potential error or significant 
     non-precipitation water source (snowmelt, groundwater).
+
+    Reports ``insufficient_data`` (never ``pass``) when the runoff ratio is
+    missing, non-finite, <= 0, outside [1e-3, 3.0], or was derived from
+    precipitation the signatures record marks as not used.
     """
     try:
         session = HydroSession.load(session_id)
@@ -36,13 +64,37 @@ def check_water_balance_consistency(session_id: str) -> dict:
                 recommendation="Run extract_hydrological_signatures first."
             ).model_dump()
 
-        rr = sigs.get("data", {}).get("runoff_ratio")
+        sig_data = sigs.get("data", {}) or {}
+        rr = sig_data.get("runoff_ratio")
         if rr is None:
+            _pr = sig_data.get("_precipitation")
+            _why = (f" Precipitation status: {_pr.get('status')} ({_pr.get('reason')})."
+                    if isinstance(_pr, dict) and _pr.get("status") not in (None, "used") else "")
             return ValidatorResult(
                 validator="water_balance_consistency",
                 status="insufficient_data",
-                message="Runoff ratio missing from signatures data.",
+                message="Runoff ratio missing from signatures data." + _why,
                 affected_slots=["signatures"]
+            ).model_dump()
+
+        # General rule: a validator never passes on a non-physical input.
+        _bad = _non_physical_scalar(rr, RUNOFF_RATIO_MIN, RUNOFF_RATIO_MAX)
+        if _bad is None:
+            _pr = sig_data.get("_precipitation")
+            _pst = _pr.get("status") if isinstance(_pr, dict) else sig_data.get("precipitation_status")
+            if _pst not in (None, "used"):
+                _bad = (f"it was derived from precipitation that was not usable "
+                        f"(status {_pst}"
+                        + (f": {_pr.get('reason')}" if isinstance(_pr, dict) else "") + ")")
+        if _bad is not None:
+            return ValidatorResult(
+                validator="water_balance_consistency",
+                status="insufficient_data",
+                message=f"Runoff ratio {rr!r} cannot be checked: {_bad}.",
+                recommendation="Restore a precipitation source and re-run "
+                               "extract_hydrological_signatures.",
+                affected_slots=["signatures"],
+                metadata={"plausible_range": [RUNOFF_RATIO_MIN, RUNOFF_RATIO_MAX]},
             ).model_dump()
 
         if rr > 1.0:
@@ -96,6 +148,22 @@ def check_temporal_alignment(session_id: str, slot_a: str, slot_b: str) -> dict:
                 status="warning",
                 severity="low",
                 message="Missing temporal metadata (start/end dates). Cannot verify alignment.",
+                affected_slots=[slot_a, slot_b]
+            ).model_dump()
+
+        # Never pass on unparseable or inverted dates (equal garbage is not alignment).
+        import pandas as _pd
+        try:
+            _ta, _tb = (_pd.Timestamp(start_a), _pd.Timestamp(end_a)), (_pd.Timestamp(start_b), _pd.Timestamp(end_b))
+            _bad_dates = (None if _ta[0] <= _ta[1] and _tb[0] <= _tb[1]
+                          else "an end date precedes its start date")
+        except Exception:
+            _bad_dates = "a start/end date is not a valid date"
+        if _bad_dates:
+            return ValidatorResult(
+                validator="temporal_alignment",
+                status="insufficient_data",
+                message=f"Temporal alignment cannot be verified: {_bad_dates}.",
                 affected_slots=[slot_a, slot_b]
             ).model_dump()
 
@@ -206,11 +274,15 @@ def check_record_length(session_id: str) -> dict:
                 if q_vals:
                     n_days = sum(1 for v in q_vals if v is not None)
 
-        if n_days is None:
+        _bad_n = (n_days is not None and (
+            isinstance(n_days, bool) or not isinstance(n_days, (int, float))
+            or n_days != n_days or n_days in (float("inf"), float("-inf")) or n_days < 0))
+        if n_days is None or _bad_n:
             return ValidatorResult(
                 validator="record_length",
                 status="insufficient_data",
-                message="Record length could not be determined from the streamflow slot.",
+                message="Record length could not be determined from the streamflow slot"
+                        + (f" (n_days={n_days!r} is not a non-negative finite number)." if _bad_n else "."),
                 affected_slots=["streamflow"],
             ).model_dump()
 
@@ -331,10 +403,42 @@ def check_usgs_qualification_codes(session_id: str) -> dict:
                 metadata={"quality_flag": "qualification_codes_absent"},
             ).model_dump()
 
-        has_provisional = bool(provisional_flag) or (
-            isinstance(qual_codes, list) and "P" in qual_codes
-        )
-        has_estimated = isinstance(qual_codes, list) and "e" in qual_codes
+        # Never certify "approved" from codes we cannot read: a non-list value,
+        # or tokens other than USGS approved ('A'), provisional ('P') and
+        # estimated ('e'), is not evidence of review status.
+        _tokens: list[str] = []
+        _unreadable = False
+        if qual_codes is not None:
+            if not isinstance(qual_codes, list):
+                _unreadable = True
+            else:
+                for c in qual_codes:
+                    if not isinstance(c, str):
+                        _unreadable = True
+                    else:
+                        _tokens.extend(c.split())
+                if any(t not in ("A", "P", "e") for t in _tokens):
+                    _unreadable = True
+        if _unreadable and not provisional_flag and "P" not in _tokens and "e" not in _tokens:
+            return ValidatorResult(
+                validator="usgs_qualification_codes",
+                status="insufficient_data",
+                message=f"Qualification codes {qual_codes!r} are not in a readable form "
+                        "(expected a list of USGS codes A / P / e); review status unknown.",
+                affected_slots=["streamflow"],
+                metadata={"quality_flag": "qualification_codes_unreadable"},
+            ).model_dump()
+        if qual_codes is not None and not _tokens and not provisional_flag:
+            return ValidatorResult(
+                validator="usgs_qualification_codes",
+                status="insufficient_data",
+                message="Qualification codes are empty; review status unknown.",
+                affected_slots=["streamflow"],
+                metadata={"quality_flag": "qualification_codes_absent"},
+            ).model_dump()
+
+        has_provisional = bool(provisional_flag) or "P" in _tokens
+        has_estimated = "e" in _tokens
 
         if has_provisional:
             return ValidatorResult(
@@ -567,8 +671,10 @@ def check_stationarity(session_id: str) -> dict:
         from collections import defaultdict as _dd
         year_totals: dict[int, list[float]] = _dd(list)
         for date_str, q in zip(dates, q_vals):
-            if q is None or not isinstance(q, (int, float)):
+            if q is None or isinstance(q, bool) or not isinstance(q, (int, float)):
                 continue
+            if q != q or q in (float("inf"), float("-inf")) or q < 0:
+                continue          # NaN / inf / negative discharge is missing, not data
             try:
                 year = int(date_str[:4])
                 month = int(date_str[5:7])
@@ -610,6 +716,16 @@ def check_stationarity(session_id: str) -> dict:
                 ),
                 affected_slots=["streamflow"],
                 recommendation="Install scipy (pip install scipy) to enable stationarity testing.",
+            ).model_dump()
+
+        import math as _m
+        if not (_m.isfinite(tau) and _m.isfinite(p_value)):
+            return ValidatorResult(
+                validator="stationarity",
+                status="insufficient_data",
+                message="Mann-Kendall statistic is not defined for these annual totals "
+                        "(e.g. constant series); trend cannot be assessed.",
+                affected_slots=["streamflow"],
             ).model_dump()
 
         direction = "increasing" if tau > 0 else "decreasing"
@@ -691,12 +807,12 @@ def check_uncertainty_present(session_id: str, slot: str = "signatures") -> dict
         data = result.get("data", {}) if isinstance(result, dict) else {}
         # C3 results nest data under feature_id → params_key → {data, meta, uncertainty}.
         # Walk one level: check direct 'data' and also first feature's first result.
-        has_uncertainty = "_uncertainty" in data
+        has_uncertainty = bool(data.get("_uncertainty"))   # an empty block is not uncertainty
         if not has_uncertainty:
             for fid_val in data.values():
                 if isinstance(fid_val, dict):
                     for pk_val in fid_val.values():
-                        if isinstance(pk_val, dict) and "_uncertainty" in pk_val.get("data", {}):
+                        if isinstance(pk_val, dict) and (pk_val.get("data") or {}).get("_uncertainty"):
                             has_uncertainty = True
                             break
                 if has_uncertainty:

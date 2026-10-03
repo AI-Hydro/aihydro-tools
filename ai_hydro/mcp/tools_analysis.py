@@ -1195,6 +1195,7 @@ def extract_hydrological_signatures(
     end_date: str = "2009-09-30",
     feature: "str | list | None" = None,
     geometry_geojson: str | None = None,
+    precipitation: str = "auto",
 ) -> dict:
     """
     Extract 17 CAMELS-style hydrological signatures (flow stats, BFI,
@@ -1217,6 +1218,13 @@ def extract_hydrological_signatures(
         Override watershed geometry as a GeoJSON string. Use when the session
         geometry is wrong or when working directly with a delineated polygon
         from delineate_watershed_from_point (e.g. global basins).
+    precipitation : "auto" | "skip"
+        "auto" (default) fetches precipitation and computes runoff_ratio /
+        stream_elas only if the series is physically valid. "skip" makes no
+        precipitation request (offline / network-guarded runs; some backends
+        read through the netCDF C library that Python-level guards cannot
+        see): runoff_ratio and stream_elas are then None and the run record
+        declares the precipitation acquisition as status "not_attempted".
     """
     # C3: batch fan-out (sync tool — simple sequential loop)
     if isinstance(feature, list):
@@ -1225,7 +1233,7 @@ def extract_hydrological_signatures(
         for ref in feature:
             r = extract_hydrological_signatures(
                 session_id=session_id, start_date=start_date,
-                end_date=end_date, feature=ref,
+                end_date=end_date, feature=ref, precipitation=precipitation,
             )
             fid = r.get("feature_id") or str(ref)
             (errors if r.get("error") else results)[fid] = r
@@ -1236,12 +1244,23 @@ def extract_hydrological_signatures(
             **({"errors": errors} if errors else {}),
         }
     try:
+        if precipitation not in ("auto", "skip"):
+            return {
+                "error": True, "code": "INVALID_PARAMETER",
+                "message": f"precipitation must be 'auto' or 'skip', got {precipitation!r}.",
+                "recovery": "Pass precipitation='auto' (default) or 'skip'.",
+            }
         session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
+        # Non-default only, so existing cache keys for the default are unchanged
+        # and a "skip" result is never served for an "auto" request.
+        _cache_params = {"start_date": start_date, "end_date": end_date}
+        if precipitation != "auto":
+            _cache_params["precipitation"] = precipitation
         _feature_id, _key, _cached, _geom = _feature_cache_resolve(
-            session, "signatures", {"start_date": start_date, "end_date": end_date},
+            session, "signatures", _cache_params,
             feature, geometry_geojson,
         )
         if _cached is not None:
@@ -1375,26 +1394,44 @@ def extract_hydrological_signatures(
             start_date=start_date,
             end_date=end_date,
             q_cms_series=_q_cms,
+            **({"precipitation": precipitation} if precipitation != "auto" else {}),
         )
         d = _result_to_dict(result)
         # Acquisitions made inside the signatures function are declared, never
-        # silent. Limits: aihydro-watershed does not return the precipitation
-        # series or the product it selected, so only the request and the
-        # sources the result's meta cites are recorded, with no data digest.
-        _src = (d.get("data") or {}).get("_streamflow_source") if isinstance(d.get("data"), dict) else None
+        # silent. aihydro-watershed reports the precipitation it received in
+        # ``data["_precipitation"]`` (status, product, digest, reason); that
+        # is declared verbatim. A watershed that predates the field is
+        # recorded as "not reported" -- never as a product that was used.
+        _dd = d.get("data") if isinstance(d.get("data"), dict) else {}
+        _src = _dd.get("_streamflow_source")
         for _e in _internal:
             if isinstance(_src, dict):
                 _e["observed_source"] = _src
         _meta_sources = [x.get("name") if isinstance(x, dict) else str(x)
                          for x in ((d.get("meta") or {}).get("sources") or [])]
-        _internal.append({
+        _prec = _dd.get("_precipitation")
+        _prec_entry = {
             "role": "precipitation", "mode": "internal_aihydro_data_fetch",
             "start_date": start_date, "end_date": end_date,
             "sources_cited_by_result": _meta_sources,
-            "product": None, "data_digest": None,
-            "limits": "product actually served and the precipitation series are not "
-                      "returned by aihydro-watershed; request period and cited sources only",
-        })
+        }
+        if isinstance(_prec, dict):
+            _prec_entry.update({
+                "status": _prec.get("status"),
+                "product": _prec.get("product"),
+                "data_digest": _prec.get("digest"),
+                "digest_scheme": _prec.get("digest_scheme"),
+                "n_days": _prec.get("n_days"),
+                "reason": _prec.get("reason"),
+                "dependent_signatures": _prec.get("dependent_signatures"),
+            })
+        else:
+            _prec_entry.update({
+                "status": "not_reported", "product": None, "data_digest": None,
+                "limits": "aihydro-watershed did not report the precipitation "
+                          "it received; request period and cited sources only",
+            })
+        _internal.append(_prec_entry)
         _rr.declare_lineage(internal_acquisitions=_internal)
         _feature_cache_store(session, "signatures", _feature_id, _key, d,
                              citations=["usgs_nwis"])
@@ -1443,6 +1480,7 @@ def extract_hydrological_signatures(
                 "end_date": end_date,
                 "feature": feature,
                 "geometry_geojson": geometry_geojson,
+                **({"precipitation": precipitation} if precipitation != "auto" else {}),
             },
         )
         return d
