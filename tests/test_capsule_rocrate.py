@@ -95,6 +95,14 @@ def _copy(capsule: Path, tmp_path: Path, name: str) -> Path:
     return dst
 
 
+def _core_has_session() -> bool:
+    import aihydro_core.export.rocrate_verify as rv
+    return "VER-SESSION" in inspect.getsource(rv)
+
+
+_CORE_HAS_SESSION = _core_has_session()
+
+
 def _rules(res) -> set:
     return {f.rule for f in res.failures}
 
@@ -209,6 +217,17 @@ def _edit_bundle(cap: Path):
     (cap / "bundle.json").write_text(json.dumps(b, indent=2, sort_keys=True))
 
 
+def _reseal(cap: Path, mutate):
+    """Edit bundle.json and re-seal it with core, so only the semantic rules are in play."""
+    from aihydro_core.records import Bundle
+    b = json.loads((cap / "bundle.json").read_text())
+    mutate(b)
+    nb = Bundle.from_dict({k: v for k, v in b.items() if k not in ("bundle_id", "record_digest")}).seal()
+    (cap / "bundle.json").write_text(json.dumps(nb.to_dict(), indent=2, sort_keys=True))
+    from aihydro_core.export import write_manifest_sha256
+    write_manifest_sha256(cap)
+
+
 def _edit_file(cap: Path):
     (cap / "README.md").write_text("tampered")
 
@@ -231,6 +250,10 @@ def _refresh(cap: Path):
     ("claim_dropped", _drop_claim_revision, True),
     ("bundle", _edit_bundle, False),
     ("file", _edit_file, False),
+    ("assessor_wrong_file", lambda c: _reseal(c, lambda b: b["replay"]["assessor"].update(
+        sha256=hashlib.sha256((c / "README.md").read_bytes()).hexdigest())), False),
+    ("assessor_sha_absent", lambda c: _reseal(c, lambda b: b["replay"]["assessor"].pop("sha256")), False),
+    ("fifo", lambda c: os.mkfifo(c / "data" / "pipe"), False),
 ])
 def test_stdlib_mirror_fails_where_core_fails(exported, tmp_path, name, tamper, refresh):
     cap = _copy(exported[0], tmp_path, "t_" + name)
@@ -242,7 +265,15 @@ def test_stdlib_mirror_fails_where_core_fails(exported, tmp_path, name, tamper, 
     assert not core.ok and not mine["ok"], (name, core.failures, mine["failures"])
     # rule ids agree, except that the mirror does not regenerate the crate, and checks the claim head the
     # sealed bundle pins (core does not know that field)
-    assert _rules(core) - {"VER-CRATE-REGEN"} <= _stdlib_rules(cap) <= _rules(core) | {"VER-CHAIN"}, name
+    mine_rules = _stdlib_rules(cap)
+    skipped = {"VER-CRATE-REGEN", "VER-VALIDATE"}          # rules the stdlib mirror deliberately does not run
+    if _CORE_HAS_SESSION:
+        assert _rules(core) - skipped == mine_rules, name     # exact agreement
+    else:
+        # TODO(core VER-SESSION): once core compares bundle.session_id with its records, this branch goes
+        # and the exact equality above applies (test_exact_rule_equality_needs_core_ver_session flips on).
+        extra = {"VER-SESSION", "VER-COVERAGE"} if "VER-SESSION" in mine_rules else set()
+        assert _rules(core) - skipped == mine_rules - extra, name
     code, out = _replay(cap, isolated_python=True)
     assert code == 1, out
 
@@ -312,6 +343,15 @@ def test_redacted_run_is_partial_coverage_and_a_cross_check_is_still_reportable(
     code, out = _replay(cap, isolated_python=True)
     assert code == 0, out
     assert "partial" in out and "archive_integrity_partial" not in out
+    assert "VER-RUN-ROWS" not in out
+    assert validate_errors(validate_crate(cap)) == []
+    code_core, out_core = _replay(cap)                          # with core importable as well
+    assert code_core == 0 and "byte-compared: ok" in out_core, out_core
+    if os.environ.get(VALIDATOR_ENV):                          # real redacted export, external validator
+        p = subprocess.run([os.environ[VALIDATOR_ENV], "validate", "--profile-identifier", "ro-crate-1.3",
+                            "--requirement-severity", "REQUIRED", "--no-paging", str(cap)],
+                           capture_output=True, text=True, timeout=600)
+        assert p.returncode == 0, p.stdout[-2000:]
     # R2: the legacy partial string is coverage, so it no longer hides a successful cross-check
     assert sr.replay_status(True, True, 3, True, partial=True) == "cross_check"
     assert sr.replay_status(True, False, 0, True, partial=True) == "archive_integrity"
@@ -477,3 +517,143 @@ def test_external_validator_reports_no_required_failures(exported):
                         "--requirement-severity", "REQUIRED", "--no-paging", str(cap)],
                        capture_output=True, text=True, timeout=600)
     assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-1000:]
+
+
+# ---------------------------------------------------------------- follow-ups (S1, S2, S3, F1, minors)
+def test_bundle_session_id_must_match_the_records(exported, tmp_path):
+    """Core does not compare them yet (to be routed); the mirror does, so a re-sealed bundle
+    renamed to another session fails replay on the stdlib path."""
+    cap = _copy(exported[0], tmp_path, "t_session")
+    _reseal(cap, lambda b: b.update(session_id="another-session"))
+    assert "VER-SESSION" in _stdlib_rules(cap)
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 1 and "VER-SESSION" in out
+
+
+def test_stdlib_path_says_what_the_mirror_does_not_check(exported):
+    code, out = _replay(exported[0], isolated_python=True)
+    assert code == 0, out
+    assert "stdlib mirror only: not checked here are crate regeneration" in out and "VER-VALIDATE" in out
+    code2, out2 = _replay(exported[0])
+    assert "stdlib mirror only" not in out2          # with core importable those checks ran
+
+
+def test_exporter_names_the_projecting_core_version(exported):
+    import aihydro_core
+    cap, _ = exported
+    bundle = json.loads((cap / "bundle.json").read_text())
+    assert bundle["exporter"]["projection"] == f"aihydro-core {aihydro_core.__version__}"
+    _code, out = _replay(cap)
+    assert f"regenerated here with aihydro-core {aihydro_core.__version__}" in out
+
+
+def test_bundle_carries_the_unsealed_row_counts(exported):
+    cap, _ = exported
+    rr_ = json.loads((cap / "bundle.json").read_text())["run_rows"]
+    assert set(rr_) == {"run_log_rows", "sealed", "legacy_no_record", "unbound", "unsealable",
+                        "withheld_for_privacy"}
+    assert rr_["legacy_no_record"] >= 1 and rr_["sealed"] >= 1      # the fixture's r1 row is legacy
+    assert rr_["run_log_rows"] == rr_["sealed"] + rr_["legacy_no_record"] + rr_["withheld_for_privacy"]
+    assert set(rr_) == set(json.loads((cap / "bundle.json").read_text())["run_rows"])
+
+
+def _mark_claim_corrupt(cap: Path):
+    p = cap / "records" / "claim_revisions.json"
+    doc = json.loads(p.read_text())
+    doc["claims"]["c1"] = {"status": "corrupt", "error": "ClaimRevisionIntegrityError: synthetic"}
+    p.write_text(json.dumps(doc, indent=2, sort_keys=True))
+    (cap / MANIFEST_FILE).write_text(json.dumps(build_manifest(cap), indent=2))
+
+
+def test_a_claim_corrupt_at_export_is_a_failed_store_stub_not_a_working_view(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_corrupt")
+    for name in _NEW:
+        (cap / name).unlink()
+    _mark_claim_corrupt(cap)
+    out = export_crate(cap, session_id=SID)
+    crate = (cap / "ro-crate-metadata.json").read_text()
+    assert "working view, unsealed" not in crate                  # session.json still holds the claim text
+    assert ("revision store failed verification at export" in crate
+            or "Claim c1 revision failed-store (unverifiable)" in crate)      # core cbeedd9 / older wording
+    bundle = json.loads((cap / "bundle.json").read_text())
+    assert "c1@failed-store" in bundle["coverage"]["unverifiable_ids"]
+    assert not any(r["kind"] == "claim_view" and r["id"] == "c1" for r in bundle["records"])
+    assert bundle["replay"]["checked_status"] == "not_performed" and out["claims_not_carried"]
+    assert verify_crate(cap).ok
+
+
+def test_a_sealed_row_downgraded_to_legacy_fails_replay(exported, tmp_path):
+    """F1 (fault matrix): delete a row's seal and edit its body. Every per-row check treats a row
+    with no record as legacy, so only the export-time counts in the manifest remember it had one."""
+    cap = _copy(exported[0], tmp_path, "t_downgrade")
+    for name in _NEW:
+        (cap / name).unlink()                                      # a capsule without a bundle: manifest counts only
+    log = json.loads((cap / "run_log.json").read_text())
+    rid = next(r for r, row in sorted(log.items()) if isinstance(row.get("record"), dict))
+    log[rid].pop("record")
+    log[rid]["key_outputs"] = {"edited": 1}
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    (cap / "replay.py").write_text(sr.source_text())
+    # the attacker repairs the file hashes but not the run_records counts
+    m = json.loads((cap / MANIFEST_FILE).read_text())
+    fresh = build_manifest(cap)
+    m["files"], m["n_files"] = fresh["files"], fresh["n_files"]
+    (cap / MANIFEST_FILE).write_text(json.dumps(m, indent=2))
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 1, out
+    assert "does not match the manifest's run_records counts" in out and "v2_records: manifest" in out
+    assert "replay_status: not_performed" in out
+    # a pristine capsule is unaffected
+    assert _replay(exported[0], isolated_python=True)[0] == 0
+
+
+def test_converter_refuses_a_capsule_with_symlinks(exported, tmp_path):
+    src = _copy(exported[0], tmp_path, "t_link_src")
+    (src / "linked.txt").symlink_to(tmp_path)                      # points outside the capsule
+    with pytest.raises(CrateExportError, match="symlinks"):
+        convert_capsule(src, tmp_path / "t_link_out")
+    assert not (tmp_path / "t_link_out").exists()
+
+
+@pytest.mark.skipif(not _CORE_HAS_SESSION, reason="TODO: core does not compare bundle.session_id yet (VER-SESSION)")
+def test_exact_rule_equality_needs_core_ver_session(exported, tmp_path):
+    """Marker for T3: runs (and then pins exact agreement incl. the session case) once core has VER-SESSION."""
+    cap = _copy(exported[0], tmp_path, "t_exact_session")
+    _reseal(cap, lambda b: b.update(session_id="another-session"))
+    assert _rules(verify_crate(cap)) - {"VER-CRATE-REGEN", "VER-VALIDATE"} == _stdlib_rules(cap)
+
+
+def test_replacing_a_sealed_row_with_a_forged_one_is_seen_by_the_counts(exported, tmp_path):
+    """T1: delete a sealed row and add a forged unsealed-error stand-in; row/v2/legacy counts can stay equal
+    while records_with_record_error or matches_exporting_environment change."""
+    cap = _copy(exported[0], tmp_path, "t_forged")
+    for name in _NEW:
+        (cap / name).unlink()
+    log = json.loads((cap / "run_log.json").read_text())
+    rid = next(r for r, row in sorted(log.items()) if isinstance(row.get("record"), dict)
+               and (row["record"].get("env_digest")))
+    forged = json.loads(json.dumps(log[rid]))
+    forged["record"]["env_digest"] = "sha256:" + "0" * 64          # a forged replacement of the same shape
+    log[rid] = forged
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    (cap / "replay.py").write_text(sr.source_text())
+    m = json.loads((cap / MANIFEST_FILE).read_text())
+    fresh = build_manifest(cap)
+    m["files"], m["n_files"] = fresh["files"], fresh["n_files"]
+    (cap / MANIFEST_FILE).write_text(json.dumps(m, indent=2))
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 1, out
+    assert "matches_exporting_environment: manifest" in out
+
+
+def test_redaction_alongside_real_sealed_rows_satisfies_the_run_rows_range(exported, tmp_path):
+    """Real sealed rows (middleware) plus one privacy-withheld row: sealed <= entries <= sealed + withheld."""
+    _forge_path_row(SID, "leg_2", "/Users/zz-someone/secret.csv")
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "mixed"))
+    assert not res.get("crate_error"), res
+    cap = Path(res["capsule_dir"])
+    rr_ = json.loads((cap / "bundle.json").read_text())["run_rows"]
+    assert rr_["sealed"] >= 1 and rr_["withheld_for_privacy"] == 1
+    assert verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
+    assert _replay(cap, isolated_python=True)[0] == 0
