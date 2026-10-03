@@ -1404,8 +1404,13 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
     rr = bundle.get("run_rows")
     if isinstance(rr, dict):                  # core VER-RUN-ROWS: run_rows.sealed equals the run entries listed
         n_runs = sum(1 for x in records if x["kind"] == "run")
-        if rr.get("sealed") != n_runs:
-            fail("VER-RUN-ROWS", f"run_rows.sealed is {rr.get('sealed')} but the bundle lists {n_runs} run records")
+        # deliberately not core cbeedd9's sealed == n_runs: that cannot hold together with the run_rows
+        # invariant (run_log_rows == sealed + legacy + withheld) when a privacy-withheld row is itself a
+        # run entry. Here the withheld entries are subtracted; parity returns once core is corrected.
+        withheld = rr.get("withheld_for_privacy") if isinstance(rr.get("withheld_for_privacy"), int) else 0
+        if rr.get("sealed") != n_runs - withheld:
+            fail("VER-RUN-ROWS", f"run_rows.sealed is {rr.get('sealed')} but the bundle lists {n_runs} run records "
+                                 f"of which {withheld} are withheld for privacy")
 
     # gates are derived from verified, sealed-bound bodies; the declared list must equal them
     derived = set()
