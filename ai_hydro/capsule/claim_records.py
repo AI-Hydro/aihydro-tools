@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from ai_hydro.capsule.privacy import REDACTED_KEY
-from ai_hydro.session.refs import scrub_paths, scrub_value
+from ai_hydro.session.claim_paths import row_has_local_path
+from ai_hydro.session.refs import scrub_paths
 
 SCHEMA = "aihydro.capsule.claim_revisions/1"
 RECORDS_DIR = "records"
@@ -81,12 +82,11 @@ def collect_claim_revisions(session_id: str, capsule_dir: str | Path,
         out_rows: list[dict] = []
         redacted: list[int] = []
         for row in rows:
-            clean = scrub_value(row, workspace_dir)
-            if json.dumps(clean, sort_keys=True, default=str) == json.dumps(row, sort_keys=True, default=str):
-                out_rows.append(row)                  # verbatim: no absolute path
-            else:
+            if row_has_local_path(row, workspace_dir):    # the same predicate the claim tools refuse on
                 out_rows.append(_stub(row))
                 redacted.append(row["revision"])
+            else:
+                out_rows.append(row)                  # verbatim: no local path
         counts["ok"] += 1
         counts["revisions"] += len(rows)
         counts["redacted"] += len(redacted)

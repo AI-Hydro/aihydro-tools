@@ -283,14 +283,24 @@ stamp) can. The exporter refuses the crate (`crate_error`) when a record fails f
 withholding, when `session.json` claims differ from their sealed head revision, or when core refuses the bundle.
 
 **Local paths in claim prose.** A sealed revision cannot be rewritten, so a path inside one could only ever be withheld
-wholesale on export. `add_claim` and `update_claim_status` therefore replace, before sealing, only the *concrete* prefixes
-of this machine in the statement, rationale and limitations: the session workspace (`<workspace>`), `AIHYDRO_HOME`
-(`<aihydro-home>`), the home directory (`<home>`) and the system temp directory (`<tmp>`), in resolved and unresolved
-spelling, longest first, at a path boundary. There is no generic path heuristic (so `HDF /var/streamflow`, `/group/var`,
-`A:/B ratio`, `mm/day` are never rewritten) and identifiers (evidence source ids, basin ids, claim ids) are never touched.
-The placeholders are not local paths to the crate validator. Anything that still matches core's local-path pattern is
-sealed as given and withheld as a stub at export. The stored claim, the sealed revision and `session.json` hold identical
-text; the result reports `paths_scrubbed` / `paths_remaining`. The claim projection is pure, so claims stored earlier keep
-their approvals and are normalised at their next write (`cause.path_scrub`). For a legacy withheld head, replay compares the
-session claim with the last readable revision (see "Claim revisions, bundle and RO-Crate in the capsule").
+wholesale on export, and a withheld head can no longer be read. `add_claim` and `update_claim_status` therefore never
+create one. Before sealing they replace the *concrete* prefixes of this machine in the statement, rationale and
+limitations: the session workspace (`<workspace>`), `AIHYDRO_HOME` (`<aihydro-home>`), the home directory (`<home>`) and the
+system temp directory (`<tmp>`), absolute spellings only, resolved and unresolved, longest first, at a path boundary (a
+placeholder is itself a boundary, so the rewrite is a fixpoint). Identifiers (evidence source ids, basin ids, claim ids)
+are never touched. If the prose then still holds something that looks like a local path (one shared test, also used by
+the capsule exporter: core's leak pattern, the run-log scrub's reading, case-insensitive `/users/...`, `~/`, `$HOME`),
+the tool returns `LOCAL_PATH_IN_TEXT` naming the field and the offending text and records nothing (no revision, no session
+change). Accepted phrasings: "the 90% interval of the baseflow index" or evidence cited through `evidence_spans`, not
+"read from /Users/me/notes.txt"; "HDF streamflow files", not `HDF /var/streamflow`; "the ratio of A to B", not
+`A:/B ratio`. Institutional mounts such as `/data/...` are outside the heuristic (ordinary directory names in prose).
+A very short real prefix (for example `HOME=/root`) is replaced like any other, so a scientific string literally under it
+is rewritten. The claim projection is pure, so claims stored earlier keep their approvals and are normalised at their next
+write (`cause.path_scrub`).
+
+*Legacy data only.* Claims stored before this change may hold a path; their sealed revision is a privacy stub on export.
+For a legacy withheld head, replay compares the session claim with the last readable revision (see "Claim revisions,
+bundle and RO-Crate in the capsule"). Known legacy limitation: a promoted claim whose approved revision is withheld fails
+replay's approval check (the recomputed digest differs); the remedy is to re-revise the claim (`add_claim` with
+rephrased text) and re-approve.
 

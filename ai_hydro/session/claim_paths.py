@@ -32,13 +32,18 @@ from typing import Any, List, Optional, Tuple
 PROSE_FIELDS = ("claim", "confidence_rationale", "limitations")
 
 
+_MIN_PREFIX = 4        # "/tmp" is the shortest sane absolute prefix; "/", "/a" and relative names are not prefixes
+
+
 def _spellings(path: Optional[str]) -> List[str]:
-    if not path or not isinstance(path, str):
+    """Absolute spellings of ``path`` only. A relative ``workspace_dir`` ("results") would otherwise become a word
+    prefix and rewrite prose ("The results show" -> "The <workspace> show")."""
+    if not path or not isinstance(path, str) or not os.path.isabs(path):
         return []
     out = []
     for p in (path, os.path.realpath(path)):
         p = p.rstrip("/\\")
-        if len(p) >= 2 and p not in out and p != "/":
+        if len(p) >= _MIN_PREFIX and os.path.isabs(p) and p not in out:
             out.append(p)
     return out
 
@@ -61,7 +66,7 @@ def _compiled(workspace_dir):
         return None, {}
     table = {p: t for p, t in pats}
     # boundary before: not part of a longer token or path; after: not a longer name (a path separator is fine)
-    rx = re.compile(r"(?<![\w./~<-])(" + "|".join(re.escape(p) for p, _t in pats) + r")(?![\w-]|\.\w)")
+    rx = re.compile(r"(?<![\w./~<>-])(" + "|".join(re.escape(p) for p, _t in pats) + r")(?![\w-]|\.\w)")
     return rx, table
 
 
@@ -72,9 +77,59 @@ def scrub_claim_text(text: str, workspace_dir: Optional[str] = None) -> str:
     return rx.sub(lambda m: table[m.group(1)], text)
 
 
-def _has_local_path(text: Any) -> bool:
+# Obvious home / system roots, matched case-insensitively (case-insensitive volumes spell /Users as /users).
+# Institutional mounts such as /data, /nfs or /gpfs are NOT in the heuristic: they are ordinary directory names
+# that appear in scientific prose, so they are neither detected nor rewritten (documented; sealed as given).
+_LOCAL_ROOT_CI = re.compile(
+    r"(?i)(?:^|[\s\"'(=:,;\[])/(?:users|home|private|var|tmp|opt|root|mnt|volumes|srv|scratch|etc)/")
+
+
+def find_local_path(text: Any) -> Optional[str]:
+    """The ONE test for "this text holds a local file path": the offending substring, or ``None``.
+
+    Used by ``add_claim`` / ``update_claim_status`` (refusal), by the capsule exporter (what it withholds) and by the
+    tool's report, so the three can never disagree. A hit is core's shared leak pattern, the run-log scrub's reading of
+    the text, or a case-insensitive home/system root; ``~`` and ``$HOME`` spellings count as home.
+    """
+    if not isinstance(text, str) or not text:
+        return None
     from aihydro_core.export.rocrate import PATH_PATTERN       # core's shared leak pattern
-    return isinstance(text, str) and PATH_PATTERN.search(text) is not None
+    from ai_hydro.session.refs import scrub_paths
+
+    def hit(t: str) -> bool:
+        return (PATH_PATTERN.search(t) is not None or _LOCAL_ROOT_CI.search(t) is not None
+                or scrub_paths(t, None) != t)
+
+    for tok in text.split():
+        if hit(tok):
+            return tok.strip("\"'(),;")
+    return text[:60] if hit(text) else None
+
+
+def _has_local_path(text: Any) -> bool:
+    return find_local_path(text) is not None
+
+
+def strings_of(obj: Any):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from strings_of(k)
+            yield from strings_of(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from strings_of(v)
+
+
+def row_has_local_path(row: Any, workspace_dir: Optional[str] = None) -> bool:
+    """Whether the capsule exporter must withhold this stored row: the run-log scrub would change it, or any string
+    in it holds a local path by :func:`find_local_path`. Same predicate the tool reports."""
+    from ai_hydro.session.refs import scrub_value
+    import json as _json
+    changed = _json.dumps(scrub_value(row, workspace_dir), sort_keys=True, default=str) != \
+        _json.dumps(row, sort_keys=True, default=str)
+    return changed or any(find_local_path(t) for t in strings_of(row))
 
 
 def normalise_claim(claim: dict, workspace_dir: Optional[str] = None) -> Tuple[List[str], List[str]]:
@@ -96,11 +151,42 @@ def normalise_claim(claim: dict, workspace_dir: Optional[str] = None) -> Tuple[L
             if nv != v:
                 claim[f] = nv
                 replaced.append(f)
-    remaining = [f for f in PROSE_FIELDS
-                 if any(_has_local_path(x) for x in (claim.get(f) if isinstance(claim.get(f), list) else [claim.get(f)]))]
-    if any(_has_local_path(sp.get("source_id")) for sp in (claim.get("evidence_spans") or []) if isinstance(sp, dict)):
-        remaining.append("evidence_spans")
+    remaining: List[str] = []
+    for f in PROSE_FIELDS:
+        v = claim.get(f)
+        for x in (v if isinstance(v, list) else [v]):
+            if _has_local_path(x):
+                remaining.append(f)
+                break
     return replaced, remaining
+
+
+def prose_problems(claim: dict, workspace_dir: Optional[str] = None) -> List[Tuple[str, str]]:
+    """``[(field, offending substring)]`` left in the prose after concrete-prefix normalisation, without mutating
+    ``claim``. Evidence and other identifiers are not prose and are never inspected here."""
+    probe = {k: (list(v) if isinstance(v, list) else v) for k, v in claim.items() if k in PROSE_FIELDS}
+    normalise_claim(probe, workspace_dir)
+    out = []
+    for f in PROSE_FIELDS:
+        v = probe.get(f)
+        for x in (v if isinstance(v, list) else [v]):
+            bad = find_local_path(x)
+            if bad:
+                out.append((f, bad))
+                break
+    return out
+
+
+def refusal(problems: List[Tuple[str, str]]) -> dict:
+    """The structured teaching error returned when claim prose holds a path that cannot be normalised."""
+    field, bad = problems[0]
+    return {"error": True, "code": "LOCAL_PATH_IN_TEXT",
+            "message": (f"The {field} contains something that looks like a local file path that could not be "
+                        f"normalised: {bad!r}. Nothing was recorded."),
+            "field": field, "offending_text": bad,
+            "recovery": ("Rephrase the text without the path, or cite the file through evidence (evidence_spans) "
+                         "instead of quoting its location in the text. Example: write 'the 90% interval of the "
+                         "baseflow index' rather than naming the file that holds it.")}
 
 
 def report_note(replaced: List[str], remaining: List[str]) -> dict:

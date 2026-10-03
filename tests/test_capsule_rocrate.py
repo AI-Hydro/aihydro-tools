@@ -1236,17 +1236,62 @@ def test_M1_a_claim_that_starts_with_a_path_keeps_its_statement(exported):
     assert stored == "<home>/run1/out.nc gives a Lyne-Hollick baseflow index of 0.585 with Q in m3/s and BFI 0.585 +/- 0.014"
 
 
-def test_a_path_that_is_not_a_known_prefix_is_not_rewritten_and_is_reported(exported, tmp_path):
+def test_a_path_that_cannot_be_normalised_is_refused_and_nothing_is_recorded(exported):
+    before = cr.history_readonly(SID)[0].get("c_odd")
     res = _add_pathy_claim("c_odd", text="Derived from /Users/zz-someone/elsewhere/x.csv with NSE 0.8",
                            rationale="Synthetic fixture rationale text.", limitations=["plain"])
-    assert res["paths_remaining"] == ["claim"] and "withheld from exports" in res["paths_remaining_note"]
-    assert "paths_scrubbed" not in res
-    assert "/Users/zz-someone/elsewhere/x.csv" in HydroSession.load(SID).claims["c_odd"]["claim"]   # as given
+    assert res["error"] is True and res["code"] == "LOCAL_PATH_IN_TEXT" and res["field"] == "claim"
+    assert res["offending_text"] == "/Users/zz-someone/elsewhere/x.csv" and "rephrase" in res["recovery"].lower()
+    assert "c_odd" not in HydroSession.load(SID).claims and cr.history_readonly(SID)[0].get("c_odd") == before
+
+
+def test_redef_a_refused_redefinition_changes_nothing_and_an_honest_one_exports(exported, tmp_path):
+    ok = _add_pathy_claim("c_red", text="Synthetic NSE is 0.8 with a plain statement", rationale="Synthetic fixture rationale text.",
+                          limitations=["plain"])
+    assert ok["status"] == "recorded"
+    n = len(cr.history_readonly(SID)[0]["c_red"]["rows"])
+    session_before = json.dumps(HydroSession.load(SID).claims["c_red"], sort_keys=True)
+    bad = _add_pathy_claim("c_red", text="Synthetic NSE is 0.8, see /Users/zz-someone/q/notes.txt",
+                           rationale="Synthetic fixture rationale text.", limitations=["plain"])
+    assert bad["code"] == "LOCAL_PATH_IN_TEXT"
+    assert len(cr.history_readonly(SID)[0]["c_red"]["rows"]) == n
+    assert json.dumps(HydroSession.load(SID).claims["c_red"], sort_keys=True) == session_before
+    r2 = update_claim_status(SID, "c_red", "proposed", "medium", "Rationale with /Users/zz-someone/p/q.txt inside")
+    assert r2["code"] == "LOCAL_PATH_IN_TEXT" and r2["field"] == "confidence_rationale"
+    assert len(cr.history_readonly(SID)[0]["c_red"]["rows"]) == n
+    good = _add_pathy_claim("c_red", text="Synthetic NSE is 0.9 with a plain redefinition",
+                            rationale="Synthetic fixture rationale text.", limitations=["plain"])
+    assert good["status"] == "recorded"
     import ai_hydro.mcp.tools_session as ts
-    out = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "odd"))
-    assert not out.get("crate_error"), out                          # existing behaviour: withheld as a stub
-    rows = json.loads((Path(out["capsule_dir"]) / "records" / "claim_revisions.json").read_text())["claims"]["c_odd"]["rows"]
-    assert rows[0].get("redacted_for_privacy") is True
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "redef"))
+    assert not res.get("crate_error"), res
+    assert verify_crate(Path(res["capsule_dir"])).ok
+
+
+def test_N1_nested_placeholders_are_a_boundary(monkeypatch, tmp_path):
+    from ai_hydro.session.claim_paths import scrub_claim_text
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AIHYDRO_HOME", str(tmp_path / "ah"))
+    ws = str(tmp_path / "ws")
+    once = scrub_claim_text(f"{ws}/tmp/out.nc and {tmp_path}/home/x", ws)
+    assert once.startswith("<workspace>/tmp/out.nc") and scrub_claim_text(once, ws) == once
+
+
+def test_N2_a_relative_workspace_is_not_a_word_prefix(monkeypatch, tmp_path):
+    from ai_hydro.session.claim_paths import scrub_claim_text
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AIHYDRO_HOME", "relative-ah")
+    for rel in ("results", "data", ".", "/", "/a"):
+        assert scrub_claim_text("The results show data are fine in /a/b", rel) == "The results show data are fine in /a/b"
+
+
+def test_S13_the_shared_predicate_is_case_insensitive_and_names_what_is_outside_it():
+    from ai_hydro.session.claim_paths import find_local_path
+    assert find_local_path("read /users/alice/x.csv today") == "/users/alice/x.csv"
+    assert find_local_path("see ~/notes/ci.txt") and find_local_path("under $HOME/work")
+    for ok in ("HDF-like /data/x.csv is institutional", "ratio A:B", "mm/day", "0.58 +/- 0.01", "/group/var"):
+        assert find_local_path(ok) is None, ok       # /data/... style institutional mounts are outside the heuristic
+    assert find_local_path("HDF /var/streamflow") is not None    # accepted consequence: rephrase it
 
 
 def test_evidence_ids_are_never_rewritten(exported):
@@ -1279,9 +1324,10 @@ def test_scrub_is_a_fixpoint_and_concrete_prefixes_leave_no_local_path(monkeypat
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AIHYDRO_HOME", str(tmp_path / "ah"))
     ws = str(tmp_path / "ws")
-    prefixes = [p for p, _t in concrete_prefixes(ws)] + [tempfile.gettempdir()]
+    prefixes = [p for p, _t in concrete_prefixes(ws)] + [tempfile.gettempdir(), ws + "/tmp", ws + "/sub/home"]
     rng = random.Random(7)
-    words = ["see", "NSE", "0.58", "+/-", "m3/s", "in", "(", ")", "and", "notes.txt", ",", ";"]
+    words = ["see", "NSE", "0.58", "+/-", "m3/s", "in", "(", ")", "and", "notes.txt", ",", ";",
+             "<workspace>/tmp/out.nc", "<home>/tmp/x", "<tmp>/home/y"]
     for _ in range(400):
         parts = []
         for _i in range(rng.randint(1, 8)):

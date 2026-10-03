@@ -13,11 +13,15 @@ Requires aihydro-core 0.2.7 or later.
 ### Changed
 - `add_claim` and `update_claim_status` replace the concrete local prefixes of this machine in claim prose (statement,
   rationale, limitations) before the revision is sealed: the session workspace, `AIHYDRO_HOME`, the home directory and
-  the system temp directory become `<workspace>`, `<aihydro-home>`, `<home>` and `<tmp>`. Nothing else is rewritten
-  (no "looks like a path" heuristic), evidence and other identifiers are never touched, and the stored claim, the sealed
-  revision and the capsule's `session.json` hold identical text. The tool result carries `paths_scrubbed` (fields
-  changed) and, when a path remains that could not be replaced exactly, `paths_remaining`: that revision is withheld from
-  exports as before. A revision written because of this carries `cause.path_scrub`.
+  the system temp directory (absolute spellings only) become `<workspace>`, `<aihydro-home>`, `<home>` and `<tmp>`.
+  Nothing else is rewritten, evidence and other identifiers are never touched, and the stored claim, the sealed revision
+  and the capsule's `session.json` hold identical text. The result carries `paths_scrubbed` (fields changed). A revision
+  written because of this carries `cause.path_scrub`.
+- If prose still holds something that looks like a local file path after that (one shared test, also used by the capsule
+  exporter: core's leak pattern, the run-log scrub, case-insensitive `/users/...`, `~/` and `$HOME`), the tool returns a
+  structured error `LOCAL_PATH_IN_TEXT` naming the field and the offending text, and records nothing. Rephrase it, or cite
+  the file through `evidence_spans`. Consequence: text such as `HDF /var/streamflow` or `A:/B ratio` is refused; write
+  `HDF streamflow files` or `the ratio of A to B`. Institutional mounts such as `/data/...` are outside the heuristic.
 - `claim_revision_fields` stays a pure projection (no scrub), so claims stored before this change keep reading in sync with
   their approvals and are normalised at their next write.
 - Replay compares `session.json` claims with the last non-withheld revision when the head is a privacy stub: a differing

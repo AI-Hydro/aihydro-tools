@@ -248,11 +248,13 @@ def add_claim(
     applies to a new or redefined id alike; claims already stored as supported without it
     are not rewritten (promotion_check flags them; promotion refuses them).
 
-    Local paths: concrete local prefixes in the statement, rationale and limitations (the session
-    workspace, AIHYDRO_HOME, the home directory, the system temp directory) are replaced by
-    <workspace>, <aihydro-home>, <home>, <tmp> before the claim is stored and sealed; the result lists
-    `paths_scrubbed` (fields changed) and, if a path remains that cannot be replaced exactly,
-    `paths_remaining` (that revision is withheld from exports). Identifiers are never rewritten.
+    Local paths: concrete local prefixes of this machine in the statement, rationale and limitations (the
+    session workspace, AIHYDRO_HOME, the home directory, the system temp directory) are replaced by
+    <workspace>, <aihydro-home>, <home>, <tmp> before the claim is stored and sealed (`paths_scrubbed` lists the
+    fields). Text that still looks like a local file path is refused with LOCAL_PATH_IN_TEXT (field and offending
+    text named) and nothing is recorded: rephrase it, or cite the file through evidence_spans. For example write
+    "HDF streamflow files" rather than "HDF /var/streamflow", and "the ratio of A to B" rather than "A:/B ratio".
+    Identifiers are never rewritten.
 
     Returns `promotion_check`: every violation (`code`, `message`, `family`,
     `blocking`) that promote_claim_to_registry would raise on this claim as stored.
@@ -279,6 +281,10 @@ def add_claim(
         )
 
         claim_dict = claim.model_dump()
+        from ai_hydro.session.claim_paths import prose_problems, refusal
+        _bad = prose_problems(claim_dict, getattr(session, "workspace_dir", None))
+        if _bad:
+            return refusal(_bad)            # nothing is stored or sealed
         gate = _uncertainty_gate(claim_id, claim_dict, status, False)   # add_claim cannot assert it
         if gate is not None:
             return gate
@@ -348,6 +354,11 @@ def update_claim_status(
         gate = _uncertainty_gate(claim_id, claim_dict, status, uncertainty_verified)
         if gate is not None:
             return gate
+
+        from ai_hydro.session.claim_paths import prose_problems, refusal
+        _bad = prose_problems({**claim_dict, "confidence_rationale": rationale}, getattr(session, "workspace_dir", None))
+        if _bad:
+            return refusal(_bad)            # nothing is recorded: no revision, no session change
 
         before = _revision_fields(session, claim_id)
         claim_dict["status"] = status
