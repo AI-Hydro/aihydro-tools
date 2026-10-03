@@ -321,3 +321,34 @@ def test_claim_events_carry_the_new_sealed_revision(monkeypatch):
         assert w.call_args[0][0]["revision_digest"] == "d3"
         real_push(change_type="updated", session_id=sid, claim_id="claim.c1")
         assert "revision_digest" not in w.call_args[0][0]
+
+
+def test_promotion_emits_an_invalidation_event_only_on_success(monkeypatch):
+    events = []
+    monkeypatch.setattr("ai_hydro.mcp.tools_ledger.push_claim_event",
+                        lambda **kw: events.append(kw) or True)
+    sid = "test-promotion-event"
+    session = HydroSession(sid)
+    session.set("_run_log", {"r1": {"run_id": "r1", "session_id": sid,
+        "key_outputs": {"kge": 0.8, "_uncertainty": {"kge": {
+            "value": 0.8, "ci_low": 0.7, "ci_high": 0.9, "ci_level": 0.95,
+            "n": 30, "method": "synthetic_fixture"}}}}})
+    add_claim(session_id=sid, claim_id="c2", statement="Supported claim",
+              claim_type="empirical_result", status="supported", confidence="high",
+              confidence_rationale="Validated across ten years of daily streamflow data with KGE > 0.7.",
+              basins=["b1"], basin_refs=[basin_ref_full("b1")], period="p1",
+              limitations=["Only tested on one basin"],
+              evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "kge"}])
+    update_claim_status(session_id=sid, claim_id="c2", status="supported", confidence="high",
+                        rationale="Bootstrap uncertainty was verified for the recorded KGE estimate.",
+                        uncertainty_verified=True)
+    events.clear()
+    refused = promote_claim_to_registry(sid, "c2", researcher_approved=True)
+    assert refused["code"] == "APPROVAL_REQUIRED"
+    assert events == []                      # nothing changed: no event
+    approve(sid, "c2")
+    res = promote_claim_to_registry(sid, "c2", researcher_approved=True)
+    assert res["status"] == "promoted"
+    assert [e["change_type"] for e in events] == ["promoted"]
+    assert events[0]["claim_id"] == "c2" and events[0]["session_id"] == sid
+    assert "revision_digest" not in events[0]   # invalidation only, no state claims
