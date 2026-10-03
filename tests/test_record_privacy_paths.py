@@ -298,7 +298,9 @@ def test_verified_redaction_stub_carries_identity_and_degrades_status(world, tmp
     man = json.loads((cap / "capsule_manifest.json").read_text())
     assert man["privacy"]["redacted_run_ids"] == ["leg_1"] and man["replay_status"] == "archive_integrity_partial"
     p = subprocess.run([sys.executable, "replay.py"], cwd=cap, capture_output=True, text=True, timeout=120)
-    assert p.returncode == 0 and "replay_status: archive_integrity_partial" in p.stdout, p.stdout[-1500:]
+    # R2: partiality is coverage, not a level, so a cross-check is never hidden by it
+    assert p.returncode == 0 and "replay_status: archive_integrity\n" in p.stdout, p.stdout[-1500:]
+    assert "archive_integrity_partial" not in p.stdout and "partial" in p.stdout
 
 
 # --- V3: free-form lineage notes are scrubbed before sealing -------------------

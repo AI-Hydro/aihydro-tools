@@ -175,6 +175,8 @@ def test_a_run_log_value_that_disagrees_with_the_retained_session_fails_live(wor
     raw = json.loads((capsule / "session.json").read_text())
     raw["signatures"]["__legacy__"][""]["data"]["q_mean"] = 99.0       # session drifted from the run log
     (capsule / "session.json").write_text(json.dumps(raw))
+    for name in ("bundle.json", "ro-crate-metadata.json", "manifest-sha256.txt"):
+        (capsule / name).unlink()       # models a capsule that predates the crate (the bundle pins file digests)
     _rebuild_manifest(capsule)
     code, out = _replay(capsule, "--live")
     assert code == 1, out

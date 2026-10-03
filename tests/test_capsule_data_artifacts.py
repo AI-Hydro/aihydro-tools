@@ -343,6 +343,8 @@ def test_sealed_file_the_manifest_never_listed_is_only_a_note(tmp_path, monkeypa
     from ai_hydro.capsule.manifest import build_manifest
 
     cap, _, _ = _build_and_export("retained", tmp_path, monkeypatch)
+    for name in ("bundle.json", "ro-crate-metadata.json", "manifest-sha256.txt"):
+        (cap / name).unlink()           # models a capsule that predates the crate (the bundle pins file digests)
     (cap / "data" / f"streamflow_{GAUGE}.json").unlink()
     (cap / "data" / f"served_streamflow_{GAUGE}.csv").unlink()
     (cap / "capsule_manifest.json").write_text(json.dumps(build_manifest(cap)))  # lists neither

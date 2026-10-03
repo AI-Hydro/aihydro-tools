@@ -18,7 +18,11 @@ from pathlib import Path
 MANIFEST_FILE = "capsule_manifest.json"
 
 # Files never included in the manifest (generated at export time, not data)
-_SKIP_NAMES: frozenset[str] = frozenset({MANIFEST_FILE, "replay.py"})
+#
+# bundle.json, ro-crate-metadata.json and manifest-sha256.txt are written after
+# the manifest (they describe it) and so can never be listed in it.
+_SKIP_NAMES: frozenset[str] = frozenset({MANIFEST_FILE, "replay.py", "bundle.json",
+                                         "ro-crate-metadata.json", "manifest-sha256.txt"})
 
 # The strongest replay level a capsule archive supports (aihydro_core.records
 # ReplayStatus). Hashes and record digests can be re-verified; no computation

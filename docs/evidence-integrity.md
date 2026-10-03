@@ -602,5 +602,44 @@ not verify it is exported as `{"integrity": "seal_mismatch_at_export", ...}` and
 replay counts it as a FAILURE. A row that verifies becomes a
 `redacted_for_privacy` stub with `session_id`, `timestamp`, `record_digest`,
 `entry_digest` and (when it holds no path) the full `record`, so replay still
-checks the seal. Any redaction makes `replay_status` `archive_integrity_partial`
-and the manifest `privacy` block lists the redacted run ids.
+checks the seal. Any redaction writes the legacy manifest string
+`archive_integrity_partial` and the manifest `privacy` block lists the redacted
+run ids. Partiality is *coverage*, not a level (R2): `replay.py` reads that string as
+`archive_integrity` with coverage below 1 and prints `coverage: x of y ... partial`,
+so a partially redacted capsule can still report a successful `--live` cross-check.
+
+## Claim revisions, bundle and RO-Crate in the capsule (slice 5)
+
+`export_session` also writes, after the manifest (never listed in it, never
+scrubbed afterwards): `bundle.json`, `ro-crate-metadata.json` and
+`manifest-sha256.txt`. Claim revisions are carried in `records/claim_revisions.json`
+(`capsule/claim_records.py`), read from the sealed store without writing it:
+
+- Sealed rows are carried verbatim. A row that holds a local path becomes a
+  `redacted_for_privacy` stub that keeps `revision_digest` and `record_digest`.
+- Each claim's chain is judged on its own. A claim whose store failed its check is
+  exported as `status: corrupt` with no rows, and replay fails it.
+- A chain cannot show that its own tail was cut. `head_revision_digest` (manifest
+  `claim_revisions` section, and `claim_heads` sealed in the bundle) is the anchor;
+  compare it with the registry stamp.
+
+The `Bundle` (`aihydro.bundle/1`, `capsule/bundle_adapter.py`) points at records
+already in the capsule; it copies no body. The crate is a pure projection of it
+(RO-Crate 1.3, Process Run Crate 0.6, `aihydro_core.export`). The achieved replay
+level in the bundle is `min(manifest, checked)`, where `checked` comes from the same
+code `replay.py` runs; coverage is recomputed by core's `verify_crate`, never assumed.
+A crate that holds a local path is not written (`scrub_value(crate) == crate` is
+enforced); `export_session` then returns `crate_error` and the capsule still stands.
+
+`replay.py` verifies the claim chains and the bundle with a stdlib mirror of
+`verify_crate`: bundle identity and seal, file digests, `objects` == manifest files,
+record seals and `aihydro.entry/1` bindings, basin ids, claim chains and the pinned
+head, coverage, and the BagIt list. **It does not regenerate the crate and
+byte-compare it**, so a crate edited consistently with its BagIt line is not caught
+by the stdlib mirror alone. When `aihydro_core` is importable `replay.py` also runs
+core's `verify_crate`, which does (`VER-CRATE-REGEN`). Integrity is not origin: none
+of this shows who produced the capsule.
+
+`scripts/capsule_to_rocrate.py IN OUT` converts an existing capsule out of place
+(input never modified; the copy gets the current `replay.py`). Capsules exported before
+claim revisions were carried report `claim_revisions: not_carried`.
