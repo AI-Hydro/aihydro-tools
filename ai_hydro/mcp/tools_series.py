@@ -217,7 +217,8 @@ def compare_series(
     Reports the number of pairs, the two means over the pairs, percent bias
     (100 * (mean_b - mean_a) / mean_a), Pearson r, the sd ratio (sd_b / sd_a),
     and KGE (Gupta et al. 2009) with the sd convention named (population sd,
-    series_a is the reference). Also echoes each input's units and period as
+    series_a is the reference). With zero variance in either series (or fewer
+    than two pairs), r, sd_ratio and the KGE are None. Also echoes each input's units and period as
     recorded.
 
     No unit conversion happens unless ``convert_to`` is given. Mismatched
@@ -340,6 +341,8 @@ def _geometry_of(session_id: str, feature: str) -> tuple[dict, dict]:
                                        "source": f.source, "from": "registered_feature"}
     try:
         parsed = json.loads(feature)
+    except RecursionError:
+        raise SeriesInputError("inline GeoJSON nests too deeply to parse") from None
     except ValueError:
         parsed = None
     if isinstance(parsed, dict):

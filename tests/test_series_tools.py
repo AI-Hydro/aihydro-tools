@@ -490,3 +490,89 @@ def test_series_retained_by_fetch_streamflow_data_format_is_readable(mcp_server,
     err, out = run(mcp_server, "summarize_series", series=rid)
     d = out["data"]
     assert d["n"] == 4 and d["n_finite"] == 3 and d["units"] == "m3/s" and d["product"] == "LEGACY"
+
+
+# ----------------------------------------------- skeptic follow-ups (S1, S2, minors)
+
+def test_swapped_retained_pointer_in_a_sealed_producer_is_refused(serve, mcp_server):
+    """S1: the pointer inside the producer's record is changed to a forged file; the seal then fails."""
+    from aihydro_core.records import digest_bytes
+    from ai_hydro.session.refs import resolve_ref
+
+    body = serve(days("2020-01-01", 3), [1.0, 2.0, 3.0])
+    rid = body["_run_id"]
+    forged = store.write_session_data_file(SID, "forged.json", {"dates": days("2020-01-01", 2), "values": [1e6, 1e6]})
+    row = run_log()[rid]
+    row["record"]["extra"]["retained_files"][0] = {
+        "path": f"session-data:{forged.rsplit('/', 1)[-1]}",
+        "digest": digest_bytes(open(forged, "rb").read()), "role": "artifact"}
+    assert rr.verify_run_log_entry(row)["record_ok"] is False
+    import sqlite3
+    conn = sqlite3.connect(store._run_log_db_path(SID))
+    conn.execute("UPDATE runs SET entry_json = ? WHERE run_id = ?", (json.dumps(row), rid))
+    conn.commit()
+    conn.close()
+    err, out = run(mcp_server, "summarize_series", series=rid)
+    assert out["code"] == "RETAINED_SERIES_RECORD_INVALID" and set(out) == {"error", "code", "message"}
+
+
+def test_legacy_unsealed_producer_is_still_readable(env):
+    from ai_hydro.session.series import load_run_series
+
+    path = store.write_session_data_file(SID, "legacy.json", {"dates": days("2020-01-01", 2), "q_cms": [1.0, 2.0]})
+    s = HydroSession.load(SID)
+    # a legacy row: no record at all, so nothing to verify and no retained pointer -> aggregate-only
+    s.set("_run_log", {"old.1": {"run_id": "old.1", "tool_name": "x", "key_outputs": {"a": 1}}})
+    s.save()
+    got = load_run_series(SID, "old.1")
+    assert got.values_available is False and got.recorded_statistics == {"a": 1}
+
+
+def test_data_fetch_wrapper_signature_is_a_superset_of_aihydro_data():
+    """S2: fail loudly if aihydro-data renames _data_fetch or adds/changes a parameter."""
+    import inspect
+
+    from aihydro_data.mcp import _data_fetch
+    from ai_hydro.mcp.tools_data_fetch import data_fetch
+
+    theirs = inspect.signature(_data_fetch).parameters
+    ours = inspect.signature(data_fetch).parameters
+    missing = [n for n in theirs if n not in ours]
+    assert not missing, f"aihydro-data's data_fetch gained parameters the wrapper hides: {missing}"
+    for n, p in theirs.items():
+        assert ours[n].default == p.default, n
+        assert ours[n].annotation == p.annotation, n
+    assert set(ours) - set(theirs) == {"session_id"}
+
+
+def test_registered_data_fetch_is_the_retaining_wrapper_and_returns_run_id(serve, mcp_server):
+    import asyncio
+
+    tool = asyncio.run(mcp_server.get_tool("data_fetch"))
+    assert tool.fn.__module__ == "ai_hydro.mcp.tools_data_fetch"
+    body = serve(days("2020-01-01", 3), [1.0, 2.0, 3.0])
+    assert body["_run_id"] in run_log()
+
+
+def test_measure_feature_inline_geojson_caps_are_plain_errors(mcp_server, env):
+    deep = "[" * 100000 + "]" * 100000
+    for feature in ('{"type":"Polygon","coordinates":' + deep + "}",):
+        err, out = run(mcp_server, "measure_feature", feature=feature)
+        assert out["code"] == "INVALID_INPUT" and set(out) == {"error", "code", "message"}
+    from ai_hydro.analysis import series_ops
+
+    big = {"type": "Polygon", "coordinates": [[[0.0, 0.0]] * 10]}
+    series_ops.MAX_GEOJSON_VERTICES, old = 5, series_ops.MAX_GEOJSON_VERTICES
+    try:
+        with pytest.raises(series_ops.SeriesInputError):
+            series_ops.measure_geometry(big)
+    finally:
+        series_ops.MAX_GEOJSON_VERTICES = old
+
+
+def test_zero_variance_inputs_give_none_components(serve, mcp_server):
+    a = serve(days("2020-01-01", 5), [2.0] * 5)
+    b = serve(days("2020-01-01", 5), [1.0, 2.0, 3.0, 4.0, 5.0])
+    err, out = run(mcp_server, "compare_series", series_a=a["_run_id"], series_b=b["_run_id"])
+    d = out["data"]
+    assert d["r"] is None and d["sd_ratio"] is None and d["kge"] is None

@@ -132,6 +132,13 @@ def load_run_series(session_id: str, run_id: str, *, declare: bool = True) -> Ru
     record = row.get("record") if isinstance(row.get("record"), dict) else {}
     tool = record.get("tool") or row.get("tool_name")
 
+    if record.get("record_digest"):
+        # A sealed producer must verify before its retained-file pointer is trusted.
+        if not run_records.verify_run_log_entry(row)["record_ok"]:
+            raise SeriesLoadError(
+                "RETAINED_SERIES_RECORD_INVALID",
+                f"the sealed record of run {run_id!r} fails its integrity check; "
+                "its retained-series pointer is not trusted")
     retained = _retained_file_of(record)
     out = RunSeries(run_id=run_id, session_id=session_id, tool=tool, values_available=False)
     edge = run_records.parent_edge_for_run(session_id, run_id)

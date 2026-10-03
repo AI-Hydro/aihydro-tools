@@ -602,6 +602,35 @@ def bootstrap(series: DailySeries, *, statistic: str, method: str,
 # Geometry
 # --------------------------------------------------------------------------- #
 
+MAX_GEOJSON_VERTICES = 5_000_000
+MAX_GEOJSON_DEPTH = 12
+
+
+def _geojson_size_problem(geom: Any) -> Optional[str]:
+    """A plain description if a GeoJSON geometry is too deep or too large, else None.
+
+    Iterative (no recursion), so a hostile nesting depth cannot raise RecursionError.
+    """
+    if not isinstance(geom, dict):
+        return "geometry must be a GeoJSON object"
+    stack = [(geom.get("coordinates", geom.get("geometries")), 1)]
+    vertices = 0
+    while stack:
+        node, depth = stack.pop()
+        if depth > MAX_GEOJSON_DEPTH:
+            return f"geometry coordinates nest deeper than {MAX_GEOJSON_DEPTH} levels"
+        if isinstance(node, dict):
+            stack.append((node.get("coordinates", node.get("geometries")), depth + 1))
+        elif isinstance(node, (list, tuple)):
+            if node and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in node):
+                vertices += 1
+                if vertices > MAX_GEOJSON_VERTICES:
+                    return f"geometry has more than {MAX_GEOJSON_VERTICES} vertices"
+            else:
+                stack.extend((v, depth + 1) for v in node)
+    return None
+
+
 def measure_geometry(geometry_dict: dict) -> dict:
     """Geodesic area and perimeter (WGS84 ellipsoid) of a GeoJSON geometry.
 
@@ -611,6 +640,9 @@ def measure_geometry(geometry_dict: dict) -> dict:
     """
     from shapely.geometry import shape
 
+    err = _geojson_size_problem(geometry_dict)
+    if err:
+        raise SeriesInputError(err)
     try:
         geom = shape(geometry_dict)
     except Exception as exc:
