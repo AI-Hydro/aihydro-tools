@@ -730,8 +730,8 @@ def test_M02e_edited_row_body_with_the_seal_kept_gets_no_crate(world, tmp_path):
 
 
 def test_declaring_a_defect_unverifiable_does_not_make_it_partial_coverage(exported, tmp_path, monkeypatch):
-    """An attacker with the exporter: pretend every failing row is privacy-withheld so the crate declares it.
-    The stdlib verifier fails it (VER-UNVERIFIABLE); core still accepts declared partiality (to route to core)."""
+    """An attacker with the exporter: pretend a failing row is privacy-withheld so the bundle declares it.
+    Core (0.2.6) refuses to project such a bundle, and core verify and the stdlib mirror fail it with the same rules."""
     import ai_hydro.capsule.rocrate_export as re_
     cap = _copy(exported[0], tmp_path, "t_launder")
     for name in _NEW:
@@ -752,9 +752,17 @@ def test_declaring_a_defect_unverifiable_does_not_make_it_partial_coverage(expor
         return bundle, recs, bods, info
 
     monkeypatch.setattr(re_, "build_bundle", lying)
-    export_crate(cap, session_id=SID, live=False)
-    res = sr.verify_bundle(cap)
-    assert not res["ok"] and "VER-UNVERIFIABLE" in {r for r, _e, _m in res["failures"]}
+    with pytest.raises((CrateExportError, ValueError)):       # core's to_rocrate refuses the laundered bundle
+        export_crate(cap, session_id=SID, live=False)
+    # keep the bundle the lying exporter wrote, and compare the two verifiers on it
+    monkeypatch.setattr(re_, "clean_outputs", lambda _d: None)
+    with pytest.raises((CrateExportError, ValueError)):
+        export_crate(cap, session_id=SID, live=False)
+    assert (cap / "bundle.json").exists()
+    skipped = {"VER-CRATE-REGEN", "VER-VALIDATE", "VER-BAGIT"}     # no crate/BagIt were written
+    core_rules = _rules(verify_crate(cap)) - skipped
+    assert "VER-UNVERIFIABLE" in core_rules
+    assert core_rules == _stdlib_rules(cap) - skipped, (core_rules, _stdlib_rules(cap))
 
 
 def test_M06e_session_claim_edited_after_the_last_revision_is_flagged(exported, tmp_path):
