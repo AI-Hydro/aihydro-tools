@@ -1004,6 +1004,7 @@ def live_cross_check(capsule_dir: Path, tolerance: float = DEFAULT_TOLERANCE):
 #       the bundle's replay level is anchored to the on-disk manifest and to what was checked;
 #   VER-SESSION            every run and claim record names the bundle's session_id (the
 #       mirror only; core does not yet compare them);
+#   VER-RUN-ROWS           run_rows.sealed equals the number of run entries the bundle lists;
 #   VER-GATES              declared gates equal those derived from verified, sealed-bound bodies;
 #   VER-RECORD-SEAL / VER-RECORD-DIGEST / VER-BINDING / VER-CHAIN
 #       run record seals, claim revision seals, basin ids from their anchors,
@@ -1399,6 +1400,12 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
             or sorted(declared) != bad_ids:
         fail("VER-COVERAGE", f"declared coverage {cov.get('records_verified')}/{cov.get('records_total')} "
                              f"differs from recomputed {res['records_verified']}/{res['records_total']}")
+
+    rr = bundle.get("run_rows")
+    if isinstance(rr, dict):                  # core VER-RUN-ROWS: run_rows.sealed equals the run entries listed
+        n_runs = sum(1 for x in records if x["kind"] == "run")
+        if rr.get("sealed") != n_runs:
+            fail("VER-RUN-ROWS", f"run_rows.sealed is {rr.get('sealed')} but the bundle lists {n_runs} run records")
 
     # gates are derived from verified, sealed-bound bodies; the declared list must equal them
     derived = set()

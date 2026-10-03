@@ -241,10 +241,19 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
 
     sealed_n = sum(1 for e in entries if e["kind"] != "claim_view")
     cov = dict(coverage) if coverage is not None else make_coverage(sealed_n, sealed_n, [])
-    unknown: dict = {"run_rows": dict(rows_seen)}      # rows with no sealed record are not "records": say so
+    unknown: dict = {}
     if claim_heads is not None or info["claim_heads"]:
         unknown["claim_heads"] = dict(sorted((claim_heads or info["claim_heads"]).items()))
+    # rows with no sealed record are not "records": say so. A known Bundle field since core's VER-RUN-ROWS
+    # (invariant run_log_rows == sealed + legacy_no_record + withheld_for_privacy); an unknown envelope
+    # field on older core.
+    rr = {k: rows_seen[k] for k in ("run_log_rows", "sealed", "legacy_no_record", "unbound", "unsealable",
+                                    "withheld_for_privacy")}
     kwargs: dict = {"unknown": unknown}
+    if "run_rows" in Bundle.__dataclass_fields__:
+        kwargs["run_rows"] = rr
+    else:
+        unknown["run_rows"] = rr
     info["run_rows"] = rows_seen
     bundle = Bundle(session_id=session_id, objects=objects, records=entries, created_at=created_at,
                     exporter=dict(exporter), replay=dict(replay), coverage=cov,
