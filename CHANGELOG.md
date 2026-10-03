@@ -8,6 +8,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-10-03
+
+The fault-matrix-2 follow-ups. It requires aihydro-core 0.2.6 or later.
+
+- A crate marker in the manifest: deleting the crate files now fails replay.
+- Per-row session ids are checked in replay.
+- Only proven privacy stubs count as partial coverage.
+- The session claim is compared with its sealed head revision.
+
 ### Added
 - `extract_hydrological_signatures(precipitation="auto"|"skip")`. `"skip"` makes
   no precipitation request (offline / network-guarded runs: some backends read
