@@ -1002,6 +1002,8 @@ def live_cross_check(capsule_dir: Path, tolerance: float = DEFAULT_TOLERANCE):
 #       manifest itself and replay.py; VER-UNLISTED-FILE any other file or a symlink;
 #   VER-ASSESSOR / VER-REPLAY-MANIFEST  the verifier the bundle names is a capsule file and
 #       the bundle's replay level is anchored to the on-disk manifest and to what was checked;
+#   VER-SESSION            every run and claim record names the bundle's session_id (the
+#       mirror only; core does not yet compare them);
 #   VER-GATES              declared gates equal those derived from verified, sealed-bound bodies;
 #   VER-RECORD-SEAL / VER-RECORD-DIGEST / VER-BINDING / VER-CHAIN
 #       run record seals, claim revision seals, basin ids from their anchors,
@@ -1028,7 +1030,7 @@ _ANCHOR_KINDS = ("gauge_index", "network_element", "grid_cell")
 _BASIN_ANCHOR_SCHEMA = "aihydro.basin_anchor/1"
 _BASIN_ID_PREFIX = "aihydro:basin:"
 _GATE_CODES = ("APPROVAL_REQUIRED",)
-_LEVELS = ("not_performed", "archive_integrity", "cross_check", "recomputed", "independently_replicated")
+_LEVELS = ("not_performed", "archive_integrity", "cross_check", "recomputed", "independently_reproduced")
 
 
 def entry_digest(obj) -> str:
@@ -1107,6 +1109,17 @@ def find_symlinks(capsule_dir: Path) -> list:
     return sorted(found)
 
 
+def find_irregular(capsule_dir: Path) -> list:
+    """Entries that are neither a regular file, a directory nor a symlink (FIFO, socket, device)."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(capsule_dir, followlinks=False):
+        for name in filenames:
+            full = Path(dirpath) / name
+            if not full.is_symlink() and not full.is_file():
+                found.append(full.relative_to(capsule_dir).as_posix())
+    return sorted(found)
+
+
 def _basin_ref_ok(rec, eid) -> bool:
     try:
         anchor = rec["anchor"]
@@ -1174,6 +1187,8 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
 
     for link in find_symlinks(capsule_dir):
         fail("VER-UNLISTED-FILE", "symlinks are never part of a capsule", link)
+    for odd in find_irregular(capsule_dir):
+        fail("VER-UNLISTED-FILE", "non-regular entries (FIFO, socket, device) are never part of a capsule", odd)
     files = scan_files(capsule_dir)
     by_ref = {o["ref"]: o for o in objects}
     for path in sorted(set(files) - set(by_ref) - {_BUNDLE_FILE}):
@@ -1207,9 +1222,14 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
         fail("VER-OBJECTS-MANIFEST", f"{MANIFEST_FILE} is missing")
     rp = bundle.get("replay") if isinstance(bundle.get("replay"), dict) else {}
     assessor = rp.get("assessor") if isinstance(rp.get("assessor"), dict) else None
-    sha = assessor.get("sha256") if assessor else None
-    if sha and not any(f["sha256"] == sha for f in files.values()):
-        fail("VER-ASSESSOR", "replay.assessor.sha256 matches no file in the capsule")
+    if assessor is not None:
+        named = assessor.get("url") if assessor.get("url") in files else "replay.py"
+        if not assessor.get("sha256"):
+            fail("VER-ASSESSOR", f"replay.assessor must carry the sha256 of {named}")
+        elif named not in files:
+            fail("VER-ASSESSOR", f"the verifier file {named} is not in the capsule", named)
+        elif files[named]["sha256"] != assessor["sha256"]:
+            fail("VER-ASSESSOR", f"replay.assessor.sha256 is not the digest of the file it names ({named})", named)
     try:
         rank = _LEVELS.index(rp["status"])
         if rank > _LEVELS.index(rp["checked_status"]) or rank > _LEVELS.index(rp["manifest_status"]):
@@ -1286,7 +1306,9 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
         if not okr or not isinstance(rec, dict):
             not_ok[key] = ("VER-RECORD-SEAL", f"record unresolvable: {why}")
             continue
-        if kind == "run":
+        if kind in ("run", "claim_revision") and rec.get("session_id") != bundle["session_id"]:
+            not_ok[key] = ("VER-SESSION", "record session_id differs from the bundle's session_id")
+        elif kind == "run":
             if not record_seal_ok(rec):
                 not_ok[key] = ("VER-RECORD-SEAL", "run record seal does not verify")
             elif rec.get("record_digest") != e.get("record_digest"):
@@ -1426,6 +1448,33 @@ def verify_bundle_with_core(capsule_dir: Path):
         return _Err()
 
 
+def check_manifest_run_counts(capsule_dir: Path, run_log: dict) -> str:
+    """``""`` when ``run_log.json`` agrees with the manifest's ``run_records`` counts, else why not.
+
+    A sealed row downgraded to a legacy row (its ``record`` deleted, then the body edited) still
+    passes every per-row check, because a row with no record is "legacy". The export-time counts
+    are the only thing that remembers it had one. They live in the capsule, so this catches an edit
+    of ``run_log.json`` alone, or of the manifest alone; an attacker who rewrites both consistently
+    (and the bundle that pins the manifest digest) is stopped only by an anchor outside the capsule.
+    Older capsules without ``run_records`` are not checked.
+    """
+    try:
+        manifest = json.loads((capsule_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    counts = manifest.get("run_records") if isinstance(manifest, dict) else None
+    if not isinstance(counts, dict):
+        return ""
+    rows = [e for e in run_log.values()]
+    v2 = sum(1 for e in rows if isinstance(e, dict) and isinstance(e.get("record"), dict))
+    seen = {"run_log_rows": len(rows), "v2_records": v2, "legacy_unrecorded": len(rows) - v2}
+    bad = {k: (counts.get(k), v) for k, v in seen.items() if k in counts and counts.get(k) != v}
+    if not bad:
+        return ""
+    return ", ".join(f"{k}: manifest {m} vs observed {o}" for k, (m, o) in sorted(bad.items())) + \
+        " (a sealed row may have been downgraded to legacy, or rows removed or added)"
+
+
 def verify_claims(capsule_dir: Path, heads=None, out=print):
     """Verify ``records/claim_revisions.json`` chain by chain. ``None`` when the capsule has none."""
     path = capsule_dir / "records" / "claim_revisions.json"
@@ -1498,6 +1547,10 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
         for run_id, why in summary["failures"]:
             out(f"FAIL  record {run_id}: {why}")
         records_ok = not summary["failures"]
+        why_counts = check_manifest_run_counts(capsule_dir, json.loads(rl_path.read_text(encoding="utf-8")))
+        if why_counts:
+            out(f"FAIL  run_log.json does not match the manifest's run_records counts: {why_counts}")
+            records_ok = False
         out(f"Run records: {summary['verified']} of {summary['v2_records']} v2 records verify; "
             f"{summary['unbound']} sealed but unbound to their row; "
             f"{summary['legacy']} legacy rows have no record ({summary['unsealable']} of them marked "
@@ -1529,12 +1582,26 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
         out(f"Bundle: {bundle_res['records_verified']} of {bundle_res['records_total']} sealed records verify "
             f"({'ok' if crate_ok else 'FAILED'}); crate regeneration is not checked by this stdlib mirror")
         core_res = verify_bundle_with_core(capsule_dir)
+        if core_res is None:
+            out("NOTE  stdlib mirror only: not checked here are crate regeneration and byte comparison, "
+                "core's structural/honesty validator (VER-VALIDATE), and the field validation of "
+                "bundle.json (types of optional fields, SPDX strings). Run aihydro_core.export verify for those.")
         if core_res is not None:
             for f in core_res.failures:
                 out(f"FAIL  {f.rule}{' ' + f.entity if getattr(f, 'entity', None) else ''}: {f.message}")
             crate_ok = crate_ok and core_res.ok
             out("Crate regenerated by aihydro_core and byte-compared: "
                 + ("ok" if core_res.ok else "FAILED"))
+            try:
+                import aihydro_core
+                made = (json.loads((capsule_dir / "bundle.json").read_text(encoding="utf-8")).get("exporter") or {}
+                        ).get("projection")
+                if made:
+                    out(f"NOTE  crate projected by {made}; regenerated here with aihydro-core "
+                        f"{getattr(aihydro_core, '__version__', '?')}"
+                        + ("" if core_res.ok else " (a version difference can explain a regeneration mismatch)"))
+            except Exception:
+                pass
     elif check_crate:
         out("Bundle: no bundle.json (this capsule predates the crate export)")
 

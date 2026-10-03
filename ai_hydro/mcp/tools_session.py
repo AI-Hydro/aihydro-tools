@@ -727,20 +727,18 @@ def export_session(
                      "compare with the registry stamp. Rows redacted for privacy keep their digests and "
                      "are neither verified nor failed."),
         }
+        _integrity_failures = _priv_counts["seal_mismatch"] + claim_counts.get("corrupt", 0)
         if claim_counts.get("corrupt"):
             # a claim whose store failed its own check cannot be exported or verified: replay fails it
             manifest["replay_status"] = "not_performed"
-            manifest["integrity_failures_at_export"] = (manifest.get("integrity_failures_at_export", 0)
-                                                        + claim_counts["corrupt"])
         if _priv_counts["seal_mismatch"]:
             # A row failed verification at export: the archive cannot be
             # integrity-checked, and replay will report a failure. The manifest
             # must never claim more than replay will find.
             manifest["replay_status"] = "not_performed"
-            manifest["integrity_failures_at_export"] = (manifest.get("integrity_failures_at_export", 0)
-                                                        - claim_counts.get("corrupt", 0)
-                                                        + _priv_counts["seal_mismatch"])
-        elif (_priv_counts["redacted"] or claim_counts.get("redacted")) and manifest["replay_status"] == "archive_integrity":
+        if _integrity_failures:
+            manifest["integrity_failures_at_export"] = _integrity_failures
+        if not _integrity_failures and (_priv_counts["redacted"] or claim_counts.get("redacted")) and manifest["replay_status"] == "archive_integrity":
             manifest["replay_status"] = "archive_integrity_partial"   # some rows are not verifiable here
         (capsule_dir / _MF).write_text(json.dumps(manifest, indent=2))
         files_written.append(str(capsule_dir / _MF))

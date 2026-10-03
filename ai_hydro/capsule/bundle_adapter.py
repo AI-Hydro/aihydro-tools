@@ -16,8 +16,12 @@ rules; each location file must be a bundle object, i.e. a manifest file):
                       ``redacted_for_privacy`` / ``seal_mismatch_at_export`` row
                       keeps its entry but its body cannot match, so it is not
                       verified.
-* ``claim_revision``  every row of ``records/claim_revisions.json`` (P5.3); a
-                      corrupt claim carries no rows and is reported in ``info``.
+* ``claim_revision``  every row of ``records/claim_revisions.json`` (P5.3). A claim
+                      whose store failed its check at export carries no rows: it is
+                      emitted as an explicit failed-store stub (id ``<claim>@failed-store``,
+                      digest of the corrupt entry, never verifiable) and gets NO working
+                      view, so the crate cannot present unsealed text as if the sealed
+                      history were fine.
 * ``claim_view``      working (unsealed) claims from ``session.json`` that have
                       no sealed chain.
 * ``basin_ref``       the BasinRef summary in a *bound* run row's
@@ -146,6 +150,8 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
     bodies: dict = {}
     redacted_ids: set = set()
     info: dict = {"claims_not_carried": {}, "redacted_ids": [], "claim_heads": {}}
+    rows_seen = {"run_log_rows": 0, "sealed": 0, "legacy_no_record": 0, "unbound": 0, "unsealable": 0,
+                 "withheld_for_privacy": 0}
 
     def add(entry: dict, rec: Any = None, body: Any = None) -> None:
         entries.append(entry)
@@ -161,13 +167,16 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
     if isinstance(run_log, dict):
         for run_id in sorted(run_log):
             row = run_log[run_id]
+            rows_seen["run_log_rows"] += 1
             if not isinstance(row, dict):
+                rows_seen["legacy_no_record"] += 1
                 continue
             rec_loc = make_location("run_log.json", [run_id, "record"])
             body_loc = make_location("run_log.json", [run_id])
             record = row.get("record") if isinstance(row.get("record"), dict) else None
             stub = bool(row.get("redacted_for_privacy")) or row.get("integrity") == "seal_mismatch_at_export"
             if stub:
+                rows_seen["withheld_for_privacy"] += 1
                 rd = (record or {}).get("record_digest") if record else row.get("record_digest")
                 rd = rd if is_digest(rd) else row.get("record_digest")
                 if not is_digest(rd):
@@ -179,8 +188,14 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
                     redacted_ids.add(run_id)
                 continue
             if record is None or not is_digest(record.get("record_digest")):
+                rows_seen["legacy_no_record"] += 1
+                if row.get("record_status") == "unsealable":
+                    rows_seen["unsealable"] += 1
                 continue                                   # legacy row: not a sealed record
             bound = isinstance((record.get("extra") or {}).get("entry_digest"), str)
+            rows_seen["sealed"] += 1
+            if not bound:
+                rows_seen["unbound"] += 1
             body = {k: v for k, v in row.items() if k != "record"}
             add(make_record_entry("run", run_id, record["record_digest"], rec_loc,
                                   body_loc if bound else None, make_binding(body) if bound else None),
@@ -198,6 +213,9 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
     for cid, item in sorted(((doc or {}).get("claims") or {}).items()) if isinstance(doc, dict) else []:
         if not isinstance(item, dict) or item.get("status") != "ok" or not isinstance(item.get("rows"), list):
             info["claims_not_carried"][cid] = (item or {}).get("error") if isinstance(item, dict) else "unreadable"
+            if isinstance(item, dict):
+                add(make_record_entry("claim_revision", f"{cid}@failed-store", digest(item),
+                                      make_location(CLAIM_REVISIONS_PATH, ["claims", cid])))
             continue
         sealed_claims.add(cid)
         rows = item["rows"]
@@ -216,16 +234,18 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
     session = _read_json(root, "session.json") if "session.json" in in_objects else None
     for cid, claim in sorted((session.get("claims") or {}).items()) if isinstance(session, dict) and isinstance(
             session.get("claims"), dict) else []:
-        if isinstance(claim, dict) and cid not in sealed_claims:
+        if isinstance(claim, dict) and cid not in sealed_claims and cid not in info["claims_not_carried"]:
             add(make_record_entry("claim_view", cid, None, None,
                                   make_location("session.json", ["claims", cid]), make_binding(claim)),
                 None, claim)
 
     sealed_n = sum(1 for e in entries if e["kind"] != "claim_view")
     cov = dict(coverage) if coverage is not None else make_coverage(sealed_n, sealed_n, [])
-    kwargs: dict = {}
+    unknown: dict = {"run_rows": dict(rows_seen)}      # rows with no sealed record are not "records": say so
     if claim_heads is not None or info["claim_heads"]:
-        kwargs["unknown"] = {"claim_heads": dict(sorted((claim_heads or info["claim_heads"]).items()))}
+        unknown["claim_heads"] = dict(sorted((claim_heads or info["claim_heads"]).items()))
+    kwargs: dict = {"unknown": unknown}
+    info["run_rows"] = rows_seen
     bundle = Bundle(session_id=session_id, objects=objects, records=entries, created_at=created_at,
                     exporter=dict(exporter), replay=dict(replay), coverage=cov,
                     gates=list(gates) if gates else None, **kwargs).seal()
