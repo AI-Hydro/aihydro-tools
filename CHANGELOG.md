@@ -22,6 +22,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 - **`data_fetch` time series now leave a sealed run record with a retained, addressable series.** Root cause, three compounding gaps: the tool took no `session_id` (passing one failed validation), so a call without chat or study context resolved no session and was never recorded (`no_session`); a call that did resolve got only a minimal row and no `_run_id` in its result; and the result kept a 5-row head only, so the series itself was retained nowhere a later tool could address. `ai_hydro/mcp/tools_data_fetch.py` registers a wrapper under the same name that calls aihydro-data's implementation unchanged, accepts `session_id`, writes the served series (read back from aihydro-data's own cache entry for the call) next to the session, binds its digest to the record (`extra.retained_files`) and returns `_run_id` plus `data.retained_series`. With `cache=False` there is no cache entry, nothing is retained and the record is aggregate-only (`data.series_retained: false`). Calls with no resolvable session are still not recorded.
 - **Every recorded tool result now carries `_run_id`.** Tools that did not go through `post_run` (`compute_flow_duration_curve`, `compute_flood_frequency`, `compute_twi`, the delineation tools, ...) were sealed by the middleware but never told the caller the id. `RunRecordMiddleware` now adds `_run_id` (the id of the row it sealed) to a successful dict result that lacks one. Mechanism, not per tool: tools that return `_run_id` already are untouched, error results and non-dict results are untouched, and `_run_id` is a transport key excluded from the output digest, so sealed records do not change. The contract "the middleware never alters the result except `_record_error`" becomes "except `_record_error` and `_run_id`" (`tests/test_run_record_middleware.py`, `tests/test_series_tools.py`).
+### Fixed
+- **Promotion policy refusals now carry their own stable code.** `promote_claim_to_registry`
+  surfaced `EVIDENCE_REQUIRED`, `LIMITATIONS_REQUIRED`, `STATUS_NOT_ELIGIBLE`,
+  `UNCERTAINTY_NOT_VERIFIED` and `MODELLED_LIMITATION_REQUIRED` (and a missing claim) as
+  `UNEXPECTED_ERROR` with a `_traceback`, because the policy raised bare `ValueError`s. They
+  now raise `PolicyRefusal` (same messages) and the envelope's `code` is the first blocking
+  violation's code, with every violation in `violations` and no traceback; a missing claim is
+  `CLAIM_NOT_FOUND`. `tests/fixtures/promotion_refusals_golden.json` pinned the old
+  `UNEXPECTED_ERROR` envelopes; that pin recorded the defect and was updated deliberately.
+  Policy refusals from the other families also gain `violations`.
+- **The uncertainty gate no longer depends on which tool sets the status.** `add_claim`
+  accepted `status="supported"` for a metric-scoped empirical claim without verified
+  uncertainty while `update_claim_status` refused it. Both (and redefinition of an existing id
+  through `add_claim`) now call one shared check and return the same `uncertainty_gate`
+  teaching error; `add_claim` cannot assert `uncertainty_verified`, so record the claim with
+  another status and call `update_claim_status(uncertainty_verified=True)`. The gate is in
+  every evaluation arm. Claims already stored as supported without verified uncertainty are
+  not rewritten: `promotion_check` flags them and promotion refuses them as before.
 
 ## [2.2.0] - 2026-10-03
 

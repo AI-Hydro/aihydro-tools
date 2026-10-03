@@ -61,7 +61,7 @@ def session():
 
 def draft(claim_id="c1", **over):
     args = dict(session_id=SID, claim_id=claim_id, statement="Synthetic NSE is 0.8",
-                claim_type="empirical_result", status="supported", confidence="medium",
+                claim_type="empirical_result", status="proposed", confidence="medium",
                 confidence_rationale="Synthetic fixture only, regression case.", basins=["synthetic"], period="2000-2001",
                 metric="nse", limitations=[LIM],
                 evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}],
@@ -87,8 +87,8 @@ def assert_promotion_refuses_with(violation, claim_id="c1"):
     resp = promote_claim_to_registry(SID, claim_id, researcher_approved=True)
     assert resp["error"] is True, resp
     assert resp["message"] == violation["message"]
-    if resp["code"] != "UNEXPECTED_ERROR":     # production's bare-ValueError refusals keep that code
-        assert resp["code"] == violation["code"]
+    assert resp["code"] == violation["code"]      # every policy refusal has its own stable code
+    assert "_traceback" not in resp
 
 
 def _drop_basin_records(claim_id="c1"):
@@ -97,14 +97,14 @@ def _drop_basin_records(claim_id="c1"):
     s.save()
 
 
-# family, expected code, draft overrides, post-draft step (None | callable), via update_claim_status?
+# family, expected code, draft overrides, post-draft step (None | callable | marker)
 CASES = [
     ("basin_identity", "BASIN_REF_REQUIRED", dict(basins=["elsewhere"], basin_refs=None), verify),
     ("basin_identity", "BASIN_REF_UNKNOWN", {}, "drop_basin_records"),
     ("evidence", "EVIDENCE_REQUIRED", dict(evidence_spans=[]), verify),
     ("limitations", "LIMITATIONS_REQUIRED", dict(limitations=[]), verify),
     ("status", "STATUS_NOT_ELIGIBLE", dict(status="proposed"), None),
-    ("uncertainty", "UNCERTAINTY_NOT_VERIFIED", {}, None),
+    ("uncertainty", "UNCERTAINTY_NOT_VERIFIED", {}, "legacy_supported"),
     ("observed_modelled", "MODELLED_LIMITATION_REQUIRED",
      dict(metric="baseflow_index", basins=["ungauged-synthetic"],
           evidence_spans=[{"source_type": "run", "source_id": "r_bfi", "metric_ref": "baseflow_index"}]), verify),
@@ -127,6 +127,14 @@ def test_family_is_advisory_in_add_claim_and_blocks_promotion(session, family, c
         _drop_basin_records()
         check = update_claim_status(SID, "c1", "supported", "medium", RAT,
                                     uncertainty_verified=True)["promotion_check"]
+    elif step == "legacy_supported":
+        # add_claim/update_claim_status can no longer produce 'supported' without verified
+        # uncertainty; a session stored before the shared gate can still hold one.
+        s = HydroSession.load(SID)
+        s.claims["c1"]["status"] = "supported"
+        s.save()
+        s = HydroSession.load(SID)
+        check = [v.to_dict() for v in promotion_violations(s, s.claims["c1"])]
     elif step is verify:
         # the later-ordered violation must still appear in add_claim's own advisory
         assert code in codes(check), check
