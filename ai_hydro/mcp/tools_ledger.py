@@ -92,19 +92,8 @@ def _revision_fields(session, claim_id: str):
         return None
 
 
-def _scrub_text(text, session):
-    from ai_hydro.session.refs import scrub_paths
-    return scrub_paths(text, getattr(session, "workspace_dir", None)) if isinstance(text, str) else text
-
-
-def _scrub_claim(claim_dict: dict, session) -> dict:
-    """The claim as stored: every string scrubbed of local paths (same narrow scrub the run log uses)."""
-    from ai_hydro.session.refs import scrub_value
-    return scrub_value(claim_dict, getattr(session, "workspace_dir", None))
-
-
 def _record_revision(session, claim_id: str, *, tool: str, reason: str, before=None,
-                     bookkeeping: bool = False, extra_cause: dict | None = None):
+                     bookkeeping: bool = False, extra_cause: dict | None = None, path_report: dict | None = None):
     """Write the sealed revision for the claim's current state (the only claim writer).
 
     Called after the in-memory claim is mutated and before ``session.save()``,
@@ -112,6 +101,15 @@ def _record_revision(session, claim_id: str, *, tool: str, reason: str, before=N
     """
     from ai_hydro.approval.records import session_claim_revision
     from ai_hydro.session import claim_revisions
+    from ai_hydro.session.claim_paths import normalise_claim, report_note
+    if not bookkeeping:
+        # normalise concrete local prefixes in the prose BEFORE projecting and sealing, in the stored claim itself,
+        # so the session store, the sealed revision and the capsule's session.json hold the same text
+        replaced, remaining = normalise_claim(session.claims[claim_id], getattr(session, "workspace_dir", None))
+        if path_report is not None:
+            path_report.update(report_note(replaced, remaining))
+        if replaced:
+            extra_cause = {**(extra_cause or {}), "path_scrub": replaced}
     after = session_claim_revision(session, claim_id)[2]
     if not bookkeeping:
         # A revision written because something moved binds the row's CURRENT
@@ -250,6 +248,12 @@ def add_claim(
     applies to a new or redefined id alike; claims already stored as supported without it
     are not rewritten (promotion_check flags them; promotion refuses them).
 
+    Local paths: concrete local prefixes in the statement, rationale and limitations (the session
+    workspace, AIHYDRO_HOME, the home directory, the system temp directory) are replaced by
+    <workspace>, <aihydro-home>, <home>, <tmp> before the claim is stored and sealed; the result lists
+    `paths_scrubbed` (fields changed) and, if a path remains that cannot be replaced exactly,
+    `paths_remaining` (that revision is withheld from exports). Identifiers are never rewritten.
+
     Returns `promotion_check`: every violation (`code`, `message`, `family`,
     `blocking`) that promote_claim_to_registry would raise on this claim as stored.
     It is advisory here; an empty list means no blocking evidence/limitation gate applies
@@ -274,9 +278,7 @@ def add_claim(
             evidence_spans=normalized_spans,
         )
 
-        claim_dict = _scrub_claim(claim.model_dump(), session)          # never store (or seal) a local path
-        statement = claim_dict["claim"]
-        limitations = claim_dict["limitations"]
+        claim_dict = claim.model_dump()
         gate = _uncertainty_gate(claim_id, claim_dict, status, False)   # add_claim cannot assert it
         if gate is not None:
             return gate
@@ -287,8 +289,10 @@ def add_claim(
         existed = claim_id in session.claims
         before = _revision_fields(session, claim_id) if existed else None
         session.claims[claim_id] = claim_dict
+        path_report: dict = {}
         rev = _record_revision(session, claim_id, tool="add_claim", before=before,
-                               reason="redefined" if existed else "created")
+                               reason="redefined" if existed else "created", path_report=path_report)
+        statement, limitations = claim_dict["claim"], claim_dict["limitations"]   # as stored (normalised)
         session.save()
         push_claim_event(
             change_type="added",
@@ -303,7 +307,7 @@ def add_claim(
             revision=rev.revision,
             revision_digest=rev.revision_digest,
         )
-        out = {"id": claim_id, "status": "recorded"}
+        out = {"id": claim_id, "status": "recorded", **path_report}
         if entries:
             out["basin_refs"] = entries
             out["auto_bound"] = auto_bound
@@ -348,14 +352,14 @@ def update_claim_status(
         before = _revision_fields(session, claim_id)
         claim_dict["status"] = status
         claim_dict["confidence"] = confidence
-        rationale = _scrub_text(rationale, session)
         claim_dict["confidence_rationale"] = rationale
         claim_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
         if uncertainty_verified:
             claim_dict["uncertainty_verified"] = True
 
+        path_report: dict = {}
         rev = _record_revision(session, claim_id, tool="update_claim_status",
-                               reason="status_update", before=before)
+                               reason="status_update", before=before, path_report=path_report)
         session.save()
         push_claim_event(
             change_type="updated",
@@ -369,7 +373,7 @@ def update_claim_status(
             revision_digest=rev.revision_digest,
         )
         # C2 advisory: what promotion would block on this claim as stored (same policy).
-        return {"id": claim_id, "status": "updated",
+        return {"id": claim_id, "status": "updated", **path_report,
                 "promotion_check": promotion_check(session, claim_dict, claim_id=claim_id)}
     except Exception as exc:
         return _tool_error_to_dict(exc)

@@ -8,6 +8,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Requires aihydro-core 0.2.7 or later.
+
+### Changed
+- `add_claim` and `update_claim_status` replace the concrete local prefixes of this machine in claim prose (statement,
+  rationale, limitations) before the revision is sealed: the session workspace, `AIHYDRO_HOME`, the home directory and
+  the system temp directory become `<workspace>`, `<aihydro-home>`, `<home>` and `<tmp>`. Nothing else is rewritten
+  (no "looks like a path" heuristic), evidence and other identifiers are never touched, and the stored claim, the sealed
+  revision and the capsule's `session.json` hold identical text. The tool result carries `paths_scrubbed` (fields
+  changed) and, when a path remains that could not be replaced exactly, `paths_remaining`: that revision is withheld from
+  exports as before. A revision written because of this carries `cause.path_scrub`.
+- `claim_revision_fields` stays a pure projection (no scrub), so claims stored before this change keep reading in sync with
+  their approvals and are normalised at their next write.
+- Replay compares `session.json` claims with the last non-withheld revision when the head is a privacy stub: a differing
+  claim text fails unless only marker-bearing tokens differ; a differing status, confidence or claim type is reported as
+  "unverifiable: head withheld" (partial coverage), not a failure.
+- The exporter and converter refuse a privacy stub (claim revision or run row) that the manifest does not list as redacted
+  at export, and any capsule that fails its own integrity checks.
+
 ## [2.3.3] - 2026-10-03
 
 The fault-matrix-2 follow-ups. It requires aihydro-core 0.2.6 or later.

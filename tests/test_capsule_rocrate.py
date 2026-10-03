@@ -1043,9 +1043,21 @@ def test_b4_a_scrubbed_session_value_is_not_a_difference(exported, tmp_path):
         (cap / n).unlink()
     _forged_stub_head(cap, edit_claim=False)
     sess = json.loads((cap / "session.json").read_text())
-    sess["claims"]["c1"]["claim"] = "result read from <abs>/data.csv"
+    head_text = json.loads((cap / "records" / "claim_revisions.json").read_text())["claims"]["c1"]["rows"][1]["content"]["text"]
+    sess["claims"]["c1"]["claim"] = head_text + " <abs>/data.csv"        # only a marker-bearing token differs
     (cap / "session.json").write_text(json.dumps(sess, indent=2))
     assert sr.check_claims_against_heads(cap, out=lambda *_a: None) == []
+
+
+def test_S9_a_marker_excuses_only_the_marker_bearing_substring(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_s9")
+    for n in _NEW:
+        (cap / n).unlink()
+    _forged_stub_head(cap, edit_claim=False)
+    sess = json.loads((cap / "session.json").read_text())
+    sess["claims"]["c1"]["claim"] = "Synthetic NSE is 0.9 (notes: <abs>/n.txt)"        # edited AND marker appended
+    (cap / "session.json").write_text(json.dumps(sess, indent=2))
+    assert sr.check_claims_against_heads(cap, out=lambda *_a: None) == [("c1", ["claim"])]
 
 
 def test_b3_all_revisions_stubbed_and_unlisted_is_refused(exported, tmp_path):
@@ -1171,52 +1183,175 @@ def test_real_export_with_a_cited_run_row_withheld_verifies_with_the_genuine_stu
     assert _replay(cap, isolated_python=True)[0] == 0 and _replay(cap)[0] == 0
 
 
-# ---------------------------------------------------------------- FP1: never seal a local path (write-time scrub)
-def _add_pathy_claim(cid="c_path", text="Baseflow index read from /Users/zz-someone/work/notes.txt is 0.58 +/- 0.01 mm/day",
-                     rationale="Synthetic fixture; see /Users/zz-someone/work/notes.txt for the CI derivation."):
+# ---------------------------------------------------------------- FP1: concrete-prefix normalisation at write time
+def _home() -> str:
+    return str(Path.home())
+
+
+def _add_pathy_claim(cid="c_path", text=None, rationale=None, limitations=None):
+    h = _home()
     return add_claim(
-        session_id=SID, claim_id=cid, statement=text, claim_type="empirical_result", status="proposed",
-        confidence="low", confidence_rationale=rationale, basins=["synthetic"], period="2000-2001", metric="nse",
-        basin_refs=[basin_ref_full("synthetic")],
-        limitations=["Synthetic regression case; data under /Users/zz-someone/work/ only."],
+        session_id=SID, claim_id=cid,
+        statement=text or f"Baseflow index from {h}/work/notes.txt is 0.58 +/- 0.01 mm/day",
+        claim_type="empirical_result", status="proposed", confidence="low",
+        confidence_rationale=rationale or f"Synthetic fixture; see {h}/work/notes.txt for the CI derivation.",
+        basins=["synthetic"], period="2000-2001", metric="nse", basin_refs=[basin_ref_full("synthetic")],
+        limitations=limitations or [f"Synthetic regression case; data under {h}/work/ only."],
         evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}])
 
 
-def test_a_claim_with_a_path_is_scrubbed_before_it_is_sealed(exported, tmp_path):
-    assert _add_pathy_claim()["status"] == "recorded"
+def test_concrete_prefixes_are_replaced_before_sealing_and_the_crate_is_written(exported, tmp_path):
+    res = _add_pathy_claim()
+    assert res["status"] == "recorded" and sorted(res["paths_scrubbed"]) == ["claim", "confidence_rationale",
+                                                                           "limitations"]
+    assert "paths_remaining" not in res
     claim = HydroSession.load(SID).claims["c_path"]
-    assert "zz-someone" not in json.dumps(claim)
-    assert "0.58 +/- 0.01 mm/day" in claim["claim"]                      # scientific strings are untouched
+    assert _home() not in json.dumps(claim)
+    assert claim["claim"] == "Baseflow index from <home>/work/notes.txt is 0.58 +/- 0.01 mm/day"
     rows = cr.history_readonly(SID)[0]["c_path"]["rows"]
-    assert len(rows) == 1 and "zz-someone" not in json.dumps(rows) and "redacted_for_privacy" not in rows[0]
+    assert len(rows) == 1 and _home() not in json.dumps(rows) and "redacted_for_privacy" not in rows[0]
+    assert rows[0]["cause"].get("path_scrub")                      # a truthful cause, never out_of_band_edit
     from aihydro_core.records import verify_claim_revision_dict
     assert verify_claim_revision_dict(rows[0])
-    update_claim_status(SID, "c_path", "proposed", "medium", "Now also see /Users/zz-someone/other/place.csv")
-    rows = cr.history_readonly(SID)[0]["c_path"]["rows"]
-    assert len(rows) == 2 and "zz-someone" not in json.dumps(rows)
+    r2 = update_claim_status(SID, "c_path", "proposed", "medium", f"Now also see {_home()}/other/place.csv")
+    assert r2["paths_scrubbed"] == ["confidence_rationale"]
     import ai_hydro.mcp.tools_session as ts
     res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "scrubbed"))
-    assert not res.get("crate_error"), res
+    assert not res.get("crate_error"), res                         # M2: the placeholders pass core's validator
     cap = Path(res["capsule_dir"])
     doc = json.loads((cap / "records" / "claim_revisions.json").read_text())
     assert not any(r.get("redacted_for_privacy") for r in doc["claims"]["c_path"]["rows"])
-    assert "zz-someone" not in "".join(p.read_text(errors="ignore") for p in cap.rglob("*") if p.is_file())
-    assert verify_crate(cap).ok and _replay(cap, isolated_python=True)[0] == 0 and _replay(cap)[0] == 0
-    # no drift between the stored claim and its latest revision
+    assert _home() not in "".join(p.read_text(errors="ignore") for p in cap.rglob("*") if p.is_file())
+    assert verify_crate(cap).ok and validate_errors(validate_crate(cap)) == []
+    assert _replay(cap, isolated_python=True)[0] == 0 and _replay(cap)[0] == 0
     from ai_hydro.approval.records import session_claim_revision
     s = HydroSession.load(SID)
     assert cr.revision_drift(session_claim_revision(s, "c_path")[2], cr.latest(SID, "c_path"))["state"] == "in_sync"
 
 
-def test_approval_and_promotion_round_trip_on_a_scrubbed_claim(exported):
+def test_M1_a_claim_that_starts_with_a_path_keeps_its_statement(exported):
+    t = f"{_home()}/run1/out.nc gives a Lyne-Hollick baseflow index of 0.585 with Q in m3/s and BFI 0.585 +/- 0.014"
+    _add_pathy_claim("whole2", text=t, rationale="Synthetic fixture rationale text.", limitations=["plain"])
+    stored = HydroSession.load(SID).claims["whole2"]["claim"]
+    assert stored == "<home>/run1/out.nc gives a Lyne-Hollick baseflow index of 0.585 with Q in m3/s and BFI 0.585 +/- 0.014"
+
+
+def test_a_path_that_is_not_a_known_prefix_is_not_rewritten_and_is_reported(exported, tmp_path):
+    res = _add_pathy_claim("c_odd", text="Derived from /Users/zz-someone/elsewhere/x.csv with NSE 0.8",
+                           rationale="Synthetic fixture rationale text.", limitations=["plain"])
+    assert res["paths_remaining"] == ["claim"] and "withheld from exports" in res["paths_remaining_note"]
+    assert "paths_scrubbed" not in res
+    assert "/Users/zz-someone/elsewhere/x.csv" in HydroSession.load(SID).claims["c_odd"]["claim"]   # as given
+    import ai_hydro.mcp.tools_session as ts
+    out = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "odd"))
+    assert not out.get("crate_error"), out                          # existing behaviour: withheld as a stub
+    rows = json.loads((Path(out["capsule_dir"]) / "records" / "claim_revisions.json").read_text())["claims"]["c_odd"]["rows"]
+    assert rows[0].get("redacted_for_privacy") is True
+
+
+def test_evidence_ids_are_never_rewritten(exported):
+    add_claim(session_id=SID, claim_id="c_ids", statement="plain", claim_type="empirical_result", status="proposed",
+              confidence="low", confidence_rationale="Synthetic fixture rationale text.", basins=["synthetic"], period="2000-2001",
+              metric="nse", basin_refs=[basin_ref_full("synthetic")], limitations=["plain"],
+              evidence_spans=[{"source_type": "run", "source_id": f"{_home()}/a/x.csv", "metric_ref": "nse"}])
+    spans = HydroSession.load(SID).claims["c_ids"]["evidence_spans"]
+    assert spans[0]["source_id"] == f"{_home()}/a/x.csv"
+
+
+SCIENTIFIC = ["HDF /var/streamflow", "zarr /root/precip", "/home/range/q", "/opt/mean", "group /private/obs",
+              "A:/B ratio", "Q in m3/s and mm/day", "kg/m2/s", "a/b", "BFI 0.585 +/- 0.014", "/group/var",
+              "/signatures/baseflow_index", "https://doi.org/10.1000/xyz", "s3://bucket/key", "USGS 01013500",
+              "C:N ratio", "2000-10-01/2009-09-30", "at:/Users/alice/x.csv", "/users/alice/x.csv", "/data/x.csv"]
+
+
+@pytest.mark.parametrize("text", SCIENTIFIC)
+def test_scientific_strings_are_unchanged(text, monkeypatch, tmp_path):
+    from ai_hydro.session.claim_paths import scrub_claim_text
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AIHYDRO_HOME", str(tmp_path / "ah"))
+    assert scrub_claim_text(text, str(tmp_path / "ws")) == text
+
+
+def test_scrub_is_a_fixpoint_and_concrete_prefixes_leave_no_local_path(monkeypatch, tmp_path):
+    import random, tempfile
+    from aihydro_core.export.rocrate import PATH_PATTERN
+    from ai_hydro.session.claim_paths import concrete_prefixes, scrub_claim_text
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AIHYDRO_HOME", str(tmp_path / "ah"))
+    ws = str(tmp_path / "ws")
+    prefixes = [p for p, _t in concrete_prefixes(ws)] + [tempfile.gettempdir()]
+    rng = random.Random(7)
+    words = ["see", "NSE", "0.58", "+/-", "m3/s", "in", "(", ")", "and", "notes.txt", ",", ";"]
+    for _ in range(400):
+        parts = []
+        for _i in range(rng.randint(1, 8)):
+            parts.append(rng.choice(prefixes) + "/" + rng.choice(["a.csv", "x/y.txt", "run1"]) if rng.random() < 0.5
+                         else rng.choice(words))
+        x = " ".join(parts)
+        y = scrub_claim_text(x, ws)
+        assert scrub_claim_text(y, ws) == y, x                     # fixpoint
+        assert PATH_PATTERN.search(y) is None, (x, y)              # only concrete prefixes: nothing left
+def test_approval_and_promotion_round_trip_on_a_normalised_claim(exported):
     from approval_helpers import approve
     from ai_hydro.mcp.tools_ledger import promote_claim_to_registry
     _add_pathy_claim("c_promo")
-    update_claim_status(SID, "c_promo", "supported", "medium", "Synthetic fixture only; notes at /Users/zz-someone/n.txt",
+    update_claim_status(SID, "c_promo", "supported", "medium", f"Synthetic fixture only; notes at {_home()}/n.txt",
                         uncertainty_verified=True)
     approve(SID, "c_promo")
     out = promote_claim_to_registry(SID, "c_promo", researcher_approved=True)
     assert not out.get("error"), out
+
+
+def _store_legacy_claim(cid="leg"):
+    """A claim written BEFORE the write-time normalisation: raw path in the stored claim and its sealed revision."""
+    from ai_hydro.approval.records import session_claim_revision
+    s = HydroSession.load(SID)
+    claim = _legacy_claim_dict(cid, f"{_home()}/old/notes.txt holds the CI, NSE 0.8")
+    s.claims[cid] = claim
+    s.save()
+    s = HydroSession.load(SID)
+    fields = session_claim_revision(s, cid)[2]
+    cr.record_change(SID, cid, fields, tool="add_claim", reason="created")
+    return s
+
+
+def _legacy_claim_dict(cid, text):
+    return {"id": cid, "claim": text, "claim_type": "empirical_result", "status": "proposed", "confidence": "low",
+            "confidence_rationale": "Synthetic regression fixture only.",
+            "scope": {"basins": ["synthetic"], "period": "2000-2001", "forcing": None, "metric": "nse",
+                      "model_versions": {}, "basin_refs": [{"id": basin_ref_full("synthetic")["id"], "label": "synthetic"}]},
+            "evidence_spans": [{"source_type": "run", "source_id": "r1", "metric_ref": "nse", "page": None,
+                                "passage_hash": None}],
+            "limitations": ["Synthetic regression case, no real research conclusion."], "contradictions": [],
+            "basin_ref_records": {basin_ref_full("synthetic")["id"]: basin_ref_full("synthetic")}}
+
+
+def test_M3_legacy_claims_stay_in_sync_and_keep_their_approval(exported):
+    """The projection is pure: a claim stored with a raw path before this change does not read as drifted."""
+    from approval_helpers import approve
+    from ai_hydro.approval.records import session_claim_revision
+    from ai_hydro.mcp.tools_ledger import promote_claim_to_registry
+    s = _store_legacy_claim()
+    assert cr.revision_drift(session_claim_revision(s, "leg")[2], cr.latest(SID, "leg"))["state"] == "in_sync"
+    approve(SID, "leg")
+    out = promote_claim_to_registry(SID, "leg", researcher_approved=True)
+    reasons = [r["cause"]["reason"] for r in cr.history_readonly(SID)[0]["leg"]["rows"]]
+    assert "out_of_band_edit" not in reasons, reasons
+    assert out.get("status") == "promoted" or out.get("code") != "APPROVAL_REQUIRED", out
+
+
+def test_M3_a_legacy_claim_is_normalised_at_its_next_write_and_exports(exported, tmp_path):
+    _store_legacy_claim()
+    r = update_claim_status(SID, "leg", "proposed", "medium", "Synthetic regression fixture only.")
+    assert r["paths_scrubbed"] == ["claim"]
+    rows = cr.history_readonly(SID)[0]["leg"]["rows"]
+    assert rows[-1]["cause"].get("path_scrub") == ["claim"] and rows[-1]["cause"]["reason"] == "status_update"
+    assert _home() not in json.dumps(rows[-1]) and "<home>/old/notes.txt" in rows[-1]["content"]["text"]
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "legacy"))
+    assert not res.get("crate_error"), res                          # head is now readable; the old revision is a stub
+    cap = Path(res["capsule_dir"])
+    assert _replay(cap, isolated_python=True)[0] == 0 and verify_crate(cap).ok
 
 
 def _legacy_stub_head(world_tmp, status="contested"):

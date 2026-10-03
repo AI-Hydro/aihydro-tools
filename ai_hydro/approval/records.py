@@ -190,13 +190,7 @@ def claim_revision_fields(claim: Any, evidence_versions: dict, evidence_seals: d
     }
     if evidence_seals:       # omitted when empty, so revisions made before it keep their digest
         fields["evidence_seals"] = dict(evidence_seals)
-    # Never seal a local path: a sealed revision cannot be rewritten, so a path in it could only ever be
-    # withheld wholesale on export (a privacy stub, whose head can then no longer be read). The narrow scrub
-    # the run-log write path uses is applied here, so revision_digest, record_digest and an approval's
-    # claim_revision_digest are all computed over path-free content. Idempotent: a claim already stored scrubbed
-    # (see tools_ledger) is unchanged. Scientific strings (+/-, /day, /group/var, URLs) are not touched.
-    from ai_hydro.session.refs import scrub_value
-    return scrub_value(fields)
+    return fields
 
 
 def claim_revision_digest(claim: Any, evidence_versions: dict, evidence_seals: dict | None = None) -> str:

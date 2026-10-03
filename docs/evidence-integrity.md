@@ -281,3 +281,16 @@ presence without a bundle is a deletion, not an old capsule. A capsule whose man
 pre-crate shape cannot be told from a genuine old one inside the capsule; only an external anchor (the registry
 stamp) can. The exporter refuses the crate (`crate_error`) when a record fails for any reason other than privacy
 withholding, when `session.json` claims differ from their sealed head revision, or when core refuses the bundle.
+
+**Local paths in claim prose.** A sealed revision cannot be rewritten, so a path inside one could only ever be withheld
+wholesale on export. `add_claim` and `update_claim_status` therefore replace, before sealing, only the *concrete* prefixes
+of this machine in the statement, rationale and limitations: the session workspace (`<workspace>`), `AIHYDRO_HOME`
+(`<aihydro-home>`), the home directory (`<home>`) and the system temp directory (`<tmp>`), in resolved and unresolved
+spelling, longest first, at a path boundary. There is no generic path heuristic (so `HDF /var/streamflow`, `/group/var`,
+`A:/B ratio`, `mm/day` are never rewritten) and identifiers (evidence source ids, basin ids, claim ids) are never touched.
+The placeholders are not local paths to the crate validator. Anything that still matches core's local-path pattern is
+sealed as given and withheld as a stub at export. The stored claim, the sealed revision and `session.json` hold identical
+text; the result reports `paths_scrubbed` / `paths_remaining`. The claim projection is pure, so claims stored earlier keep
+their approvals and are normalised at their next write (`cause.path_scrub`). For a legacy withheld head, replay compares the
+session claim with the last readable revision (see "Claim revisions, bundle and RO-Crate in the capsule").
+

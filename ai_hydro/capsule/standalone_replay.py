@@ -1747,7 +1747,17 @@ _HEAD_FIELDS = (("claim", "text"), ("claim_type", "claim_type"), ("status", "sta
 
 
 _ENUM_FIELDS = ("status", "confidence", "claim_type")
-_SCRUB_MARKERS = ("<abs>", "~/", "workspace:", "session-data:")
+_SCRUB_MARKERS = ("<abs>", "~/", "workspace:", "session-data:", "<workspace>", "<home>", "<tmp>", "<aihydro-home>")
+_MARKER_TOKEN = re.compile(r"\S*(?:" + "|".join(re.escape(m) for m in _SCRUB_MARKERS) + r")\S*")
+
+
+def _strip_markers(value):
+    """``value`` with every marker-bearing token removed and whitespace collapsed (strings, or lists of them)."""
+    if isinstance(value, str):
+        return " ".join(_MARKER_TOKEN.sub("", value).split())
+    if isinstance(value, list):
+        return [_strip_markers(v) for v in value]
+    return value
 
 
 def _scrubbed(value) -> bool:
@@ -1797,8 +1807,15 @@ def check_claims_against_heads(capsule_dir: Path, out=print) -> list:
             # unknown, so an enumerated field (status, confidence, claim_type) may legitimately have changed in
             # that very revision: unverifiable, not a failure. A string field that differs and carries no scrub
             # marker still fails (an edit of the claim text cannot hide behind a forged stub head).
-            unverifiable = [f for f in differing if f in _ENUM_FIELDS]
-            diff = [f for f in differing if f not in _ENUM_FIELDS and not _scrubbed(claim[f])]
+            # A scrub marker excuses only the marker-bearing substring: the text left after removing those tokens
+            # must still equal the last non-withheld revision's, or an edit could hide behind an appended marker.
+            # Applied to the claim text, the only prose the crate projects. The rationale and limitations are
+            # not projected, and a revision that rewrote them wholesale around a path is the honest legacy case,
+            # so a marker excuses them (still reported as unverifiable).
+            hk_of = dict(_HEAD_FIELDS)
+            unverifiable = [f for f in differing if f in _ENUM_FIELDS or (_scrubbed(claim[f]) and (
+                f != "claim" or _strip_markers(claim[f]) == _strip_markers(head[hk_of[f]])))]
+            diff = [f for f in differing if f not in unverifiable]
             out(f"NOTE  claim {cid}: head withheld; comparison limited to revision {rows[k].get('revision')}")
             if unverifiable:
                 out(f"NOTE  claim {cid}: unverifiable: head withheld, so session.json's "
