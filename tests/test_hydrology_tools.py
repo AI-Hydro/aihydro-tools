@@ -72,7 +72,7 @@ class TestFlowStatistics:
         # Validate ranges
         assert result['q_mean'] > 0
         assert result['q_std'] > 0
-        assert result['q5'] > result['q95']  # Q5 is high flow, Q95 is low flow
+        assert result['q5'] < result['q95']  # CAMELS: q5 is the 5% quantile (low flow), q95 the 95% quantile (high flow)
         assert 0 <= result['baseflow_index'] <= 1
     
     def test_compute_flow_stats_insufficient_data(self):

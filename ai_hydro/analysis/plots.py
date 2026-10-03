@@ -232,8 +232,9 @@ def plot_flow_duration_curve(
     q_cms : list[float]
         Daily discharge in m³/s.
     signatures : dict
-        Output from extract_hydrological_signatures — used to annotate q5/q95
-        and BFI.
+        Output from extract_hydrological_signatures — used to annotate BFI. The
+        Q5/Q95 marked on the curve are exceedance flows (Q5 high, Q95 low), the
+        reverse of the CAMELS ``q5``/``q95`` signature keys.
     gauge_id : str
         8-digit USGS gauge ID (used in filename).
     output_dir : str
@@ -262,13 +263,14 @@ def plot_flow_duration_curve(
     ax.semilogy(exceedance, q_sorted, color="#2980B9", linewidth=1.8)
     ax.fill_between(exceedance, q_sorted, alpha=0.12, color="#2980B9")
 
-    # Mark Q5 and Q95
+    # Mark the 5% and 95% exceedance flows. These are hydrologic exceedance flows
+    # (Q5 high, Q95 low), NOT the CAMELS signature keys q5 (low) / q95 (high).
     q5_val  = np.percentile(q_sorted, 95)   # 5% exceedance = high flow
     q95_val = np.percentile(q_sorted, 5)    # 95% exceedance = low flow
     ax.axvline(5,  color="#E74C3C", linestyle="--", linewidth=1.2,
-               label=f"Q5  = {q5_val:.2f} m³/s")
+               label=f"Q5 (exceeded 5% of days)  = {q5_val:.2f} m³/s")
     ax.axvline(95, color="#E67E22", linestyle="--", linewidth=1.2,
-               label=f"Q95 = {q95_val:.3f} m³/s")
+               label=f"Q95 (exceeded 95% of days) = {q95_val:.3f} m³/s")
 
     ax.set_xlabel("Exceedance probability (%)", fontsize=10)
     ax.set_ylabel("Discharge (m³/s)", fontsize=10)

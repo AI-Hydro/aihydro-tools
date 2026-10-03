@@ -1199,6 +1199,8 @@ def extract_hydrological_signatures(
     """
     Extract 17 CAMELS-style hydrological signatures (flow stats, BFI,
     runoff ratio, elasticity, high/low flow events, FDC slope, timing).
+    `q5` / `q95` are the 5% / 95% flow quantiles (low / high flow, CAMELS), not
+    exceedance flows; `_flow_quantile_convention` marks results that follow this.
     Requires delineate_watershed first. Defaults to CAMELS analysis period
     1989-10-01 to 2009-09-30.
 

@@ -375,8 +375,8 @@
 			"outputs": [
 				"q_mean: Mean discharge (mm/day)",
 				"q_std: Discharge standard deviation (mm/day)",
-				"q5: 5th percentile flow (mm/day)",
-				"q95: 95th percentile flow (mm/day)",
+				"q5: 5% flow quantile, low flow (mm/day; CAMELS)",
+				"q95: 95% flow quantile, high flow (mm/day; CAMELS)",
 				"q_median: Median discharge (mm/day)",
 				"baseflow_index: Baseflow index (BF/Q)",
 				"runoff_ratio: Runoff ratio (Q/P)",

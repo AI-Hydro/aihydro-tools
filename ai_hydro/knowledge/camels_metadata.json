@@ -59,16 +59,16 @@
 		"interpretation": "Timing of streamflow center of mass"
 	},
 	"Q5": {
-		"description": "5th percentile flow (high flow)",
+		"description": "5% flow quantile (low flow; CAMELS q5)",
 		"units": "mm/day",
 		"group": "hydrology",
-		"interpretation": "Exceeded 5% of time"
+		"interpretation": "Non-exceedance quantile: 5% of days are at or below this flow (exceeded 95% of time)"
 	},
 	"Q95": {
-		"description": "95th percentile flow (low flow)",
+		"description": "95% flow quantile (high flow; CAMELS q95)",
 		"units": "mm/day",
 		"group": "hydrology",
-		"interpretation": "Exceeded 95% of time"
+		"interpretation": "Non-exceedance quantile: 95% of days are at or below this flow (exceeded 5% of time)"
 	},
 	"high_q_freq": {
 		"description": "Frequency of high flow events (> 9x median)",
