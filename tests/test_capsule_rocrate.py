@@ -95,6 +95,14 @@ def _copy(capsule: Path, tmp_path: Path, name: str) -> Path:
     return dst
 
 
+def _core_has_session() -> bool:
+    import aihydro_core.export.rocrate_verify as rv
+    return "VER-SESSION" in inspect.getsource(rv)
+
+
+_CORE_HAS_SESSION = _core_has_session()
+
+
 def _rules(res) -> set:
     return {f.rule for f in res.failures}
 
@@ -258,8 +266,14 @@ def test_stdlib_mirror_fails_where_core_fails(exported, tmp_path, name, tamper, 
     # rule ids agree, except that the mirror does not regenerate the crate, and checks the claim head the
     # sealed bundle pins (core does not know that field)
     mine_rules = _stdlib_rules(cap)
-    extra = {"VER-CHAIN"} | ({"VER-SESSION", "VER-COVERAGE"} if "VER-SESSION" in mine_rules else set())
-    assert _rules(core) - {"VER-CRATE-REGEN", "VER-VALIDATE"} <= mine_rules <= _rules(core) | extra, name
+    skipped = {"VER-CRATE-REGEN", "VER-VALIDATE"}          # rules the stdlib mirror deliberately does not run
+    if _CORE_HAS_SESSION:
+        assert _rules(core) - skipped == mine_rules, name     # exact agreement
+    else:
+        # TODO(core VER-SESSION): once core compares bundle.session_id with its records, this branch goes
+        # and the exact equality above applies (test_exact_rule_equality_needs_core_ver_session flips on).
+        extra = {"VER-SESSION", "VER-COVERAGE"} if "VER-SESSION" in mine_rules else set()
+        assert _rules(core) - skipped == mine_rules - extra, name
     code, out = _replay(cap, isolated_python=True)
     assert code == 1, out
 
@@ -588,3 +602,34 @@ def test_converter_refuses_a_capsule_with_symlinks(exported, tmp_path):
     with pytest.raises(CrateExportError, match="symlinks"):
         convert_capsule(src, tmp_path / "t_link_out")
     assert not (tmp_path / "t_link_out").exists()
+
+
+@pytest.mark.skipif(not _CORE_HAS_SESSION, reason="TODO: core does not compare bundle.session_id yet (VER-SESSION)")
+def test_exact_rule_equality_needs_core_ver_session(exported, tmp_path):
+    """Marker for T3: runs (and then pins exact agreement incl. the session case) once core has VER-SESSION."""
+    cap = _copy(exported[0], tmp_path, "t_exact_session")
+    _reseal(cap, lambda b: b.update(session_id="another-session"))
+    assert _rules(verify_crate(cap)) - {"VER-CRATE-REGEN", "VER-VALIDATE"} == _stdlib_rules(cap)
+
+
+def test_replacing_a_sealed_row_with_a_forged_one_is_seen_by_the_counts(exported, tmp_path):
+    """T1: delete a sealed row and add a forged unsealed-error stand-in; row/v2/legacy counts can stay equal
+    while records_with_record_error or matches_exporting_environment change."""
+    cap = _copy(exported[0], tmp_path, "t_forged")
+    for name in _NEW:
+        (cap / name).unlink()
+    log = json.loads((cap / "run_log.json").read_text())
+    rid = next(r for r, row in sorted(log.items()) if isinstance(row.get("record"), dict)
+               and (row["record"].get("env_digest")))
+    forged = json.loads(json.dumps(log[rid]))
+    forged["record"]["env_digest"] = "sha256:" + "0" * 64          # a forged replacement of the same shape
+    log[rid] = forged
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    (cap / "replay.py").write_text(sr.source_text())
+    m = json.loads((cap / MANIFEST_FILE).read_text())
+    fresh = build_manifest(cap)
+    m["files"], m["n_files"] = fresh["files"], fresh["n_files"]
+    (cap / MANIFEST_FILE).write_text(json.dumps(m, indent=2))
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 1, out
+    assert "matches_exporting_environment: manifest" in out

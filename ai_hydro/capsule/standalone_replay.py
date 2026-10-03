@@ -1375,7 +1375,10 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
                                           "or has a gap")
         else:
             head = res["claim_heads"].get(claim_id)
-            if head is not None and items[-1][1].get("revision_digest") != head:
+            listed_n = sum(1 for x in records if x["kind"] == "claim_revision"
+                           and x["id"].rpartition("@")[0] == claim_id)
+            # the pin is compared only when every listed revision verified (else the seal failure is the finding)
+            if head is not None and len(items) == listed_n and items[-1][1].get("revision_digest") != head:
                 for k, _r in items:
                     not_ok[k] = ("VER-CHAIN", f"claim {claim_id}: head revision does not match the head the "
                                               "bundle pinned (tail cut or re-sealed)")
@@ -1453,7 +1456,9 @@ def check_manifest_run_counts(capsule_dir: Path, run_log: dict) -> str:
 
     A sealed row downgraded to a legacy row (its ``record`` deleted, then the body edited) still
     passes every per-row check, because a row with no record is "legacy". The export-time counts
-    are the only thing that remembers it had one. They live in the capsule, so this catches an edit
+    are the only thing that remembers it had one. The comparison also covers ``unsealable``,
+    ``records_with_record_error`` and ``matches_exporting_environment``, so replacing a sealed row by
+    a forged one (same row count) is seen when the replacement differs on any of them. They live in the capsule, so this catches an edit
     of ``run_log.json`` alone, or of the manifest alone; an attacker who rewrites both consistently
     (and the bundle that pins the manifest digest) is stopped only by an anchor outside the capsule.
     Older capsules without ``run_records`` are not checked.
@@ -1466,8 +1471,17 @@ def check_manifest_run_counts(capsule_dir: Path, run_log: dict) -> str:
     if not isinstance(counts, dict):
         return ""
     rows = [e for e in run_log.values()]
-    v2 = sum(1 for e in rows if isinstance(e, dict) and isinstance(e.get("record"), dict))
-    seen = {"run_log_rows": len(rows), "v2_records": v2, "legacy_unrecorded": len(rows) - v2}
+    recs = [e["record"] for e in rows if isinstance(e, dict) and isinstance(e.get("record"), dict)]
+    v2 = len(recs)
+    seen = {"run_log_rows": len(rows), "v2_records": v2, "legacy_unrecorded": len(rows) - v2,
+            "unsealable": sum(1 for e in rows if isinstance(e, dict) and not isinstance(e.get("record"), dict)
+                              and e.get("record_status") == "unsealable"),
+            "records_with_record_error": sum(1 for r in recs if r.get("record_error"))}
+    env = counts.get("environment")
+    env_digest = env.get("env_digest") if isinstance(env, dict) else None
+    if env_digest is not None and "matches_exporting_environment" in counts:
+        # a delete plus a forged replacement keeps the three row counts equal but changes these
+        seen["matches_exporting_environment"] = sum(1 for r in recs if r.get("env_digest") == env_digest)
     bad = {k: (counts.get(k), v) for k, v in seen.items() if k in counts and counts.get(k) != v}
     if not bad:
         return ""
