@@ -407,8 +407,9 @@ existing rows fail loudly.
   source is refused as `EVIDENCE_SEAL_INVALID` (drift reason
   `seal_removed_or_replaced`). A source that was unsealed at bind time stays
   unbound, so a later valid seal (lazy re-seal) is neutral. Registry entries
-  carry the same `evidence_seals`. `capsule/standalone_replay.py` does not yet
-  reproduce this field (see the slice-5 hand-off).
+  carry the same `evidence_seals`. Stdlib replay reproduces the field: per run
+  source it tries seal-bound and unbound (and v2/v3), only where variants
+  differ, so a capsule row whose seal was stripped matches no combination.
 - A stored fingerprint is always recomputed in its own version, so existing
   v2 claims, approvals and registry rows do not drift. A v2 binding to a row
   that is later sealed or marked still reads as changed (the limit of v2).
