@@ -8,6 +8,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-10-03
+
+The q5/q95 fix release (defect P2-D0).
+
+- It requires aihydro-watershed 0.1.1 or later for the corrected values.
+- Records produced at `tool_version` 2.3.0 or earlier, or without a
+  `flow_quantile_convention` key, predate the fix.
+
 ### Fixed
 
 - **`q5` / `q95` signatures follow CAMELS (defect P2-D0).** `extract_hydrological_signatures` (engine in aihydro-watershed) returned `q5` as the 95th percentile of daily flow and `q95` as the 5th, the opposite of CAMELS (Addor et al. 2017, Table 3: `q5` = 5% flow quantile, low flow; `q95` = 95% flow quantile, high flow). It was a computation error, so the value under each key changed (proof-1 gauge 01013500: before q5 6.357 / q95 0.240; CAMELS 0.241 / 6.373; after 0.2405 / 6.3566 mm/day). Results now carry `flow_quantile_convention = "camels_nonexceedance_v1"`; **a run record or session whose signature result lacks that key predates the fix and has `q5`/`q95` swapped.** The key is deliberately not underscore-prefixed, because the evidence capture drops `_` keys; it is retained in the sealed row's `evidence.data` (test: `test_marker_reaches_the_sealed_row`). Requires aihydro-watershed >= 0.1.1 (whose version also moves `env_digest`). Pre-fix = no `flow_quantile_convention` key AND watershed < 0.1.1; `tool_version` <= 2.3.0 is pre-fix, and the release carrying this fix must bump it again. Sealed run records, `session.json` and capsules are never rewritten; the claim `metric_ref` of any pre-fix `q5`/`q95` claim should be treated as referring to the opposite tail (see `docs/vision-2040/findings/defect-q5-q95.md`). Metadata (`camels_metadata.json` x2, `camels_tools.json`), the tool docstring and the FDC plot labels now state the convention; the exceedance flows of `compute_flow_duration_curve` (`Q5` high, `Q95` low) are a different documented convention and are unchanged. Tests: `tests/test_q5_q95_convention.py`; `tests/test_hydrology_tools.py` now asserts `q5 < q95`.
