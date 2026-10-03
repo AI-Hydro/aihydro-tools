@@ -399,6 +399,16 @@ existing rows fail loudly.
   sealed `entry_digest`) is refused with `EVIDENCE_SEAL_INVALID`. Promotion
   refuses it, claim bindings and snapshot drift show `unresolved:EVIDENCE_SEAL_INVALID`,
   and registry staleness lists it. Unsealed legacy rows are unchanged.
+- The seal a run row carried when the claim was bound is recorded in the sealed
+  revision as `evidence_seals` (`source_id -> record_digest`; omitted when no
+  source was sealed, so earlier revisions keep their digest). A v3 fingerprint is
+  blind to the seal, so on verify, promotion, claim binding, registry staleness
+  and snapshot drift the row must still carry exactly that record: otherwise the
+  source is refused as `EVIDENCE_SEAL_INVALID` (drift reason
+  `seal_removed_or_replaced`). A source that was unsealed at bind time stays
+  unbound, so a later valid seal (lazy re-seal) is neutral. Registry entries
+  carry the same `evidence_seals`. `capsule/standalone_replay.py` does not yet
+  reproduce this field (see the slice-5 hand-off).
 - A stored fingerprint is always recomputed in its own version, so existing
   v2 claims, approvals and registry rows do not drift. A v2 binding to a row
   that is later sealed or marked still reads as changed (the limit of v2).

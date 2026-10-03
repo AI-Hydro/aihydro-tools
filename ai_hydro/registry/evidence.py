@@ -28,16 +28,29 @@ class EvidenceError(ValueError):
         }
 
 
-def run_row_seal_problem(run_id: str, row: dict) -> str | None:
+def row_seal_digest(row: Any) -> str | None:
+    """The ``record_digest`` a run row currently carries, or None when unsealed."""
+    record = row.get("record") if isinstance(row, dict) else None
+    digest = record.get("record_digest") if isinstance(record, dict) else None
+    return digest if isinstance(digest, str) and digest else None
+
+
+def run_row_seal_problem(run_id: str, row: dict, bound_digest: str | None = None) -> str | None:
     """Why a run row's ``record`` seal must not be trusted, or None.
 
     A v3 evidence fingerprint covers the row body only, so the seal is checked
-    here, at the one point every evidence resolution goes through. A row with
+    here, at the one point every evidence resolution goes through.
+    ``bound_digest``: the seal digest recorded when the claim was bound; a v3
+    fingerprint is blind to the seal, so removing or swapping it is caught here. A row with
     no ``record`` (legacy/unsealed) is not checked. There is no exemption for
     ``redacted_for_privacy``: that flag is settable by anyone who can edit a
     session run log (stubs exist only in exported capsules, where replay has
     its own handling), so it cannot excuse a body that no longer matches.
     """
+    if bound_digest and row_seal_digest(row) != bound_digest:
+        # Sealed when the claim was bound: the same seal must still be there. A
+        # row that was unsealed at bind time (bound_digest None) may be sealed later.
+        return "seal_removed_or_replaced: the row was sealed with a different record when the claim was bound"
     record = row.get("record")
     if record is None:
         return None
@@ -57,7 +70,7 @@ def run_row_seal_problem(run_id: str, row: dict) -> str | None:
     return None
 
 
-def resolve_source(session: Any, span: dict) -> dict:
+def resolve_source(session: Any, span: dict, bound_seal: str | None = None) -> dict:
     kind, sid = span.get("source_type"), span.get("source_id", "")
     if kind == "run":
         record = (session.get("_run_log") or {}).get(sid)
@@ -65,7 +78,7 @@ def resolve_source(session: Any, span: dict) -> dict:
             raise EvidenceError("EVIDENCE_UNRESOLVED", sid, f"Run '{sid}' is not retained in this session.")
         if record.get("session_id", session.session_id) != session.session_id or record.get("run_id", sid) != sid:
             raise EvidenceError("EVIDENCE_IDENTITY_MISMATCH", sid, f"Run '{sid}' has conflicting session/run identity.")
-        problem = run_row_seal_problem(sid, record)
+        problem = run_row_seal_problem(sid, record, bound_seal)
         if problem:
             raise EvidenceError("EVIDENCE_SEAL_INVALID", sid, f"Run '{sid}' carries a record seal that does not verify: {problem}.")
         return record
@@ -213,17 +226,44 @@ def validate_span(record: dict, span: dict, *, require_uncertainty: bool) -> Non
 
 
 def verified_versions(session: Any, spans: list[dict], *, require_uncertainty: bool = False,
-                      like: dict | None = None) -> dict[str, str]:
-    versions, kinds = {}, {}
+                      like: dict | None = None, like_seals: dict | None = None) -> dict[str, str]:
+    return verified_binding(session, spans, require_uncertainty=require_uncertainty,
+                            like=like, like_seals=like_seals)[0]
+
+
+def bind_seal(row: Any, kind: str | None, sid: str, like: dict | None, like_seals: dict | None) -> str | None:
+    """The seal digest to bind for a run source, or None.
+
+    An existing binding keeps what it recorded (a source bound while unsealed
+    stays unbound, so a later seal is neutral); a source with no binding yet
+    records the seal the row carries now.
+    """
+    if kind != "run":
+        return None
+    if like_seals and like_seals.get(sid):
+        return like_seals[sid]
+    if like and sid in like:
+        return None
+    return row_seal_digest(row)
+
+
+def verified_binding(session: Any, spans: list[dict], *, require_uncertainty: bool = False,
+                     like: dict | None = None, like_seals: dict | None = None
+                     ) -> tuple[dict[str, str], dict[str, str]]:
+    """``(evidence_versions, evidence_seals)`` for validated spans."""
+    versions, kinds, seals = {}, {}, {}
     for span in spans:
         sid = span["source_id"]
         if sid in kinds and kinds[sid] != span["source_type"]:
             raise EvidenceError("EVIDENCE_IDENTITY_MISMATCH", sid, "Different evidence types share a source_id; use distinct identifiers.")
         kinds[sid] = span["source_type"]
-        record = resolve_source(session, span)
+        record = resolve_source(session, span, (like_seals or {}).get(sid))
         validate_span(record, span, require_uncertainty=require_uncertainty)
         version = evidence_fingerprint(record, span["source_type"], like=(like or {}).get(sid))
         if sid in versions and versions[sid] != version:
             raise EvidenceError("EVIDENCE_IDENTITY_MISMATCH", sid, "One source_id resolves to different retained records.")
         versions[sid] = version
-    return versions
+        bound = bind_seal(record, span["source_type"], sid, like, like_seals)
+        if bound:
+            seals[sid] = bound
+    return versions, seals

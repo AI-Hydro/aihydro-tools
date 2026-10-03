@@ -248,6 +248,7 @@ def check_evidence_staleness(
     session: Any,
     evidence_versions: dict[str, str],
     evidence_spans: list[dict],
+    evidence_seals: dict[str, str] | None = None,
 ) -> list[str]:
     """Changed, deleted, unresolvable and legacy evidence all need review.
 
@@ -261,7 +262,9 @@ def check_evidence_staleness(
         stored = evidence_versions.get(sid, "")
         try:
             # recomputed in the stored fingerprint's own version
-            current = evidence_fingerprint(resolve_source(session, span), span.get("source_type"), like=stored)
+            current = evidence_fingerprint(
+                resolve_source(session, span, (evidence_seals or {}).get(sid)),
+                span.get("source_type"), like=stored)
         except (EvidenceError, TypeError, ValueError, OSError):
             current = None
         if fingerprint_version(stored) is None or current != stored:

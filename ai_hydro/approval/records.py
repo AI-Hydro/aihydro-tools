@@ -122,7 +122,35 @@ def approvals_lock_file() -> Path:
 # Claim revision digest
 # ---------------------------------------------------------------------------
 
-def evidence_fingerprints(session: Any, spans: Iterable[Any], like: dict | None = None) -> dict:
+def evidence_binding(session: Any, spans: Iterable[Any], like: dict | None = None,
+                     like_seals: dict | None = None) -> tuple:
+    """``(evidence_versions, evidence_seals)`` for the spans' retained sources.
+
+    ``evidence_seals`` maps a run source to the ``record_digest`` its row carried
+    when the claim was bound (``like_seals`` keeps an earlier binding; a source
+    bound while unsealed stays unbound, so a later seal is revision-neutral).
+    A bound seal that was removed or swapped makes the source unresolved
+    (``EVIDENCE_SEAL_INVALID``, ``seal_removed_or_replaced``).
+    """
+    from ai_hydro.registry.evidence import EvidenceError, bind_seal, evidence_fingerprint, resolve_source
+
+    versions, seals = {}, {}
+    for span in spans:
+        span = span if isinstance(span, dict) else span.model_dump()
+        sid = span["source_id"]
+        try:
+            row = resolve_source(session, span, (like_seals or {}).get(sid))
+            versions[sid] = evidence_fingerprint(row, span.get("source_type"), like=(like or {}).get(sid))
+            bound = bind_seal(row, span.get("source_type"), sid, like, like_seals)
+            if bound:
+                seals[sid] = bound
+        except EvidenceError as exc:
+            versions[sid] = f"unresolved:{exc.code}"
+    return versions, seals
+
+
+def evidence_fingerprints(session: Any, spans: Iterable[Any], like: dict | None = None,
+                          like_seals: dict | None = None) -> dict:
     """``source_id -> sha256-v3`` of the retained record each span resolves to
     (v2 for a source whose entry in ``like`` is v2: a stored fingerprint is
     recomputed in its own version, so old bindings do not drift).
@@ -132,21 +160,10 @@ def evidence_fingerprints(session: Any, spans: Iterable[Any], like: dict | None 
     A span that cannot be resolved binds as ``unresolved:<code>``; promotion
     refuses such a claim on evidence grounds before it ever checks approval.
     """
-    from ai_hydro.registry.evidence import EvidenceError, evidence_fingerprint, resolve_source
-
-    out = {}
-    for span in spans:
-        span = span if isinstance(span, dict) else span.model_dump()
-        try:
-            out[span["source_id"]] = evidence_fingerprint(
-                resolve_source(session, span), span.get("source_type"),
-                like=(like or {}).get(span["source_id"]))
-        except EvidenceError as exc:
-            out[span["source_id"]] = f"unresolved:{exc.code}"
-    return out
+    return evidence_binding(session, spans, like, like_seals)[0]
 
 
-def claim_revision_fields(claim: Any, evidence_versions: dict) -> dict:
+def claim_revision_fields(claim: Any, evidence_versions: dict, evidence_seals: dict | None = None) -> dict:
     """The authority-bearing projection of a claim plus its bound evidence.
 
     ``claim`` is the stored session claim dict (``prereg_id`` and
@@ -157,7 +174,7 @@ def claim_revision_fields(claim: Any, evidence_versions: dict) -> dict:
 
     raw = dict(claim) if isinstance(claim, dict) else claim.model_dump()
     model = ScientificClaim(**raw)
-    return {
+    fields = {
         "schema": REVISION_SCHEMA,
         "text": model.claim,
         "claim_type": model.claim_type,
@@ -171,11 +188,27 @@ def claim_revision_fields(claim: Any, evidence_versions: dict) -> dict:
         "prereg_id": raw.get("prereg_id"),
         "uncertainty_verified": bool(raw.get("uncertainty_verified")),
     }
+    if evidence_seals:       # omitted when empty, so revisions made before it keep their digest
+        fields["evidence_seals"] = dict(evidence_seals)
+    return fields
 
 
-def claim_revision_digest(claim: Any, evidence_versions: dict) -> str:
+def claim_revision_digest(claim: Any, evidence_versions: dict, evidence_seals: dict | None = None) -> str:
     """``sha256:<hex>`` binding an approval to the claim's current revision."""
-    return digest(claim_revision_fields(claim, evidence_versions))
+    return digest(claim_revision_fields(claim, evidence_versions, evidence_seals))
+
+
+def latest_bound_state(session_id: Any, claim_id: str) -> tuple:
+    """``(evidence_versions, evidence_seals)`` of the claim's latest stored
+    revision, or ``({}, {})``. Never raises."""
+    try:
+        from ai_hydro.session import claim_revisions
+
+        last = claim_revisions.latest(session_id, claim_id) if session_id else None
+        content = (last or {}).get("content", {})
+        return dict(content.get("evidence_versions") or {}), dict(content.get("evidence_seals") or {})
+    except Exception:
+        return {}, {}
 
 
 def latest_bound_versions(session_id: Any, claim_id: str) -> dict:
@@ -198,9 +231,9 @@ def session_claim_revision(session: Any, claim_id: str) -> tuple:
     claim = session.claims[claim_id]
     from ai_hydro.session.models import ScientificClaim
     spans = ScientificClaim(**dict(claim)).evidence_spans
-    ev = evidence_fingerprints(session, spans, like=latest_bound_versions(
-        getattr(session, "session_id", None), claim_id))
-    fields = claim_revision_fields(claim, ev)
+    bound_v, bound_s = latest_bound_state(getattr(session, "session_id", None), claim_id)
+    ev, seals = evidence_binding(session, spans, bound_v, bound_s)
+    fields = claim_revision_fields(claim, ev, seals)
     return claim, ev, fields, digest(fields)
 
 
