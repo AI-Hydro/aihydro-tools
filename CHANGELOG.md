@@ -8,7 +8,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `extract_hydrological_signatures(precipitation="auto"|"skip")`. `"skip"` makes
+  no precipitation request (offline / network-guarded runs: some backends read
+  through the netCDF C library, invisible to Python-level network guards);
+  `runoff_ratio`/`stream_elas` are None and the run record declares
+  `precipitation.status = "not_attempted"`. Default unchanged; a non-default
+  value is part of the feature-cache key. Requires aihydro-watershed with the
+  `precipitation` parameter.
+
 ### Fixed
+- D4 sweep, "a validator never passes on a missing or non-physical input":
+  `check_record_length` (NaN/inf/negative/non-numeric `n_days` passed),
+  `check_temporal_alignment` (equal unparseable or inverted dates passed),
+  `check_usgs_qualification_codes` (unreadable or unknown codes were reported
+  as approved), `check_stationarity` (NaN/negative discharge gave p = nan, which
+  passed; undefined statistic now `insufficient_data`),
+  `check_uncertainty_present` (an empty `_uncertainty` block passed).
+  `check_unit_consistency` and `check_regulated_basin` were reviewed: no
+  violation.
 - D4: `check_water_balance_consistency` never passes on a missing or
   non-physical runoff ratio. `None`, non-numeric, non-finite, <= 0 or outside
   [1e-3, 3.0] (engineering bound; > 1 still warns) reports `insufficient_data`,

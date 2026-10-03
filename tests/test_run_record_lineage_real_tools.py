@@ -260,3 +260,28 @@ def test_fill_valued_precipitation_is_rejected_and_validator_does_not_pass(world
     assert wb and all(f["status"] == "insufficient_data" for f in wb), wb
     flags = json.dumps(body)
     assert "Runoff Ratio: 0.00" not in flags
+
+
+def test_precipitation_skip_makes_no_request_and_is_declared_not_attempted(world, monkeypatch):
+    server, _ = world
+
+    def forbidden(*a, **k):
+        raise AssertionError("precipitation='skip' must not fetch")
+
+    monkeypatch.setattr("aihydro_watershed.signatures.signatures._fetch_precipitation_data_bygeom", forbidden)
+    _fetch(server)
+    is_err, body = _call(server, "extract_hydrological_signatures",
+                         {"session_id": SID, "start_date": START, "end_date": END,
+                          "geometry_geojson": SQUARE, "precipitation": "skip"})
+    assert not is_err and not body.get("error"), body
+    assert body["data"]["runoff_ratio"] is None
+    child = _rows()[body["_run_id"]]["record"]
+    p = {a["role"]: a for a in child["extra"]["internal_acquisitions"]}["precipitation"]
+    assert p["status"] == "not_attempted" and p["data_digest"] is None and "skip" in p["reason"]
+    wb = [f for f in body["quality_flags"] if f.get("validator") == "water_balance_consistency"]
+    assert wb and all(f["status"] == "insufficient_data" for f in wb)
+    # a later default call is not served the skipped result from the cache
+    _, body2 = _call(server, "extract_hydrological_signatures",
+                     {"session_id": SID, "start_date": START, "end_date": END, "geometry_geojson": SQUARE,
+                      "precipitation": "bogus"})
+    assert body2.get("error") and body2["code"] == "INVALID_PARAMETER"
