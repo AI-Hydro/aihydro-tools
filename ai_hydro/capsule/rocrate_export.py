@@ -76,6 +76,26 @@ def clean_outputs(capsule_dir: Path) -> None:
             pass
 
 
+def _check_stub_revisions_listed(root: Path, manifest: dict) -> None:
+    """Every privacy-stub claim revision must be one the manifest says the exporter redacted.
+
+    A stub no export step announced (a hand-built capsule, or one rewritten after export) cannot be told from a
+    forged head by the bundle, so no crate is written for it.
+    """
+    try:
+        doc = json.loads((root / "records" / "claim_revisions.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    listed = {e.get("claim_id"): set(e.get("redacted_revisions") or [])
+              for e in ((manifest.get("claim_revisions") or {}).get("claims") or []) if isinstance(e, dict)}
+    for cid, item in sorted((doc.get("claims") or {}).items()):
+        for row in (item.get("rows") or []) if isinstance(item, dict) else []:
+            if isinstance(row, dict) and row.get("redacted_for_privacy") is True \
+                    and row.get("revision") not in listed.get(cid, set()):
+                raise CrateExportError(f"no crate is written: claim {cid} revision {row.get('revision')} is a privacy "
+                                       "stub the manifest does not list as redacted at export")
+
+
 def _check_clean(capsule_dir: Path) -> dict:
     manifest = json.loads((capsule_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
     listed = {m["path"] for m in manifest["files"]}
@@ -125,6 +145,7 @@ def _export(root: Path, session_id: str, workspace_dir, claim_entries, live: boo
     assessment = sr.assess(root, live=live, out=lambda *_a, **_k: None, check_crate=False)
     manifest_status, _complete = read_legacy_replay_status(str(manifest.get("replay_status", "not_performed")))
     checked = assessment["status"]
+    _check_stub_revisions_listed(root, manifest)
     if assessment.get("head_bad") or assessment.get("session_bad"):
         # the claim in session.json no longer matches its sealed head revision (M06e), or a sealed record names
         # another session: like a failed binding, that is a defect to refuse, not partial coverage to declare
@@ -176,7 +197,10 @@ def _export(root: Path, session_id: str, workspace_dir, claim_entries, live: boo
         raise CrateExportError("records fail verification for a reason other than privacy withholding, so no "
                                f"crate is written: {unexplained[:5]}")
     if not assessment["integrity_ok"]:
-        checked = "not_performed"
+        # a capsule that fails its own integrity checks gets no crate at all: a crate at not_performed would only
+        # dress up a defect (the specific refusals above and the manifest/replay report what failed)
+        raise CrateExportError("no crate is written: the capsule fails its own integrity checks "
+                               "(run replay.py for the failing checks)")
     # only the privacy stubs themselves are declared withheld (core derives the same set from stub shape
     # and digests and requires equality); siblings of a stub revision stay verified and are not declared
     cov = make_coverage(probe.records_verified, probe.records_total, bad,

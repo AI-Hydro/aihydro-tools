@@ -1042,6 +1042,7 @@ def live_cross_check(capsule_dir: Path, tolerance: float = DEFAULT_TOLERANCE):
 #       extra.entry_digest), and per-claim revision chains;
 #   VER-UNVERIFIABLE       a record declared unverifiable must be a privacy-withheld stub
 #       (redacted_for_privacy); any other defect (seal, foreign session, missing body) fails;
+#   VER-STUB-ANCHOR        a withheld run stub cited in a carried revision's evidence_seals carries that digest;
 #   VER-COVERAGE           the unverifiable set equals the bundle's declared one;
 #   VER-BAGIT              manifest-sha256.txt covers every file and each digest holds.
 # What it does NOT check: it does not regenerate ro-crate-metadata.json and
@@ -1517,6 +1518,28 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
                         not_ok[k] = ("VER-RECORD-SEAL", "revision withheld for privacy")
                         withheld_ok.add(k)
 
+    # a withheld run cited by a carried claim revision must carry the digest the claim was bound to
+    # (core VER-STUB-ANCHOR); uncited stubs stay anchored only outside the capsule
+    cited = {}
+    for _items in revisions.values():
+        for _k, r, is_stub in _items:
+            seals = (r.get("content") or {}).get("evidence_seals") if not is_stub and isinstance(
+                r.get("content"), dict) else None
+            if isinstance(seals, dict):
+                for rid_, d_ in seals.items():
+                    cited.setdefault(str(rid_), set()).add(d_)
+    for key in sorted(withheld_ok):
+        if key[0] != "run":
+            continue
+        entry = next(x for x in records if (x["kind"], x["id"]) == key)
+        digests = cited.get(key[1])
+        if digests and digests != {entry.get("record_digest")}:
+            msg = (f"withheld run {key[1]} carries record_digest {entry.get('record_digest')} but a claim "
+                   f"revision's evidence_seals binds it to {sorted(map(str, digests))}")
+            fail("VER-STUB-ANCHOR", msg, f"run:{key[1]}")
+            not_ok[key] = ("VER-STUB-ANCHOR", msg)
+            withheld_ok.discard(key)
+
     sealed = [e for e in records if e["kind"] not in _UNSEALED_KINDS]
     bad_ids = sorted({eid for (_k, eid) in not_ok})
     res["records_total"] = len(sealed)
@@ -1723,13 +1746,28 @@ _HEAD_FIELDS = (("claim", "text"), ("claim_type", "claim_type"), ("status", "sta
                 ("limitations", "limitations"))
 
 
+_SCRUB_MARKERS = ("<abs>", "~/", "workspace:", "session-data:")
+
+
+def _scrubbed(value) -> bool:
+    """True if ``value`` (a string, or a list of them) carries one of the privacy scrub markers."""
+    if isinstance(value, str):
+        return any(m in value for m in _SCRUB_MARKERS)
+    if isinstance(value, list):
+        return any(_scrubbed(v) for v in value)
+    return False
+
+
 def check_claims_against_heads(capsule_dir: Path, out=print) -> list:
     """session.json's claim must agree with its sealed head revision on the authority fields.
 
     Editing the claim text in the capsule and regenerating the manifest and bundle changes nothing the
     other checks compare (fault matrix M06e). The head revision is sealed in the chain; the session
-    claim is a mutable working copy. Only fields the revision projects are compared; a head carried as
-    a privacy stub, or a claim without a chain, is skipped.
+    claim is a mutable working copy. Only fields the revision projects are compared. A claim without a
+    chain is skipped. When the head is a privacy stub its content is withheld, which excuses the
+    stub's content and not the comparison: the claim is compared with the last non-stub revision, and a
+    differing field fails unless the session value carries a scrub marker (it was scrubbed because it held
+    a path, so it legitimately differs from anything sealed).
     """
     try:
         doc = json.loads((capsule_dir / "records" / "claim_revisions.json").read_text(encoding="utf-8"))
@@ -1742,15 +1780,25 @@ def check_claims_against_heads(capsule_dir: Path, out=print) -> list:
     for cid, item in sorted((doc.get("claims") or {}).items()):
         rows = item.get("rows") if isinstance(item, dict) and item.get("status") == "ok" else None
         claim = claims.get(cid)
-        if not rows or not isinstance(claim, dict) or not isinstance(rows[-1], dict) \
-                or rows[-1].get(REDACTED_KEY) or not isinstance(rows[-1].get("content"), dict):
+        if not rows or not isinstance(claim, dict):
             continue
-        head = rows[-1]["content"]
-        diff = [sk for sk, hk in _HEAD_FIELDS if sk in claim and hk in head and claim[sk] != head[hk]]
+        k = next((i for i in range(len(rows) - 1, -1, -1)
+                  if isinstance(rows[i], dict) and not rows[i].get(REDACTED_KEY)
+                  and isinstance(rows[i].get("content"), dict)), None)
+        if k is None:
+            out(f"NOTE  claim {cid}: every revision is withheld; session.json cannot be compared with the chain")
+            continue
+        head_withheld = k != len(rows) - 1
+        head = rows[k]["content"]
+        diff = [sk for sk, hk in _HEAD_FIELDS if sk in claim and hk in head and claim[sk] != head[hk]
+                and not (head_withheld and _scrubbed(claim[sk]))]
+        if head_withheld:
+            out(f"NOTE  claim {cid}: head withheld; comparison limited to revision {rows[k].get('revision')}")
         if diff:
             bad.append((cid, diff))
-            out(f"FAIL  claim {cid}: session.json differs from the sealed head revision "
-                f"{rows[-1].get('revision')} in {', '.join(diff)} (edited after the last revision?)")
+            out(f"FAIL  claim {cid}: session.json differs from the sealed "
+                f"{'last non-withheld' if head_withheld else 'head'} revision "
+                f"{rows[k].get('revision')} in {', '.join(diff)} (edited after the last revision?)")
     return bad
 
 

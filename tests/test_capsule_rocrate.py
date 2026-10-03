@@ -103,6 +103,20 @@ def _core_has_session() -> bool:
 _CORE_HAS_SESSION = _core_has_session()
 
 
+def _force_integrity(monkeypatch):
+    """An attacker with the exporter: make the exporter's own assessment pass, so the bundle is written and the
+    verifiers (core, mirror) are what must refuse it."""
+    import ai_hydro.capsule.rocrate_export as re_
+    real = re_.sr.assess
+
+    def liar(*a, **k):
+        out = real(*a, **k)
+        return {**out, "integrity_ok": True, "head_bad": [], "session_bad": []}
+
+    monkeypatch.setattr(re_.sr, "assess", liar)
+    monkeypatch.setattr(re_, "clean_outputs", lambda _d: None)
+
+
 def _rules(res) -> set:
     return {f.rule for f in res.failures}
 
@@ -752,10 +766,10 @@ def test_declaring_a_defect_unverifiable_does_not_make_it_partial_coverage(expor
         return bundle, recs, bods, info
 
     monkeypatch.setattr(re_, "build_bundle", lying)
+    _force_integrity(monkeypatch)
     with pytest.raises((CrateExportError, ValueError)):       # core's to_rocrate refuses the laundered bundle
         export_crate(cap, session_id=SID, live=False)
     # keep the bundle the lying exporter wrote, and compare the two verifiers on it
-    monkeypatch.setattr(re_, "clean_outputs", lambda _d: None)
     with pytest.raises((CrateExportError, ValueError)):
         export_crate(cap, session_id=SID, live=False)
     assert (cap / "bundle.json").exists()
@@ -832,6 +846,15 @@ def _refresh_manifest(cap: Path, counts: bool = True):
                                                  **{k: v for k, v in build_manifest(cap).items() if k in keys}}, indent=2))
 
 
+def _list_redacted(cap: Path, cid: str, revisions):
+    """Record in the manifest that the exporter redacted these revisions (what export_session writes)."""
+    m = json.loads((cap / MANIFEST_FILE).read_text())
+    for e in m["claim_revisions"]["claims"]:
+        if e["claim_id"] == cid:
+            e["redacted_revisions"] = list(revisions)
+    (cap / MANIFEST_FILE).write_text(json.dumps(m, indent=2))
+
+
 def _first_bound_row(log):
     return next(r for r, row in sorted(log.items()) if isinstance(row.get("record"), dict) and
                 row["record"].get("extra", {}).get("entry_digest"))
@@ -893,7 +916,7 @@ def test_a_privacy_flag_alone_does_not_launder_a_defect(exported, tmp_path, monk
         (cap / n).unlink()
     tamper(cap)
     _refresh_manifest(cap)
-    monkeypatch.setattr(re_, "clean_outputs", lambda _d: None)       # keep the bundle the exporter wrote
+    _force_integrity(monkeypatch)                                    # reach the verifiers, keep the bundle
     with pytest.raises((CrateExportError, ValueError)):                # no crate may be written for a laundered defect
         export_crate(cap, session_id=SID, live=False)
     assert not (cap / "ro-crate-metadata.json").exists()
@@ -920,20 +943,21 @@ def test_a4_a_bare_stub_with_an_invented_digest_is_caught_only_by_the_export_cou
 
 
 def test_a_stub_excuses_only_itself_and_siblings_stay_verified(exported, tmp_path):
-    """Claim revision 1 withheld; revision 0 must remain verified, and only the stub is declared unverifiable."""
+    """Claim revision 0 withheld; revision 1 (the head) must remain verified, and only the stub is declared unverifiable."""
     cap = _copy(exported[0], tmp_path, "t_sibling")
     for n in _NEW:
         (cap / n).unlink()
     p = cap / "records" / "claim_revisions.json"
     doc = json.loads(p.read_text()); rows = doc["claims"]["c1"]["rows"]
-    r = rows[1]
-    rows[1] = {"redacted_for_privacy": True, "session_id": r["session_id"], "claim_id": "c1", "revision": r["revision"],
-               "supersedes": r["supersedes"], "revision_digest": r["revision_digest"],
+    r = rows[0]
+    rows[0] = {"redacted_for_privacy": True, "session_id": r["session_id"], "claim_id": "c1", "revision": r["revision"],
+               "revision_digest": r["revision_digest"],
                "record_digest": r["record_digest"], "recorded_at": r["recorded_at"]}
     p.write_text(json.dumps(doc, indent=2, sort_keys=True))
     _refresh_manifest(cap)
+    _list_redacted(cap, "c1", [0])
     out = export_crate(cap, session_id=SID, live=False)
-    assert out["coverage"]["unverifiable_ids"] == ["c1@1"] and out["coverage"]["withheld_ids"] == ["c1@1"]
+    assert out["coverage"]["unverifiable_ids"] == ["c1@0"] and out["coverage"]["withheld_ids"] == ["c1@0"]
     assert verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
 
 
@@ -967,3 +991,168 @@ def test_real_redacted_export_with_a_run_row_and_a_claim_revision_both_withheld(
                              "--requirement-severity", "REQUIRED", "--no-paging", str(cap)],
                             capture_output=True, text=True, timeout=600)
         assert pr.returncode == 0, pr.stdout[-1500:]
+
+
+# ---------------------------------------------------------------- B4 / b3 / b6 and VER-STUB-ANCHOR
+def _forged_stub_head(cap: Path, *, edit_claim: bool = True):
+    """b4: edit the session claim, append a shape-valid stub revision on top of the real head."""
+    p = cap / "records" / "claim_revisions.json"
+    doc = json.loads(p.read_text()); rows = doc["claims"]["c1"]["rows"]; head = rows[-1]
+    rows.append({"redacted_for_privacy": True, "session_id": head["session_id"], "claim_id": "c1",
+                 "revision": head["revision"] + 1, "supersedes": head["revision_digest"],
+                 "revision_digest": "sha256:" + "cd" * 32, "record_digest": "sha256:" + "ef" * 32,
+                 "recorded_at": "2026-10-03T00:00:00Z"})
+    p.write_text(json.dumps(doc, indent=2, sort_keys=True))
+    if edit_claim:
+        sess = json.loads((cap / "session.json").read_text())
+        sess["claims"]["c1"]["claim"] += " (much stronger)"
+        (cap / "session.json").write_text(json.dumps(sess, indent=2))
+    _refresh_manifest(cap)
+
+
+def test_b4_a_stub_head_does_not_excuse_the_comparison(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_b4")
+    for n in _NEW:
+        (cap / n).unlink()
+    _forged_stub_head(cap)
+    lines = []
+    bad = sr.check_claims_against_heads(cap, out=lines.append)
+    assert bad == [("c1", ["claim"])]
+    text = "\n".join(lines)
+    assert "head withheld; comparison limited to revision 1" in text and "FAIL  claim c1" in text
+    # the exporter refuses a stub the manifest does not list as redacted at export
+    with pytest.raises(CrateExportError, match="not list as redacted"):
+        export_crate(cap, session_id=SID, live=False)
+    # even if the attacker also lists it in the manifest, the claim edit is still refused
+    _list_redacted(cap, "c1", [2])
+    with pytest.raises(CrateExportError, match="claims differing from their sealed head"):
+        export_crate(cap, session_id=SID, live=False)
+
+
+def test_b4_a_scrubbed_session_value_is_not_a_difference(exported, tmp_path):
+    """A legitimately withheld head: the session value was scrubbed (carries a marker), so it may differ."""
+    cap = _copy(exported[0], tmp_path, "t_b4_scrub")
+    for n in _NEW:
+        (cap / n).unlink()
+    _forged_stub_head(cap, edit_claim=False)
+    sess = json.loads((cap / "session.json").read_text())
+    sess["claims"]["c1"]["claim"] = "result read from <abs>/data.csv"
+    (cap / "session.json").write_text(json.dumps(sess, indent=2))
+    assert sr.check_claims_against_heads(cap, out=lambda *_a: None) == []
+
+
+def test_b3_all_revisions_stubbed_and_unlisted_is_refused(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_b3")
+    for n in _NEW:
+        (cap / n).unlink()
+    p = cap / "records" / "claim_revisions.json"
+    doc = json.loads(p.read_text())
+    doc["claims"]["c1"]["rows"] = [
+        {"redacted_for_privacy": True, "session_id": r["session_id"], "claim_id": "c1", "revision": r["revision"],
+         **({"supersedes": r["supersedes"]} if r.get("supersedes") else {}),
+         "revision_digest": r["revision_digest"], "record_digest": r["record_digest"],
+         "recorded_at": r["recorded_at"]} for r in doc["claims"]["c1"]["rows"]]
+    p.write_text(json.dumps(doc, indent=2, sort_keys=True))
+    _refresh_manifest(cap)
+    with pytest.raises(CrateExportError, match="not list as redacted"):
+        export_crate(cap, session_id=SID, live=False)
+
+
+def test_b6_an_a4_shaped_capsule_gets_no_crate_at_not_performed(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_b6")
+    for n in _NEW:
+        (cap / n).unlink()
+    _a4(cap)
+    _refresh_manifest(cap, counts=False)          # hashes repaired, export-time counts not
+    with pytest.raises(CrateExportError, match="fails its own integrity checks"):
+        export_crate(cap, session_id=SID, live=False)
+    assert not any((cap / n).exists() for n in _NEW)
+
+
+def _rechain_with_seals(cap: Path, run_id: str, record_digest: str):
+    """Replace claim c1's chain by one whose revisions bind ``run_id`` to ``record_digest`` in evidence_seals."""
+    from aihydro_core.records import ClaimRevision, digest
+    p = cap / "records" / "claim_revisions.json"
+    doc = json.loads(p.read_text()); old = doc["claims"]["c1"]["rows"]
+    rows, prev = [], None
+    for r in old:
+        content = {**r["content"], "evidence_seals": {run_id: record_digest}}
+        rev = ClaimRevision(session_id=r["session_id"], claim_id="c1", revision=r["revision"],
+                            supersedes=prev, revision_digest=digest(content), content=content,
+                            cause=r["cause"], actor=r["actor"], recorded_at=r["recorded_at"]).seal()
+        rows.append(rev.to_dict()); prev = rev.revision_digest
+    doc["claims"]["c1"]["rows"] = rows
+    p.write_text(json.dumps(doc, indent=2, sort_keys=True))
+
+
+def test_a4_on_a_cited_row_fails_stub_anchor_with_core_parity(exported, tmp_path, monkeypatch):
+    cap = _copy(exported[0], tmp_path, "t_anchor")
+    for n in _NEW:
+        (cap / n).unlink()
+    log = json.loads((cap / "run_log.json").read_text()); rid = _first_bound_row(log)
+    real_digest = log[rid]["record"]["record_digest"]
+    _rechain_with_seals(cap, rid, real_digest)
+    _a4(cap)                                       # bare stub, invented digest, on a row the claim cites
+    _refresh_manifest(cap)
+    _force_integrity(monkeypatch)
+    with pytest.raises((CrateExportError, ValueError)):
+        export_crate(cap, session_id=SID, live=False)
+    skipped = {"VER-CRATE-REGEN", "VER-VALIDATE", "VER-BAGIT"}
+    core_rules = _rules(verify_crate(cap)) - skipped
+    assert "VER-STUB-ANCHOR" in core_rules and core_rules == _stdlib_rules(cap) - skipped
+
+
+def test_the_genuine_stub_of_a_cited_row_verifies_and_an_uncited_a4_is_the_documented_limit(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_anchor_ok")
+    for n in _NEW:
+        (cap / n).unlink()
+    log = json.loads((cap / "run_log.json").read_text()); rid = _first_bound_row(log)
+    _rechain_with_seals(cap, rid, log[rid]["record"]["record_digest"])
+    log[rid] = _stub_of(log[rid])                  # a genuine stub: the real digest, the real record
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    _refresh_manifest(cap)
+    _list_redacted(cap, "c1", [])
+    out = export_crate(cap, session_id=SID, live=False)
+    assert rid in out["coverage"]["withheld_ids"] and verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
+    # limit: the same invented-digest stub on a row NO revision cites passes every verifier (documented)
+    cap2 = _copy(exported[0], tmp_path, "t_uncited")
+    for n in _NEW:
+        (cap2 / n).unlink()
+    _a4(cap2)
+    _refresh_manifest(cap2)                        # the attacker repairs every export-time count too
+    export_crate(cap2, session_id=SID, live=False)
+    assert verify_crate(cap2).ok and sr.verify_bundle(cap2)["ok"]
+
+
+def test_real_export_with_a_cited_run_row_withheld_verifies_with_the_genuine_stub(world, tmp_path):
+    """The claim cites a sealed, path-bearing run row; export withholds it as a stub; the claim's evidence_seals
+    names the same record digest, so VER-STUB-ANCHOR holds (core verify, validator, stdlib replay all pass)."""
+    from ai_hydro.session import run_records as rr
+    server, _tp = world
+    _call(server, "extract_hydrological_signatures", {"session_id": SID})
+    body = {**_run_record(SID), "run_id": "cited_1",
+            "timestamp": "2026-01-01T00:00:00+00:00"}
+    body["key_outputs"] = {"nse": 0.8, "source_file": "/Users/zz-someone/secret.csv"}
+    rec = rr.build_run_record(run_id="cited_1", tool="fixture", session_id=SID, entry=body)
+    conn = store._run_log_connect(SID)
+    conn.execute("INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?,?,?)",
+                 ("cited_1", body["timestamp"], json.dumps({**body, "record": rec.to_dict()})))
+    conn.commit()
+    conn.close()
+    s = HydroSession.load(SID)
+    assert add_claim(
+        session_id=SID, claim_id="c2", statement="Synthetic NSE is 0.8", claim_type="empirical_result",
+        status="proposed", confidence="low", confidence_rationale="Synthetic regression fixture only.",
+        basins=["synthetic"], period="2000-2001", metric="nse", basin_refs=[basin_ref_full("synthetic")],
+        limitations=["Synthetic regression case, no real research conclusion."],
+        evidence_spans=[{"source_type": "run", "source_id": "cited_1", "metric_ref": "nse"}])["status"] == "recorded"
+    rows = cr.history_readonly(SID)[0]["c2"]["rows"]
+    assert (rows[-1]["content"].get("evidence_seals") or {}).get("cited_1") == rec.record_digest
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "cited"))
+    assert not res.get("crate_error"), res
+    cap = Path(res["capsule_dir"])
+    cov = json.loads((cap / "bundle.json").read_text())["coverage"]
+    assert "cited_1" in cov["withheld_ids"] and verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
+    assert validate_errors(validate_crate(cap)) == []
+    assert _replay(cap, isolated_python=True)[0] == 0 and _replay(cap)[0] == 0
