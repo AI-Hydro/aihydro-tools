@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from aihydro_core.export.rocrate import PATH_PATTERN
 from aihydro_core.records import ClaimRevision, digest, verify_chain, verify_claim_revision_dict
 
 from ai_hydro.capsule import claim_chain_verify as ccv
@@ -28,7 +29,7 @@ from approval_helpers import basin_ref_full
 from test_approval import _run_record
 
 VECTORS = Path(__file__).parent / "data" / "claim_chain_vectors.json"
-_ABS = re.compile(r"(?<![\w.])/(?:Users|home|private|var|tmp|opt|root|mnt|Volumes|srv)/[^\s\"']+")
+_ABS = PATH_PATTERN       # core's shared local-path leak pattern
 
 
 @pytest.fixture(autouse=True)
@@ -245,7 +246,7 @@ def test_output_is_path_free(session, tmp_path):
     cap = tmp_path / "cap"
     entries, _ = collect_claim_revisions("rev", cap, tmp_path)
     blob = (cap / "records/claim_revisions.json").read_text(encoding="utf-8") + json.dumps(entries)
-    assert not _ABS.findall(blob), _ABS.findall(blob)
+    assert not _ABS.search(blob), _ABS.search(blob)
     assert str(tmp_path) not in blob
 
 

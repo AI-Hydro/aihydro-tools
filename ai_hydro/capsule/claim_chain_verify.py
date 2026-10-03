@@ -244,6 +244,7 @@ def verify_exported(doc, expected_heads=None):
 
     ``expected_heads`` maps ``claim_id -> revision_digest`` pinned outside the
     chain; a tail that was cut or re-sealed then fails instead of verifying.
+    Every row's ``session_id`` must equal the document's.
     """
     out = {}
     claims = doc.get("claims") if isinstance(doc, dict) else None
@@ -261,6 +262,12 @@ def verify_exported(doc, expected_heads=None):
             out[cid] = {"status": "failed", "revisions": 0, "detail": "no rows"}
             continue
         stubs = [r for r in rows if isinstance(r, dict) and r.get(REDACTED_KEY)]
+        foreign = [r.get("revision") for r in rows
+                   if not isinstance(r, dict) or r.get("session_id") != doc.get("session_id")]
+        if foreign:
+            out[cid] = {"status": "failed", "revisions": len(rows),
+                        "detail": "row session_id differs from the document's (revision(s) %s)" % foreign}
+            continue
         if not stubs:
             ok = verify_chain(rows)
             detail = "chain verifies" if ok else "seal, link or ordering check failed"
