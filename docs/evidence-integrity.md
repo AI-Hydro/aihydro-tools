@@ -1,666 +1,283 @@
-# Registry evidence integrity
-
-Implemented locally on 2026-09-07. This is a retained-record integrity gate,
-not a scientific certification system.
-
-`promote_claim_to_registry` requires a human approval record for the claim's
-current revision (see [Human approval](#human-approval-adr-002a)), eligible
-claim status and limitations. It resolves every evidence span before writing to
-the registry. Failure returns a structured `EVIDENCE_*`
-error with the source ID and recovery instructions; it leaves the session
-claim available and writes no promoted entry.
-
-| Evidence | Required retained source |
-|---|---|
-| Run | Exact ID in the session's SQLite run log; any embedded run/session identity must agree. Historical runs never fall back to a current product slot. |
-| Dataset | Exact product name resolving to a retained session result. Manifest hashes, DOI strings and similar product names alone are insufficient. |
-| Paper | Intact indexed passage identified by passage hash, or indexed document name plus passage hash. The current index cannot verify page numbers. This verifies retained passage content, not entailment or the original document bytes. |
-
-A `metric_ref` must resolve to a finite numeric scalar. `nse`,
-`key_outputs.nse` and `data.nse` address the original metric; nested dictionary
-paths are supported. Array indexing and synthesized array-length summaries in
-new run records are not metric evidence. A declared scope metric must have a
-matching explicit metric reference. This is a name match, not validation of
-the metric's scientific definition or convention.
-
-Metric-scoped empirical and negative-result claims require both the existing
-`uncertainty_verified` acknowledgement and a persisted uncertainty record for
-each referenced metric. The currently supported structure is:
-
-```json
-{
-  "value": 0.8,
-  "ci_low": 0.7,
-  "ci_high": 0.9,
-  "ci_level": 0.95,
-  "n": 30,
-  "method": "bootstrap_block"
-}
-```
-
-These are illustrative numbers. The fields follow the core bootstrap output;
-`n` retains the producer's semantics. Values must be finite, bounds ordered,
-confidence level strictly between zero and one, and `n` an integer at least
-two. The method must be declared and cannot be `none`, `unknown` or
-`unavailable`. The uncertainty's point estimate must match the referenced
-metric within numerical tolerance. The interval need not contain that point
-estimate. Recorded failed/error/invalid checks or result states block
-promotion. An empty check list is not proof that required validations passed.
-
-The session Store Protocol writer, enforcement writer and legacy helper retain
-an additive `evidence` object with schema version 1: original scalar/dictionary
-outputs, uncertainty and quality flags. Arrays are omitted rather than replaced
-with lengths; nonfinite scalar outputs become null in this compact object.
-Existing `key_outputs` remain available for display and older consumers.
-Historical records without this object remain readable; promotion only succeeds
-if their original stored outputs contain the required evidence. Current slots
-cannot supply uncertainty missing from a historical run. Other uncertainty
-formats need an explicit producer adapter; they are not guessed into this one.
-
-New registry entries carry `evidence_schema_version: 2` and full
-content fingerprints (`sha256-v3:` for new bindings, see below; entries bound
-with `sha256-v2:` stay valid). Missing, changed or unresolvable records are
-marked stale by `check_registry_staleness`. Legacy self-ID hashes, empty hashes
-and unverifiable metadata snapshots receive the reason
-`legacy_evidence_unverifiable`; their historical versions are preserved.
-The check is explicit, not a background monitor. Re-promotion after review
-retains stale/retracted history. Staling an older revision does not stale a
-session claim linked to a newer revision.
-
-The promotion response and entry declare `evidence_verification` with level
-`retained_record_integrity`. Scope alignment, method validity and claim-text
-alignment are explicitly `not_verified`. These are remaining research gates:
-
-- Bind period, basin/population, units, conventions, metric definition and CI
-  to the same analysis artifact. A scalar value match alone cannot do this.
-- Verify transitive input artifacts, external file bytes and software versions.
-- Check scientific appropriateness of the method and uncertainty design.
-- Formalize quantitative assertions instead of inferring values from prose.
-- Make registry/session writes transactional under concurrency. Run-log rows
-  that carry a sealed run record are now insert-only (see below), but legacy
-  rows without a record can still be replaced, a SQLite file can still be
-  edited directly (the edit is detectable, not preventable), and none of this
-  is a tamper-proof history.
-
-## Human approval (ADR-002a)
-
-Added in Slice 1b (2026-10-02), revised after the slice-1 adversarial review.
-`researcher_approved` was an ordinary tool argument, so an agent could (and in a
-reproduced run did) promote its own claim. It is now only a *request flag*: it
-must be true, and it is never sufficient. Promotion needs an approval record.
-
-**What this does and does not stop.** It blocks unintended and naive
-self-approval: authority cannot be conferred through a tool argument or any MCP
-tool, and an agent that shells out to `aihydro-approve` without a terminal is
-refused. It does **not** stop a process running as the same OS user. Such a
-process can append a correctly sealed record itself (the seal is an unkeyed
-digest, so it proves integrity, not origin) or drive the CLI through a
-pseudo-terminal; the review demonstrated both. Unsigned (v1) records therefore
-carry `channel: "cli_same_user"`, which names how the record was produced and
-must not be read as verified human identity. ADR-002b closes the forgery gap
-with signed v2 records (see [Signed approvals](#signed-approvals-adr-002b)).
-
-**Approval record.** Stored at `$AIHYDRO_HOME/approvals/approvals.jsonl`
-(`AIHYDRO_HOME` defaults to `~/.aihydro`, resolved at call time). Append-only,
-one line per record, written under a cross-process lock; existing lines are
-never rewritten.
-
-```json
-{"schema": "aihydro.approval/1", "claim_id": "...", "session_id": "...",
- "claim_revision_digest": "sha256:...", "approver": {"kind": "human", "id": "..."},
- "channel": "cli_same_user", "approved_at": "<UTC>", "statement": "...",
- "record_digest": "sha256:..."}
-```
-
-`record_digest` is the `aihydro_core.records.digest` of the other fields. Lines
-that fail verification (edited without resealing, unsealed, or with a non-human
-approver) are ignored; a correctly resealed forgery verifies.
-
-**Claim revision digest** (`aihydro.claim_revision/2`). The rule: every
-authority-bearing field copied into the registry row, plus the retained
-evidence the claim rests on, is bound. Over `digest` (`aihydro.c14n/1`):
-claim text, `claim_type`, status, confidence, `confidence_rationale`, scope
-(basins, period, forcing, metric, model versions), every evidence span,
-`evidence_versions`, limitations, `prereg_id`, `uncertainty_verified`,
-normalised through `ScientificClaim`. `evidence_versions` maps each span's
-`source_id` to the `sha256-v3` fingerprint (or `sha256-v2` for bindings made
-before v3) of the retained record it resolves to (`registry/evidence.py`),
-computed at promotion time. So editing the claim,
-or mutating a retained run, dataset result or passage after approval, changes
-the digest and invalidates the approval. A span that cannot be resolved binds as
-`unresolved:<code>`; promotion refuses it on evidence grounds first. Not bound:
-`contradictions`, `citations`, timestamps and promotion bookkeeping, none of
-which is copied into the registry row.
-
-**Single use.** An approval authorises exactly one promotion. The registry row
-stores `approval: {record_digest, channel}`; the registry refuses (under its
-write lock) a second row citing the same record, and promotion refuses an
-approval that already authorised one. Promoting again, for example after
-retained evidence changed, needs a fresh approval.
-
-**Who can write it.** Only the `aihydro-approve <session_id> <claim_id>` CLI
-(`ai_hydro/approval/cli.py` -> `writer.py`). It loads the session read-only,
-prints the bound fields including each retained-evidence fingerprint and the
-revision digest, and requires the human to type the first 12 hex characters of
-that digest. It refuses unless stdin and stdout are a terminal and has no
-`--yes` flag. `--approver` defaults to the OS user. No MCP tool imports or calls
-the writer; `tests/test_approval_authority.py` enforces this statically (AST
-scan of `ai_hydro/`), by importing the full MCP server in a clean interpreter,
-and by inspecting loaded modules and registered tools (that last check skips,
-with a stated reason, where the installed FastMCP cannot enumerate tools).
-
-**Promotion.** After every other gate passes, a missing or consumed record for
-the current revision returns `APPROVAL_REQUIRED` with the exact command
-(`aihydro-approve <session_id> <claim_id>`) in `approval_command` and
-`recovery`. The refusal does not return the revision digest.
-
-**Legacy rows.** Registry rows written before this change have no `approval`
-key and are never rewritten. `list_registry_claims` and the defensibility
-report label them `approval: self_asserted` at read time.
-
-The record does not say the claim is true: it records that a named person ran
-the CLI for this exact revision of the claim and its retained evidence.
-
-**Capsule approvals and external verification.** The machine's trust root is not
-the boundary against a same-user process; a third party's own key file is.
-`export_session` writes `approvals/` into the capsule: one verbatim approval
-record (signature included) per promoted claim, plus `approvals/index.json`
-with the registry row stamp (`approval`, `claim_revision_digest`,
-`claim_revision`). Files are hashed in `capsule_manifest.json` (also summarised
-under `approvals`). Claims with no approval (legacy `self_asserted` rows, or a
-promoted claim without a registry row) are listed with status `no_approval`,
-never implied approved. `python replay.py --allowed-signers FILE` verifies each
-approval with `ssh-keygen -Y verify` against the file the verifier supplies (for
-example the owner's published GitHub keys), namespace `aihydro-approval@v1`,
-principal = the approver id; it also re-derives the sealed body digest and checks
-that the approval's `claim_revision_digest` equals the registry stamp's. It also
-binds the approval to the capsule: the record's own `claim_id` must equal the
-index entry's, the record, index and `session.json` must name one session, and
-`claim_revision_digest` is recomputed in stdlib (`aihydro.claim_revision/2`) from
-the claim in `session.json` and the cited run rows in `run_log.json`; editing the
-claim, or a cited run row, after approval fails. Claims whose evidence is not
-run-backed (dataset or paper spans), or legacy `evidence` lists, cannot be
-re-derived in stdlib and FAIL with that reason rather than PASS. Approval files
-are confined to `approvals/<64 hex>.json` named by the record digest (no absolute
-paths, traversal or symlinks); the approver must be a human actor. The index
-`status` `record_carried` means only that the record is in the capsule. It
-prints `PASS`/`FAIL` per approval and
-`approvals: N verified against supplied signers, M failed, K unsigned (cli_same_user/opt-out)`;
-any failure exits 1. Unsigned v1 records are reported `UNSIGNED`, never `PASS`;
-without `--allowed-signers` signed approvals are "not verified (no signer file
-supplied)". The capsule carries no trust root, and local revocation is not
-consulted: use `valid-before` in the supplied file to retire a key. A pass shows
-who signed which claim revision, not that the claim is true.
-
-## Claim revisions (`aihydro.claim_revision_record/1`)
-
-Added in 2040 slice 2. Every authority-bearing change to a session claim
-appends exactly one sealed row to `<sessions_dir>/<session_id>.claims.sqlite3`.
-`ai_hydro/session/claim_revisions.py` is the only writer.
-
-A row carries `session_id`, `claim_id`, `revision` (from 0), `supersedes` (the
-previous row's `revision_digest`), `revision_digest`, `content`, `cause`
-(`{tool, reason, run_id?, ...}`), `actor`, `recorded_at` and `record_digest`
-(`aihydro_core.records.ClaimRevision`). `revision_digest` is the same
-`aihydro.claim_revision/2` digest an approval binds to, including the retained
-evidence fingerprints, so a revision and an approval name the same thing.
-
-| `cause.reason` | Written by |
-|---|---|
-| `created`, `redefined` | `add_claim` (`redefined` when the id already existed) |
-| `status_update` | `update_claim_status` |
-| `promotion` | `promote_claim_to_registry`, after the registry row is written. Promotion is outside the digest, so the row repeats the approved `revision_digest` and records `registry_id` |
-| `staleness` | `check_registry_staleness` when it sets `status: stale` |
-| `evidence_drift` | promotion found that the retained evidence differs from the latest stored revision. The revision is written, then promotion is refused unless an unused approval already binds the new revision |
-| `out_of_band_edit` | promotion found claim fields that differ from the latest revision for another reason (the session JSON was edited outside the tools) |
-| `legacy_unrecorded` | first touch of a claim that predates the store |
-
-Rules:
-
-- **Insert-only.** `PRIMARY KEY (claim_id, revision)`, plain `INSERT`, and
-  `BEFORE UPDATE`/`BEFORE DELETE` triggers that abort. Read-modify-insert runs in
-  `BEGIN IMMEDIATE`, so concurrent writers get consecutive numbers.
-- **Fail closed.** Every read verifies each seal and the chain; a failing row
-  raises instead of being skipped, and promotion therefore errors.
-- **Record before save.** The revision is written before `session.save()`. A
-  change that cannot be recorded is not persisted.
-- **No unchanged rows.** An update that moves no authority field (same
-  `revision_digest`) writes nothing.
-- **Promotion** requires the approval's `claim_revision_digest` to equal the
-  latest stored revision's `revision_digest`. Registry rows gain
-  `claim_revision_digest` and `claim_revision` (the approved revision number).
-  `registry_id` is unchanged and legacy rows are not recomputed.
-- **Legacy claims** get revision 0 with `legacy_unrecorded` on first touch,
-  recording the state when first seen. Earlier history is never back-filled.
-
-A seal proves integrity, not origin: a process running as the same OS user can
-rewrite the SQLite file and re-seal. Signed approvals (ADR-002b) address origin.
-
-**There is no external anchor for the chain itself.** Truncating the tail, or
-editing the latest row and re-sealing it, cannot be detected from the SQLite
-file alone. Each seal covers only its own row, and each row links backwards.
-
-The anchor that exists today is the registry. Promotion stamps
-`claim_revision_digest` and `claim_revision` on the registry row.
-`check_registry_staleness` compares every stamped row with the session's chain
-and returns `revision_chain_mismatches`, each flagged
-`revision_chain_mismatch` with a reason: `missing_revision` (tail truncated
-below the promoted revision), `different_digest` (the revision was rewritten and
-re-sealed) or `chain_corrupt`. This detects tampering only for claims that were
-promoted and only at or below the promoted revision. Registry rows written
-before this change carry no stamp and are skipped. The check reports and does
-not change claim status.
-
-**Reading.** `history(session_id)` returns, per claim, `{ok: true, rows}` or
-`{ok: false, error}`, so one corrupt chain does not hide the others. `latest`
-and `get_revision` raise for a corrupt chain, so anything that gates authority
-fails closed. `revision_drift(current_fields, latest_row)` is a pure helper that
-reports whether a claim's current fields (with live evidence fingerprints) still
-match its latest revision.
-
-**Reverting to an approved state reuses the approval.** An approval binds a
-revision digest, not a point in time. If a claim is edited and then edited back to
-fields whose digest equals an approved, unconsumed revision, the old approval
-matches again and promotion can use it (once). The chain shows the round trip as
-two new revisions that repeat the earlier digest, so a reviewer can see it. The
-approval is still single use, and any difference in the claim or its retained
-evidence breaks the match.
-
-### Signed approvals (ADR-002b)
-
-`aihydro-approve` is the canonical approval channel; the editor extension is
-only a client that opens it. After the terminal confirmation the CLI signs the
-approval with an SSH key through `ssh-keygen -Y sign -n aihydro-approval@v1`
-(stdlib subprocess; no new dependency; private keys are never read or stored by
-this code) and writes schema `aihydro.approval/2`:
-
-```json
-{"schema": "aihydro.approval/2", "claim_id": "...", "session_id": "...",
- "claim_revision_digest": "sha256:...", "approver": {"kind": "human", "id": "..."},
- "approved_at": "<UTC>", "statement": "...",
- "signer": {"fingerprint": "SHA256:...", "key_type": "ssh-ed25519"},
- "record_digest": "sha256:...",
- "signature": {"format": "sshsig", "namespace": "aihydro-approval@v1", "armored": "-----BEGIN SSH SIGNATURE-----..."}}
-```
-
-`signer` is sealed by `record_digest`; `signature` signs the UTF-8 bytes of
-`record_digest` and sits outside the seal. v2 has no `channel` field: the
-**verifier derives the channel**, never the record, and the label names both the
-key class and the trust root it was verified under:
-
-| Channel | Meaning |
-|---|---|
-| `ssh_sig_sk_system_trust` | `sk-` key (physical touch per signature, no `no-touch-required`), protected system trust root |
-| `ssh_sig_system_trust` | other enrolled key (software / agent), protected system trust root |
-| `ssh_sig_sk_user_trust`, `ssh_sig_user_trust` | same, but the trust file is user-writable |
-| `ssh_sig_sk_supplied`, `ssh_sig_supplied` | verified against an allowed_signers file the verifier supplied |
-| `cli_same_user` | legacy v1 record, accepted only under an explicit opt-out |
-
-**What this does and does not stop (read this first).** Against a process
-running as the same OS user there is **no boundary** unless
-`trust_root == "system"` **and** the key is an `sk-` key that needs a touch.
-`*_user_trust` is integrity-only and equivalent to `cli_same_user`: the trust
-file is editable by that process, which can enrol its own key and sign. A
-software key loaded in ssh-agent signs silently. A trojaned CLI in an editable
-install can show one claim and have the human sign another. No label here means
-"a human was verified"; the guarantees are that each approval needs a signing
-action by an enrolled key, and that a third party can verify the signature
-against keys published off the machine.
-
-**Trust root.** The signature must verify against an `allowed_signers` file:
-`/etc/aihydro/allowed_signers` (override for tests: `AIHYDRO_SYSTEM_TRUST_FILE`),
-else `$AIHYDRO_HOME/trust/allowed_signers`. The label `system` is earned only
-when the file **and its directory** are neither writable by nor owned by the
-current user (`os.access` + owner check); otherwise the file is labelled
-`user_writable`. `valid-after` / `valid-before` are enforced by `ssh-keygen` at
-verification time, so a rotated-out key stops verifying (an unconsumed approval
-it signed must be redone). Verification also accepts a file the verifier
-supplies (`check_approval(record, allowed_signers=...)`, trust root `supplied`):
-that off-machine check is the real boundary.
-
-**Refused by `find_approval`:** a sealed v2 line with a missing, malformed or
-invalid signature (including a genuine signature copied from another record);
-a signature whose key differs from the sealed `signer`; a key not in
-allowed_signers or outside its validity window; a revoked key; an
-`approver.id` that is not the enrolled principal of the signing key.
-
-**Stamp.** `approval_stamp(record)` returns `{record_digest, channel,
-trust_root, principal, signer {fingerprint, key_type}, policy}`; `principal`
-comes from `ssh-keygen -Y find-principals` / `-Y verify`, and `policy` is
-`signed_required` or `unsigned_opt_out`.
-
-**Fail closed (`require_signed`).** With no allowed_signers file anywhere, no
-approval verifies and the CLI refuses (exit 5) and tells the human to enrol.
-v1 (`cli_same_user`) approvals are accepted only under an explicit
-development opt-out, `AIHYDRO_REQUIRE_SIGNED=0` or `{"require_signed": false}`
-in `$AIHYDRO_HOME/approvals/config.json`; the opt-out is logged and every
-record verified under it is stamped `policy: "unsigned_opt_out"`. A protected
-system trust root forces signatures and cannot be relaxed. Tests that use v1
-fixtures set the opt-out explicitly.
-
-**CLI.**
-
-```
-aihydro-approve <session_id> <claim_id> [--key PATH]
-aihydro-approve enroll <key.pub> [--principal NAME] [--valid-before D] [--user-trust]
-aihydro-approve revoke <SHA256:fingerprint> [--reason TEXT]
-```
-
-The key is `--key`, else `~/.ssh/id_ed25519_sk`, `id_ecdsa_sk`, `id_ed25519`,
-`id_ecdsa`, `id_rsa`, else an enrolled ssh-agent key. `--approver` defaults to
-the OS user and must equal the principal enrolled for the key (`enroll
---principal` defaults to the OS user). `enroll` prints the `allowed_signers`
-line and the `sudo` command for the system root; it never runs sudo, and writes
-only the user-writable fallback when `--user-trust` is given.
-
-**Revocation.** `revoke` appends a sealed line to
-`$AIHYDRO_HOME/approvals/revocations.jsonl`. That file is deletable and
-forgeable by any process running as the user; it is a convenience, not a
-security control. Real revocation is setting `valid-before` on the key's line in
-the **system** `allowed_signers` (or removing the line).
-
-Hardware behaviour (whether `ssh-keygen -Y verify` enforces the touch flag) is
-unverified without a device. The registry-row stamp is wired into promotion in
-packet A2; until then rows still carry the constant `cli_same_user`.
-
-## State isolation
-
-Scope: the registry (`$AIHYDRO_HOME/registry/claims.jsonl`) and approval paths
-only. Sessions, course state, jobs and caches still live under
-`Path.home()/.aihydro`; the bench and tests isolate sessions separately by
-patching the session directory. The registry and approval paths are resolved
-when used, not at import. `tests/conftest.py` gives every test its own
-`AIHYDRO_HOME`, and `aihydro-bench --run` sets a temporary one for its pytest
-subprocess, so test and bench promotions never write the user's real registry.
-Before this change the shipped bench tasks B-016 and B-045 wrote promoted
-fixtures into `~/.aihydro/registry`. Registry read-modify-write operations
-(`append`, `mark_stale`, `mark_retracted`) run under an exclusive cross-process
-lock (`fcntl.flock` on a sidecar `claims.jsonl.lock` on POSIX, `msvcrt.locking`
-on Windows; with neither available the lock is a logged no-op). The lock is
-advisory and the registry file is still rewritten whole, not append-only.
-
-`tests/test_registry_fingerprint_golden.py` pins one legacy `sha256-v2` evidence
-fingerprint, so changes to the algorithm that would silently re-stale or re-bless
-existing rows fail loudly.
-
-### Fingerprint versions
-
-- `sha256-v2`: hash of the whole retained record. For a run-log row that
-  includes its `record` seal and any `record_status*` keys, so sealing a row
-  later (lazy re-seal) or marking it `record_status: unsealable` changes it.
-- `sha256-v3`: identical, except a run row is hashed over its body only; the
-  seal and every `record_status*` key are excluded (one rule,
-  `registry.evidence.is_run_row_metadata_key`, mirrored in
-  `capsule/standalone_replay.py` and pinned by a test). Datasets and passages
-  are hashed whole. All new bindings use v3.
-- Because v3 attests the body only, the seal is checked where evidence is
-  resolved (`resolve_source`): a run row whose `record` is present but does not
-  verify (digest mismatch, wrong run id, or the body no longer matches the
-  sealed `entry_digest`) is refused with `EVIDENCE_SEAL_INVALID`. Promotion
-  refuses it, claim bindings and snapshot drift show `unresolved:EVIDENCE_SEAL_INVALID`,
-  and registry staleness lists it. Unsealed legacy rows are unchanged.
-- The seal a run row carried when the claim was bound is recorded in the sealed
-  revision as `evidence_seals` (`source_id -> record_digest`; omitted when no
-  source was sealed, so earlier revisions keep their digest). A v3 fingerprint is
-  blind to the seal, so on verify, promotion, claim binding, registry staleness
-  and snapshot drift the row must still carry exactly that record: otherwise the
-  source is refused as `EVIDENCE_SEAL_INVALID` (drift reason
-  `seal_removed_or_replaced`). A source that was unsealed at bind time stays
-  unbound, so a later valid seal (lazy re-seal) is neutral. Registry entries
-  carry the same `evidence_seals`. Stdlib replay reproduces the field: per run
-  source it tries seal-bound and unbound (and v2/v3), only where variants
-  differ, so a capsule row whose seal was stripped matches no combination.
-- A revision written now binds the row's CURRENT seal, also for a source that
-  was unsealed at an earlier bind (so a claim re-revised after a lazy re-seal
-  does not stay unbound); when nothing else moved no revision is written.
-  Verifying an existing revision keeps its stored binding.
-- Bound of the replay guarantee: at replay, seal binding protects only claims
-  anchored by a signed approval (the approval signs the revision digest, which
-  includes `evidence_seals`). Chains of unapproved claims are checked for
-  self-consistency and against the in-capsule `claim_heads` pin, so a
-  consistent strip + re-digest + re-pin of such a chain is accepted until an
-  external anchor (registry stamp or signed bundle) exists.
-- A stored fingerprint is always recomputed in its own version, so existing
-  v2 claims, approvals and registry rows do not drift. A v2 binding to a row
-  that is later sealed or marked still reads as changed (the limit of v2).
-- The capsule does not record each source's version, so stdlib replay tries the
-  v3 and v2 choice per source (only sources where the two differ) and accepts
-  the digest the approval signed.
-
-No real claims are migrated or promoted by installing this change. All
-regression fixtures use isolated temporary sessions, registry files and passage
-indexes.
-
-## Run records (`aihydro.run/2`)
-
-Added in the 2040 records slice. Every tool call that resolves a session
-(except the exempt catalog, view, UI and lifecycle tools listed with reasons in
-`ai_hydro/session/run_records.py::RECORD_EXEMPT`) gets a sealed
-`aihydro_core.records.RunRecord` in `entry["record"]` of its run-log row. A
-FastMCP middleware (`RunRecordMiddleware`, `ai_hydro/mcp/app.py`) attaches it
-after the call. It adds the record to the row the tool's own writer produced
-(`post_run`, the Store Protocol writer, the legacy helper) or creates a minimal
-row (`"minimal": true`, empty `key_outputs`) when the tool wrote none. Failed
-calls, including raised exceptions, are recorded with `status: "error"`.
-A Tier-1 call that uses both `post_run` and the Store Protocol writer produces
-two rows (the slot write and the `post_run` row). Both are recorded; the
-secondary row's `extra.call_run_id` is the `_run_id` returned to the caller.
-The map CLI (`hydro_map_cli delineate-point`) calls the tool directly, so it
-records through `run_records.recorded_call` (`extra.mcp_client = "direct_call"`).
-List, string and number results are digested as delivered. Replay and coverage
-report a record without `extra.entry_digest` as *unbound*, not verified.
-Calls with no resolvable session are counted as `no_session` and not recorded.
-Direct Python calls that bypass the MCP server are not recorded.
-
-**What a record does not give you (limits).**
-
-- A seal proves *integrity*, not *origin*. Anyone who can write the run log can
-  build a record that verifies.
-- Insert-only protects against cooperating writers (stale snapshots, accidental
-  rewrites), not against an adversary with access to the SQLite file.
-- A deleted sealed row is not detectable: there is no hash chain or signed head
-  yet. The hash-chained ledger in swatplus-builder is the model for that fix.
-- A writer that pre-seals its own record, including `run_python` code or any
-  same-user process, authors its own provenance. The middleware leaves an
-  already-sealed row untouched and will not overwrite it.
-- If `aihydro_core.records` is unavailable when a record is written, the record
-  is dropped (and logged) and the legacy row kept; an unverifiable sealed-looking
-  record is never stored.
-
-A record states: tool, tool version (`meta.version` when the result carries
-one, otherwise the `aihydro-tools` distribution version, labelled by
-`version_source`), session, UTC `recorded_at`, status, `input_digest`,
-`output_digest`, `parents`, `input_refs`, `env_digest`, and `record_error`.
-Digests are `sha256:<64 hex>` over the strict `aihydro.c14n/1` encoding.
-
-- `input_digest` covers the arguments as received, minus private (`_`), `ctx`,
-  top-level `session`/`session_id` and secret-shaped names at any depth. Long
-  strings are included in full. Defaults a caller omitted are not filled in, so
-  an omitted default and the same value passed explicitly digest differently.
-- `output_digest` covers `result["data"]`, or the result minus transport keys
-  (`_run_id`, `_record_error`, `quality_flags`, `next_steps`). It covers what
-  the caller received, not arrays a tool wrote to disk. Outputs over 64 MiB are
-  not digested and the record says so.
-- `extra.entry_digest` binds the row's legacy fields (`key_outputs`,
-  `evidence`, ...) to the record. Editing them after sealing is detected.
-- `env_digest` identifies interpreter, platform and the versions of the named
-  AI-Hydro and numerical distributions (memoised per process). It is not a
-  lockfile.
-- A digest that cannot be computed is `None` with an explicit `record_error`.
-  The record is still sealed, and the tool result gains `_record_error` so the
-  failure is visible to the agent. The middleware never fails a tool call and
-  never alters its result otherwise.
-- The record is **not** evidence that the computation is reproducible, correct
-  or appropriate, and no actor is recorded (the MCP client name goes in
-  `extra.mcp_client` when the client sent one).
-
-**Insert-only rows.** Once a row's record is sealed, a same-id write is a no-op
-when identical (or when it is a stale legacy snapshot with the same other
-fields, which never drops the record) and is **refused and logged** otherwise.
-A record that does not verify, or whose `run_id` differs from the row, is
-refused. Rows without a record keep the legacy upsert behaviour, and
-`HydroSession.set("_run_log", ...)` still works.
-
-**Run ids.** `post_run` and middleware-created ids are
-`{tool}.{yyyymmdd}.{session8}.{hex8}` (the suffix was 4 hex digits). No
-consumer parses the suffix: the auditor grammar accepts `[A-Za-z0-9._-]+`, and
-the extension treats ids as opaque. Older ids stay valid. Uniqueness within a
-session is checked at generation, and the sealed-row rule applies at write time.
-
-**Lineage.** `extract_hydrological_signatures` records the streamflow run whose
-slot supplied its series: `parents=[run_id]` and two `served_data` input refs,
-the producer's recorded `output_digest` and the digest of the series actually
-read (`<run_id>#q_cms`). The slot carries its run id in `meta.run_id`, stamped
-by the run-log writer when the slot is stored. A slot stored before this change
-carries none, so no edge is recorded and `extra.parent_unresolved` says so.
-If the producer has no record (written outside the middleware) the edge has a
-reference and no digest. Other tools declare lineage with
-`run_records.declare_lineage`.
-
-**Served data in the capsule.** Session slots strip arrays longer than 50
-elements on save, so `session.json` does not hold the discharge series a
-signature was computed from. `fetch_streamflow_data` retains the series it served
-(in the workspace, or beside the session file when there is none) and points the
-slot's `_data_file` at it. `export_session` consumes exactly that artifact: it is
-copied verbatim into `data/` (`retained_artifact`, with sha256) and a
-stdlib-readable `data/served_streamflow_<gauge>.csv` (`date,q_cms`; missing days
-as empty cells; floats written with `repr` so they round-trip exactly) is derived
-from it. `capsule_manifest.json` lists both under `data_artifacts` and in `files`
-(so `replay.py` verifies the hashes), with `n_rows`, `n_missing`, the request, the
-`produced_by_run_id` (the slot's `meta.run_id`) and that run's
-`producer_record_digest`. Sessions written before the fetch tool retained its
-series fall back to `aihydro_data.fetch` for the recorded request;
-`retrieval.mechanism` says which path was used and `retrieval.cache_hit` whether
-the aihydro-data disk cache answered (the bytes the run saw) or the provider was
-queried again (a re-query, to be weighed by the reader). If no source yields the
-series the entry has `status: "unavailable"` and a reason; it is never omitted
-silently. `consistency_checks` are export-time comparisons: `n_rows` against the
-slot's recorded `n_days`; the exported series' digest against the
-`<run_id>#q_cms` `served_data` ref a consuming run recorded (so the CSV is the
-series that run actually read); and, when a `baseflow_index` signature exists, a
-stdlib Lyne-Hollick (alpha 0.925, 3 passes) on the exported series against the
-recorded value. A mismatch sets `status: "exported_with_inconsistency"`. These are
-not a replay: `replay_status` stays `archive_integrity` and `recomputation` stays
-`not_performed`. A reader recomputes from the CSV with their own code.
-
-**Binding of the exported series.** Each `data_artifacts` entry has a
-`binding`. `producer_sealed`: the producing run's sealed record lists the
-retained file's digest (`extra.retained_files`, recorded by `fetch_streamflow_data`)
-and the exported file matches it. `replay.py` re-checks this from `run_log.json`
-(not from the manifest), so a swapped series fails replay with exit 1 even if the
-manifest is regenerated, and it also checks that the CSV equals the retained JSON.
-`self_attested`: nothing sealed names the series (sessions fetched before
-fetch-time sealing, a series that no longer matches its sealed digest, a slot
-array, or a re-query); the capsule then vouches only for itself, and the README
-and `replay.py` say so. A re-query (`aihydro_data_refetch`) is never attributed to
-the run: `produced_by_run_id` is null, `requested_by_run_id` names the run that
-triggered it, status is `exported_requeried` (provider queried again) or
-`exported_from_cache`, and the README says "re-queried at export; may differ from
-what the run consumed". The refetch's product is compared with the slot's recorded
-`_aihydro_data_product`; a mismatch, a differing BFI or any sealed-digest mismatch
-sets `exported_with_inconsistency`. Every consumer `<run_id>#q_cms` ref is
-compared, not only the last. The manifest carries relative paths only.
-
-**Replay.** The `replay.py` written into a capsule verifies file hashes and every
-v2 record (the seal, and the binding to its run-log row), prints
-`replay_status`, and never claims recomputation. `--live` additionally
-cross-checks numeric `key_outputs` against the values retained in `session.json`
-using the real export shape (slots are top-level keys). It prints the number of
-comparisons and exits 2 when it found none to compare. Exit 1 means a failed
-check. `capsule_manifest.json` carries `replay_status: "archive_integrity"`
-and `recomputation: "not_performed"`. See `ai_hydro/capsule/standalone_replay.py`.
-
-| replay_status | Established |
-|---|---|
-| `archive_integrity` | Files match their hashes; every v2 record verifies. Nothing recomputed. |
-| `cross_check` | `--live` and at least one comparison, all agreeing within tolerance. Still no recomputation. |
-| `not_performed` | An integrity check failed. |
-
-## No absolute paths in records or capsules
-
-Sealed records reference retained files by a location-independent ref, never by
-absolute path: `session-data:<file name>` (session data directory) or
-`workspace:<relative path>`, via `ai_hydro/session/refs.py`. The recorded digest
-is the file's identity; the ref is only a locator, so a record or capsule leaks
-no home directory and means the same on another machine. Records written before
-this change keep their absolute paths (sealed rows are never rewritten); readers
-resolve them and match capsule files by name, so they still verify. Capsule
-`session.json` rewrites local paths to refs or `~/`.
-
-### Run-log row bodies and legacy rows
-
-Every run-log row body (`key_outputs`, `inputs`, `evidence`, and any other
-free-form field except `record`) is scrubbed at one choke point, the store
-writer (`session/store.py::_scrub_row_body`), before it is digested into
-`extra.entry_digest` and stored: session dir to `session-data:`, workspace to
-`workspace:`, home to `~/`, any other absolute path to `<abs>/basename`. The
-scrub is idempotent. `export_session` applies a second layer to every other
-exported JSON/MD/text file. Rows sealed before this change that still contain an
-absolute path are never rewritten in the store; because a scrubbed copy of a
-sealed row would not verify, the export carries a `redacted_for_privacy` stub
-with the row's `record_digest` instead, and `capsule_manifest.json` records
-`privacy: {legacy_paths_scrubbed_on_export: N, ...}`. The standalone replay
-reports such rows as "redacted for privacy (not verifiable from capsule)":
-neither verified nor failed. A claim approval that cites a redacted row cannot be
-re-derived from the capsule and says so.
-
-**What the scrubber rewrites (and never does).** Only demonstrably local paths:
-under the session dir (`session-data:`), workspace (`workspace:`) or home
-(`~/`); other absolute POSIX paths only when rooted in `/Users`, `/home`,
-`/private`, `/var`, `/tmp`, `/opt`, `/root`, `/mnt`, `/Volumes`, `/srv` or
-`/scratch` with at least two segments; Windows drive and UNC paths (`<abs>/basename`).
-Units (`/day`, `m3/s`), `+/-`, NetCDF/Zarr group paths, endpoint paths and
-anything inside a URL or URI (`https://`, `s3://`, `doi:`) are never touched.
-It is idempotent. It also covers `record.extra` notes and `input_refs` declared
-through `declare_lineage`. Dict keys are scrubbed too (a key that is a path is
-renamed) and tuples become lists before digesting; exported `.html`/`.svg` files
-get the same text scrub, while `approvals/` (human-signed) and `data/` stay
-verbatim by design.
-
-**Redaction cannot hide tampering.** On export a path-bearing sealed row is
-first verified against its raw body (record seal and `entry_digest`). If it does
-not verify it is exported as `{"integrity": "seal_mismatch_at_export", ...}` and
-replay counts it as a FAILURE. A row that verifies becomes a
-`redacted_for_privacy` stub with `session_id`, `timestamp`, `record_digest`,
-`entry_digest` and (when it holds no path) the full `record`, so replay still
-checks the seal. Any redaction writes the legacy manifest string
-`archive_integrity_partial` and the manifest `privacy` block lists the redacted
-run ids. Partiality is *coverage*, not a level (R2): `replay.py` reads that string as
-`archive_integrity` with coverage below 1 and prints `coverage: x of y ... partial`,
-so a partially redacted capsule can still report a successful `--live` cross-check.
-
-## Claim revisions, bundle and RO-Crate in the capsule (slice 5)
-
-`export_session` also writes, after the manifest (never listed in it, never
-scrubbed afterwards): `bundle.json`, `ro-crate-metadata.json` and
-`manifest-sha256.txt`. Claim revisions are carried in `records/claim_revisions.json`
-(`capsule/claim_records.py`), read from the sealed store without writing it:
-
-- Sealed rows are carried verbatim. A row that holds a local path becomes a
-  `redacted_for_privacy` stub that keeps `revision_digest` and `record_digest`.
-- Each claim's chain is judged on its own. A claim whose store failed its check is
-  exported as `status: corrupt` with no rows, and replay fails it.
-- A chain cannot show that its own tail was cut. `head_revision_digest` (manifest
-  `claim_revisions` section, and `claim_heads` sealed in the bundle) is the anchor;
-  compare it with the registry stamp.
-
-The `Bundle` (`aihydro.bundle/1`, `capsule/bundle_adapter.py`) points at records
-already in the capsule; it copies no body. The crate is a pure projection of it
-(RO-Crate 1.3, Process Run Crate 0.6, `aihydro_core.export`). The achieved replay
-level in the bundle is `min(manifest, checked)`, where `checked` comes from the same
-code `replay.py` runs; coverage is recomputed by core's `verify_crate`, never assumed.
-A crate that holds a local path is not written (`scrub_value(crate) == crate` is
-enforced); `export_session` then returns `crate_error` and the capsule still stands.
-
-`replay.py` verifies the claim chains and the bundle with a stdlib mirror of
-`verify_crate`: bundle identity and seal, file digests, `objects` == manifest files,
-record seals and `aihydro.entry/1` bindings, basin ids, claim chains and the pinned
-head, coverage, and the BagIt list. **It does not regenerate the crate and
-byte-compare it**, so a crate edited consistently with its BagIt line is not caught
-by the stdlib mirror alone. When `aihydro_core` is importable `replay.py` also runs
-core's `verify_crate`, which does (`VER-CRATE-REGEN`). Integrity is not origin: none
-of this shows who produced the capsule.
-
-`scripts/capsule_to_rocrate.py IN OUT` converts an existing capsule out of place
-(input never modified; the copy gets the current `replay.py`). Capsules exported before
-claim revisions were carried report `claim_revisions: not_carried`.
+"""Write ``bundle.json``, ``ro-crate-metadata.json`` and ``manifest-sha256.txt`` for a capsule.
+
+Order (slice 5 interface section 4): capsule + manifest are already written ->
+build and seal the Bundle -> ``bundle.json`` -> ``scan_files`` -> ``to_rocrate``
+-> ``write_crate`` -> ``write_manifest_sha256``. The three new files are written
+last and are never in the capsule manifest or scrubbed (see ``manifest._SKIP_NAMES``,
+``privacy._SKIP_NAMES``).
+
+Honesty rules enforced here, not left to the caller:
+
+* The replay level is *achieved*: ``checked_status`` is what the shared
+  ``standalone_replay.assess`` (the code replay.py runs) establishes on this
+  capsule right now, and ``status`` is ``min(manifest_status, checked_status)``,
+  so a crate never claims more than the manifest.
+* Coverage is recomputed by core's ``verify_crate`` on the capsule, not assumed.
+  A record that is not verified only because privacy withheld it is declared
+  partial coverage; any other unverified record is an integrity failure and drops
+  ``checked_status`` to ``not_performed``.
+* Fail closed on privacy: if ``scrub_value(crate) != crate`` nothing is written.
+* The output directory is cleaned of old bundle/crate files first, and a capsule
+  holding files its manifest does not list is refused (they would silently
+  change the regenerated crate).
+
+Integrity is not origin. A crate shows that content is unchanged since it was
+sealed, not who made it.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Any, Optional
+
+from aihydro_core.export import (
+    BAGIT_FILE,
+    CRATE_FILE,
+    dumps_crate,
+    load_inputs,
+    scan_files,
+    to_rocrate,
+    validate_crate,
+    verify_crate,
+    write_manifest_sha256,
+)
+from aihydro_core.export.rocrate import derive_gates
+from aihydro_core.export.rocrate_validate import errors as _validate_errors
+from aihydro_core.records import make_coverage, min_replay_status, read_legacy_replay_status
+from aihydro_core.records.run import utc_now
+
+from ai_hydro.capsule import standalone_replay as sr
+from ai_hydro.capsule.bundle_adapter import build_bundle
+from ai_hydro.session.refs import scrub_value
+
+BUNDLE_FILE = "bundle.json"
+MANIFEST_FILE = "capsule_manifest.json"
+REPLAY_FILE = "replay.py"
+_OWN_OUTPUTS = (BUNDLE_FILE, CRATE_FILE, BAGIT_FILE)
+
+
+class CrateExportError(RuntimeError):
+    """The crate was not written (and no partial crate files are left behind)."""
+
+
+def _tools_version() -> str:
+    from ai_hydro import __version__
+
+    return __version__
+
+
+def clean_outputs(capsule_dir: Path) -> None:
+    for name in _OWN_OUTPUTS:
+        try:
+            (capsule_dir / name).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _check_clean(capsule_dir: Path) -> dict:
+    manifest = json.loads((capsule_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
+    listed = {m["path"] for m in manifest["files"]}
+    try:
+        on_disk = set(scan_files(capsule_dir))
+    except ValueError as exc:                       # symlinks are never part of a capsule
+        raise CrateExportError(str(exc)) from exc
+    stray = sorted(on_disk - listed - {MANIFEST_FILE, REPLAY_FILE})
+    if stray:
+        raise CrateExportError(f"capsule holds files its manifest does not list (not a clean export): {stray[:5]}")
+    return manifest
+
+
+def export_crate(capsule_dir: "str | Path", *, session_id: str, workspace_dir: "str | Path | None" = None,
+                 claim_entries: Optional[list] = None, live: bool = True, license: Optional[str] = None,
+                 created_at: Optional[str] = None) -> dict:
+    """Build and write the bundle, crate and BagIt manifest. Returns a summary dict.
+
+    Raises :class:`CrateExportError` (after removing any partial output) when the
+    capsule is not clean, the privacy check fails, or the result does not verify
+    for a reason other than recorded integrity failures.
+    """
+    root = Path(capsule_dir)
+    clean_outputs(root)
+    try:
+        return _export(root, session_id, workspace_dir, claim_entries, live, license, created_at)
+    except CrateExportError:
+        clean_outputs(root)
+        raise
+    except ValueError as exc:
+        # core refuses to project or verify something (e.g. a declared-unverifiable record that is not
+        # privacy-withheld): that is a refusal to write a crate, not a crash of the export
+        clean_outputs(root)
+        raise CrateExportError(f"core refused the crate: {exc}") from exc
+    except BaseException:
+        clean_outputs(root)
+        raise
+
+
+def _export(root: Path, session_id: str, workspace_dir, claim_entries, live: bool, license, created_at) -> dict:
+    manifest = _check_clean(root)
+    if not (root / REPLAY_FILE).is_file():
+        raise CrateExportError("replay.py must be written before the crate (it is the named verifier)")
+    created_at = created_at or utc_now()
+
+    # ---- what is achieved now: the same assessment replay.py runs, minus the crate that does not exist yet
+    assessment = sr.assess(root, live=live, out=lambda *_a, **_k: None, check_crate=False)
+    manifest_status, _complete = read_legacy_replay_status(str(manifest.get("replay_status", "not_performed")))
+    checked = assessment["status"]
+    if assessment.get("head_bad") or assessment.get("session_bad"):
+        # the claim in session.json no longer matches its sealed head revision (M06e), or a sealed record names
+        # another session: like a failed binding, that is a defect to refuse, not partial coverage to declare
+        raise CrateExportError("no crate is written: the capsule fails its own checks ("
+                               + (f"claims differing from their sealed head: {[c for c, _d in assessment['head_bad']]}"
+                                  if assessment.get("head_bad") else
+                                  f"records naming another session: {assessment['session_bad'][:5]}") + ")")
+    import aihydro_core
+
+    # the projection is regenerated by whoever verifies, so the producing core version is part of the bundle:
+    # a VER-CRATE-REGEN failure under a later core is then distinguishable from tampering
+    exporter = {"name": "aihydro-tools", "version": _tools_version(),
+                "projection": f"aihydro-core {aihydro_core.__version__}"}
+    assessor = {"name": "replay.py", "version": _tools_version(),
+                "sha256": hashlib.sha256((root / REPLAY_FILE).read_bytes()).hexdigest()}
+    heads = {e["claim_id"]: e["head_revision_digest"] for e in (claim_entries or [])
+             if e.get("status") == "ok" and e.get("head_revision_digest")} or None
+
+    def replay_for(checked_status: str) -> dict:
+        return {"status": min_replay_status(manifest_status, checked_status).value,
+                "manifest_status": manifest_status.value, "checked_status": checked_status,
+                "assessor": assessor}
+
+    def make(coverage, checked_status, gates=None):
+        files = scan_files(root)
+        return files, build_bundle(root, files=files, session_id=session_id, created_at=created_at,
+                                   exporter=exporter, replay=replay_for(checked_status),
+                                   coverage=coverage, claim_heads=heads, gates=gates)
+
+    def write_bundle(bundle) -> None:
+        (root / BUNDLE_FILE).write_text(json.dumps(bundle.to_dict(), indent=2, sort_keys=True) + "\n",
+                                        encoding="utf-8")
+
+    # ---- pass 1: provisional coverage; core's verifier tells us what is actually verified
+    files, (bundle, _r, _b, info) = make(None, checked)
+    write_bundle(bundle)
+    probe = verify_crate(root)
+    bad = set(probe.unverifiable_ids)
+    unexplained = sorted(bad - set(info["redacted_ids"]))
+    structural = [f for f in probe.failures
+                  if f.rule in ("VER-BUNDLE-IDENTITY", "VER-BUNDLE-SEAL", "VER-FILE-DIGEST", "VER-OBJECTS-MANIFEST",
+                                "VER-UNLISTED-FILE", "VER-ASSESSOR")]
+    if structural:
+        raise CrateExportError("bundle does not match the capsule files: "
+                               + "; ".join(f"{f.rule}: {f.message}" for f in structural[:3]))
+    if unexplained:
+        # only a privacy-withheld row is acceptable partiality; a seal mismatch, foreign session or missing
+        # body must not be turned into "declared partial coverage" by the exporter (fault matrix F7)
+        raise CrateExportError("records fail verification for a reason other than privacy withholding, so no "
+                               f"crate is written: {unexplained[:5]}")
+    if not assessment["integrity_ok"]:
+        checked = "not_performed"
+    cov = make_coverage(probe.records_verified, probe.records_total, bad)
+
+    # ---- pass 2: the recomputed coverage and achieved level, then gates exactly as core derives them
+    files, (bundle, recs, bods, info) = make(cov, checked)
+    gates = derive_gates(bundle, recs, bods)
+    files, (bundle, _r, _b, info) = make(cov, checked, gates)
+    write_bundle(bundle)
+    records, bodies, files_now = load_inputs(root, bundle)
+    crate = to_rocrate(bundle, records, bodies, files_now, license=license)
+    if scrub_value(crate, workspace_dir) != crate:
+        raise CrateExportError("privacy check failed: the crate holds a local path; nothing was written")
+    (root / CRATE_FILE).write_bytes(dumps_crate(crate).encode("utf-8"))
+    write_manifest_sha256(root)
+
+    final = verify_crate(root)
+    findings = _validate_errors(validate_crate(root))
+    if findings:
+        raise CrateExportError("crate failed validation: "
+                               + "; ".join(f"{f.rule}: {f.message}" for f in findings[:3]))
+    if not final.ok:
+        raise CrateExportError("crate failed verification: "
+                               + "; ".join(f"{f.rule}: {f.message}" for f in final.failures[:3]))
+    return {
+        "crate_file": str(root / CRATE_FILE), "bundle_file": str(root / BUNDLE_FILE),
+        "bagit_file": str(root / BAGIT_FILE), "bundle_id": bundle.bundle_id,
+        "replay_status": bundle.replay["status"], "checked_status": checked,
+        "manifest_status": manifest_status.value, "coverage": bundle.coverage,
+        "unexplained_unverifiable": unexplained, "claims_not_carried": info["claims_not_carried"],
+        "claim_heads": heads or {}, "gates": gates,
+    }
+
+
+def _tree_digest(root: Path) -> dict:
+    return {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def convert_capsule(src: "str | Path", dst: "str | Path", *, live: bool = True,
+                    license: Optional[str] = None) -> dict:
+    """Out-of-place conversion of an existing capsule: copy ``src`` to ``dst``, then build the crate there.
+
+    ``src`` is never written (its file digests are compared before and after). A capsule
+    containing symlinks is refused rather than copied (a copy would inline whatever they
+    point at, possibly a file outside the capsule). ``dst``
+    must not exist or must be empty. The copy gets the current ``replay.py`` (which
+    verifies the bundle and crate), because the old one predates them; ``replay.py``
+    is not in the capsule manifest, so no sealed digest changes. A capsule exported
+    before claim revisions were carried has no ``records/claim_revisions.json``: its
+    claims appear as unsealed working views and ``claim_revisions`` is reported
+    ``not_carried``.
+    """
+    import shutil
+
+    src, dst = Path(src), Path(dst)
+    if not (src / MANIFEST_FILE).is_file():
+        raise CrateExportError(f"{src} is not a capsule (no {MANIFEST_FILE})")
+    if dst.exists() and any(dst.iterdir()):
+        raise CrateExportError(f"output directory {dst} is not empty; conversion is out of place")
+    try:
+        dst.resolve().relative_to(src.resolve())
+        raise CrateExportError("output directory must not be inside the input capsule")
+    except ValueError:
+        pass
+    links = sorted(p.relative_to(src).as_posix() for p in src.rglob("*") if p.is_symlink())
+    if links:                                         # copying would silently inline files from outside the capsule
+        raise CrateExportError(f"input capsule contains symlinks, which are never part of a capsule: {links[:5]}")
+    before = _tree_digest(src)
+    shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=False)
+    clean_outputs(dst)
+    try:                                    # the converted copy now has a crate: say so, so its deletion is seen
+        mp = dst / MANIFEST_FILE
+        man = json.loads(mp.read_text(encoding="utf-8"))
+        man["crate"] = {"expected": True, "files": list(_OWN_OUTPUTS), "converted": True}
+        mp.write_text(json.dumps(man, indent=2), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+    (dst / REPLAY_FILE).write_text(sr.source_text(), encoding="utf-8")
+    try:
+        session = json.loads((dst / "session.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        session = {}
+    session_id = session.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise CrateExportError("session.json has no session_id")
+    carried = (dst / "records" / "claim_revisions.json").is_file()
+    try:
+        out = export_crate(dst, session_id=session_id, workspace_dir=session.get("workspace_dir"),
+                           live=live, license=license)
+    finally:
+        if _tree_digest(src) != before:               # pragma: no cover - the copy cannot touch src
+            raise CrateExportError("input capsule changed during conversion")
+    out["claim_revisions"] = "carried" if carried else "not_carried"
+    out["output_dir"] = str(dst)
+    return out
+
+**Crate files and the pre-crate shape.** The manifest carries `session_id` and a `crate` marker written before the
+crate step (`{"expected": true}`, rewritten to `{"expected": false, "error": ...}` if the crate could not be built).
+`replay.py` fails a capsule with no `bundle.json` when the marker says a crate was written, when
+`records/claim_revisions.json` (or the manifest's `claim_revisions` section) is present and the crate was not declined,
+or when other crate files exist: claim revisions are only carried by exporters that also write a crate, so their
+presence without a bundle is a deletion, not an old capsule. A capsule whose manifest was also edited back to the
+pre-crate shape cannot be told from a genuine old one inside the capsule; only an external anchor (the registry
+stamp) can. The exporter refuses the crate (`crate_error`) when a record fails for any reason other than privacy
+withholding, when `session.json` claims differ from their sealed head revision, or when core refuses the bundle.

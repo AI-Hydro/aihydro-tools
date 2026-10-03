@@ -77,7 +77,7 @@ def export_run_log(run_log: dict, workspace_dir: str | Path | None = None) -> tu
             stub: dict[str, Any] = {
                 REDACTED_KEY: True,
                 "run_id": run_id,
-                "session_id": row.get("session_id"),
+                "session_id": row.get("session_id") or record.get("session_id"),   # the sealed record names it
                 "timestamp": row.get("timestamp"),
                 "tool_name": row.get("tool_name"),
                 "record_digest": record["record_digest"],

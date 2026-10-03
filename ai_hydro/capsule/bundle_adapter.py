@@ -174,7 +174,7 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
             rec_loc = make_location("run_log.json", [run_id, "record"])
             body_loc = make_location("run_log.json", [run_id])
             record = row.get("record") if isinstance(row.get("record"), dict) else None
-            stub = bool(row.get("redacted_for_privacy")) or row.get("integrity") == "seal_mismatch_at_export"
+            stub = row.get("redacted_for_privacy") is True or row.get("integrity") == "seal_mismatch_at_export"
             if stub:
                 rows_seen["withheld_for_privacy"] += 1
                 rd = (record or {}).get("record_digest") if record else row.get("record_digest")
@@ -184,7 +184,7 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
                 ed = row.get("entry_digest") or ((record or {}).get("extra") or {}).get("entry_digest")
                 add(make_record_entry("run", run_id, rd, rec_loc, body_loc,
                                       {"scheme": "aihydro.entry/1", "digest": ed if is_digest(ed) else _ZERO_DIGEST}))
-                if row.get("redacted_for_privacy"):
+                if row.get("redacted_for_privacy") is True:
                     redacted_ids.add(run_id)
                 continue
             if record is None or not is_digest(record.get("record_digest")):
@@ -219,7 +219,7 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
             continue
         sealed_claims.add(cid)
         rows = item["rows"]
-        stubs = [r for r in rows if isinstance(r, dict) and r.get("redacted_for_privacy")]
+        stubs = [r for r in rows if isinstance(r, dict) and r.get("redacted_for_privacy") is True]
         if rows and isinstance(rows[-1], dict) and is_digest(rows[-1].get("revision_digest")):
             info["claim_heads"][cid] = rows[-1]["revision_digest"]
         for i, row in enumerate(rows):
@@ -228,9 +228,9 @@ def build_bundle(capsule_dir: "str | Path", *, files: Mapping[str, Mapping[str, 
             rid = f"{cid}@{row.get('revision')}"
             add(make_record_entry("claim_revision", rid, row["record_digest"],
                                   make_location(CLAIM_REVISIONS_PATH, ["claims", cid, "rows", i])),
-                None if row.get("redacted_for_privacy") else row)
-            if stubs:
-                redacted_ids.add(rid)          # a withheld row breaks its claim's chain: partial, not tampered
+                None if row.get("redacted_for_privacy") is True else row)
+            if isinstance(row, dict) and row.get("redacted_for_privacy") is True:
+                redacted_ids.add(rid)          # only the stub itself is withheld; its siblings must still verify
     session = _read_json(root, "session.json") if "session.json" in in_objects else None
     for cid, claim in sorted((session.get("claims") or {}).items()) if isinstance(session, dict) and isinstance(
             session.get("claims"), dict) else []:

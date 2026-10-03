@@ -1132,6 +1132,81 @@ def scan_files(capsule_dir: Path) -> dict:
     return out
 
 
+_RUN_STUB_KEYS = frozenset({"redacted_for_privacy", "run_id", "session_id", "timestamp", "tool_name",
+                            "record_digest", "entry_digest", "reason", "record"})
+_CLAIM_STUB_KEYS = frozenset({"redacted_for_privacy", "session_id", "claim_id", "revision", "supersedes",
+                              "revision_digest", "record_digest", "recorded_at", "reason"})
+
+
+def run_stub_problem(entry, body, session_id):
+    """``None`` if ``body`` is an acceptable privacy-withheld stub of run ``entry``, else ``(rule, message)``.
+    Mirrors aihydro_core.export.rocrate.run_stub_problem: withholding excuses only the body binding."""
+    if body.get("redacted_for_privacy") is not True:
+        return ("VER-STUB-SHAPE", "redacted_for_privacy is not exactly true")
+    extra_keys = sorted(set(body) - _RUN_STUB_KEYS)
+    if extra_keys:
+        return ("VER-STUB-SHAPE", f"a withheld row may carry no body keys beyond the stub shape: {extra_keys}")
+    if body.get("run_id") != entry["id"]:
+        return ("VER-RECORD-DIGEST", "stub run_id is missing or differs from the bundle entry id")
+    if body.get("session_id") != session_id:
+        return ("VER-SESSION", "stub session_id is missing or differs from the bundle's session_id")
+    if body.get("record_digest") != entry.get("record_digest"):
+        return ("VER-RECORD-DIGEST", "stub record_digest differs from the bundle entry")
+    ed = body.get("entry_digest")
+    binding = entry.get("binding")
+    if is_digest(ed) and isinstance(binding, dict) and binding.get("digest") != ed:
+        return ("VER-BINDING", "stub entry_digest differs from the declared binding digest")
+    if "record" in body:
+        rec = body["record"]
+        if not isinstance(rec, dict) or not record_seal_ok(rec):
+            return ("VER-RECORD-SEAL", "the record a stub keeps does not verify")
+        if rec.get("record_digest") != entry.get("record_digest") or rec.get("run_id") != entry["id"]:
+            return ("VER-RECORD-DIGEST", "the record a stub keeps differs from the bundle entry")
+        if rec.get("session_id") != session_id:
+            return ("VER-SESSION", "the record a stub keeps has a missing or foreign session_id")
+        sealed = (rec.get("extra") or {}).get("entry_digest") if isinstance(rec.get("extra"), dict) else None
+        if is_digest(ed) and sealed != ed:
+            return ("VER-BINDING", "stub entry_digest differs from the kept record's sealed entry_digest")
+    return None
+
+
+def claim_stub_problem(entry, rec, session_id):
+    """Mirrors aihydro_core.export.rocrate.claim_stub_problem."""
+    if rec.get("redacted_for_privacy") is not True:
+        return ("VER-STUB-SHAPE", "redacted_for_privacy is not exactly true")
+    extra_keys = sorted(set(rec) - _CLAIM_STUB_KEYS)
+    if extra_keys:
+        return ("VER-STUB-SHAPE", f"a withheld revision may carry no keys beyond the stub shape: {extra_keys}")
+    if entry["id"] != f"{rec.get('claim_id')}@{rec.get('revision')}":
+        return ("VER-RECORD-DIGEST", "stub claim_id/revision differ from the bundle entry id")
+    if rec.get("session_id") != session_id:
+        return ("VER-SESSION", "stub session_id is missing or differs from the bundle's session_id")
+    if rec.get("record_digest") != entry.get("record_digest"):
+        return ("VER-RECORD-DIGEST", "stub record_digest differs from the bundle entry")
+    if not is_digest(rec.get("revision_digest")):
+        return ("VER-STUB-SHAPE", "stub revision_digest is not a digest")
+    sup, n = rec.get("supersedes"), rec.get("revision")
+    if (n == 0 and sup is not None) or (isinstance(n, int) and n > 0 and not is_digest(sup)):
+        return ("VER-STUB-SHAPE", "stub supersedes is inconsistent with its revision number")
+    return None
+
+
+def claim_links_problem(items):
+    """Chain links around any gap, without seals. Mirrors aihydro_core.export.rocrate.claim_links_problem."""
+    prev = None
+    for i, r in enumerate(items):
+        if r.get("revision") != i:
+            return f"revision numbering broken at position {i} (a revision is missing or duplicated)"
+        if r.get("claim_id") != items[0].get("claim_id") or r.get("session_id") != items[0].get("session_id"):
+            return f"mixed claim or session at revision {i}"
+        if not is_digest(r.get("revision_digest")):
+            return f"bad revision_digest at revision {i}"
+        if prev is not None and r.get("supersedes") != prev.get("revision_digest"):
+            return f"link broken at revision {i}"
+        prev = r
+    return None
+
+
 def find_symlinks(capsule_dir: Path) -> list:
     found = []
     for dirpath, dirnames, filenames in os.walk(capsule_dir, followlinks=False):
@@ -1314,8 +1389,7 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
     not_ok = {}
     revisions = {}
     content_checks = []
-    stub_runs = set()          # run rows withheld for privacy (the only acceptable partiality)
-    stub_claims = set()        # claims with a privacy-withheld revision row
+    withheld_ok = set()        # (kind, id) of privacy stubs that proved everything a stub can (interfaces doc 12)
     for e in records:
         kind, eid = e["kind"], e["id"]
         key = (kind, eid)
@@ -1330,7 +1404,14 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
                     not_ok[key] = ("VER-BINDING", f"body unresolvable: {why}")
                 continue
         if kind == "run" and isinstance(body, dict) and body.get("redacted_for_privacy") is True:
-            stub_runs.add(eid)
+            # withholding excuses only the body binding; the stub must still prove everything else
+            problem = run_stub_problem(e, body, bundle["session_id"])
+            if problem is None:
+                not_ok[key] = ("VER-BINDING", "body withheld for privacy")
+                withheld_ok.add(key)
+            else:
+                not_ok[key] = problem
+            continue
         if e.get("binding") is not None and not binding_ok(body, e["binding"]):
             if kind in _UNSEALED_KINDS:
                 fail("VER-BINDING", "body does not match its aihydro.entry/1 binding", label)
@@ -1344,14 +1425,19 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
             not_ok[key] = ("VER-RECORD-SEAL", f"record unresolvable: {why}")
             continue
         if kind == "claim_revision" and rec.get("redacted_for_privacy") is True:
-            stub_claims.add(eid.rpartition("@")[0])
-        if kind in ("run", "claim_revision") and rec.get("session_id") != bundle["session_id"]:
-            not_ok[key] = ("VER-SESSION", "record session_id differs from the bundle's session_id")
-        elif kind == "run":
+            problem = claim_stub_problem(e, rec, bundle["session_id"])
+            if problem is not None:
+                not_ok[key] = problem
+            else:                                   # its own seal is excused; the chain around it is not
+                revisions.setdefault(rec["claim_id"], []).append((key, rec, True))
+            continue
+        if kind == "run":
             if not record_seal_ok(rec):
                 not_ok[key] = ("VER-RECORD-SEAL", "run record seal does not verify")
             elif rec.get("record_digest") != e.get("record_digest"):
                 not_ok[key] = ("VER-RECORD-DIGEST", "record_digest differs from the bundle entry")
+            elif rec.get("session_id") != bundle["session_id"]:
+                not_ok[key] = ("VER-SESSION", "record session_id is missing or differs from the bundle's session_id")
             elif rec.get("run_id") != eid:
                 not_ok[key] = ("VER-RECORD-DIGEST", "record run_id differs from the bundle entry id")
             elif e.get("binding") is not None and (
@@ -1367,10 +1453,12 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
                 not_ok[key] = ("VER-RECORD-SEAL", "claim revision seal does not verify")
             elif rec.get("record_digest") != e.get("record_digest"):
                 not_ok[key] = ("VER-RECORD-DIGEST", "record_digest differs from the bundle entry")
+            elif rec.get("session_id") != bundle["session_id"]:
+                not_ok[key] = ("VER-SESSION", "record session_id is missing or differs from the bundle's session_id")
             elif eid != f"{rec.get('claim_id')}@{rec.get('revision')}":
                 not_ok[key] = ("VER-RECORD-DIGEST", "claim revision id differs from claim_id@revision")
             else:
-                revisions.setdefault(rec["claim_id"], []).append((key, rec))
+                revisions.setdefault(rec["claim_id"], []).append((key, rec, False))
         elif kind == "basin_ref":
             try:
                 digest_ok = c14n_digest(rec) == e.get("record_digest")
@@ -1408,19 +1496,26 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
 
     for claim_id, items in sorted(revisions.items()):
         items.sort(key=lambda it: it[1]["revision"])
-        if not verify_chain([r for _k, r in items]):
-            for k, _r in items:
-                not_ok[k] = ("VER-CHAIN", f"claim {claim_id}: revision chain is broken, truncated at the head "
-                                          "or has a gap")
+        # every non-stub revision already verified on its own; check the links around any stub gap
+        chain_problem = claim_links_problem([r for _k, r, _s in items])
+        if chain_problem is not None:
+            for k, _r, _s in items:
+                not_ok[k] = ("VER-CHAIN", f"claim {claim_id}: {chain_problem}")
+                withheld_ok.discard(k)
         else:
             head = res["claim_heads"].get(claim_id)
             listed_n = sum(1 for x in records if x["kind"] == "claim_revision"
                            and x["id"].rpartition("@")[0] == claim_id)
-            # the pin is compared only when every listed revision verified (else the seal failure is the finding)
+            # the pin is compared only when every listed revision is present (else the missing one is the finding)
             if head is not None and len(items) == listed_n and items[-1][1].get("revision_digest") != head:
-                for k, _r in items:
+                for k, _r, _s in items:
                     not_ok[k] = ("VER-CHAIN", f"claim {claim_id}: head revision does not match the head the "
                                               "bundle pinned (tail cut or re-sealed)")
+            else:
+                for k, _r, is_stub in items:       # a stub excuses only itself
+                    if is_stub:
+                        not_ok[k] = ("VER-RECORD-SEAL", "revision withheld for privacy")
+                        withheld_ok.add(k)
 
     sealed = [e for e in records if e["kind"] not in _UNSEALED_KINDS]
     bad_ids = sorted({eid for (_k, eid) in not_ok})
@@ -1431,29 +1526,32 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
     declared = cov.get("unverifiable_ids", [])
     for (kind, eid), (rule, why) in sorted(not_ok.items()):
         if eid in declared:
-            withheld = (kind == "run" and eid in stub_runs) or (
-                kind == "claim_revision" and eid.rpartition("@")[0] in stub_claims)
-            if withheld:
+            if (kind, eid) in withheld_ok:
                 res["notes"].append(f"{kind}:{eid} declared unverifiable ({rule}: {why})")
             else:
-                # a declaration cannot launder a defect: only a privacy-withheld row is acceptable partiality
+                # a declaration cannot launder a defect: only a privacy-withheld stub is acceptable partiality
                 fail("VER-UNVERIFIABLE", f"declared unverifiable but not withheld for privacy ({rule}: {why})",
                      f"{kind}:{eid}")
         else:
             fail(rule, why, f"{kind}:{eid}")
+    derived_withheld = sorted(eid for (_k, eid) in withheld_ok)
+    if "withheld_ids" in cov and sorted(cov["withheld_ids"]) != derived_withheld:
+        fail("VER-UNVERIFIABLE", f"declared withheld ids {sorted(cov['withheld_ids'])} differ from the privacy "
+                                 f"stubs derived from stub shape and digests {derived_withheld}")
     if cov.get("records_total") != res["records_total"] or cov.get("records_verified") != res["records_verified"] \
             or sorted(declared) != bad_ids:
         fail("VER-COVERAGE", f"declared coverage {cov.get('records_verified')}/{cov.get('records_total')} "
                              f"differs from recomputed {res['records_verified']}/{res['records_total']}")
 
     rr = bundle.get("run_rows")
-    if isinstance(rr, dict):                  # core VER-RUN-ROWS: run_rows.sealed equals the run entries listed
+    if isinstance(rr, dict):
         n_runs = sum(1 for x in records if x["kind"] == "run")
-        # core VER-RUN-ROWS (0.2.5): a withheld row with a digest is a run entry counted under
-        # withheld_for_privacy, not sealed; one without a digest has no entry. So
-        # sealed <= run entries <= sealed + withheld_for_privacy.
         sealed_n = rr.get("sealed") if isinstance(rr.get("sealed"), int) else 0
         withheld_n = rr.get("withheld_for_privacy") if isinstance(rr.get("withheld_for_privacy"), int) else 0
+        derived_run_stubs = sum(1 for (k, _i) in withheld_ok if k == "run")
+        if derived_run_stubs > withheld_n:
+            fail("VER-RUN-ROWS", f"{derived_run_stubs} run stubs derived but run_rows counts only "
+                                 f"{withheld_n} withheld_for_privacy rows")
         if not sealed_n <= n_runs <= sealed_n + withheld_n:
             fail("VER-RUN-ROWS", f"run_rows says {sealed_n} sealed and {withheld_n} withheld rows, which cannot "
                                  f"account for the {n_runs} run records the bundle lists "
@@ -1826,7 +1924,7 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
     return {"status": status, "integrity_ok": integrity_ok, "approvals_ok": approvals_ok,
             "comparisons": comparisons, "comparisons_ok": comparisons_ok, "live": live,
             "partial": partial, "coverage": coverage, "hashes_ok": hashes_ok, "records_ok": records_ok,
-            "claims": claims, "bundle": bundle_res}
+            "claims": claims, "bundle": bundle_res, "session_bad": session_bad, "head_bad": head_bad}
 
 
 def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERANCE, out=print,
