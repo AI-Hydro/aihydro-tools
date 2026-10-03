@@ -399,6 +399,27 @@ existing rows fail loudly.
   sealed `entry_digest`) is refused with `EVIDENCE_SEAL_INVALID`. Promotion
   refuses it, claim bindings and snapshot drift show `unresolved:EVIDENCE_SEAL_INVALID`,
   and registry staleness lists it. Unsealed legacy rows are unchanged.
+- The seal a run row carried when the claim was bound is recorded in the sealed
+  revision as `evidence_seals` (`source_id -> record_digest`; omitted when no
+  source was sealed, so earlier revisions keep their digest). A v3 fingerprint is
+  blind to the seal, so on verify, promotion, claim binding, registry staleness
+  and snapshot drift the row must still carry exactly that record: otherwise the
+  source is refused as `EVIDENCE_SEAL_INVALID` (drift reason
+  `seal_removed_or_replaced`). A source that was unsealed at bind time stays
+  unbound, so a later valid seal (lazy re-seal) is neutral. Registry entries
+  carry the same `evidence_seals`. Stdlib replay reproduces the field: per run
+  source it tries seal-bound and unbound (and v2/v3), only where variants
+  differ, so a capsule row whose seal was stripped matches no combination.
+- A revision written now binds the row's CURRENT seal, also for a source that
+  was unsealed at an earlier bind (so a claim re-revised after a lazy re-seal
+  does not stay unbound); when nothing else moved no revision is written.
+  Verifying an existing revision keeps its stored binding.
+- Bound of the replay guarantee: at replay, seal binding protects only claims
+  anchored by a signed approval (the approval signs the revision digest, which
+  includes `evidence_seals`). Chains of unapproved claims are checked for
+  self-consistency and against the in-capsule `claim_heads` pin, so a
+  consistent strip + re-digest + re-pin of such a chain is accepted until an
+  external anchor (registry stamp or signed bundle) exists.
 - A stored fingerprint is always recomputed in its own version, so existing
   v2 claims, approvals and registry rows do not drift. A v2 binding to a row
   that is later sealed or marked still reads as changed (the limit of v2).

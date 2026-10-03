@@ -89,7 +89,7 @@ def test_snapshot_surface_flags_the_forged_seal(session):
     _raw_write({**row, "record": {**_sealed(row), "tool": "forged"}})
     from ai_hydro.session import surfaces
     records = {"r1": _row()}
-    versions, reason = surfaces._live_evidence("rev", HydroSession.load("rev").claims["c1"], records)
+    versions, _seals, reason = surfaces._live_evidence("rev", HydroSession.load("rev").claims["c1"], records)
     assert versions["r1"] == "unresolved:EVIDENCE_SEAL_INVALID"
 
 

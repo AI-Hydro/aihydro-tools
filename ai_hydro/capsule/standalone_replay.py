@@ -648,9 +648,13 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str, ex
     Mirrors ``ai_hydro.approval.records.claim_revision_fields`` for claims whose
     evidence spans are all run-backed (the retained run row is in ``run_log.json``).
     The capsule does not carry which fingerprint version each source was bound
-    in, so when ``expected`` is given every per-source v2/v3 choice (only sources
-    whose two fingerprints differ branch) is tried and ``expected`` is returned
-    on a match; otherwise the all-v3 digest is returned.
+    in, nor whether it was sealed when the claim was bound (``evidence_seals``,
+    present only for sources whose row carried a record at bind time). When
+    ``expected`` is given every per-source (fingerprint version, seal bound or
+    not) choice is tried, branching only on sources whose variants differ, and
+    ``expected`` is returned on a match; otherwise the all-v3, seals-bound digest
+    is returned. A row whose seal was deleted offers no seal-bound variant, so a
+    claim bound to the sealed row matches no combination.
     Anything not reproducible in stdlib returns a precise reason, never a digest:
     dataset and paper spans (they need the raw slot / the passage index), legacy
     ``evidence`` lists, claims that are not valid scientific claims.
@@ -670,7 +674,7 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str, ex
         return None, "claim in session.json is not a valid scientific claim"
     spans = claim.get("evidence_spans") or []
     session_id = session_raw.get("session_id")
-    norm_spans, versions = [], {}
+    norm_spans, versions, row_seals = [], {}, {}
     for span in spans:
         if not isinstance(span, dict) or not span.get("source_type") or not span.get("source_id"):
             return None, "claim has a malformed evidence span"
@@ -687,6 +691,9 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str, ex
         if row.get("session_id", session_id) != session_id or row.get("run_id", sid) != sid:
             return None, f"run {sid!r} has conflicting session/run identity"
         versions[sid] = {v: _run_fingerprint(row, v) for v in ("sha256-v3", "sha256-v2")}
+        rec = row.get("record")
+        if isinstance(rec, dict) and isinstance(rec.get("record_digest"), str) and rec["record_digest"]:
+            row_seals[sid] = rec["record_digest"]
         norm_spans.append({"source_type": kind, "source_id": sid, "metric_ref": span.get("metric_ref"),
                            "page": span.get("page"), "passage_hash": span.get("passage_hash")})
     out_scope = {"basins": list(scope["basins"]), "period": scope["period"],
@@ -694,8 +701,8 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str, ex
                  "model_versions": scope.get("model_versions") or {}}
     if scope.get("basin_refs") is not None:     # same omission-when-None rule as ClaimScope (slice 3)
         out_scope["basin_refs"] = [dict(e) for e in scope["basin_refs"]]
-    def _fields(chosen: dict) -> dict:
-        return {
+    def _fields(chosen: dict, seals: dict | None = None) -> dict:
+        fields = {
             "schema": REVISION_SCHEMA,
             "text": claim["claim"],
             "claim_type": claim["claim_type"],
@@ -709,18 +716,41 @@ def recompute_claim_revision(session_raw: dict, run_log: dict, claim_id: str, ex
             "prereg_id": claim.get("prereg_id"),
             "uncertainty_verified": bool(claim.get("uncertainty_verified")),
         }
+        if seals:           # omitted when empty, as in claim_revision_fields
+            fields["evidence_seals"] = dict(seals)
+        return fields
+
+    def _options(sid: str) -> list:
+        """Distinct ``(fingerprint, seal-or-None)`` choices for one source, default first."""
+        out = []
+        for seal in ((row_seals[sid], None) if sid in row_seals else (None,)):
+            for ver in ("sha256-v3", "sha256-v2"):
+                option = (versions[sid][ver], seal)
+                if option not in out:
+                    out.append(option)
+        return out
     try:
-        default = c14n_digest(_fields({s: v["sha256-v3"] for s, v in versions.items()}))
+        options = {s: _options(s) for s in versions}
+        default = c14n_digest(_fields({s: o[0][0] for s, o in options.items()},
+                                      {s: o[0][1] for s, o in options.items() if o[0][1]}))
         if expected is None or default == expected:
             return default, None
-        branching = [s for s, v in versions.items() if v["sha256-v3"] != v["sha256-v2"]]
-        if not branching or len(branching) > _MAX_BRANCHING_SOURCES:
+        branching = [s for s, o in options.items() if len(o) > 1]
+        total = 1
+        for s in branching:
+            total *= len(options[s])
+        if not branching or len(branching) > _MAX_BRANCHING_SOURCES or total > 2 ** _MAX_BRANCHING_SOURCES:
             return default, None
         import itertools
-        for combo in itertools.product(("sha256-v3", "sha256-v2"), repeat=len(branching)):
-            choice = {s: v["sha256-v3"] for s, v in versions.items()}
-            choice.update({s: versions[s][ver] for s, ver in zip(branching, combo)})
-            candidate = c14n_digest(_fields(choice))
+        for combo in itertools.product(*(options[s] for s in branching)):
+            choice = {s: o[0][0] for s, o in options.items()}
+            seals = {s: o[0][1] for s, o in options.items() if o[0][1]}
+            for s, (fp, seal) in zip(branching, combo):
+                choice[s] = fp
+                seals.pop(s, None)
+                if seal:
+                    seals[s] = seal
+            candidate = c14n_digest(_fields(choice, seals))
             if candidate == expected:
                 return candidate, None
         return default, None

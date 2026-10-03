@@ -82,7 +82,8 @@ def _claim(text="Mean flow is stable", kind="run"):
 class Case:
     """A session whose claims are promoted with the given approval kinds, exported to a capsule."""
 
-    def __init__(self, tmp_path, monkeypatch, claims: dict, key: Path | None = None, span_kind="run"):
+    def __init__(self, tmp_path, monkeypatch, claims: dict, key: Path | None = None, span_kind="run",
+                 seal_row=False):
         import ai_hydro.mcp.tools_session as ts
         import ai_hydro.session.store as store
         from ai_hydro.approval.records import session_claim_revision
@@ -102,6 +103,11 @@ class Case:
             rid = f"{SID}.{claim_id}"
             session.claims[claim_id] = {**_claim(f"Claim {claim_id}", span_kind), "registry_id": rid}
         session.save()
+        if seal_row:        # the row is sealed before the claims are bound (evidence_seals)
+            from ai_hydro.session import run_records as rr
+            row = store._run_log_read_one(SID, RUN_ID)
+            rec = rr.build_run_record(run_id=RUN_ID, tool="t", session_id=SID, entry=row).to_dict()
+            assert store._run_log_record(SID, RUN_ID, {**row, "record": rec}) == "replaced"
         loaded = HydroSession.load(SID)
         for claim_id, kind in claims.items():
             rid = f"{SID}.{claim_id}"
@@ -395,3 +401,37 @@ def test_s6_non_human_approver_fails(tmp_path, monkeypatch, keys):
     c.reseal_manifest()
     code, out = c.replay("--allowed-signers", str(keys["supplied_good"]))
     assert code == 1 and "PASS  approval c1 (" not in out
+
+
+# ------------------------------------------------- evidence_seals (seal binding)
+def test_claim_bound_to_a_sealed_row_replays_and_a_stripped_seal_fails(tmp_path, monkeypatch):
+    c = Case(tmp_path, monkeypatch, {"c1": "v1"}, seal_row=True)
+    rl = json.loads((c.dir / "run_log.json").read_text())
+    assert rl[RUN_ID]["record"]["record_digest"]                 # exported sealed
+    code, out = c.replay()
+    assert code == 0 and "FAIL" not in out, out
+    assert "UNSIGNED  approval c1" in out
+
+    # strip the seal in the capsule copy and regenerate the manifest (hide it from the hash check)
+    rl[RUN_ID].pop("record")
+    (c.dir / "run_log.json").write_text(json.dumps(rl))
+    c.reseal_manifest()
+    code, out = c.replay()
+    assert code == 1
+    assert "FAIL  approval c1" in out and "recomputed claim_revision_digest differs" in out
+
+
+def test_unsealed_at_bind_then_sealed_still_replays(tmp_path, monkeypatch):
+    """Lazy re-seal after the claim was bound: the capsule has a sealed row, the approval predates it."""
+    from ai_hydro.session import run_records as rr
+    from ai_hydro.session import store
+    import ai_hydro.mcp.tools_session as ts
+    c = Case(tmp_path, monkeypatch, {"c1": "v1"})
+    row = store._run_log_read_one(SID, RUN_ID)
+    rec = rr.build_run_record(run_id=RUN_ID, tool="t", session_id=SID, entry=row).to_dict()
+    assert store._run_log_record(SID, RUN_ID, {**row, "record": rec}) == "replaced"
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "capsule2"))
+    assert "error" not in res, res
+    c.dir = tmp_path / "capsule2"
+    code, out = c.replay()
+    assert code == 0 and "FAIL" not in out, out

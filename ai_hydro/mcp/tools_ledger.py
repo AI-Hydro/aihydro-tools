@@ -101,6 +101,19 @@ def _record_revision(session, claim_id: str, *, tool: str, reason: str, before=N
     from ai_hydro.approval.records import session_claim_revision
     from ai_hydro.session import claim_revisions
     after = session_claim_revision(session, claim_id)[2]
+    if not bookkeeping:
+        # A revision written because something moved binds the row's CURRENT
+        # seal (a row sealed late is bound from here on). When nothing else
+        # moved, keep the stored binding so no spurious revision is written.
+        fresh = session_claim_revision(session, claim_id, for_new_revision=True)[2]
+        if fresh != after:
+            from aihydro_core.records import digest as _digest
+            try:
+                last = claim_revisions.latest(session.session_id, claim_id)
+            except Exception:
+                last = None
+            if last is None or last["revision_digest"] != _digest(after):
+                after = fresh
     return claim_revisions.record_change(
         session.session_id, claim_id, after, tool=tool, reason=reason, before=before,
         bookkeeping=bookkeeping, extra_cause=extra_cause)
@@ -464,14 +477,16 @@ def promote_claim_to_registry(
         )
         from ai_hydro.registry.evidence import fingerprint
 
-        from ai_hydro.approval.records import latest_bound_versions
+        from ai_hydro.approval.records import latest_bound_state
+        _bound_versions, _bound_seals = latest_bound_state(session_id, claim_id)
         evaluation = evaluate_promotion(session, claim_dict, claim_id=claim_id,
-                                        like=latest_bound_versions(session_id, claim_id))
+                                        like=_bound_versions, like_seals=_bound_seals)
         blocked = evaluation.first_blocking
         if blocked is not None:
             raise blocked.exception
         spans = [s if isinstance(s, dict) else s.model_dump() for s in claim.evidence_spans]
         evidence_versions = evaluation.evidence_versions
+        evidence_seals = evaluation.evidence_seals
 
         # ── Human approval (ADR-002a) ─────────────────────────────────────────
         # Checked last so the researcher is only asked to approve a claim that
@@ -480,7 +495,7 @@ def promote_claim_to_registry(
         # retained-evidence fingerprints just computed above. It must also be
         # unconsumed (single use). A tool argument can request but never confer
         # this.
-        claim_rev = claim_revision_digest(claim_dict, evidence_versions)
+        claim_rev = claim_revision_digest(claim_dict, evidence_versions, evidence_seals)
 
         # ── Revision chain (slice 2) ──────────────────────────────────────────
         # Approvals bind to the claim's latest *stored* revision. A claim with no
@@ -489,7 +504,7 @@ def promote_claim_to_registry(
         # stored revision, record why; the old approval cannot cover that state.
         from ai_hydro.approval.records import claim_revision_fields
         from ai_hydro.session import claim_revisions
-        now_fields = claim_revision_fields(claim_dict, evidence_versions)
+        now_fields = claim_revision_fields(claim_dict, evidence_versions, evidence_seals)
         stored = claim_revisions.ensure_baseline(
             session_id, claim_id, now_fields, tool="promote_claim_to_registry").to_dict()
         if stored["revision_digest"] != claim_rev:
@@ -572,6 +587,7 @@ def promote_claim_to_registry(
             "prereg_id": claim_dict.get("prereg_id"),
             "promoted_at": promoted_at,
             "evidence_versions": evidence_versions,
+            **({"evidence_seals": evidence_seals} if evidence_seals else {}),
             "evidence_schema_version": 2,
             "scope": claim.scope.model_dump(),
             "evidence_verification": verification,
@@ -664,7 +680,7 @@ def check_registry_staleness(session_id: str) -> dict:
             spans = entry.get("evidence_spans", [])
             ev_versions = entry.get("evidence_versions", {})
 
-            stale_sources = check_evidence_staleness(session, ev_versions, spans)
+            stale_sources = check_evidence_staleness(session, ev_versions, spans, entry.get("evidence_seals"))
 
             if stale_sources:
                 legacy = entry.get("evidence_schema_version") != 2

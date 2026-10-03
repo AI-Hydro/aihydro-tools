@@ -84,6 +84,11 @@ class Violation:
 class PromotionEvaluation:
     violations: list
     evidence_versions: dict   # source_id -> fingerprint; valid only if no blocking violation
+    evidence_seals: dict = None   # source_id -> record_digest of rows sealed at bind time
+
+    def __post_init__(self):
+        if self.evidence_seals is None:
+            object.__setattr__(self, "evidence_seals", {})
 
     @property
     def first_blocking(self) -> Violation | None:
@@ -182,7 +187,7 @@ def _quality_warnings(session: Any, spans: list[dict]) -> list[dict]:
 
 
 def evaluate_promotion(session: Any, claim: dict, *, claim_id: str | None = None,
-                       like: dict | None = None) -> PromotionEvaluation:
+                       like: dict | None = None, like_seals: dict | None = None) -> PromotionEvaluation:
     """All promotion violations for ``claim`` plus the verified evidence fingerprints.
 
     ``claim`` is the session's claim dict. Exceptions other than the structured
@@ -190,12 +195,15 @@ def evaluate_promotion(session: Any, claim: dict, *, claim_id: str | None = None
     did. ``like``: the claim's latest stored ``evidence_versions``; fingerprints are
     computed in each stored entry's version so an old binding does not drift.
     """
-    from ai_hydro.registry.evidence import EvidenceError, verified_versions
+    from ai_hydro.registry.evidence import EvidenceError, verified_binding
     from ai_hydro.session.models import ScientificClaim
 
     claim_id = claim_id if claim_id is not None else claim.get("id")
     model = ScientificClaim(**claim)
     out: list[Violation] = []
+    if like is None and like_seals is None:     # the gate always knows what the claim was bound to
+        from ai_hydro.approval.records import latest_bound_state
+        like, like_seals = latest_bound_state(getattr(session, "session_id", None), claim_id)
 
     # id: stored ids that predate the id rule stay readable but cannot be promoted.
     try:
@@ -256,8 +264,10 @@ def evaluate_promotion(session: Any, claim: dict, *, claim_id: str | None = None
                 "EVIDENCE_METRIC_MISMATCH", claim_id,
                 "The scope metric does not match any referenced evidence metric.")))
     versions: dict = {}
+    seals: dict = {}
     try:
-        versions = verified_versions(session, spans, require_uncertainty=requires_uncertainty, like=like)
+        versions, seals = verified_binding(session, spans, require_uncertainty=requires_uncertainty,
+                                           like=like, like_seals=like_seals)
     except EvidenceError as exc:
         out.append(_from_exc(exc.code, "evidence", exc))
 
@@ -268,7 +278,7 @@ def evaluate_promotion(session: Any, claim: dict, *, claim_id: str | None = None
             f"'{warn['validator']}'. It does not block promotion; state it as a limitation or "
             "re-run the analysis with the issue resolved.",
             "evidence", blocking=False))
-    return PromotionEvaluation(out, versions)
+    return PromotionEvaluation(out, versions, seals)
 
 
 def promotion_violations(session: Any, claim: dict, *, claim_id: str | None = None) -> list[Violation]:
