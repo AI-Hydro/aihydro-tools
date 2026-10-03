@@ -8,6 +8,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-03
+
+Released after e2e proof 2. It contains:
+
+- the neutral analysis tools;
+- `data_fetch` retention and `_run_id` on every recorded result;
+- seal binding (`evidence_seals`);
+- the replay mirror follow-ups;
+- stable promotion refusal codes and one shared uncertainty gate;
+- carry-through of provider-declared units.
+
+It requires aihydro-core 0.2.5 or later.
+
 ### Added
 
 - **Five deterministic series/geometry tools, identical in every evaluation arm** (P1 design ruling, packet P1-T). `summarize_series(series, start?, end?, quantiles?)`, `detect_threshold_runs(series, threshold | threshold_relative={stat, factor}, comparison="gt", gap_policy="break")`, `compare_series(series_a, series_b, convert_to=None)`, `bootstrap_statistic(series, statistic, method, n_resamples, level, seed, block_length?)` and `measure_feature(feature)`. Each `series` argument is the `run_id` of a prior run that retained a series (`data_fetch`, `fetch_streamflow_data`); the producer is declared as a parent of the call, so lineage and the retained file's digest are sealed in the new record, and every success returns `_run_id`. Results echo recorded metadata (units, product, variable) in neutral fields and name their method (quantile method, KGE sd convention, bootstrap interval, geodesic method). Neutrality contract: no warnings, recommendations, `next_steps` or adequacy judgements; the only refusal is a plain `{error, code, message}` for malformed input (unknown run, aggregate-only record where values are needed, bad arguments, a retained file whose digest no longer matches). `detect_threshold_runs` works on the dates actually present and never re-indexes (`gap_policy="break"` ends a run at a missing date or a date with no value; `"skip"` is an explicit choice that bridges them); it does not use the `q.dropna()` event detector in aihydro-lsh. `bootstrap_statistic` has no default `method` (iid vs block must be chosen). `compare_series` converts units only when `convert_to` is given and never refuses on mismatched units. `measure_feature` was chosen over filling `area_km2` in `register_feature` because it works on any registered feature or inline GeoJSON, does not change an existing tool's output in every arm, and leaves its own sealed record. Maths lives in `ai_hydro/analysis/series_ops.py` and wraps `aihydro_core.science._bootstrap`, `aihydro_modelling.search.comparison._kge`, `aihydro_watershed.signatures.signatures._consecutive_event_lengths` and `aihydro_data.geometry.measures.geodesic_area_km2`. Tests (synthetic series only): `tests/test_series_tools.py`; the per-arm tool differences are unchanged (C3-C2 and C2-C1 are the same sets, the new tools are in all arms): `tests/test_series_tools_arms.py`.
