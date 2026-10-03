@@ -855,6 +855,13 @@ def _list_redacted(cap: Path, cid: str, revisions):
     (cap / MANIFEST_FILE).write_text(json.dumps(m, indent=2))
 
 
+def _list_redacted_run(cap: Path, run_id: str):
+    """Record in the manifest that the exporter redacted this run row (privacy.redacted_run_ids)."""
+    m = json.loads((cap / MANIFEST_FILE).read_text())
+    m.setdefault("privacy", {}).setdefault("redacted_run_ids", []).append(run_id)
+    (cap / MANIFEST_FILE).write_text(json.dumps(m, indent=2))
+
+
 def _first_bound_row(log):
     return next(r for r, row in sorted(log.items()) if isinstance(row.get("record"), dict) and
                 row["record"].get("extra", {}).get("entry_digest"))
@@ -1064,6 +1071,8 @@ def test_b6_an_a4_shaped_capsule_gets_no_crate_at_not_performed(exported, tmp_pa
         (cap / n).unlink()
     _a4(cap)
     _refresh_manifest(cap, counts=False)          # hashes repaired, export-time counts not
+    log = json.loads((cap / "run_log.json").read_text())
+    _list_redacted_run(cap, next(r for r, row in log.items() if row.get("redacted_for_privacy")))   # listed: only the counts fail
     with pytest.raises(CrateExportError, match="fails its own integrity checks"):
         export_crate(cap, session_id=SID, live=False)
     assert not any((cap / n).exists() for n in _NEW)
@@ -1094,6 +1103,7 @@ def test_a4_on_a_cited_row_fails_stub_anchor_with_core_parity(exported, tmp_path
     _rechain_with_seals(cap, rid, real_digest)
     _a4(cap)                                       # bare stub, invented digest, on a row the claim cites
     _refresh_manifest(cap)
+    _list_redacted_run(cap, rid)
     _force_integrity(monkeypatch)
     with pytest.raises((CrateExportError, ValueError)):
         export_crate(cap, session_id=SID, live=False)
@@ -1111,6 +1121,7 @@ def test_the_genuine_stub_of_a_cited_row_verifies_and_an_uncited_a4_is_the_docum
     log[rid] = _stub_of(log[rid])                  # a genuine stub: the real digest, the real record
     (cap / "run_log.json").write_text(json.dumps(log, indent=2))
     _refresh_manifest(cap)
+    _list_redacted_run(cap, rid)
     _list_redacted(cap, "c1", [])
     out = export_crate(cap, session_id=SID, live=False)
     assert rid in out["coverage"]["withheld_ids"] and verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
@@ -1120,6 +1131,8 @@ def test_the_genuine_stub_of_a_cited_row_verifies_and_an_uncited_a4_is_the_docum
         (cap2 / n).unlink()
     _a4(cap2)
     _refresh_manifest(cap2)                        # the attacker repairs every export-time count too
+    _list_redacted_run(cap2, next(r for r, row in json.loads((cap2 / "run_log.json").read_text()).items()
+                                  if row.get("redacted_for_privacy")))
     export_crate(cap2, session_id=SID, live=False)
     assert verify_crate(cap2).ok and sr.verify_bundle(cap2)["ok"]
 
@@ -1156,3 +1169,103 @@ def test_real_export_with_a_cited_run_row_withheld_verifies_with_the_genuine_stu
     assert "cited_1" in cov["withheld_ids"] and verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
     assert validate_errors(validate_crate(cap)) == []
     assert _replay(cap, isolated_python=True)[0] == 0 and _replay(cap)[0] == 0
+
+
+# ---------------------------------------------------------------- FP1: never seal a local path (write-time scrub)
+def _add_pathy_claim(cid="c_path", text="Baseflow index read from /Users/zz-someone/work/notes.txt is 0.58 +/- 0.01 mm/day",
+                     rationale="Synthetic fixture; see /Users/zz-someone/work/notes.txt for the CI derivation."):
+    return add_claim(
+        session_id=SID, claim_id=cid, statement=text, claim_type="empirical_result", status="proposed",
+        confidence="low", confidence_rationale=rationale, basins=["synthetic"], period="2000-2001", metric="nse",
+        basin_refs=[basin_ref_full("synthetic")],
+        limitations=["Synthetic regression case; data under /Users/zz-someone/work/ only."],
+        evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}])
+
+
+def test_a_claim_with_a_path_is_scrubbed_before_it_is_sealed(exported, tmp_path):
+    assert _add_pathy_claim()["status"] == "recorded"
+    claim = HydroSession.load(SID).claims["c_path"]
+    assert "zz-someone" not in json.dumps(claim)
+    assert "0.58 +/- 0.01 mm/day" in claim["claim"]                      # scientific strings are untouched
+    rows = cr.history_readonly(SID)[0]["c_path"]["rows"]
+    assert len(rows) == 1 and "zz-someone" not in json.dumps(rows) and "redacted_for_privacy" not in rows[0]
+    from aihydro_core.records import verify_claim_revision_dict
+    assert verify_claim_revision_dict(rows[0])
+    update_claim_status(SID, "c_path", "proposed", "medium", "Now also see /Users/zz-someone/other/place.csv")
+    rows = cr.history_readonly(SID)[0]["c_path"]["rows"]
+    assert len(rows) == 2 and "zz-someone" not in json.dumps(rows)
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "scrubbed"))
+    assert not res.get("crate_error"), res
+    cap = Path(res["capsule_dir"])
+    doc = json.loads((cap / "records" / "claim_revisions.json").read_text())
+    assert not any(r.get("redacted_for_privacy") for r in doc["claims"]["c_path"]["rows"])
+    assert "zz-someone" not in "".join(p.read_text(errors="ignore") for p in cap.rglob("*") if p.is_file())
+    assert verify_crate(cap).ok and _replay(cap, isolated_python=True)[0] == 0 and _replay(cap)[0] == 0
+    # no drift between the stored claim and its latest revision
+    from ai_hydro.approval.records import session_claim_revision
+    s = HydroSession.load(SID)
+    assert cr.revision_drift(session_claim_revision(s, "c_path")[2], cr.latest(SID, "c_path"))["state"] == "in_sync"
+
+
+def test_approval_and_promotion_round_trip_on_a_scrubbed_claim(exported):
+    from approval_helpers import approve
+    from ai_hydro.mcp.tools_ledger import promote_claim_to_registry
+    _add_pathy_claim("c_promo")
+    update_claim_status(SID, "c_promo", "supported", "medium", "Synthetic fixture only; notes at /Users/zz-someone/n.txt",
+                        uncertainty_verified=True)
+    approve(SID, "c_promo")
+    out = promote_claim_to_registry(SID, "c_promo", researcher_approved=True)
+    assert not out.get("error"), out
+
+
+def _legacy_stub_head(world_tmp, status="contested"):
+    """A LEGACY withheld head: a sealed revision whose content held a path (written before the write-time scrub)."""
+    from aihydro_core.records import ClaimRevision, digest
+    prev = cr.history_readonly(SID)[0]["c1"]["rows"][-1]
+    content = {**prev["content"], "status": status, "confidence_rationale": "legacy note at /Users/zz-someone/x.txt"}
+    new = ClaimRevision(session_id=SID, claim_id="c1", revision=prev["revision"] + 1, supersedes=prev["revision_digest"],
+                        revision_digest=digest(content), content=content,
+                        cause={"tool": "update_claim_status", "reason": "status_update"}, actor=prev["actor"]).seal()
+    conn = cr._connect(SID, create=False)
+    cr._insert_sealed(conn, new)
+    conn.close()
+    s = HydroSession.load(SID)
+    s.claims["c1"]["status"] = status
+    s.claims["c1"]["confidence_rationale"] = "legacy note at <abs>/x.txt"
+    s.save()
+    return new
+
+
+def test_FP2_honest_legacy_withheld_head_that_also_changed_status_is_exported_and_replays(exported, tmp_path):
+    _legacy_stub_head(tmp_path)
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "fp2"))
+    assert not res.get("crate_error"), res
+    cap = Path(res["capsule_dir"])
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 0, out
+    assert "head withheld; comparison limited to revision 1" in out and "unverifiable: head withheld" in out
+    assert verify_crate(cap).ok
+    crate = (cap / "ro-crate-metadata.json").read_text()
+    assert "contested" not in crate                       # the session's status is not projected for a withheld head
+
+
+def test_FP2b_a_text_edit_behind_a_legacy_stub_head_still_fails(exported, tmp_path):
+    new = _legacy_stub_head(tmp_path)
+    s = HydroSession.load(SID)
+    s.claims["c1"]["claim"] += " (stronger)"
+    s.save()
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "fp2b"))
+    assert "claims differing from their sealed head" in str(res.get("crate_error"))
+
+
+def test_S4_a_run_stub_the_manifest_does_not_list_is_refused(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_s4")
+    for n in _NEW:
+        (cap / n).unlink()
+    _a4(cap)
+    _refresh_manifest(cap)                                # every count repaired; privacy.redacted_run_ids still empty
+    with pytest.raises(CrateExportError, match="privacy stub the manifest does not list"):
+        export_crate(cap, session_id=SID, live=False)

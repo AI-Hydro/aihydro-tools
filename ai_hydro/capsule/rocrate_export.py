@@ -96,6 +96,19 @@ def _check_stub_revisions_listed(root: Path, manifest: dict) -> None:
                                        "stub the manifest does not list as redacted at export")
 
 
+def _check_run_stubs_listed(root: Path, manifest: dict) -> None:
+    """Every privacy-stub run row must be one the manifest says the exporter redacted (privacy.redacted_run_ids)."""
+    try:
+        log = json.loads((root / "run_log.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    listed = set((manifest.get("privacy") or {}).get("redacted_run_ids") or [])
+    for rid, row in sorted(log.items()):
+        if isinstance(row, dict) and row.get("redacted_for_privacy") is True and rid not in listed:
+            raise CrateExportError(f"no crate is written: run {rid} is a privacy stub the manifest does not list "
+                                   "as redacted at export")
+
+
 def _check_clean(capsule_dir: Path) -> dict:
     manifest = json.loads((capsule_dir / MANIFEST_FILE).read_text(encoding="utf-8"))
     listed = {m["path"] for m in manifest["files"]}
@@ -146,6 +159,7 @@ def _export(root: Path, session_id: str, workspace_dir, claim_entries, live: boo
     manifest_status, _complete = read_legacy_replay_status(str(manifest.get("replay_status", "not_performed")))
     checked = assessment["status"]
     _check_stub_revisions_listed(root, manifest)
+    _check_run_stubs_listed(root, manifest)
     if assessment.get("head_bad") or assessment.get("session_bad"):
         # the claim in session.json no longer matches its sealed head revision (M06e), or a sealed record names
         # another session: like a failed binding, that is a defect to refuse, not partial coverage to declare

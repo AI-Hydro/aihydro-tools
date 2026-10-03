@@ -92,6 +92,17 @@ def _revision_fields(session, claim_id: str):
         return None
 
 
+def _scrub_text(text, session):
+    from ai_hydro.session.refs import scrub_paths
+    return scrub_paths(text, getattr(session, "workspace_dir", None)) if isinstance(text, str) else text
+
+
+def _scrub_claim(claim_dict: dict, session) -> dict:
+    """The claim as stored: every string scrubbed of local paths (same narrow scrub the run log uses)."""
+    from ai_hydro.session.refs import scrub_value
+    return scrub_value(claim_dict, getattr(session, "workspace_dir", None))
+
+
 def _record_revision(session, claim_id: str, *, tool: str, reason: str, before=None,
                      bookkeeping: bool = False, extra_cause: dict | None = None):
     """Write the sealed revision for the claim's current state (the only claim writer).
@@ -263,7 +274,9 @@ def add_claim(
             evidence_spans=normalized_spans,
         )
 
-        claim_dict = claim.model_dump()
+        claim_dict = _scrub_claim(claim.model_dump(), session)          # never store (or seal) a local path
+        statement = claim_dict["claim"]
+        limitations = claim_dict["limitations"]
         gate = _uncertainty_gate(claim_id, claim_dict, status, False)   # add_claim cannot assert it
         if gate is not None:
             return gate
@@ -335,6 +348,7 @@ def update_claim_status(
         before = _revision_fields(session, claim_id)
         claim_dict["status"] = status
         claim_dict["confidence"] = confidence
+        rationale = _scrub_text(rationale, session)
         claim_dict["confidence_rationale"] = rationale
         claim_dict["updated_at"] = datetime.now(timezone.utc).isoformat()
         if uncertainty_verified:

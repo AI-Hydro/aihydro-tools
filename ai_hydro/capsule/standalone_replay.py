@@ -1746,6 +1746,7 @@ _HEAD_FIELDS = (("claim", "text"), ("claim_type", "claim_type"), ("status", "sta
                 ("limitations", "limitations"))
 
 
+_ENUM_FIELDS = ("status", "confidence", "claim_type")
 _SCRUB_MARKERS = ("<abs>", "~/", "workspace:", "session-data:")
 
 
@@ -1790,10 +1791,20 @@ def check_claims_against_heads(capsule_dir: Path, out=print) -> list:
             continue
         head_withheld = k != len(rows) - 1
         head = rows[k]["content"]
-        diff = [sk for sk, hk in _HEAD_FIELDS if sk in claim and hk in head and claim[sk] != head[hk]
-                and not (head_withheld and _scrubbed(claim[sk]))]
+        differing = [sk for sk, hk in _HEAD_FIELDS if sk in claim and hk in head and claim[sk] != head[hk]]
         if head_withheld:
+            # Legacy withheld head (new revisions never carry a path, so none is withheld any more). Its content is
+            # unknown, so an enumerated field (status, confidence, claim_type) may legitimately have changed in
+            # that very revision: unverifiable, not a failure. A string field that differs and carries no scrub
+            # marker still fails (an edit of the claim text cannot hide behind a forged stub head).
+            unverifiable = [f for f in differing if f in _ENUM_FIELDS]
+            diff = [f for f in differing if f not in _ENUM_FIELDS and not _scrubbed(claim[f])]
             out(f"NOTE  claim {cid}: head withheld; comparison limited to revision {rows[k].get('revision')}")
+            if unverifiable:
+                out(f"NOTE  claim {cid}: unverifiable: head withheld, so session.json's "
+                    f"{', '.join(unverifiable)} cannot be compared with the sealed chain (partial coverage)")
+        else:
+            diff = differing
         if diff:
             bad.append((cid, diff))
             out(f"FAIL  claim {cid}: session.json differs from the sealed "
