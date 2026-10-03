@@ -271,7 +271,7 @@ def test_declare_lineage_outside_a_call_is_a_noop():
     assert rr.declare_lineage(parents=["x"]) is False
 
 
-def test_result_is_unchanged_except_for_record_error(server, env):
+def test_result_is_unchanged_except_for_run_id_and_record_error(server, env):
     from ai_hydro.mcp import app
 
     bare = FastMCP(name="bare")
@@ -283,8 +283,13 @@ def test_result_is_unchanged_except_for_record_error(server, env):
 
     with_mw = call(server, "ok_tool", {"x": 3, "session_id": SID})
     without = call(bare, "ok_tool", {"x": 3, "session_id": SID})
+    # The one addition on success is the address of the sealed row (``_run_id``).
+    run_id = with_mw[1].pop("_run_id")
+    assert run_id in run_log()
     assert with_mw[1] == without[1]
-    assert with_mw[2].structuredContent == without[2].structuredContent
+    structured = dict(with_mw[2].structuredContent)
+    assert structured.pop("_run_id") == run_id
+    assert structured == without[2].structuredContent
 
 
 # --------------------------------------------------------- failure visibility

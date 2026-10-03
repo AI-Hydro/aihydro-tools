@@ -32,6 +32,7 @@ from ai_hydro.mcp import tools_data_async  # noqa: F401  — data_fetch_backgrou
 from ai_hydro.mcp import tools_audit       # noqa: F401  — v1.8.0: audit_interpretation (Answer Auditor)
 from ai_hydro.mcp import tools_experiments # noqa: F401  — v2.1.0: define_experiment, run_experiment, get_experiment_table
 from ai_hydro.mcp import tools_skeptic    # noqa: F401  — v2.3.0: run_skeptic (adversarial second-pass referee)
+from ai_hydro.mcp import tools_series     # noqa: F401  — summarize_series, detect_threshold_runs, compare_series, bootstrap_statistic, measure_feature
 
 # ── Tier 1 post-run validator registrations ───────────────────────────────
 # Registered after all tool modules are imported so validator callables exist.
@@ -269,6 +270,11 @@ for _name, _fn in _discover_tools():
 # Pattern 2: multi-tool registrars (one function = many tools)
 # aihydro-data uses this to register its 9 data_* tools in one call.
 _invoke_plugin_registrars(mcp)
+
+# data_fetch (aihydro-data's tool) gets a sealed run record, `_run_id` and a
+# retained, addressable series. Must run after the registrars above.
+from ai_hydro.mcp.tools_data_fetch import register_data_fetch as _register_data_fetch  # noqa: E402
+_register_data_fetch(mcp)
 
 
 # ── Wave 1.5: tag registered tools with tier/domain metadata ──────────────────

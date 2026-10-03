@@ -115,6 +115,12 @@ TOOL_TIERS: dict[str, int] = {
     "check_unit_consistency":           1,
     "audit_interpretation":             1,
     "run_skeptic":                      1,
+    # Deterministic series/geometry tools (identical in every evaluation arm).
+    "summarize_series":                 1,
+    "detect_threshold_runs":            1,
+    "compare_series":                   1,
+    "bootstrap_statistic":              1,
+    "measure_feature":                  1,
     # ── Tier 2: Workflow / data ────────────────────────────────────────────
     # Data retrieval, LLM-authored prose, orchestration; no auto-enforcement.
     # fetch_streamflow_data / fetch_forcing_data demoted to tier 3 (Wave 2.5
@@ -589,7 +595,9 @@ mcp.add_middleware(_EvalConditionMiddleware())
 # Contract (see ai_hydro/session/run_records.py for the record itself):
 #   * never breaks a tool call — every failure here is caught and logged;
 #   * never alters the tool's result, except to add ``_record_error`` when a
-#     record could not be built or stored completely;
+#     record could not be built or stored completely, and ``_run_id`` (the id of
+#     the sealed row, so the agent can cite it) to a successful dict result that
+#     does not already carry one;
 #   * tools listed in RECORD_EXEMPT are skipped (catalog, read-only views, UI
 #     state, lifecycle); calls with no resolvable session are counted as
 #     ``no_session`` and not recorded.
@@ -654,6 +662,38 @@ def _inject_record_error(tool_result, message: str) -> None:
                 return
     except Exception as exc:  # the result must still go out
         _record_log.debug("could not inject _record_error: %s", exc)
+
+
+def _inject_run_id(tool_result, run_id: str) -> None:
+    """Add ``_run_id`` to a successful dict result that does not carry one.
+
+    General mechanism for every recorded tool: the id of the sealed row the
+    middleware just stored is the address the agent cites. Tools that already
+    return ``_run_id`` (via ``post_run``) are left alone. ``_run_id`` is a
+    transport key, excluded from the output digest, so the sealed record is
+    unaffected. Best effort; the result must still go out.
+    """
+    try:
+        structured = getattr(tool_result, "structured_content", None)
+        if isinstance(structured, dict) and set(structured) != {"result"}:
+            if structured.get("error") or "_run_id" in structured:
+                return
+            structured["_run_id"] = run_id
+        for block in getattr(tool_result, "content", None) or []:
+            text = getattr(block, "text", None)
+            if not isinstance(text, str):
+                continue
+            try:
+                parsed = _json.loads(text)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                if not parsed.get("error") and "_run_id" not in parsed:
+                    parsed["_run_id"] = run_id
+                    block.text = _json.dumps(parsed, default=str)
+                return
+    except Exception as exc:
+        _record_log.debug("could not inject _run_id: %s", exc)
 
 
 def _mcp_client_label(context) -> str | None:
@@ -725,6 +765,10 @@ class RunRecordMiddleware(Middleware):
                 context=run_context,
             )
             record_error = outcome.record_error
+            if (failure is None and tool_result is not None and outcome.call_run_id
+                    and isinstance(result_dict, dict) and not result_dict.get("error")
+                    and "_run_id" not in result_dict):
+                _inject_run_id(tool_result, outcome.call_run_id)
         except Exception as exc:
             _record_log.warning("run recording failed for %s: %s", tool, exc)
             record_error = f"recording: {type(exc).__name__}: {exc}"

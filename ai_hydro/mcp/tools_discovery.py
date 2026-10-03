@@ -83,7 +83,9 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
                     "data_doctor", "data_help",
                     "data_fetch_background", "get_data_fetch_result"),
     # v0.2.0 — spectral index tools (TorchGeo cherry-pick Day 5)
-    "analysis":    ("compute_spectral_index", "list_spectral_indices"),
+    "analysis":    ("compute_spectral_index", "list_spectral_indices",
+                    "summarize_series", "detect_threshold_runs", "compare_series",
+                    "bootstrap_statistic", "measure_feature"),
 }
 
 

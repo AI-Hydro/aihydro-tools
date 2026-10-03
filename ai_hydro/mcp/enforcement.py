@@ -98,6 +98,12 @@ _TOOL_ABBREVS: dict[str, str] = {
     "check_temporal_alignment":        "vta",
     "check_unit_consistency":          "vuc",
     "fetch_streamflow_data":           "q",
+    "data_fetch":                      "dfetch",
+    "summarize_series":                "ssum",
+    "detect_threshold_runs":           "runs",
+    "compare_series":                  "cmp",
+    "bootstrap_statistic":             "boot",
+    "measure_feature":                 "meas",
 }
 
 

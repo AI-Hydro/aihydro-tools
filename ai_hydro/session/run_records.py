@@ -477,6 +477,9 @@ class RecordOutcome:
     session_id: Optional[str] = None
     run_ids: List[str] = dataclasses.field(default_factory=list)
     record_error: Optional[str] = None
+    #: The run id the caller should cite for this call (the tool's own ``_run_id``
+    #: when it declared one, else the call's primary row); None unless stored.
+    call_run_id: Optional[str] = None
 
 
 def _session_exists(session_id: str) -> bool:
@@ -806,6 +809,7 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         session_id=session_id,
         run_ids=run_ids,
         record_error="; ".join(problems) if problems else None,
+        call_run_id=call_id if call_id in run_ids else None,
     )
 
 
