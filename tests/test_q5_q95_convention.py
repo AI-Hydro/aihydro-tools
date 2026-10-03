@@ -55,3 +55,30 @@ def test_extract_signatures_marker_through_tools_shim(monkeypatch):
     ).data
     assert d["flow_quantile_convention"] == "camels_nonexceedance_v1"
     assert d["q5"] < d["q_median"] < d["q95"]
+
+
+def test_marker_reaches_the_sealed_row(tmp_path, monkeypatch):
+    """A real post_run seals the marker: evidence.data keeps non-underscore string keys."""
+    from ai_hydro.session import chat_binding, store
+    from ai_hydro.session.chat_binding import ChatBindingStore
+    from ai_hydro.session.store import HydroSession
+    from ai_hydro.mcp.enforcement import post_run
+    import aihydro_watershed.signatures.signatures as impl
+
+    monkeypatch.setattr(store, "_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(store, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(chat_binding, "_store", ChatBindingStore(tmp_path / "chat_studies.json"))
+    HydroSession("q5q95-seal").save()
+
+    days = pd.date_range("2000-01-01", periods=800, freq="D")
+    q_cms = pd.Series(np.random.default_rng(3).lognormal(1.0, 0.8, size=800), index=days)
+    monkeypatch.setattr(impl, "_fetch_precipitation_data_bygeom", lambda *a, **k: pd.Series(2.0, index=days))
+    square = {"type": "Polygon", "coordinates": [[
+        [-77.5, 39.2], [-77.4, 39.2], [-77.4, 39.3], [-77.5, 39.3], [-77.5, 39.2],
+    ]]}
+    res = impl.extract_hydrological_signatures(
+        gauge_id=None, watershed_geojson=square, area_km2=250.0, q_cms_series=q_cms)
+    out = post_run("extract_hydrological_signatures", "q5q95-seal", {"data": dict(res.data), "meta": {"version": "x"}})
+    row = (HydroSession.load("q5q95-seal").get("_run_log") or {})[out["_run_id"]]
+    assert row["evidence"]["data"]["flow_quantile_convention"] == "camels_nonexceedance_v1"
+    assert "_flow_quantile_convention" not in row["evidence"]["data"]
