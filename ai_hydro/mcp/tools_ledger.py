@@ -92,8 +92,12 @@ def _revision_fields(session, claim_id: str):
         return None
 
 
+from ai_hydro.session.claim_paths import LocalPathRefused  # noqa: E402
+
+
 def _record_revision(session, claim_id: str, *, tool: str, reason: str, before=None,
-                     bookkeeping: bool = False, extra_cause: dict | None = None, path_report: dict | None = None):
+                     bookkeeping: bool = False, extra_cause: dict | None = None, path_report: dict | None = None,
+                     enforce_paths: bool = False):
     """Write the sealed revision for the claim's current state (the only claim writer).
 
     Called after the in-memory claim is mutated and before ``session.save()``,
@@ -124,6 +128,16 @@ def _record_revision(session, claim_id: str, *, tool: str, reason: str, before=N
                 last = None
             if last is None or last["revision_digest"] != _digest(after):
                 after = fresh
+    if enforce_paths and not bookkeeping:
+        # the exporter's own test, on the whole projected revision (prose AND identifiers): an accepted write is
+        # never stubbed by the exporter. Ids are not rewritten; a path-like id is refused, naming the field.
+        from ai_hydro.session.claim_paths import LocalPathRefused, refusal, row_problems
+        probe = {"session_id": session.session_id, "claim_id": claim_id, "content": after,
+                 "cause": {"tool": tool, "reason": reason, **(extra_cause or {})}}
+        problems = [(w[len("content."):] if w.startswith("content.") else w, t) for w, t in
+                    row_problems(probe, getattr(session, "workspace_dir", None))]
+        if problems:
+            raise LocalPathRefused(refusal(problems))
     return claim_revisions.record_change(
         session.session_id, claim_id, after, tool=tool, reason=reason, before=before,
         bookkeeping=bookkeeping, extra_cause=extra_cause)
@@ -254,7 +268,10 @@ def add_claim(
     fields). Text that still looks like a local file path is refused with LOCAL_PATH_IN_TEXT (field and offending
     text named) and nothing is recorded: rephrase it, or cite the file through evidence_spans. For example write
     "HDF streamflow files" rather than "HDF /var/streamflow", and "the ratio of A to B" rather than "A:/B ratio".
-    Identifiers are never rewritten.
+    The check covers the whole recorded revision, so a path-like evidence source_id is refused too (the field is
+    named, e.g. evidence_spans[2].source_id); identifiers are never rewritten. Tilde approximations such as
+    "~mm/day" are fine; only "~/" and "$HOME" count as home. For a claim stored earlier with such a path,
+    update_claim_status cannot rephrase it: call add_claim on the same id with rephrased text first.
 
     Returns `promotion_check`: every violation (`code`, `message`, `family`,
     `blocking`) that promote_claim_to_registry would raise on this claim as stored.
@@ -297,7 +314,8 @@ def add_claim(
         session.claims[claim_id] = claim_dict
         path_report: dict = {}
         rev = _record_revision(session, claim_id, tool="add_claim", before=before,
-                               reason="redefined" if existed else "created", path_report=path_report)
+                               reason="redefined" if existed else "created", path_report=path_report,
+                               enforce_paths=True)
         statement, limitations = claim_dict["claim"], claim_dict["limitations"]   # as stored (normalised)
         session.save()
         push_claim_event(
@@ -320,6 +338,8 @@ def add_claim(
         # C2 advisory: what promotion would block on this claim as stored (same policy).
         out["promotion_check"] = promotion_check(session, claim_dict, claim_id=claim_id)
         return out
+    except LocalPathRefused as exc:
+        return exc.refusal
     except Exception as exc:
         return _tool_error_to_dict(exc)
 
@@ -358,7 +378,9 @@ def update_claim_status(
         from ai_hydro.session.claim_paths import prose_problems, refusal
         _bad = prose_problems({**claim_dict, "confidence_rationale": rationale}, getattr(session, "workspace_dir", None))
         if _bad:
-            return refusal(_bad)            # nothing is recorded: no revision, no session change
+            # nothing is recorded: no revision, no session change. A path in text stored earlier (not the new
+            # rationale) cannot be rephrased by this tool: the recovery points to add_claim.
+            return refusal(_bad, legacy_stored=_bad[0][0] != "confidence_rationale")
 
         before = _revision_fields(session, claim_id)
         claim_dict["status"] = status
@@ -370,7 +392,8 @@ def update_claim_status(
 
         path_report: dict = {}
         rev = _record_revision(session, claim_id, tool="update_claim_status",
-                               reason="status_update", before=before, path_report=path_report)
+                               reason="status_update", before=before, path_report=path_report,
+                               enforce_paths=True)
         session.save()
         push_claim_event(
             change_type="updated",
@@ -386,6 +409,8 @@ def update_claim_status(
         # C2 advisory: what promotion would block on this claim as stored (same policy).
         return {"id": claim_id, "status": "updated", **path_report,
                 "promotion_check": promotion_check(session, claim_dict, claim_id=claim_id)}
+    except LocalPathRefused as exc:
+        return exc.refusal
     except Exception as exc:
         return _tool_error_to_dict(exc)
 

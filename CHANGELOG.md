@@ -8,7 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Requires aihydro-core 0.2.7 or later.
+Requires aihydro-core 0.2.8 or later.
 
 ### Changed
 - `add_claim` and `update_claim_status` replace the concrete local prefixes of this machine in claim prose (statement,
@@ -20,8 +20,14 @@ Requires aihydro-core 0.2.7 or later.
 - If prose still holds something that looks like a local file path after that (one shared test, also used by the capsule
   exporter: core's leak pattern, the run-log scrub, case-insensitive `/users/...`, `~/` and `$HOME`), the tool returns a
   structured error `LOCAL_PATH_IN_TEXT` naming the field and the offending text, and records nothing. Rephrase it, or cite
-  the file through `evidence_spans`. Consequence: text such as `HDF /var/streamflow` or `A:/B ratio` is refused; write
-  `HDF streamflow files` or `the ratio of A to B`. Institutional mounts such as `/data/...` are outside the heuristic.
+  the file through `evidence_spans`. The test runs on the whole projected revision, so a path-like evidence id is refused
+  too (field named, for example `evidence_spans[2].source_id`), ids are never rewritten, and an accepted write is never
+  stubbed by the exporter. Consequence: text such as `HDF /var/streamflow` or `A:/B ratio` is refused; write
+  `HDF streamflow files` or `the ratio of A to B` (table in docs/evidence-integrity.md). Tilde approximations such as
+  `~mm/day` are accepted (only `~/` and `$HOME` are home). Institutional mounts such as `/data/...` are outside the heuristic.
+  A legacy claim whose stored text holds an un-normalisable path takes `add_claim` (same id, rephrased text) first.
+- Replay: a legacy scrub marker excuses a difference only if it STARTS its token, and the write-time placeholders do not
+  excuse anything.
 - `claim_revision_fields` stays a pure projection (no scrub), so claims stored before this change keep reading in sync with
   their approvals and are normalised at their next write.
 - Replay compares `session.json` claims with the last non-withheld revision when the head is a privacy stub: a differing

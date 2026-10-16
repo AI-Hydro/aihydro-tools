@@ -1,25 +1,24 @@
-"""Write-time normalisation of local paths in claim prose (never in identifiers).
+"""Write-time handling of local paths in claims (never in identifiers).
 
-A claim's text, rationale and limitations are sealed scientific prose. A sealed revision cannot be rewritten, so a
-local path inside it can only ever be withheld wholesale on export (a privacy stub whose head can no longer be read).
-The writer therefore replaces, before the revision is sealed, the *concrete* local prefixes of this machine and nothing
-else:
+A sealed revision cannot be rewritten, so a local path inside one could only ever be withheld wholesale on export (a
+privacy stub whose head can no longer be read). The writer therefore never creates one:
 
-* the session's workspace directory  -> ``<workspace>``
-* AIHYDRO_HOME                       -> ``<aihydro-home>``
-* the user's home directory          -> ``<home>``
-* the system temp directory          -> ``<tmp>``
+1. It replaces, in the claim's prose (statement, rationale, limitations), the *concrete* local prefixes of this
+   machine, and nothing else: the session workspace -> ``<workspace>``, AIHYDRO_HOME -> ``<aihydro-home>``, the home
+   directory -> ``<home>``, the system temp directory -> ``<tmp>`` (absolute spellings only, resolved and unresolved,
+   longest first, at a path boundary; a placeholder is itself a boundary, so the rewrite is a fixpoint).
+2. It then runs the exporter's own test (:func:`row_problems`, the predicate behind :func:`find_local_path`) on the
+   WHOLE projected revision and refuses (``LOCAL_PATH_IN_TEXT``, field named, nothing recorded) if anything in it, prose
+   or identifier, still looks like a local path. Identifiers (evidence source ids, basin ids, claim ids) are never
+   rewritten, and any accepted write is therefore never stubbed by the exporter, by construction.
 
-(each in its resolved and its unresolved spelling, longest first). There is no "looks like a path" heuristic, so a
-scientific string such as ``HDF /var/streamflow``, ``/group/var``, ``A:/B ratio`` or ``mm/day`` is never rewritten
-unless it is literally under one of those prefixes. The placeholders are not local paths to core's ``PATH_PATTERN``,
-so the crate validates. Anything that still matches that pattern afterwards is *not* rewritten: the revision is
-sealed as given and withheld as a stub at export (existing behaviour). Identifiers (claim id, evidence source ids,
-basin ids) are never touched.
+The predicate is a heuristic by design: core's leak pattern, the run-log scrub's reading, case-insensitive home/system
+roots, ``~/`` and ``$HOME``. It has known false positives on scientific prose (``HDF /var/streamflow``, ``A:/B ratio``,
+``~PET/P``): those are refused and must be rephrased (see docs/evidence-integrity.md). Institutional mounts such as
+``/data/...`` are outside it.
 
-The function is a fixpoint (``normalise(normalise(x)) == normalise(x)``): placeholders contain no prefix.
-The claim projection (``claim_revision_fields``) stays pure and does not scrub, so claims stored before this change
-keep reading in sync with their approvals; they are normalised only at their next write.
+The claim projection (``claim_revision_fields``) stays pure, so claims stored before this change keep reading in sync with
+their approvals; they are normalised only at their next write.
 """
 from __future__ import annotations
 
@@ -102,7 +101,7 @@ def find_local_path(text: Any) -> Optional[str]:
 
     for tok in text.split():
         if hit(tok):
-            return tok.strip("\"'(),;")
+            return tok.strip("\"'(),;").rstrip(".:!?")
     return text[:60] if hit(text) else None
 
 
@@ -122,14 +121,39 @@ def strings_of(obj: Any):
             yield from strings_of(v)
 
 
+def row_problems(row: Any, workspace_dir: Optional[str] = None) -> List[Tuple[str, str]]:
+    """``[(field path, offending substring)]`` for every string (and dict key) in ``row`` that the exporter would
+    withhold: the run-log scrub would change it, or :func:`find_local_path` finds a local path in it."""
+    from ai_hydro.session.refs import scrub_paths
+    out: List[Tuple[str, str]] = []
+
+    def check(text: str, where: str):
+        bad = find_local_path(text)
+        if bad is None and scrub_paths(text, workspace_dir) != text:
+            bad = text.strip()[:80]
+        if bad is not None:
+            out.append((where, bad))
+
+    def walk(x, where):
+        if isinstance(x, str):
+            check(x, where)
+        elif isinstance(x, dict):
+            for k, v in x.items():
+                sub = f"{where}.{k}" if where else str(k)
+                if isinstance(k, str):
+                    check(k, sub)
+                walk(v, sub)
+        elif isinstance(x, (list, tuple)):
+            for i, v in enumerate(x):
+                walk(v, f"{where}[{i}]")
+
+    walk(row, "")
+    return out
+
+
 def row_has_local_path(row: Any, workspace_dir: Optional[str] = None) -> bool:
-    """Whether the capsule exporter must withhold this stored row: the run-log scrub would change it, or any string
-    in it holds a local path by :func:`find_local_path`. Same predicate the tool reports."""
-    from ai_hydro.session.refs import scrub_value
-    import json as _json
-    changed = _json.dumps(scrub_value(row, workspace_dir), sort_keys=True, default=str) != \
-        _json.dumps(row, sort_keys=True, default=str)
-    return changed or any(find_local_path(t) for t in strings_of(row))
+    """Whether the capsule exporter must withhold this stored row. Same predicate the writer refuses on."""
+    return bool(row_problems(row, workspace_dir))
 
 
 def normalise_claim(claim: dict, workspace_dir: Optional[str] = None) -> Tuple[List[str], List[str]]:
@@ -177,27 +201,37 @@ def prose_problems(claim: dict, workspace_dir: Optional[str] = None) -> List[Tup
     return out
 
 
-def refusal(problems: List[Tuple[str, str]]) -> dict:
-    """The structured teaching error returned when claim prose holds a path that cannot be normalised."""
+def refusal(problems: List[Tuple[str, str]], *, legacy_stored: bool = False) -> dict:
+    """The structured teaching error returned when a claim holds a local path that cannot be normalised."""
     field, bad = problems[0]
+    bad = bad.rstrip(".,;:!?")
+    recovery = ("Rephrase the text without the path, or cite the file through evidence (evidence_spans) instead of "
+                "quoting its location in the text. Example: write 'the 90% interval of the baseflow index' rather "
+                "than naming the file that holds it.")
+    if legacy_stored:
+        recovery = ("This text was stored earlier and update_claim_status cannot rephrase it. Call add_claim with the "
+                    "same claim id and rephrased text (status 'retracted' is accepted there too), then update the "
+                    "status.")
     return {"error": True, "code": "LOCAL_PATH_IN_TEXT",
             "message": (f"The {field} contains something that looks like a local file path that could not be "
                         f"normalised: {bad!r}. Nothing was recorded."),
-            "field": field, "offending_text": bad,
-            "recovery": ("Rephrase the text without the path, or cite the file through evidence (evidence_spans) "
-                         "instead of quoting its location in the text. Example: write 'the 90% interval of the "
-                         "baseflow index' rather than naming the file that holds it.")}
+            "field": field, "offending_text": bad, "recovery": recovery}
+
+
+class LocalPathRefused(Exception):
+    """Raised by the writer when the projected revision still holds a local path; carries the refusal dict."""
+
+    def __init__(self, refusal_dict: dict):
+        super().__init__(refusal_dict["message"])
+        self.refusal = refusal_dict
 
 
 def report_note(replaced: List[str], remaining: List[str]) -> dict:
-    """Neutral tool-result fields (the same in every evaluation arm)."""
+    """Neutral tool-result fields (the same in every evaluation arm). A remaining path is refused by the writer, so
+    ``remaining`` is not reported for accepted writes."""
     out: dict = {}
     if replaced:
         out["paths_scrubbed"] = replaced
         out["paths_note"] = ("Local filesystem prefixes in these fields were replaced by placeholders "
                              "(<workspace>, <home>, <tmp>) before the claim was recorded.")
-    if remaining:
-        out["paths_remaining"] = remaining
-        out["paths_remaining_note"] = ("These fields still contain a local path that could not be replaced exactly; "
-                                       "this revision is recorded as given and withheld from exports.")
     return out

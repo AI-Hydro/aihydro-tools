@@ -282,25 +282,43 @@ pre-crate shape cannot be told from a genuine old one inside the capsule; only a
 stamp) can. The exporter refuses the crate (`crate_error`) when a record fails for any reason other than privacy
 withholding, when `session.json` claims differ from their sealed head revision, or when core refuses the bundle.
 
-**Local paths in claim prose.** A sealed revision cannot be rewritten, so a path inside one could only ever be withheld
+**Local paths in claims.** A sealed revision cannot be rewritten, so a path inside one could only ever be withheld
 wholesale on export, and a withheld head can no longer be read. `add_claim` and `update_claim_status` therefore never
-create one. Before sealing they replace the *concrete* prefixes of this machine in the statement, rationale and
-limitations: the session workspace (`<workspace>`), `AIHYDRO_HOME` (`<aihydro-home>`), the home directory (`<home>`) and the
-system temp directory (`<tmp>`), absolute spellings only, resolved and unresolved, longest first, at a path boundary (a
-placeholder is itself a boundary, so the rewrite is a fixpoint). Identifiers (evidence source ids, basin ids, claim ids)
-are never touched. If the prose then still holds something that looks like a local path (one shared test, also used by
-the capsule exporter: core's leak pattern, the run-log scrub's reading, case-insensitive `/users/...`, `~/`, `$HOME`),
-the tool returns `LOCAL_PATH_IN_TEXT` naming the field and the offending text and records nothing (no revision, no session
-change). Accepted phrasings: "the 90% interval of the baseflow index" or evidence cited through `evidence_spans`, not
-"read from /Users/me/notes.txt"; "HDF streamflow files", not `HDF /var/streamflow`; "the ratio of A to B", not
-`A:/B ratio`. Institutional mounts such as `/data/...` are outside the heuristic (ordinary directory names in prose).
-A very short real prefix (for example `HOME=/root`) is replaced like any other, so a scientific string literally under it
-is rewritten. The claim projection is pure, so claims stored earlier keep their approvals and are normalised at their next
-write (`cause.path_scrub`).
+create one, in two steps.
+
+1. *Normalise.* In the statement, rationale and limitations the *concrete* prefixes of this machine are replaced: the
+   session workspace (`<workspace>`), `AIHYDRO_HOME` (`<aihydro-home>`), the home directory (`<home>`) and the system temp
+   directory (`<tmp>`), absolute spellings only, resolved and unresolved, longest first, at a path boundary (a placeholder
+   is itself a boundary, so the rewrite is a fixpoint). Identifiers (evidence source ids, basin ids, claim ids) are never
+   rewritten.
+2. *Refuse.* The exporter's own test is then run on the WHOLE projected revision, prose and identifiers (so an accepted
+   write is never stubbed by the exporter, by construction). If anything still looks like a local path the tool returns
+   `LOCAL_PATH_IN_TEXT`, naming the field (for example `claim` or `evidence_spans[2].source_id`) and the offending text,
+   and records nothing: no revision, no session change. The test is core's local-path pattern plus the run-log scrub's
+   reading, case-insensitive home and system roots, `~/` and `$HOME`.
+
+Refused shapes that are legitimate prose, and accepted phrasings (a heuristic cannot tell them from real leaks):
+
+| refused | accepted phrasing |
+|---|---|
+| `HDF /var/streamflow`, `Zarr array /root/precip`, `group /home/range/q`, `under /opt/mean`, `in /private/obs` (a group path whose first name is a system root, any case) | "the precip array in the root group", "variable var/streamflow" |
+| `A:/B ratio`, `X:/Y`, `c:/n` (letter, colon, slash reads as a drive) | "the ratio of A to B", `A:B` |
+| `//NLDAS/FORA` (reads as a UNC share) | `NLDAS/FORA` |
+| `~/notes.txt`, `$HOME/work`, `/etc/hosts`, `/Volumes/...`, `C:\data\x.csv`, `/users/alice/...` (real paths) | cite the file through `evidence_spans`; say "the 90% interval of the baseflow index" |
+
+Accepted without change: units (`m3/s`, `mm/day`, `kg/m2/s`, `W/m2`), ratios (`Q/P`, `PET/P`, `Q5/Q95`, `dQ/dt`), `+/-`,
+dates and fractions, DOIs and URLs, gauge and HUC ids, dataset names, tilde approximations (`~mm/day`, `~A/L`, `~0.95/day`:
+only `~/` and `$HOME` are home), and relative paths. Institutional mounts such as `/data/...` and `/gpfs/...` are outside the
+heuristic (ordinary directory names in prose) and are neither detected nor rewritten. A very short real prefix (for example
+`HOME=/root`) is replaced like any other, so a scientific string literally under it is rewritten. The claim projection is
+pure, so claims stored earlier keep their approvals and are normalised at their next write (`cause.path_scrub`).
 
 *Legacy data only.* Claims stored before this change may hold a path; their sealed revision is a privacy stub on export.
 For a legacy withheld head, replay compares the session claim with the last readable revision (see "Claim revisions,
 bundle and RO-Crate in the capsule"). Known legacy limitation: a promoted claim whose approved revision is withheld fails
 replay's approval check (the recomputed digest differs); the remedy is to re-revise the claim (`add_claim` with
-rephrased text) and re-approve.
+rephrased text) and re-approve. A legacy claim whose stored text holds a path that cannot be normalised cannot take
+`update_claim_status` (that tool cannot rephrase it, and a status revision would seal the path, i.e. create a stub head);
+the sound route is `add_claim` on the same id with rephrased text (`status='retracted'` is accepted there), after which
+updates work. So no retraction revision ever carries legacy text.
 

@@ -1747,12 +1747,16 @@ _HEAD_FIELDS = (("claim", "text"), ("claim_type", "claim_type"), ("status", "sta
 
 
 _ENUM_FIELDS = ("status", "confidence", "claim_type")
-_SCRUB_MARKERS = ("<abs>", "~/", "workspace:", "session-data:", "<workspace>", "<home>", "<tmp>", "<aihydro-home>")
-_MARKER_TOKEN = re.compile(r"\S*(?:" + "|".join(re.escape(m) for m in _SCRUB_MARKERS) + r")\S*")
+# Markers the exporter's scrub wrote into legacy data. The excuse list is deliberately short: the write-time
+# placeholders (<workspace>, <home>, <tmp>, <aihydro-home>) are NOT excusing, because no honest withheld head can carry
+# them (new stub heads cannot be written), and a marker must START its token so a token like "not<tmp>" inserted into
+# a sentence is a difference, not an excuse.
+_SCRUB_MARKERS = ("<abs>", "~/", "workspace:", "session-data:")
+_MARKER_TOKEN = re.compile(r"(?<!\S)(?:" + "|".join(re.escape(m) for m in _SCRUB_MARKERS) + r")\S*")
 
 
 def _strip_markers(value):
-    """``value`` with every marker-bearing token removed and whitespace collapsed (strings, or lists of them)."""
+    """``value`` with every token that STARTS with a marker removed and whitespace collapsed (strings or lists)."""
     if isinstance(value, str):
         return " ".join(_MARKER_TOKEN.sub("", value).split())
     if isinstance(value, list):
@@ -1761,9 +1765,9 @@ def _strip_markers(value):
 
 
 def _scrubbed(value) -> bool:
-    """True if ``value`` (a string, or a list of them) carries one of the privacy scrub markers."""
+    """True if ``value`` (a string, or a list of them) has a token that starts with one of the markers."""
     if isinstance(value, str):
-        return any(m in value for m in _SCRUB_MARKERS)
+        return bool(_MARKER_TOKEN.search(value))
     if isinstance(value, list):
         return any(_scrubbed(v) for v in value)
     return False

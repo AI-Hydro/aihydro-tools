@@ -1292,15 +1292,84 @@ def test_S13_the_shared_predicate_is_case_insensitive_and_names_what_is_outside_
     for ok in ("HDF-like /data/x.csv is institutional", "ratio A:B", "mm/day", "0.58 +/- 0.01", "/group/var"):
         assert find_local_path(ok) is None, ok       # /data/... style institutional mounts are outside the heuristic
     assert find_local_path("HDF /var/streamflow") is not None    # accepted consequence: rephrase it
+    for tilde in ("~mm/day", "~A/L", "~PET/P", "~m3/s", "~0.95/day"):
+        assert find_local_path(tilde) is None, tilde            # core 0.2.8: only ~/ and $HOME are home
 
 
-def test_evidence_ids_are_never_rewritten(exported):
-    add_claim(session_id=SID, claim_id="c_ids", statement="plain", claim_type="empirical_result", status="proposed",
-              confidence="low", confidence_rationale="Synthetic fixture rationale text.", basins=["synthetic"], period="2000-2001",
-              metric="nse", basin_refs=[basin_ref_full("synthetic")], limitations=["plain"],
-              evidence_spans=[{"source_type": "run", "source_id": f"{_home()}/a/x.csv", "metric_ref": "nse"}])
-    spans = HydroSession.load(SID).claims["c_ids"]["evidence_spans"]
-    assert spans[0]["source_id"] == f"{_home()}/a/x.csv"
+def _assert_exporter_does_not_stub_the_head(tmp_path, name="probe"):
+    """For an accepted write: the exporter's own collection must not turn any revision into a privacy stub."""
+    from ai_hydro.capsule.claim_records import collect_claim_revisions
+    entries, counts = collect_claim_revisions(SID, tmp_path / name, HydroSession.load(SID).workspace_dir)
+    assert counts["redacted"] == 0 and all(not e["redacted_revisions"] for e in entries), entries
+
+
+def test_N4_a_path_like_evidence_id_is_refused_and_ids_are_never_rewritten(exported, tmp_path):
+    ok = _add_pathy_claim("ev", text="Synthetic NSE is 0.8 plain statement", rationale="Synthetic fixture rationale text.",
+                          limitations=["plain"])
+    assert ok["status"] == "recorded"
+    n = len(cr.history_readonly(SID)[0]["ev"]["rows"])
+    before = json.dumps(HydroSession.load(SID).claims["ev"], sort_keys=True)
+    bad = add_claim(session_id=SID, claim_id="ev", statement="Synthetic NSE is 0.8 reworded statement",
+                    claim_type="empirical_result", status="proposed", confidence="low",
+                    confidence_rationale="Synthetic fixture rationale text.", basins=["synthetic"], period="2000-2001",
+                    metric="nse", basin_refs=[basin_ref_full("synthetic")], limitations=["plain"],
+                    evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "nse"},
+                                    {"source_type": "dataset", "source_id": "/Volumes/Shared/alice/t.csv"}])
+    assert bad["code"] == "LOCAL_PATH_IN_TEXT" and "source_id" in bad["field"] and bad["field"].startswith("evidence_spans[")
+    assert bad["offending_text"] == "/Volumes/Shared/alice/t.csv"
+    assert len(cr.history_readonly(SID)[0]["ev"]["rows"]) == n
+    assert json.dumps(HydroSession.load(SID).claims["ev"], sort_keys=True) == before
+    _assert_exporter_does_not_stub_the_head(tmp_path)
+
+
+ACCEPT_OR_REFUSE = [
+    "Plain statement about NSE 0.8", "NSE is 0.8 +/- 0.1 mm/day", "about ~mm/day and ~PET/P and ~m3/s",
+    "ratio Q5/Q95 and dQ/dt", "see https://doi.org/10.1000/xyz", "approximately ~0.95/day",
+    "HDF /var/streamflow", "A:/B ratio", "//NLDAS/FORA group", "read from ~/notes.txt", "uses $HOME/work",
+    "Windows C:\\data\\x.csv", "/etc/hosts", "under /Volumes/Shared/x",
+]
+
+
+@pytest.mark.parametrize("text", ACCEPT_OR_REFUSE)
+def test_every_accepted_write_is_never_stubbed_by_the_exporter(exported, tmp_path, text):
+    res = _add_pathy_claim("prop", text=text, rationale="Synthetic fixture rationale text.", limitations=["plain"])
+    if res.get("error"):
+        assert res["code"] == "LOCAL_PATH_IN_TEXT" and "prop" not in HydroSession.load(SID).claims
+        assert not res["offending_text"].endswith((".", ",", ";", ":"))
+    else:
+        _assert_exporter_does_not_stub_the_head(tmp_path)
+
+
+def test_a_legacy_claim_with_an_unnormalisable_path_points_to_add_claim(exported):
+    _store_legacy_claim("legx")
+    s = HydroSession.load(SID)
+    s.claims["legx"]["claim"] = "Derived from /Volumes/Shared/alice/x.csv with NSE 0.8"
+    s.save()
+    r = update_claim_status(SID, "legx", "retracted", "low", "Synthetic regression fixture only.")
+    assert r["code"] == "LOCAL_PATH_IN_TEXT" and r["field"] == "claim" and "add_claim" in r["recovery"]
+    # the sound route: re-issue the claim with rephrased text (retracted is a valid status there), then it is writable
+    ok = _add_pathy_claim("legx", text="Derived from the shared dataset with NSE 0.8", rationale="Synthetic fixture rationale text.",
+                          limitations=["plain"])
+    assert ok["status"] == "recorded"
+    assert update_claim_status(SID, "legx", "retracted", "low", "Synthetic regression fixture only.")["status"] == "updated"
+
+
+def test_S9_a_marker_must_start_its_token_and_placeholders_do_not_excuse(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_s9b")
+    for n in _NEW:
+        (cap / n).unlink()
+    _forged_stub_head(cap, edit_claim=False)
+    head_text = json.loads((cap / "records" / "claim_revisions.json").read_text())["claims"]["c1"]["rows"][1]["content"]["text"]
+    for edited in (head_text.replace(" is ", " is not<tmp> "),          # marker glued to a word: not a token start
+                   head_text + " <tmp>/x",                              # write-time placeholder: no honest stub carries it
+                   head_text + " <workspace>/x"):
+        sess = json.loads((cap / "session.json").read_text())
+        sess["claims"]["c1"]["claim"] = edited
+        (cap / "session.json").write_text(json.dumps(sess, indent=2))
+        assert sr.check_claims_against_heads(cap, out=lambda *_a: None) == [("c1", ["claim"])], edited
+    sess["claims"]["c1"]["claim"] = head_text + " <abs>/x"               # a legacy marker token is still excused
+    (cap / "session.json").write_text(json.dumps(sess, indent=2))
+    assert sr.check_claims_against_heads(cap, out=lambda *_a: None) == []
 
 
 SCIENTIFIC = ["HDF /var/streamflow", "zarr /root/precip", "/home/range/q", "/opt/mean", "group /private/obs",
