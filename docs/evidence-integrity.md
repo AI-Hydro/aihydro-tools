@@ -322,3 +322,8 @@ rephrased text) and re-approve. A legacy claim whose stored text holds a path th
 the sound route is `add_claim` on the same id with rephrased text (`status='retracted'` is accepted there), after which
 updates work. So no retraction revision ever carries legacy text.
 
+*Accepted residual (S9).* For a legacy withheld head the reader excuses a marker-bearing token, so a token that starts with
+a legacy marker (`<abs>`, `~/`, `workspace:`, `session-data:`) inserted into a forged stub head's text is excused with an
+"unverifiable" NOTE. It needs the same attacker power as a forged uncited run stub (a4: a full rewrite of unsealed capsule
+state plus a bundle reseal), which already defeats every in-capsule check, so it adds no new capability.
+

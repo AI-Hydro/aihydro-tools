@@ -1519,3 +1519,24 @@ def test_S4_a_run_stub_the_manifest_does_not_list_is_refused(exported, tmp_path)
     _refresh_manifest(cap)                                # every count repaired; privacy.redacted_run_ids still empty
     with pytest.raises(CrateExportError, match="privacy stub the manifest does not list"):
         export_crate(cap, session_id=SID, live=False)
+
+
+def test_the_refusal_recovery_is_field_aware(exported):
+    prose = _add_pathy_claim("m_prose", text="Derived from /Volumes/Shared/a/x.csv with NSE 0.8",
+                             rationale="Synthetic fixture rationale text.", limitations=["plain"])
+    assert prose["field"] == "claim" and "Rephrase" in prose["recovery"] and "named dataset" in prose["recovery"]
+    ev = add_claim(session_id=SID, claim_id="m_ev", statement="Synthetic NSE is 0.8 plain statement",
+                   claim_type="empirical_result", status="proposed", confidence="low",
+                   confidence_rationale="Synthetic fixture rationale text.", basins=["synthetic"], period="2000-2001",
+                   metric="nse", basin_refs=[basin_ref_full("synthetic")], limitations=["plain"],
+                   evidence_spans=[{"source_type": "dataset", "source_id": "/Volumes/Shared/alice/t.csv"}])
+    assert ev["field"] == "evidence_spans[0].source_id"
+    assert "identifier, not a local file path" in ev["recovery"] and "run id, a DOI or a named dataset" in ev["recovery"]
+    assert "Rephrase" not in ev["recovery"] and "cite the file" not in ev["recovery"].lower()
+    sc = add_claim(session_id=SID, claim_id="m_sc", statement="Synthetic NSE is 0.8 plain statement",
+                   claim_type="empirical_result", status="proposed", confidence="low",
+                   confidence_rationale="Synthetic fixture rationale text.", basins=["/Volumes/Shared/basin"],
+                   period="2000-2001", metric="nse", limitations=["plain"],
+                   evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}])
+    assert sc["code"] == "LOCAL_PATH_IN_TEXT" and sc["field"].startswith("scope") and "not file paths" in sc["recovery"]
+    assert "m_prose" not in HydroSession.load(SID).claims and "m_ev" not in HydroSession.load(SID).claims

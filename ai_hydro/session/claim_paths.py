@@ -205,9 +205,16 @@ def refusal(problems: List[Tuple[str, str]], *, legacy_stored: bool = False) -> 
     """The structured teaching error returned when a claim holds a local path that cannot be normalised."""
     field, bad = problems[0]
     bad = bad.rstrip(".,;:!?")
-    recovery = ("Rephrase the text without the path, or cite the file through evidence (evidence_spans) instead of "
-                "quoting its location in the text. Example: write 'the 90% interval of the baseflow index' rather "
-                "than naming the file that holds it.")
+    if field.startswith("evidence_spans") or field.startswith("evidence_versions") or field.endswith("source_id"):
+        recovery = ("The evidence source must be an identifier, not a local file path. Cite a run id, a DOI or a named "
+                    "dataset as the source instead (source_id), and keep the file's location out of the claim.")
+    elif field.startswith("scope"):
+        recovery = ("Scope values are names, periods and identifiers, not file paths. Use a basin, gauge or dataset "
+                    "name instead of a location on disk.")
+    else:
+        recovery = ("Rephrase the text without the path, or cite the source through evidence_spans (a run id, DOI or "
+                    "named dataset) instead of quoting a location in the text. Example: write 'the 90% interval of "
+                    "the baseflow index' rather than naming the file that holds it.")
     if legacy_stored:
         recovery = ("This text was stored earlier and update_claim_status cannot rephrase it. Call add_claim with the "
                     "same claim id and rephrased text (status 'retracted' is accepted there too), then update the "
