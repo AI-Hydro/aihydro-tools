@@ -8,6 +8,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.7] - 2026-10-16
+
+It requires aihydro-core 0.2.10 or later.
+
+- **Approvals.** Each approval is verified against the revision it
+  signed. A later revision with a different digest makes it `superseded`
+  (reported as a NOTE).
+- **Exporter.** It refuses the crate when a carried approval fails.
+- **Partial outcomes.** "Partial" is derived from content:
+  - privacy stubs give `withheld`;
+  - any unsealed run-log row gives `unsealed`.
+  - **Behaviour change:** a capsule with any unsealed legacy row now
+    exits 3.
+- **VER-HEAD.** It covers deleted projected keys.
+- **Registry staleness.** `check_registry_staleness` reports
+  `claim_revised_since_promotion`.
+
 Requires aihydro-core 0.2.10 or later.
 
 ### Fixed
