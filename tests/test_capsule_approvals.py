@@ -143,7 +143,7 @@ class Case:
 def test_valid_signature_passes(tmp_path, monkeypatch, keys):
     c = Case(tmp_path, monkeypatch, {"c1": "signed"}, keys["good"])
     code, out = c.replay("--allowed-signers", str(keys["supplied_good"]))
-    assert code == 0, out
+    assert code == 3, out  # unsealed-only capsule: ok_partial_unsealed (exit 3), core 0.2.10
     assert "PASS  approval c1 (" in out
     assert "approvals: 1 verified against supplied signers, 0 failed, 0 unsigned (cli_same_user/opt-out)" in out
     # carried verbatim, hashed in the manifest
@@ -153,7 +153,7 @@ def test_valid_signature_passes(tmp_path, monkeypatch, keys):
     assert m["approvals"]["n_with_approval_record"] == 1 and m["approvals"]["n_no_approval"] == 0
     assert all(f["sha256"] for f in m["approvals"]["files"])
     # equals-sign spelling works too
-    assert c.replay(f"--allowed-signers={keys['supplied_good']}")[0] == 0
+    assert c.replay(f"--allowed-signers={keys['supplied_good']}")[0] == 3  # unsealed-only: exit 3
 
 
 def test_standalone_seal_matches_core_digest(tmp_path, monkeypatch, keys):
@@ -228,7 +228,7 @@ def test_unsigned_v1_is_unsigned_never_pass(tmp_path, monkeypatch, keys):
     c = Case(tmp_path, monkeypatch, {"c1": "v1"})
     for args in ([], ["--allowed-signers", str(keys["supplied_good"])]):
         code, out = c.replay(*args)
-        assert code == 0, out
+        assert code == 3, out  # unsealed-only capsule: ok_partial_unsealed (exit 3), core 0.2.10
         assert "UNSIGNED  approval c1 (" in out and "PASS  approval " not in out
         assert "1 unsigned (cli_same_user/opt-out)" in out
 
@@ -236,7 +236,7 @@ def test_unsigned_v1_is_unsigned_never_pass(tmp_path, monkeypatch, keys):
 def test_missing_flag_is_not_verified(tmp_path, monkeypatch, keys):
     c = Case(tmp_path, monkeypatch, {"c1": "signed"}, keys["good"])
     code, out = c.replay()
-    assert code == 0, out
+    assert code == 3, out  # unsealed-only capsule: ok_partial_unsealed (exit 3), core 0.2.10
     assert "not verified (no signer file supplied)" in out
     assert "PASS  approval " not in out and "verified against supplied signers" not in out
 
@@ -250,7 +250,7 @@ def test_missing_signer_file_fails(tmp_path, monkeypatch, keys):
 def test_claim_without_approval_is_listed_not_approved(tmp_path, monkeypatch, keys):
     c = Case(tmp_path, monkeypatch, {"c1": "signed", "c2": "none"}, keys["good"])
     code, out = c.replay("--allowed-signers", str(keys["supplied_good"]))
-    assert code == 0, out
+    assert code == 3, out  # unsealed-only capsule: ok_partial_unsealed (exit 3), core 0.2.10
     assert "NOTE  approval c2 (" in out and "not approved" in out
     assert "1 verified against supplied signers" in out
     ix = json.loads((c.dir / "approvals" / "index.json").read_text())
@@ -264,7 +264,7 @@ def test_capsule_without_promoted_claims_is_fine(tmp_path, monkeypatch, keys):
     assert c.result["approvals"]["n_promoted_claims"] == 0
     for args in ([], ["--allowed-signers", str(keys["supplied_good"])]):
         code, out = c.replay(*args)
-        assert code == 0, out
+        assert code == 3, out  # unsealed-only capsule: ok_partial_unsealed (exit 3), core 0.2.10
         assert "none in this capsule" in out
 
 

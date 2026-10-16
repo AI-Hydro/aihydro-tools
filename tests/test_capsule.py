@@ -449,7 +449,7 @@ class TestReplayScript:
             [sys.executable, str(cap / "replay.py")],
             capture_output=True,
         )
-        assert proc.returncode == 0, proc.stdout.decode() + proc.stderr.decode()
+        assert proc.returncode == 3, proc.stdout.decode() + proc.stderr.decode()  # unsealed-only capsule: ok_partial_unsealed (exit 3), core 0.2.10
 
     def test_exit_1_after_tamper(self, tmp_path, monkeypatch):
         cap = self._build_capsule(tmp_path, monkeypatch)

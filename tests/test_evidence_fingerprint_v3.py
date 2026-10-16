@@ -120,7 +120,7 @@ def test_capsule_replay_unchanged_by_reseal_and_reports_unsealable(tmp_path, mon
 
     c = Case(tmp_path, monkeypatch, {"c1": "v1"})
     code, before = c.replay()
-    assert code == 0, before
+    assert code == 3, before  # unsealed-only capsule: ok_partial_unsealed (exit 3), core 0.2.10
 
     _seal_row_sid = store._run_log_read_one(SID, RUN_ID)
     record = rr.build_run_record(run_id=RUN_ID, tool="t", session_id=SID, entry=_seal_row_sid)

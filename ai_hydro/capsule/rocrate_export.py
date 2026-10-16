@@ -158,6 +158,10 @@ def _export(root: Path, session_id: str, workspace_dir, claim_entries, live: boo
     assessment = sr.assess(root, live=live, out=lambda *_a, **_k: None, check_crate=False)
     manifest_status, _complete = read_legacy_replay_status(str(manifest.get("replay_status", "not_performed")))
     checked = assessment["status"]
+    if not assessment.get("approvals_ok", True):
+        # replay would exit 1 on a failing approval: the exporter must not report an ok crate for such a capsule
+        raise CrateExportError("no crate is written: an approval the capsule carries fails verification "
+                               "(run replay.py for the failing check)")
     _check_stub_revisions_listed(root, manifest)
     _check_run_stubs_listed(root, manifest)
     if assessment.get("head_bad") or assessment.get("session_bad"):
@@ -250,6 +254,7 @@ def _export(root: Path, session_id: str, workspace_dir, claim_entries, live: boo
         # core's three-way outcome: ok, ok_partial_withheld (verified except privacy-withheld records or an
         # unverifiable withheld head: a consumer may reject it by policy), failed (never returned: it raises)
         "status": getattr(final, "status", "ok"), "partial": bool(getattr(final, "partial", False)),
+        "partial_reasons": sorted(getattr(final, "partial_reasons", []) or []),
     }
 
 

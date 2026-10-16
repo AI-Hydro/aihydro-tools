@@ -788,8 +788,9 @@ def export_session(
             "bundle_id": crate_info.get("bundle_id"),
             "crate_replay_status": crate_info.get("replay_status"),
             "crate_coverage": crate_info.get("coverage"),
-            "crate_status": crate_info.get("status"),          # ok | ok_partial_withheld (exit 3 for a consumer)
+            "crate_status": crate_info.get("status"),          # ok | ok_partial_withheld | ok_partial_unsealed (exit 3)
             "crate_partial": crate_info.get("partial"),
+            "crate_partial_reasons": crate_info.get("partial_reasons"),
             **({"crate_error": crate_error} if crate_error else {}),
             "_note": (
                 "NEXT: call get_session_raw_state then write_research_interpretation "

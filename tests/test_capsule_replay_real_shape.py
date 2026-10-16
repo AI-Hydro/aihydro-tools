@@ -133,7 +133,7 @@ def test_post_run_then_export_then_live_replay_reports_comparisons(tmp_path, mon
     post_run("extract_hydrological_signatures", SID, {"data": dict(res["data"]), "meta": res["meta"]})
     capsule = _export(tmp_path)
     code, out = _replay(capsule, "--live")
-    assert code == 0, out
+    assert code == 3, out  # unsealed-only capsule: ok_partial_unsealed (exit 3), core 0.2.10
     assert int(out.split("comparisons: ")[1].split()[0]) >= 1
     assert "replay_status: cross_check" in out
 
@@ -163,7 +163,7 @@ def test_live_on_a_legacy_export_without_records_still_compares_but_flags_legacy
     session.save()
     capsule = _export(tmp_path)
     code, out = _replay(capsule, "--live")
-    assert code == 0, out
+    assert code == 3, out  # unsealed-only capsule: ok_partial_unsealed (exit 3), core 0.2.10
     assert "0 of 0 v2 records verify" in out and "2 legacy rows have no record" in out   # run-log row + put_result row
 
 

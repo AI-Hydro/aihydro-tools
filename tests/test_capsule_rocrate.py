@@ -1597,3 +1597,154 @@ def test_F12_session_view_vs_sealed_head_has_core_parity(exported, tmp_path):
         mp.undo()
     skipped = {"VER-CRATE-REGEN", "VER-VALIDATE", "VER-BAGIT"}
     assert "VER-HEAD" in _rules(verify_crate(cap)) and _rules(verify_crate(cap)) - skipped == _stdlib_rules(cap) - skipped
+
+
+# ---------------------------------------------------------------- T-S1: approve, promote, then revise the claim
+def _approve_promote_then_revise():
+    from approval_helpers import approve
+    from ai_hydro.mcp.tools_ledger import promote_claim_to_registry
+    approve(SID, "c1")
+    out = promote_claim_to_registry(SID, "c1", researcher_approved=True)
+    assert out.get("status") == "promoted", out
+    r = update_claim_status(SID, "c1", "supported", "high", "Revised after promotion; synthetic fixture only.",
+                            uncertainty_verified=True)
+    assert r["status"] == "updated", r
+
+
+def test_TS1_an_approval_of_an_earlier_revision_is_superseded_not_failed(exported, tmp_path):
+    _approve_promote_then_revise()
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "ts1"))
+    assert not res.get("crate_error") and res["crate_status"] == "ok", res        # export says ok ...
+    cap = Path(res["capsule_dir"])
+    for kw in ({"isolated_python": True}, {}):
+        code, out = _replay(cap, **kw)                                              # ... and replay agrees
+        assert code == 0, out
+        assert "superseded: it signed revision" in out and "FAIL" not in out
+    assert verify_crate(cap).ok
+
+
+def test_TS1_a_tampered_or_missing_approved_revision_still_fails(exported, tmp_path):
+    _approve_promote_then_revise()
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "ts1b"))
+    cap = Path(res["capsule_dir"])
+    p = cap / "records" / "claim_revisions.json"
+    doc = json.loads(p.read_text())
+    approved = json.loads((cap / "approvals" / "index.json").read_text())["claims"][0]["registry_stamp"]["claim_revision_digest"]
+    rows = doc["claims"]["c1"]["rows"]
+    i = next(k for k, r in enumerate(rows) if r["revision_digest"] == approved)
+    # the approved revision is edited in place: its seal no longer verifies
+    rows[i] = {**rows[i], "content": {**rows[i]["content"], "confidence_rationale": "edited later after approval"}}
+    p.write_text(json.dumps(doc, indent=2, sort_keys=True))
+    (cap / MANIFEST_FILE).write_text(json.dumps({**json.loads((cap / MANIFEST_FILE).read_text()),
+                                                 **{k: v for k, v in build_manifest(cap).items() if k in ("files", "n_files")}}, indent=2))
+    for n in _NEW:
+        (cap / n).unlink()
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 1 and "FAIL" in out
+
+
+def test_deleted_projected_keys_are_a_head_difference(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_delkey")
+    sess = json.loads((cap / "session.json").read_text())
+    del sess["claims"]["c1"]["limitations"]
+    del sess["claims"]["c1"]["status"]
+    (cap / "session.json").write_text(json.dumps(sess, indent=2))
+    lines = []
+    bad = sr.check_claims_against_heads(cap, out=lines.append)
+    assert bad and set(bad[0][1]) == {"limitations", "status"}
+    # mirror-only until core compares missing keys too (to route to core): then parity is asserted
+    for n in _NEW:
+        (cap / n).unlink()
+    _refresh_manifest(cap)
+    import aihydro_core.export.rocrate_verify as rv
+    import inspect
+    if "sk not in claim" in inspect.getsource(rv):
+        mp = pytest.MonkeyPatch()
+        try:
+            _force_integrity(mp)
+            with pytest.raises((CrateExportError, ValueError)):
+                export_crate(cap, session_id=SID, live=False)
+        finally:
+            mp.undo()
+        skipped = {"VER-CRATE-REGEN", "VER-VALIDATE", "VER-BAGIT"}
+        assert "VER-HEAD" in _rules(verify_crate(cap)) and _rules(verify_crate(cap)) - skipped == _stdlib_rules(cap) - skipped
+
+
+# ---------------------------------------------------------------- core 0.2.10: partial from content, unsealed, deleted keys
+def test_C_S1_a_relabelled_stub_is_partial_by_content_with_core_parity(exported, tmp_path):
+    """A stub relabelled as a legacy unsealed row (no declaration) still makes the result partial; run_rows that
+    undercount the stub rows fail VER-RUN-ROWS. Core and the mirror agree."""
+    cap = _copy(exported[0], tmp_path, "t_cs1")
+    for n in _NEW:
+        (cap / n).unlink()
+    log = json.loads((cap / "run_log.json").read_text())
+    rid = _first_bound_row(log)
+    log[rid] = _stub_of(log[rid])
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    _refresh_manifest(cap)
+    _list_redacted_run(cap, rid)
+    out = export_crate(cap, session_id=SID, live=False)
+    assert out["partial"] and "withheld" in out["partial_reasons"]
+    core = verify_crate(cap)
+    assert core.status == "ok_partial_withheld" and "withheld" in core.partial_reasons
+    mine = sr.verify_bundle(cap)
+    assert mine["ok"] and "withheld" in mine["partial_reasons"]
+    # run_rows undercounts the stub rows: both fail VER-RUN-ROWS
+    b = json.loads((cap / "bundle.json").read_text())
+    b["run_rows"] = {**b["run_rows"], "withheld_for_privacy": 0, "sealed": b["run_rows"]["sealed"] + b["run_rows"]["withheld_for_privacy"]}
+    from aihydro_core.records import Bundle
+    nb = Bundle.from_dict({k: v for k, v in b.items() if k not in ("bundle_id", "record_digest")}).seal()
+    (cap / "bundle.json").write_text(json.dumps(nb.to_dict(), indent=2, sort_keys=True))
+    skipped = {"VER-CRATE-REGEN", "VER-VALIDATE", "VER-BAGIT"}
+    assert "VER-RUN-ROWS" in _rules(verify_crate(cap)) and _rules(verify_crate(cap)) - skipped == _stdlib_rules(cap) - skipped
+
+
+def test_unsealed_only_capsule_is_partial_unsealed_in_core_and_replay(world, tmp_path):
+    s = HydroSession.load(SID)
+    s.set("_run_log", {"old.1": {"run_id": "old.1", "tool_name": "extract_hydrological_signatures", "session_id": SID,
+                                 "timestamp": "2026-06-10T00:00:00+00:00", "key_outputs": {"q_mean": 1.25}}})
+    s.save()
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "unsealed"))
+    cap = Path(res["capsule_dir"])
+    assert res["crate_status"] == "ok_partial_unsealed" and res["crate_partial_reasons"] == ["unsealed"]
+    core = verify_crate(cap)
+    assert core.status == "ok_partial_unsealed" and core.exit_code == 3
+    for kw in ({"isolated_python": True}, {}):
+        code, out = _replay(cap, **kw)
+        assert code == 3 and "replay_outcome: ok_partial_unsealed" in out and "partial_reasons: unsealed" in out, out
+
+
+def test_VER_HEAD_absent_chained_claim_and_deleted_withheld_head_keys(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_absent")
+    sess = json.loads((cap / "session.json").read_text())
+    del sess["claims"]["c1"]
+    (cap / "session.json").write_text(json.dumps(sess, indent=2))
+    assert sr.check_claims_against_heads(cap, out=lambda *_a: None) == [("c1", ["absent"])]
+    for n in _NEW:
+        (cap / n).unlink()
+    _refresh_manifest(cap)
+    mp = pytest.MonkeyPatch()
+    try:
+        _force_integrity(mp)
+        with pytest.raises((CrateExportError, ValueError)):
+            export_crate(cap, session_id=SID, live=False)
+    finally:
+        mp.undo()
+    skipped = {"VER-CRATE-REGEN", "VER-VALIDATE", "VER-BAGIT"}
+    assert "VER-HEAD" in _rules(verify_crate(cap)) and _rules(verify_crate(cap)) - skipped == _stdlib_rules(cap) - skipped
+    # withheld head: a missing enumerated key is unverifiable (partial), a missing string key fails
+    cap2 = _copy(exported[0], tmp_path, "t_absent2")
+    for n in _NEW:
+        (cap2 / n).unlink()
+    _forged_stub_head(cap2, edit_claim=False)
+    sess = json.loads((cap2 / "session.json").read_text())
+    del sess["claims"]["c1"]["status"]
+    (cap2 / "session.json").write_text(json.dumps(sess, indent=2))
+    part = []
+    assert sr.check_claims_against_heads(cap2, out=lambda *_a: None, partial=part) == [] and part == [True]
+    sess["claims"]["c1"].pop("claim")
+    (cap2 / "session.json").write_text(json.dumps(sess, indent=2))
+    assert sr.check_claims_against_heads(cap2, out=lambda *_a: None)[0][1] == ["claim"]

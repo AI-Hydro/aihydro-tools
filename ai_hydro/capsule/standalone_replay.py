@@ -40,8 +40,9 @@ verified" and never PASS. Requires ssh-keygen (OpenSSH 8.0+) on PATH.
 
 Exit code: 0 = all checks passed, 1 = a check failed (including any approval),
            2 = --live found no comparable values (nothing was cross-checked),
-           3 = passed except privacy-withheld records / an unverifiable withheld head (ok_partial_withheld).
-The line 'replay_outcome: ok|ok_partial_withheld|failed' states the outcome in machine-readable form.
+           3 = passed except privacy-withheld records / an unverifiable withheld head (ok_partial_withheld), or nothing
+           in the capsule was sealed (ok_partial_unsealed).
+The line 'replay_outcome: ok|ok_partial_withheld|ok_partial_unsealed|failed' states the outcome in machine-readable form.
 """
 from __future__ import annotations
 
@@ -801,6 +802,14 @@ def verify_approvals(capsule_dir: Path, allowed_signers=None, out=print) -> dict
         run_log = json.loads((capsule_dir / "run_log.json").read_text(encoding="utf-8"))
     except Exception:
         run_log = {}
+    chain_rows = {}                  # claim_id -> carried revision rows (None when the capsule carries no chain)
+    try:
+        cdoc = json.loads((capsule_dir / "records" / "claim_revisions.json").read_text(encoding="utf-8"))
+        for cid_, item_ in (cdoc.get("claims") or {}).items():
+            if isinstance(item_, dict) and item_.get("status") == "ok" and isinstance(item_.get("rows"), list):
+                chain_rows[cid_] = [r for r in item_["rows"] if isinstance(r, dict)]
+    except (OSError, ValueError, AttributeError):
+        chain_rows = {}
     signers = Path(allowed_signers) if allowed_signers else None
     if signers is not None and not signers.is_file():
         out(f"FAIL  --allowed-signers file not found: {signers}")
@@ -858,13 +867,46 @@ def verify_approvals(capsule_dir: Path, allowed_signers=None, out=print) -> dict
         if not isinstance(approver, dict) or approver.get("kind") != "human" or not approver.get("id"):
             problems.append("approver is not a human actor")
         if not problems:
-            recomputed, why = recompute_claim_revision(session_raw, run_log, record["claim_id"],
-                                                         record["claim_revision_digest"])
-            if recomputed is None:
-                problems.append(f"claim revision cannot be re-derived from the capsule: {why}")
-            elif recomputed != record["claim_revision_digest"]:
-                problems.append("the claim (or the run rows it cites) in this capsule is not the revision "
-                                "the approval signed: recomputed claim_revision_digest differs")
+            rows = chain_rows.get(record["claim_id"])
+            digest_signed = record["claim_revision_digest"]
+            match = next((r for r in rows if r.get("revision_digest") == digest_signed and not r.get(REDACTED_KEY)),
+                         None) if rows else None
+            head = rows[-1] if rows else None
+            if rows and match is None:
+                problems.append("no revision carried in records/claim_revisions.json is the one the approval signed "
+                                "(or that revision is withheld for privacy and cannot be verified here)")
+            elif match is not None and match is not head:
+                # The claim has moved on since the approval. The approved revision is the one the registry row
+                # refers to: verify the approval against THAT sealed revision, not against the current claim.
+                try:
+                    content_ok = verify_claim_revision(match) and c14n_digest(match["content"]) == digest_signed
+                except Exception:
+                    content_ok = False
+                seals = (match.get("content") or {}).get("evidence_seals") if isinstance(match.get("content"), dict) else None
+                seal_bad = []
+                for rid_, d_ in (seals.items() if isinstance(seals, dict) else []):
+                    row_ = run_log.get(rid_) if isinstance(run_log, dict) else None
+                    rec_ = row_.get("record") if isinstance(row_, dict) and isinstance(row_.get("record"), dict) else None
+                    got = (rec_ or {}).get("record_digest") if rec_ else (row_ or {}).get("record_digest") \
+                        if isinstance(row_, dict) else None
+                    if got != d_:
+                        seal_bad.append(rid_)
+                if not content_ok:
+                    problems.append("the approved revision in the carried chain does not verify")
+                elif seal_bad:
+                    problems.append(f"the run rows the approved revision was bound to are not in this capsule: {seal_bad}")
+                else:
+                    c["superseded"] = c.get("superseded", 0) + 1
+                    out(f"NOTE  approval {label}: superseded: it signed revision {match.get('revision')}, "
+                        f"the claim is now at revision {head.get('revision')}; valid for the revision it signed")
+            else:
+                recomputed, why = recompute_claim_revision(session_raw, run_log, record["claim_id"],
+                                                             record["claim_revision_digest"])
+                if recomputed is None:
+                    problems.append(f"claim revision cannot be re-derived from the capsule: {why}")
+                elif recomputed != record["claim_revision_digest"]:
+                    problems.append("the claim (or the run rows it cites) in this capsule is not the revision "
+                                    "the approval signed: recomputed claim_revision_digest differs")
         if problems:
             c["failed"] += 1
             out(f"FAIL  approval {label}: " + "; ".join(problems))
@@ -1211,6 +1253,12 @@ def claim_links_problem(items):
     return None
 
 
+def _mark_partial(res: dict, reason: str) -> None:
+    res["partial"] = True
+    if reason not in res["partial_reasons"]:
+        res["partial_reasons"].append(reason)
+
+
 def find_symlinks(capsule_dir: Path) -> list:
     found = []
     for dirpath, dirnames, filenames in os.walk(capsule_dir, followlinks=False):
@@ -1256,7 +1304,8 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
     if not bpath.exists():
         return None
     res = {"ok": True, "failures": [], "notes": [], "unverifiable_ids": [], "records_verified": 0,
-           "records_total": 0, "coverage": None, "replay": None, "claim_heads": {}, "partial": False}
+           "records_total": 0, "coverage": None, "replay": None, "claim_heads": {}, "partial": False,
+           "partial_reasons": []}
 
     def fail(rule, message, entity=None):
         res["failures"].append((rule, entity, message))
@@ -1554,16 +1603,17 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
         for cid, items in sorted(revisions.items()):
             claim = session_claims.get(cid)
             if not isinstance(claim, dict):
+                fail("VER-HEAD", "the claim has a sealed chain but is absent from session.json", f"claim:{cid}")
                 continue
             found = claim_head_problem(claim, [r for _k, r, _s in sorted(items, key=lambda it: it[1]["revision"])])
             if found is None:
                 res["notes"].append(f"claim {cid}: every revision is withheld; session.json cannot be compared "
                                     "with the chain")
-                res["partial"] = True
+                _mark_partial(res, "withheld")
                 continue
             diff, unverifiable, rev, withheld_head = found
             if unverifiable:
-                res["partial"] = True
+                _mark_partial(res, "withheld")
                 res["notes"].append(f"claim {cid}: unverifiable: head withheld, so session.json's "
                                     f"{', '.join(unverifiable)} cannot be compared with the sealed chain "
                                     "(partial coverage)")
@@ -1591,7 +1641,30 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
             fail(rule, why, f"{kind}:{eid}")
     derived_withheld = sorted(eid for (_k, eid) in withheld_ok)
     if withheld_ok:
-        res["partial"] = True
+        _mark_partial(res, "withheld")
+    # partial is derived from content, not from the bundle's declarations (core C-S1): any run-log row with the
+    # privacy-stub shape makes the result partial, and the bundle must count it as withheld
+    rl_rows = None
+    if "run_log.json" in by_ref:
+        try:
+            rl_rows = json.loads((capsule_dir / "run_log.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rl_rows = None
+    if isinstance(rl_rows, dict):
+        flagged = sorted(r for r, row in rl_rows.items() if isinstance(row, dict) and row.get("redacted_for_privacy") is True)
+        unsealed_rows = sum(1 for row in rl_rows.values() if isinstance(row, dict)
+                            and row.get("redacted_for_privacy") is not True
+                            and not (isinstance(row.get("record"), dict) and row["record"].get("record_digest")))
+        rr_ = bundle.get("run_rows") if isinstance(bundle.get("run_rows"), dict) else None
+        if flagged:
+            _mark_partial(res, "withheld")
+            if rr_ is not None and isinstance(rr_.get("withheld_for_privacy"), int) \
+                    and rr_["withheld_for_privacy"] < len(flagged):
+                fail("VER-RUN-ROWS", f"{len(flagged)} run-log rows have the privacy-stub shape but run_rows counts "
+                                     f"only {rr_['withheld_for_privacy']} withheld_for_privacy (a stub relabelled as "
+                                     "another kind of row?)")
+        if len(sealed) - len(not_ok) == 0 and (unsealed_rows or (rr_ or {}).get("legacy_no_record")):
+            _mark_partial(res, "unsealed")                  # nothing was verified: never a plain ok
     if "withheld_ids" in cov and sorted(cov["withheld_ids"]) != derived_withheld:
         fail("VER-UNVERIFIABLE", f"declared withheld ids {sorted(cov['withheld_ids'])} differ from the privacy "
                                  f"stubs derived from stub shape and digests {derived_withheld}")
@@ -1823,11 +1896,12 @@ def claim_head_problem(claim, rows):
         return None
     head_withheld = k != len(rows) - 1
     head = rows[k]["content"]
-    differing = [sk for sk, hk in _HEAD_FIELDS if sk in claim and hk in head and claim[sk] != head[hk]]
+    # a projected key missing from a claim that has a chain is a difference (deleting it must not pass)
+    differing = [sk for sk, hk in _HEAD_FIELDS if hk in head and (sk not in claim or claim[sk] != head[hk])]
     if not head_withheld:
         return differing, [], rows[k].get("revision"), False
     hk_of = dict(_HEAD_FIELDS)
-    unverifiable = [f for f in differing if f in _ENUM_FIELDS or (_scrubbed(claim[f]) and (
+    unverifiable = [f for f in differing if f in _ENUM_FIELDS or (f in claim and _scrubbed(claim[f]) and (
         f != "claim" or _strip_markers(claim[f]) == _strip_markers(head[hk_of[f]])))]
     return [f for f in differing if f not in unverifiable], unverifiable, rows[k].get("revision"), True
 
@@ -1850,6 +1924,10 @@ def check_claims_against_heads(capsule_dir: Path, out=print, partial=None) -> li
     for cid, item in sorted((doc.get("claims") or {}).items()):
         rows = item.get("rows") if isinstance(item, dict) and item.get("status") == "ok" else None
         claim = claims.get(cid)
+        if rows and not isinstance(claim, dict) and all(isinstance(r, dict) for r in rows):
+            bad.append((cid, ["absent"]))
+            out(f"FAIL  claim {cid}: has a sealed chain but is absent from session.json")
+            continue
         if not rows or not isinstance(claim, dict) or not all(isinstance(r, dict) for r in rows):
             continue
         found = claim_head_problem(claim, rows)
@@ -1971,6 +2049,7 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
         records_ok = False
 
     core_partial = False
+    core_reasons = []
     bundle_res = verify_bundle(capsule_dir) if check_crate else None
     heads = bundle_res["claim_heads"] if bundle_res else None
     claims = verify_claims(capsule_dir, heads, out=out)
@@ -1997,6 +2076,7 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
                 out(f"FAIL  {f.rule}{' ' + f.entity if getattr(f, 'entity', None) else ''}: {f.message}")
             crate_ok = crate_ok and core_res.ok
             core_partial = bool(getattr(core_res, "partial", False))
+            core_reasons = list(getattr(core_res, "partial_reasons", []) or [])
             out("Crate regenerated by aihydro_core and byte-compared: "
                 + ("ok" if core_res.ok else "FAILED"))
             try:
@@ -2033,13 +2113,24 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
         integrity_ok = False        # nothing was actually checked
         out("FAIL  archive has no files and no records; nothing was verified.")
     status = replay_status(integrity_ok, live, len(comparisons), comparisons_ok)
-    partial = bool((summary and summary["redacted"]) or (claims and claims["partial"]) or head_partial
-                   or (bundle_res and bundle_res.get("partial")) or core_partial
-                   or (coverage and coverage.get("records_verified") != coverage.get("records_total")))
+    reasons = []
+    if (summary and summary["redacted"]) or (claims and claims["partial"]) or head_partial \
+            or (coverage and coverage.get("records_verified") != coverage.get("records_total")):
+        reasons.append("withheld")
+    for src in (bundle_res.get("partial_reasons") if bundle_res else []) + core_reasons:
+        if src not in reasons:
+            reasons.append(src)
+    if core_partial and not core_reasons and "withheld" not in reasons:
+        reasons.append("withheld")
+    if bundle_res and bundle_res.get("partial") and not bundle_res.get("partial_reasons") and "withheld" not in reasons:
+        reasons.append("withheld")
+    partial = bool(reasons)
     # F13 outcome: ok (0), ok_partial_withheld (3: verified except privacy-withheld records or an unverifiable
-    # withheld head, which a consumer may reject by policy), failed (1)
+    # withheld head), ok_partial_unsealed (3: nothing in the capsule was sealed, so nothing was verified), failed (1).
+    # Both partial outcomes exit 3 so a consumer can reject them by policy.
     ok_all = integrity_ok and comparisons_ok and approvals_ok
-    outcome = "failed" if not ok_all else ("ok_partial_withheld" if partial else "ok")
+    outcome = ("failed" if not ok_all else "ok_partial_withheld" if "withheld" in reasons
+               else "ok_partial_unsealed" if reasons else "ok")
     out(f"\nreplay_status: {status}")
     if integrity_ok and coverage:
         out(f"coverage: {coverage.get('records_verified')} of {coverage.get('records_total')} sealed records "
@@ -2049,8 +2140,9 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
     out("recomputation: not_performed")
     if live:
         out(f"comparisons: {len(comparisons)}")
+    out(f"partial_reasons: {','.join(sorted(reasons)) if reasons else 'none'}")
     out(f"replay_outcome: {outcome}")
-    return {"outcome": outcome, "status": status, "integrity_ok": integrity_ok, "approvals_ok": approvals_ok,
+    return {"outcome": outcome, "partial_reasons": sorted(reasons), "status": status, "integrity_ok": integrity_ok, "approvals_ok": approvals_ok,
             "comparisons": comparisons, "comparisons_ok": comparisons_ok, "live": live,
             "partial": partial, "coverage": coverage, "hashes_ok": hashes_ok, "records_ok": records_ok,
             "claims": claims, "bundle": bundle_res, "session_bad": session_bad, "head_bad": head_bad}
@@ -2063,15 +2155,16 @@ def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERA
         allowed_signers=None) -> int:
     """Exit codes: 0 ok, 1 failed, 2 ``--live`` found nothing to compare, 3 ok_partial_withheld (verified except
     declared privacy-withheld records or an unverifiable withheld head; a consumer may reject it by policy).
-    A ``replay_outcome: <ok|ok_partial_withheld|failed>`` line is the machine-readable outcome."""
+    A ``replay_outcome: <ok|ok_partial_withheld|ok_partial_unsealed|failed>`` line is the machine-readable outcome."""
     a = assess(capsule_dir, live, tolerance, out, allowed_signers)
     if a["outcome"] == "failed":
         return EXIT_FAILED
     if live and not a["comparisons"]:
         out("FAIL  --live found no comparable values; nothing was cross-checked.")
         return EXIT_NO_COMPARISONS
-    if a["outcome"] == "ok_partial_withheld":
-        out("NOTE  partial by withholding: exit code 3 lets a consumer reject this by policy.")
+    if a["outcome"] in ("ok_partial_withheld", "ok_partial_unsealed"):
+        out("NOTE  partial (" + ("withheld records" if a["outcome"] == "ok_partial_withheld" else "unsealed rows only")
+            + "): exit code 3 lets a consumer reject this by policy.")
         return EXIT_PARTIAL
     return EXIT_OK
 

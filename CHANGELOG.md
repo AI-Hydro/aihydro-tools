@@ -8,6 +8,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Requires aihydro-core 0.2.10 or later.
+
+### Changed
+- Partial results derive from content (core C-S1): any run-log row with the privacy-stub shape makes the result partial
+  (`withheld`) whatever the bundle declares, and `VER-RUN-ROWS` fails if `run_rows.withheld_for_privacy` undercounts them.
+  A capsule where nothing was verified (`records_verified == 0` and some non-stub row has no sealed record, or
+  `run_rows.legacy_no_record > 0`) is partial with reason `unsealed`: outcome `ok_partial_unsealed`. Both partial outcomes
+  exit 3; `replay.py` prints `partial_reasons: ...` and `replay_outcome: ...`, `export_session` returns
+  `crate_status` (`ok` / `ok_partial_withheld` / `ok_partial_unsealed`), `crate_partial` and `crate_partial_reasons`.
+  **Behaviour change:** an export of a session with no sealed run records now exits 3 under `replay.py` (it was 0).
+- A chained claim that is absent from `session.json` fails `VER-HEAD`; under a withheld head a missing enumerated key is
+  unverifiable (partial) and a missing string key fails.
+
+### Fixed
+- Approve, promote, then revise the claim: `replay.py` no longer fails the approval with "recomputed claim_revision_digest
+  differs". An approval is verified against the sealed revision whose digest it signed (carried in
+  `records/claim_revisions.json`); if the claim has since moved on it is reported as `superseded` (a NOTE; the registry row
+  still refers to the approved revision). It fails only when no carried revision matches, the approved revision does not
+  verify, or the run rows it was bound to are not in the capsule. For the head revision the stronger recomputation from the
+  current claim is kept. `export_session` refuses the crate when a carried approval fails verification, so it no longer
+  reports an ok crate for a capsule replay rejects.
+- A projected key deleted from `session.json` (for a claim with a sealed chain) is now a difference in the head comparison
+  (`VER-HEAD` in the mirror; core needs the same change for exact parity).
+
 ## [2.3.6] - 2026-10-16
 
 The fault-matrix-3 follow-ups. It requires aihydro-core 0.2.9 or later.
