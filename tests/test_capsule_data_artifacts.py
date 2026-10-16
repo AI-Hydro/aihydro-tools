@@ -238,7 +238,7 @@ def test_replay_status_makes_no_recomputation_claim(exported):
     cap, result, _ = exported
     assert result["replay_status"] == "archive_integrity" and result["recomputation"] == "not_performed"
     proc = subprocess.run([sys.executable, str(cap / "replay.py")], capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.returncode == 3, proc.stdout + proc.stderr  # core 0.2.10 C-S2: a capsule with an unsealed run row is ok_partial_unsealed (exit 3)
     assert "recomputed" not in proc.stdout.lower().replace("not recomputed", "")
 
 
@@ -277,7 +277,7 @@ def test_unobtainable_series_is_stated_not_omitted(tmp_path, monkeypatch):
 def test_replay_binds_retained_series_to_the_sealed_record(tmp_path, monkeypatch):
     cap, _, _ = _build_and_export("retained", tmp_path, monkeypatch)
     proc = subprocess.run([sys.executable, str(cap / "replay.py")], capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stdout
+    assert proc.returncode == 3, proc.stdout  # core 0.2.10 C-S2: a capsule with an unsealed run row is ok_partial_unsealed (exit 3)
     assert "matches the digest sealed by" in proc.stdout and "equals the retained series" in proc.stdout
 
 

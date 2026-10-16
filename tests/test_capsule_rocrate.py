@@ -46,12 +46,23 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_REPO_ROOT", tmp_path)
 
 
+def _seal_run_row(run_id: str, body: dict):
+    """Insert ``body`` as a SEALED run-log row (record + entry_digest), as the middleware writes it."""
+    from ai_hydro.session import run_records as rr
+    rec = rr.build_run_record(run_id=run_id, tool=body.get("tool_name", "fixture"), session_id=SID, entry=body)
+    conn = store._run_log_connect(SID)
+    conn.execute("INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?,?,?)",
+                 (run_id, body.get("timestamp", "2026-01-01T00:00:00+00:00"), json.dumps({**body, "record": rec.to_dict()})))
+    conn.commit()
+    conn.close()
+
+
 def _session_with_claim(ws: Path | None = None):
     s = HydroSession.load(SID)
     if ws is not None:
         s.workspace_dir = str(ws)
-    s.set("_run_log", {"r1": _run_record(SID)})        # a legacy row with uncertainty evidence for the claim
     s.save()
+    _seal_run_row("r1", _run_record(SID))               # a sealed row with uncertainty evidence for the claim
     assert add_claim(
         session_id=SID, claim_id="c1", statement="Synthetic NSE is 0.8", claim_type="empirical_result",
         status="proposed", confidence="low", confidence_rationale="Synthetic regression fixture only.",
@@ -561,14 +572,54 @@ def test_exporter_names_the_projecting_core_version(exported):
     assert f"regenerated here with aihydro-core {aihydro_core.__version__}" in out
 
 
-def test_bundle_carries_the_unsealed_row_counts(exported):
-    cap, _ = exported
+def _insert_legacy_row(run_id: str, key_outputs=None):
+    """An UNSEALED legacy run-log row (no record), as written before sealing existed."""
+    body = {"run_id": run_id, "tool_name": "legacy_tool", "session_id": SID, "timestamp": "2026-01-01T00:00:00+00:00",
+            "key_outputs": key_outputs or {"v": 1.0}}
+    conn = store._run_log_connect(SID)
+    conn.execute("INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?,?,?)",
+                 (run_id, body["timestamp"], json.dumps(body)))
+    conn.commit()
+    conn.close()
+
+
+def test_bundle_carries_the_unsealed_row_counts(exported, tmp_path):
+    _insert_legacy_row("legacy_cnt")
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "counts"))
+    cap = Path(res["capsule_dir"])
     rr_ = json.loads((cap / "bundle.json").read_text())["run_rows"]
     assert set(rr_) == {"run_log_rows", "sealed", "legacy_no_record", "unbound", "unsealable",
                         "withheld_for_privacy"}
-    assert rr_["legacy_no_record"] >= 1 and rr_["sealed"] >= 1      # the fixture's r1 row is legacy
+    assert rr_["legacy_no_record"] >= 1 and rr_["sealed"] >= 1
     assert rr_["run_log_rows"] == rr_["sealed"] + rr_["legacy_no_record"] + rr_["withheld_for_privacy"]
-    assert set(rr_) == set(json.loads((cap / "bundle.json").read_text())["run_rows"])
+    # core C-S2: 7+ sealed rows and one legacy row are never a plain ok
+    assert res["crate_status"] == "ok_partial_unsealed" and res["crate_partial_reasons"] == ["unsealed"]
+    assert verify_crate(cap).status == "ok_partial_unsealed"
+    for kw in ({"isolated_python": True}, {}):
+        code, out = _replay(cap, **kw)
+        assert code == 3 and "partial_reasons: unsealed" in out and "replay_outcome: ok_partial_unsealed" in out, out
+
+
+def test_C_S2_both_reasons_and_a_stripped_stub_flag(exported, tmp_path):
+    _insert_legacy_row("legacy_both")
+    _forge_path_row(SID, "leg_both", "/Users/zz-someone/secret.csv")
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "both_reasons"))
+    cap = Path(res["capsule_dir"])
+    assert sorted(res["crate_partial_reasons"]) == ["unsealed", "withheld"] and res["crate_status"] == "ok_partial_withheld"
+    core = verify_crate(cap)
+    assert sorted(core.partial_reasons) == ["unsealed", "withheld"] and core.status == "ok_partial_withheld"
+    mine = sr.verify_bundle(cap)
+    assert sorted(mine["partial_reasons"]) == ["unsealed", "withheld"]
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 3 and "partial_reasons: unsealed,withheld" in out
+    # strip the stub flag: the row is now an unsealed legacy-looking row, so the capsule is not plain ok
+    log = json.loads((cap / "run_log.json").read_text())
+    log["leg_both"].pop("redacted_for_privacy")
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    _refresh_manifest(cap)
+    assert verify_crate(cap).status != "ok" and _replay(cap, isolated_python=True)[0] != 0
 
 
 def _mark_claim_corrupt(cap: Path):
@@ -863,7 +914,8 @@ def _list_redacted_run(cap: Path, run_id: str):
 
 
 def _first_bound_row(log):
-    return next(r for r, row in sorted(log.items()) if isinstance(row.get("record"), dict) and
+    # a bound row the fixture's claim does NOT cite (r1 is cited, so a forged stub of it would fail VER-STUB-ANCHOR)
+    return next(r for r, row in sorted(log.items()) if r != "r1" and isinstance(row.get("record"), dict) and
                 row["record"].get("extra", {}).get("entry_digest"))
 
 
@@ -1621,6 +1673,10 @@ def test_TS1_an_approval_of_an_earlier_revision_is_superseded_not_failed(exporte
         code, out = _replay(cap, **kw)                                              # ... and replay agrees
         assert code == 0, out
         assert "superseded: it signed revision" in out and "FAIL" not in out
+    # the note names the real later revision (the status update), not promotion's bookkeeping revision
+    rows = cr.history_readonly(SID)[0]["c1"]["rows"]
+    real_later = next(r["revision"] for r in rows if r["cause"]["tool"] == "update_claim_status" and r["revision"] > 1)
+    assert f"revision {real_later} changed the claim since" in out
     assert verify_crate(cap).ok
 
 
@@ -1748,3 +1804,121 @@ def test_VER_HEAD_absent_chained_claim_and_deleted_withheld_head_keys(exported, 
     sess["claims"]["c1"].pop("claim")
     (cap2 / "session.json").write_text(json.dumps(sess, indent=2))
     assert sr.check_claims_against_heads(cap2, out=lambda *_a: None)[0][1] == ["claim"]
+
+
+# ---------------------------------------------------------------- T-M1 and follow-ups
+def _revise_approve_promote():
+    from approval_helpers import approve
+    from ai_hydro.mcp.tools_ledger import promote_claim_to_registry
+    update_claim_status(SID, "c1", "supported", "high", "Revised before approval; synthetic fixture only.",
+                        uncertainty_verified=True)
+    approve(SID, "c1")
+    assert promote_claim_to_registry(SID, "c1", researcher_approved=True).get("status") == "promoted"
+
+
+def test_TM1_revise_approve_promote_is_current_not_superseded(exported, tmp_path):
+    _revise_approve_promote()
+    rows = cr.history_readonly(SID)[0]["c1"]["rows"]
+    assert rows[-1]["cause"]["reason"] == "promotion" and rows[-1]["revision_digest"] == rows[-2]["revision_digest"]
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "tm1"))
+    assert not res.get("crate_error"), res
+    cap = Path(res["capsule_dir"])
+    for kw in ({"isolated_python": True}, {}):
+        code, out = _replay(cap, **kw)
+        assert code == 0 and "superseded" not in out, out
+
+
+def test_TM1_the_stronger_head_check_still_runs_for_a_current_approval(exported, tmp_path):
+    """With the approval current, editing the claim in the capsule is caught by the recomputation, not skipped."""
+    _revise_approve_promote()
+    import ai_hydro.mcp.tools_session as ts
+    cap = Path(ts.export_session(session_id=SID, capsule_path=str(tmp_path / "tm1b"))["capsule_dir"])
+    sess = json.loads((cap / "session.json").read_text())
+    sess["claims"]["c1"]["claim"] += " (edited)"
+    (cap / "session.json").write_text(json.dumps(sess, indent=2))
+    for n in _NEW:
+        (cap / n).unlink()
+    _refresh_manifest(cap)
+    out = sr.verify_approvals(cap, out=lambda *_a: None)
+    assert out["failed"] == 1
+
+
+def _cited_flow(claim_id, run_id, rows_sealed: bool):
+    """claim_id cites run_id; approve, promote, then revise (so the approval is superseded)."""
+    from approval_helpers import approve
+    from ai_hydro.mcp.tools_ledger import promote_claim_to_registry
+    body = {**_run_record(SID), "run_id": run_id}
+    if rows_sealed:
+        _seal_run_row(run_id, body)
+    else:
+        conn = store._run_log_connect(SID)
+        conn.execute("INSERT OR REPLACE INTO runs (run_id, timestamp, entry_json) VALUES (?,?,?)",
+                     (run_id, "2026-01-01T00:00:00+00:00", json.dumps({**body, "timestamp": "2026-01-01T00:00:00+00:00"})))
+        conn.commit()
+        conn.close()
+    assert add_claim(session_id=SID, claim_id=claim_id, statement="Synthetic NSE is 0.8 plain statement",
+                     claim_type="empirical_result", status="proposed", confidence="low",
+                     confidence_rationale="Synthetic fixture rationale text.", basins=["synthetic"], period="2000-2001",
+                     metric="nse", basin_refs=[basin_ref_full("synthetic")], limitations=["plain"],
+                     evidence_spans=[{"source_type": "run", "source_id": run_id, "metric_ref": "nse"}])["status"] == "recorded"
+    update_claim_status(SID, claim_id, "supported", "medium", "Synthetic regression fixture only.", uncertainty_verified=True)
+    approve(SID, claim_id)
+    assert promote_claim_to_registry(SID, claim_id, researcher_approved=True).get("status") == "promoted"
+    update_claim_status(SID, claim_id, "supported", "high", "Revised after promotion; synthetic fixture only.",
+                        uncertainty_verified=True)
+
+
+def test_sealed_bound_row_whose_record_digest_differs_is_described_as_present_but_different(exported, tmp_path):
+    _cited_flow("c_seal", "rseal", rows_sealed=True)
+    import ai_hydro.mcp.tools_session as ts
+    cap = Path(ts.export_session(session_id=SID, capsule_path=str(tmp_path / "bound"))["capsule_dir"])
+    for n in _NEW:
+        (cap / n).unlink()
+    log = json.loads((cap / "run_log.json").read_text())
+    log["rseal"]["record"]["record_digest"] = "sha256:" + "ab" * 32
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    _refresh_manifest(cap)
+    lines = []
+    out = sr.verify_approvals(cap, out=lines.append)
+    text = "\n".join(lines)
+    assert out["failed"] >= 1 and "present but their record digest (or fingerprint) differs" in text
+    del log["rseal"]
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    lines = []
+    sr.verify_approvals(cap, out=lines.append)
+    assert "are not in this capsule" in "\n".join(lines)
+
+
+def test_pre_seal_approval_is_rederived_from_the_run_log_when_the_claim_has_no_evidence_seals(exported, tmp_path):
+    """A claim bound to an UNSEALED row has evidence fingerprints but no evidence_seals: re-derive them."""
+    _cited_flow("c_leg", "rleg", rows_sealed=False)
+    import ai_hydro.mcp.tools_session as ts
+    cap = Path(ts.export_session(session_id=SID, capsule_path=str(tmp_path / "preseal"))["capsule_dir"])
+    rows = cr.history_readonly(SID)[0]["c_leg"]["rows"]
+    assert not any((r["content"].get("evidence_seals") or {}) for r in rows)
+    lines = []
+    assert sr.verify_approvals(cap, out=lines.append)["failed"] == 0 and "superseded" in "\n".join(lines)
+    for n in _NEW:
+        (cap / n).unlink()
+    log = json.loads((cap / "run_log.json").read_text())
+    log["rleg"]["key_outputs"] = {**log["rleg"].get("key_outputs", {}), "nse": 0.99}
+    (cap / "run_log.json").write_text(json.dumps(log, indent=2))
+    _refresh_manifest(cap)
+    lines = []
+    assert sr.verify_approvals(cap, out=lines.append)["failed"] >= 1
+    assert "present but their record digest (or fingerprint) differs" in "\n".join(lines)
+
+
+def test_staleness_flags_a_claim_revised_since_promotion_but_not_before(exported):
+    from approval_helpers import approve
+    from ai_hydro.mcp.tools_ledger import check_registry_staleness, promote_claim_to_registry
+    approve(SID, "c1")
+    assert promote_claim_to_registry(SID, "c1", researcher_approved=True).get("status") == "promoted"
+    assert check_registry_staleness(SID)["claim_revised_since_promotion"] == []
+    update_claim_status(SID, "c1", "supported", "high", "Revised after promotion; synthetic fixture only.",
+                        uncertainty_verified=True)
+    res = check_registry_staleness(SID)
+    (flag,) = res["claim_revised_since_promotion"]
+    assert flag["claim_id"] == "c1" and flag["flag"] == "claim_revised_since_promotion"
+    assert flag["latest_revision"] > flag["promoted_revision"] and res["n_stale"] == 0 and res["revision_chain_mismatches"] == []

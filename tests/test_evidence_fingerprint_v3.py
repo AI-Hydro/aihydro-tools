@@ -132,6 +132,6 @@ def test_capsule_replay_unchanged_by_reseal_and_reports_unsealable(tmp_path, mon
     assert "error" not in res, res
     c.dir = tmp_path / "capsule2"
     code, after = c.replay()
-    assert code == 0, after                                  # resealed row: approval still re-derives
+    assert code == 3, after                                  # resealed row: approval still re-derives  # core 0.2.10 C-S2: a capsule with an unsealed run row is ok_partial_unsealed (exit 3)
     assert "FAIL" not in after
     assert "1 of them marked unsealable" in after and "NOTE  run other: unsealable: body not observed" in after

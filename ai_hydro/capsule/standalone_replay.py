@@ -872,33 +872,61 @@ def verify_approvals(capsule_dir: Path, allowed_signers=None, out=print) -> dict
             match = next((r for r in rows if r.get("revision_digest") == digest_signed and not r.get(REDACTED_KEY)),
                          None) if rows else None
             head = rows[-1] if rows else None
+            current = bool(head) and head.get("revision_digest") == digest_signed and match is not None
             if rows and match is None:
                 problems.append("no revision carried in records/claim_revisions.json is the one the approval signed "
                                 "(or that revision is withheld for privacy and cannot be verified here)")
-            elif match is not None and match is not head:
-                # The claim has moved on since the approval. The approved revision is the one the registry row
-                # refers to: verify the approval against THAT sealed revision, not against the current claim.
+            elif match is not None and not current:
+                # A LATER revision with a different digest exists: the claim has moved on since the approval. (A
+                # bookkeeping revision such as promotion repeats the digest and leaves the approval current.) The
+                # approved revision is the one the registry row refers to: verify the approval against THAT sealed
+                # revision, not against the current claim.
+                later = next((r for r in rows if isinstance(r.get("revision"), int) and isinstance(match.get("revision"), int)
+                              and r["revision"] > match["revision"] and r.get("revision_digest") != digest_signed), head)
                 try:
                     content_ok = verify_claim_revision(match) and c14n_digest(match["content"]) == digest_signed
                 except Exception:
                     content_ok = False
-                seals = (match.get("content") or {}).get("evidence_seals") if isinstance(match.get("content"), dict) else None
-                seal_bad = []
-                for rid_, d_ in (seals.items() if isinstance(seals, dict) else []):
-                    row_ = run_log.get(rid_) if isinstance(run_log, dict) else None
-                    rec_ = row_.get("record") if isinstance(row_, dict) and isinstance(row_.get("record"), dict) else None
-                    got = (rec_ or {}).get("record_digest") if rec_ else (row_ or {}).get("record_digest") \
-                        if isinstance(row_, dict) else None
-                    if got != d_:
-                        seal_bad.append(rid_)
+                content = match.get("content") if isinstance(match.get("content"), dict) else {}
+                seals = content.get("evidence_seals")
+                missing, differs = [], []
+                if isinstance(seals, dict) and seals:
+                    for rid_, d_ in seals.items():
+                        row_ = run_log.get(rid_) if isinstance(run_log, dict) else None
+                        if not isinstance(row_, dict):
+                            missing.append(rid_)
+                            continue
+                        rec_ = row_.get("record") if isinstance(row_.get("record"), dict) else None
+                        got = rec_.get("record_digest") if rec_ else row_.get("record_digest")
+                        if got != d_:
+                            differs.append(rid_)
+                else:
+                    # approvals written before evidence_seals existed: re-derive the evidence fingerprints the revision
+                    # bound against the run log (run sources only; datasets and papers are not reproducible in stdlib)
+                    for sid_, fp_ in (content.get("evidence_versions") or {}).items():
+                        row_ = run_log.get(sid_) if isinstance(run_log, dict) else None
+                        if not isinstance(row_, dict) or row_.get(REDACTED_KEY):
+                            if isinstance(fp_, str) and fp_.startswith("sha256-v") and row_ is None:
+                                missing.append(sid_)
+                            continue
+                        ver_ = fp_.split(":", 1)[0] if isinstance(fp_, str) else ""
+                        try:
+                            ok_fp = ver_ in ("sha256-v2", "sha256-v3") and _run_fingerprint(row_, ver_) == fp_
+                        except Exception:
+                            ok_fp = False
+                        if not ok_fp and ver_ in ("sha256-v2", "sha256-v3"):
+                            differs.append(sid_)
                 if not content_ok:
                     problems.append("the approved revision in the carried chain does not verify")
-                elif seal_bad:
-                    problems.append(f"the run rows the approved revision was bound to are not in this capsule: {seal_bad}")
+                elif missing:
+                    problems.append(f"the run rows the approved revision was bound to are not in this capsule: {missing}")
+                elif differs:
+                    problems.append("the run rows the approved revision was bound to are present but their record "
+                                    f"digest (or fingerprint) differs from the one the approval bound: {differs}")
                 else:
                     c["superseded"] = c.get("superseded", 0) + 1
-                    out(f"NOTE  approval {label}: superseded: it signed revision {match.get('revision')}, "
-                        f"the claim is now at revision {head.get('revision')}; valid for the revision it signed")
+                    out(f"NOTE  approval {label}: superseded: it signed revision {match.get('revision')}, revision "
+                        f"{later.get('revision')} changed the claim since; valid for the revision it signed")
             else:
                 recomputed, why = recompute_claim_revision(session_raw, run_log, record["claim_id"],
                                                              record["claim_revision_digest"])
@@ -1663,8 +1691,8 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
                 fail("VER-RUN-ROWS", f"{len(flagged)} run-log rows have the privacy-stub shape but run_rows counts "
                                      f"only {rr_['withheld_for_privacy']} withheld_for_privacy (a stub relabelled as "
                                      "another kind of row?)")
-        if len(sealed) - len(not_ok) == 0 and (unsealed_rows or (rr_ or {}).get("legacy_no_record")):
-            _mark_partial(res, "unsealed")                  # nothing was verified: never a plain ok
+        if unsealed_rows or (rr_ or {}).get("legacy_no_record"):
+            _mark_partial(res, "unsealed")                  # core C-S2: any unsealed row, whatever else verified
     if "withheld_ids" in cov and sorted(cov["withheld_ids"]) != derived_withheld:
         fail("VER-UNVERIFIABLE", f"declared withheld ids {sorted(cov['withheld_ids'])} differ from the privacy "
                                  f"stubs derived from stub shape and digests {derived_withheld}")

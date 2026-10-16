@@ -10,7 +10,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 Requires aihydro-core 0.2.10 or later.
 
+### Fixed
+- Approval currency (T-M1): an approval is *current* when the head revision's digest equals the digest it signed (promotion
+  appends a bookkeeping revision with the same digest, so a promoted claim is not "superseded"); the stronger recomputation
+  from the current claim then runs. It is reported `superseded` only when a LATER revision with a DIFFERENT digest exists, and
+  the note names that revision. For an approval written before `evidence_seals` existed the superseded branch re-derives the
+  evidence fingerprints against the run log. A bound run row whose digest differs is reported as "present but its record digest
+  (or fingerprint) differs from the one the approval bound", distinct from "not in this capsule".
+- `check_registry_staleness` returns `claim_revised_since_promotion` (informational, not stale evidence): promoted claims whose
+  latest revision digest is no longer the registry row's.
+
 ### Changed
+- (core C-S2) any unsealed run-log row makes the result partial with reason `unsealed`, whatever else verified; plain `ok`
+  needs every run-log row to be sealed or a counted privacy stub. A session whose run log still holds unsealed legacy rows
+  therefore exits 3 under `replay.py`.
 - Partial results derive from content (core C-S1): any run-log row with the privacy-stub shape makes the result partial
   (`withheld`) whatever the bundle declares, and `VER-RUN-ROWS` fails if `run_rows.withheld_for_privacy` undercounts them.
   A capsule where nothing was verified (`records_verified == 0` and some non-stub row has no sealed record, or

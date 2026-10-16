@@ -814,8 +814,27 @@ def check_registry_staleness(session_id: str) -> dict:
                                    "claim_revision": rev_no, "reason": reason,
                                    "flag": "revision_chain_mismatch"})
 
+        # Informational: the claim was redefined or revised after it was promoted (its latest revision digest is not
+        # the one the registry row carries, and the row's own revision is intact). The registry row still refers to the
+        # promoted revision; this is not stale evidence.
+        revised = []
+        flagged = {(m["claim_id"], m["registry_id"]) for m in mismatches}
+        for entry in entries:
+            rev_digest = entry.get("claim_revision_digest")
+            if not rev_digest or (entry["claim_id"], entry.get("registry_id")) in flagged:
+                continue
+            try:
+                latest = claim_revisions.latest(session_id, entry["claim_id"])
+            except claim_revisions.ClaimRevisionError:
+                continue
+            if latest is not None and latest["revision_digest"] != rev_digest:
+                revised.append({"claim_id": entry["claim_id"], "registry_id": entry.get("registry_id"),
+                                "promoted_revision": entry.get("claim_revision"),
+                                "latest_revision": latest["revision"], "flag": "claim_revised_since_promotion"})
+
         return {
             "revision_chain_mismatches": mismatches,
+            "claim_revised_since_promotion": revised,
             "n_checked": len(promoted),
             "n_stale": len(stale_results),
             "n_already_stale": len(already_stale),
