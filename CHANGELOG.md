@@ -8,6 +8,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.6] - 2026-10-16
+
+The fault-matrix-3 follow-ups. It requires aihydro-core 0.2.9 or later.
+
+- **Behaviour change.** `replay.py` now has three outcomes:
+  - `ok` exits 0;
+  - `ok_partial_withheld` exits 3;
+  - `failed` exits 1.
+
+  A capsule with privacy-withheld records now exits 3 instead of 0.
+- `VER-HEAD` parity with core.
+- Export results carry `status` and `partial`.
+
 Requires aihydro-core 0.2.9 or later.
 
 ### Changed
