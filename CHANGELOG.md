@@ -8,6 +8,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.5] - 2026-10-16
+
+- The `LOCAL_PATH_IN_TEXT` recovery is field-aware:
+  - evidence ids: cite a run id, DOI or named dataset;
+  - scope values: use names and identifiers;
+  - prose: rephrase.
+- The S9 residual is documented.
+
 ## [2.3.4] - 2026-10-16
 
 Claim path handling. It requires aihydro-core 0.2.8 or later.
