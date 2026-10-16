@@ -8,6 +8,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.4] - 2026-10-16
+
+Claim path handling. It requires aihydro-core 0.2.8 or later.
+
+- Concrete local prefixes are normalised at write time: workspace, home,
+  AI-Hydro home and temp.
+- A claim write whose revision would be withheld at export is refused
+  with `LOCAL_PATH_IN_TEXT`, and nothing is recorded.
+- New revisions are never stubbed.
+- An interim reader rule applies to legacy stub heads.
+- A run stub that is not listed is refused by the exporter.
+
 Requires aihydro-core 0.2.8 or later.
 
 ### Changed
