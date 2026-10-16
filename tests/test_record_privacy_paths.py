@@ -299,7 +299,8 @@ def test_verified_redaction_stub_carries_identity_and_degrades_status(world, tmp
     assert man["privacy"]["redacted_run_ids"] == ["leg_1"] and man["replay_status"] == "archive_integrity_partial"
     p = subprocess.run([sys.executable, "replay.py"], cwd=cap, capture_output=True, text=True, timeout=120)
     # R2: partiality is coverage, not a level, so a cross-check is never hidden by it
-    assert p.returncode == 0 and "replay_status: archive_integrity\n" in p.stdout, p.stdout[-1500:]
+    assert p.returncode == 3 and "replay_status: archive_integrity\n" in p.stdout, p.stdout[-1500:]
+    assert "replay_outcome: ok_partial_withheld" in p.stdout
     assert "archive_integrity_partial" not in p.stdout and "partial" in p.stdout
 
 

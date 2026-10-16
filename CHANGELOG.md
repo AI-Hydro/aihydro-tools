@@ -8,6 +8,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Requires aihydro-core 0.2.9 or later.
+
+### Changed
+- Three-way outcome (F13) in `replay.py` and in `export_session`: `ok` (exit 0), `ok_partial_withheld` (exit 3: verified
+  except privacy-withheld records or an unverifiable withheld head) and `failed` (exit 1); `--live` with nothing comparable
+  stays exit 2. `replay.py` prints a `replay_outcome: <status>` line. `export_session` returns `crate_status` and
+  `crate_partial` (and `export_crate` returns `status` / `partial`) from core's `VerifyResult`. **Behaviour change:** a
+  capsule with privacy-withheld records now exits 3, not 0; the capsule-replay CI job accepts 3 with a notice. A consumer
+  that wants to reject withholding should treat 3 as failure.
+- The stdlib mirror gains `VER-HEAD` (session claim vs sealed head, identical semantics to core's) and keeps `VER-BAGIT`
+  for a missing `manifest-sha256.txt` (F11/F12 parity tests).
+
 ## [2.3.5] - 2026-10-16
 
 - The `LOCAL_PATH_IN_TEXT` recovery is field-aware:

@@ -247,6 +247,9 @@ def _export(root: Path, session_id: str, workspace_dir, claim_entries, live: boo
         "manifest_status": manifest_status.value, "coverage": bundle.coverage,
         "unexplained_unverifiable": unexplained, "claims_not_carried": info["claims_not_carried"],
         "claim_heads": heads or {}, "gates": gates,
+        # core's three-way outcome: ok, ok_partial_withheld (verified except privacy-withheld records or an
+        # unverifiable withheld head: a consumer may reject it by policy), failed (never returned: it raises)
+        "status": getattr(final, "status", "ok"), "partial": bool(getattr(final, "partial", False)),
     }
 
 

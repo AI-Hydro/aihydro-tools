@@ -355,12 +355,12 @@ def test_redacted_run_is_partial_coverage_and_a_cross_check_is_still_reportable(
     assert bundle["replay"]["checked_status"] in ("archive_integrity", "cross_check")
     assert "zz-someone" not in (cap / "ro-crate-metadata.json").read_text()
     code, out = _replay(cap, isolated_python=True)
-    assert code == 0, out
+    assert code == 3, out
     assert "partial" in out and "archive_integrity_partial" not in out
     assert "VER-RUN-ROWS" not in out
     assert validate_errors(validate_crate(cap)) == []
     code_core, out_core = _replay(cap)                          # with core importable as well
-    assert code_core == 0 and "byte-compared: ok" in out_core, out_core
+    assert code_core == 3 and "byte-compared: ok" in out_core, out_core
     if os.environ.get(VALIDATOR_ENV):                          # real redacted export, external validator
         p = subprocess.run([os.environ[VALIDATOR_ENV], "validate", "--profile-identifier", "ro-crate-1.3",
                             "--requirement-severity", "REQUIRED", "--no-paging", str(cap)],
@@ -665,7 +665,7 @@ def test_redaction_alongside_real_sealed_rows_satisfies_the_run_rows_range(expor
     rr_ = json.loads((cap / "bundle.json").read_text())["run_rows"]
     assert rr_["sealed"] >= 1 and rr_["withheld_for_privacy"] == 1
     assert verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
-    assert _replay(cap, isolated_python=True)[0] == 0
+    assert _replay(cap, isolated_python=True)[0] == 3
 
 
 # ---------------------------------------------------------------- fault-matrix-2 follow-ups (M15, M14b, M02e, M06e)
@@ -991,7 +991,7 @@ def test_real_redacted_export_with_a_run_row_and_a_claim_revision_both_withheld(
     cov = json.loads((cap / "bundle.json").read_text())["coverage"]
     assert sorted(cov["withheld_ids"]) == sorted(cov["unverifiable_ids"]) == sorted(["leg_9", f"c1@{new.revision}"])
     assert verify_crate(cap).ok and validate_errors(validate_crate(cap)) == []
-    assert _replay(cap, isolated_python=True)[0] == 0 and _replay(cap)[0] == 0
+    assert _replay(cap, isolated_python=True)[0] == 3 and _replay(cap)[0] == 3
     assert "zz-someone" not in "".join(p.read_text(errors="ignore") for p in cap.rglob("*") if p.is_file())
     if os.environ.get(VALIDATOR_ENV):
         pr = subprocess.run([os.environ[VALIDATOR_ENV], "validate", "--profile-identifier", "ro-crate-1.3",
@@ -1180,7 +1180,7 @@ def test_real_export_with_a_cited_run_row_withheld_verifies_with_the_genuine_stu
     cov = json.loads((cap / "bundle.json").read_text())["coverage"]
     assert "cited_1" in cov["withheld_ids"] and verify_crate(cap).ok and sr.verify_bundle(cap)["ok"]
     assert validate_errors(validate_crate(cap)) == []
-    assert _replay(cap, isolated_python=True)[0] == 0 and _replay(cap)[0] == 0
+    assert _replay(cap, isolated_python=True)[0] == 3 and _replay(cap)[0] == 3
 
 
 # ---------------------------------------------------------------- FP1: concrete-prefix normalisation at write time
@@ -1466,7 +1466,7 @@ def test_M3_a_legacy_claim_is_normalised_at_its_next_write_and_exports(exported,
     res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "legacy"))
     assert not res.get("crate_error"), res                          # head is now readable; the old revision is a stub
     cap = Path(res["capsule_dir"])
-    assert _replay(cap, isolated_python=True)[0] == 0 and verify_crate(cap).ok
+    assert _replay(cap, isolated_python=True)[0] == 3 and verify_crate(cap).ok
 
 
 def _legacy_stub_head(world_tmp, status="contested"):
@@ -1494,7 +1494,7 @@ def test_FP2_honest_legacy_withheld_head_that_also_changed_status_is_exported_an
     assert not res.get("crate_error"), res
     cap = Path(res["capsule_dir"])
     code, out = _replay(cap, isolated_python=True)
-    assert code == 0, out
+    assert code == 3, out
     assert "head withheld; comparison limited to revision 1" in out and "unverifiable: head withheld" in out
     assert verify_crate(cap).ok
     crate = (cap / "ro-crate-metadata.json").read_text()
@@ -1540,3 +1540,60 @@ def test_the_refusal_recovery_is_field_aware(exported):
                    evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}])
     assert sc["code"] == "LOCAL_PATH_IN_TEXT" and sc["field"].startswith("scope") and "not file paths" in sc["recovery"]
     assert "m_prose" not in HydroSession.load(SID).claims and "m_ev" not in HydroSession.load(SID).claims
+
+
+# ---------------------------------------------------------------- F13: three-way outcome
+def test_F13_outcome_ok_partial_failed_and_the_machine_readable_line(exported, tmp_path):
+    code, out = _replay(exported[0], isolated_python=True)
+    assert code == 0 and "replay_outcome: ok\n" in out
+    cap = _copy(exported[0], tmp_path, "t_f13")
+    (cap / "README.md").write_text("tampered")
+    code, out = _replay(cap, isolated_python=True)
+    assert code == 1 and "replay_outcome: failed" in out
+
+
+def test_F13_a_partial_export_is_reported_as_partial_by_export_session_and_replay(world, tmp_path):
+    server, _tp = world
+    _call(server, "extract_hydrological_signatures", {"session_id": SID})
+    _session_with_claim()
+    _forge_path_row(SID, "leg_f13", "/Users/zz-someone/secret.csv")
+    import ai_hydro.mcp.tools_session as ts
+    res = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "f13"))
+    assert res["crate_status"] == "ok_partial_withheld" and res["crate_partial"] is True
+    cap = Path(res["capsule_dir"])
+    core = verify_crate(cap)
+    assert core.status == "ok_partial_withheld" and core.exit_code == 3 and core.ok and core.partial
+    for kw in ({"isolated_python": True}, {}):
+        code, out = _replay(cap, **kw)
+        assert code == 3 and "replay_outcome: ok_partial_withheld" in out, out
+    # the same agreement for a complete export
+    clean = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "f13b"))
+    assert clean["crate_status"] in ("ok", "ok_partial_withheld")
+
+
+def test_F11_a_missing_bagit_manifest_fails_in_core_and_the_mirror(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_f11")
+    (cap / "manifest-sha256.txt").unlink()
+    assert "VER-BAGIT" in _rules(verify_crate(cap)) and "VER-BAGIT" in _stdlib_rules(cap)
+
+
+def test_F12_session_view_vs_sealed_head_has_core_parity(exported, tmp_path):
+    cap = _copy(exported[0], tmp_path, "t_f12")
+    sess = json.loads((cap / "session.json").read_text())
+    sess["claims"]["c1"]["claim"] += " (stronger)"
+    (cap / "session.json").write_text(json.dumps(sess, indent=2))
+    _refresh(cap)
+    # the bundle still pins the old session.json digest: re-export so only the head comparison is in play
+    for n in _NEW:
+        (cap / n).unlink()
+    _refresh_manifest(cap)
+    import ai_hydro.capsule.rocrate_export as re_
+    mp = pytest.MonkeyPatch()
+    try:
+        _force_integrity(mp)
+        with pytest.raises((CrateExportError, ValueError)):
+            export_crate(cap, session_id=SID, live=False)
+    finally:
+        mp.undo()
+    skipped = {"VER-CRATE-REGEN", "VER-VALIDATE", "VER-BAGIT"}
+    assert "VER-HEAD" in _rules(verify_crate(cap)) and _rules(verify_crate(cap)) - skipped == _stdlib_rules(cap) - skipped

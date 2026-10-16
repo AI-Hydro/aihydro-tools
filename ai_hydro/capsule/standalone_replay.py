@@ -39,7 +39,9 @@ consulted. Without --allowed-signers each signed approval is reported "not
 verified" and never PASS. Requires ssh-keygen (OpenSSH 8.0+) on PATH.
 
 Exit code: 0 = all checks passed, 1 = a check failed (including any approval),
-           2 = --live found no comparable values (nothing was cross-checked).
+           2 = --live found no comparable values (nothing was cross-checked),
+           3 = passed except privacy-withheld records / an unverifiable withheld head (ok_partial_withheld).
+The line 'replay_outcome: ok|ok_partial_withheld|failed' states the outcome in machine-readable form.
 """
 from __future__ import annotations
 
@@ -1042,6 +1044,7 @@ def live_cross_check(capsule_dir: Path, tolerance: float = DEFAULT_TOLERANCE):
 #       extra.entry_digest), and per-claim revision chains;
 #   VER-UNVERIFIABLE       a record declared unverifiable must be a privacy-withheld stub
 #       (redacted_for_privacy); any other defect (seal, foreign session, missing body) fails;
+#   VER-HEAD               session.json's claim agrees with its sealed head revision (claim_head_problem);
 #   VER-STUB-ANCHOR        a withheld run stub cited in a carried revision's evidence_seals carries that digest;
 #   VER-COVERAGE           the unverifiable set equals the bundle's declared one;
 #   VER-BAGIT              manifest-sha256.txt covers every file and each digest holds.
@@ -1253,7 +1256,7 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
     if not bpath.exists():
         return None
     res = {"ok": True, "failures": [], "notes": [], "unverifiable_ids": [], "records_verified": 0,
-           "records_total": 0, "coverage": None, "replay": None, "claim_heads": {}}
+           "records_total": 0, "coverage": None, "replay": None, "claim_heads": {}, "partial": False}
 
     def fail(rule, message, entity=None):
         res["failures"].append((rule, entity, message))
@@ -1540,6 +1543,35 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
             not_ok[key] = ("VER-STUB-ANCHOR", msg)
             withheld_ok.discard(key)
 
+    # the session working view must agree with the sealed head on the fields the revision projects (core VER-HEAD)
+    session_claims = None
+    if "session.json" in by_ref:
+        try:
+            session_claims = json.loads((capsule_dir / "session.json").read_text(encoding="utf-8")).get("claims")
+        except (OSError, ValueError, AttributeError):
+            session_claims = None
+    if isinstance(session_claims, dict):
+        for cid, items in sorted(revisions.items()):
+            claim = session_claims.get(cid)
+            if not isinstance(claim, dict):
+                continue
+            found = claim_head_problem(claim, [r for _k, r, _s in sorted(items, key=lambda it: it[1]["revision"])])
+            if found is None:
+                res["notes"].append(f"claim {cid}: every revision is withheld; session.json cannot be compared "
+                                    "with the chain")
+                res["partial"] = True
+                continue
+            diff, unverifiable, rev, withheld_head = found
+            if unverifiable:
+                res["partial"] = True
+                res["notes"].append(f"claim {cid}: unverifiable: head withheld, so session.json's "
+                                    f"{', '.join(unverifiable)} cannot be compared with the sealed chain "
+                                    "(partial coverage)")
+            if diff:
+                fail("VER-HEAD", f"session.json differs from the sealed "
+                                 f"{'last non-withheld' if withheld_head else 'head'} revision {rev} in "
+                                 f"{', '.join(diff)} (edited after the last revision?)", f"claim:{cid}")
+
     sealed = [e for e in records if e["kind"] not in _UNSEALED_KINDS]
     bad_ids = sorted({eid for (_k, eid) in not_ok})
     res["records_total"] = len(sealed)
@@ -1558,6 +1590,8 @@ def verify_bundle(capsule_dir: Path) -> dict | None:
         else:
             fail(rule, why, f"{kind}:{eid}")
     derived_withheld = sorted(eid for (_k, eid) in withheld_ok)
+    if withheld_ok:
+        res["partial"] = True
     if "withheld_ids" in cov and sorted(cov["withheld_ids"]) != derived_withheld:
         fail("VER-UNVERIFIABLE", f"declared withheld ids {sorted(cov['withheld_ids'])} differ from the privacy "
                                  f"stubs derived from stub shape and digests {derived_withheld}")
@@ -1773,16 +1807,37 @@ def _scrubbed(value) -> bool:
     return False
 
 
-def check_claims_against_heads(capsule_dir: Path, out=print) -> list:
-    """session.json's claim must agree with its sealed head revision on the authority fields.
+def claim_head_problem(claim, rows):
+    """Compare the session working view ``claim`` with the sealed head of its chain ``rows`` (stubs included,
+    revision order). ``None`` when there is nothing to compare (every revision withheld), else
+    ``(diff, unverifiable, revision, head_withheld)``. Mirrors aihydro_core.export.rocrate_verify.claim_head_problem.
 
-    Editing the claim text in the capsule and regenerating the manifest and bundle changes nothing the
-    other checks compare (fault matrix M06e). The head revision is sealed in the chain; the session
-    claim is a mutable working copy. Only fields the revision projects are compared. A claim without a
-    chain is skipped. When the head is a privacy stub its content is withheld, which excuses the
-    stub's content and not the comparison: the claim is compared with the last non-stub revision, and a
-    differing field fails unless the session value carries a scrub marker (it was scrubbed because it held
-    a path, so it legitimately differs from anything sealed).
+    head = last non-stub revision with content. Under a withheld head an enumerated field (status, confidence,
+    claim_type) may legitimately have changed in the withheld revision: unverifiable, not a failure. A string field
+    that differs fails unless it carries a scrub marker that STARTS its token (and, for the claim text, the text left
+    after removing marker-started tokens equals the head's).
+    """
+    k = next((i for i in range(len(rows) - 1, -1, -1)
+              if not rows[i].get(REDACTED_KEY) and isinstance(rows[i].get("content"), dict)), None)
+    if k is None:
+        return None
+    head_withheld = k != len(rows) - 1
+    head = rows[k]["content"]
+    differing = [sk for sk, hk in _HEAD_FIELDS if sk in claim and hk in head and claim[sk] != head[hk]]
+    if not head_withheld:
+        return differing, [], rows[k].get("revision"), False
+    hk_of = dict(_HEAD_FIELDS)
+    unverifiable = [f for f in differing if f in _ENUM_FIELDS or (_scrubbed(claim[f]) and (
+        f != "claim" or _strip_markers(claim[f]) == _strip_markers(head[hk_of[f]])))]
+    return [f for f in differing if f not in unverifiable], unverifiable, rows[k].get("revision"), True
+
+
+def check_claims_against_heads(capsule_dir: Path, out=print, partial=None) -> list:
+    """session.json's claim must agree with its sealed head revision on the authority fields (fault matrix M06e).
+
+    Only fields the revision projects are compared; a claim without a chain is skipped. A privacy-stub head excuses
+    the stub's content, not the comparison (see :func:`claim_head_problem`). ``partial``, if a list, receives a True
+    for every claim left partly unverifiable (withheld head or every revision withheld).
     """
     try:
         doc = json.loads((capsule_dir / "records" / "claim_revisions.json").read_text(encoding="utf-8"))
@@ -1795,42 +1850,27 @@ def check_claims_against_heads(capsule_dir: Path, out=print) -> list:
     for cid, item in sorted((doc.get("claims") or {}).items()):
         rows = item.get("rows") if isinstance(item, dict) and item.get("status") == "ok" else None
         claim = claims.get(cid)
-        if not rows or not isinstance(claim, dict):
+        if not rows or not isinstance(claim, dict) or not all(isinstance(r, dict) for r in rows):
             continue
-        k = next((i for i in range(len(rows) - 1, -1, -1)
-                  if isinstance(rows[i], dict) and not rows[i].get(REDACTED_KEY)
-                  and isinstance(rows[i].get("content"), dict)), None)
-        if k is None:
+        found = claim_head_problem(claim, rows)
+        if found is None:
             out(f"NOTE  claim {cid}: every revision is withheld; session.json cannot be compared with the chain")
+            if partial is not None:
+                partial.append(True)
             continue
-        head_withheld = k != len(rows) - 1
-        head = rows[k]["content"]
-        differing = [sk for sk, hk in _HEAD_FIELDS if sk in claim and hk in head and claim[sk] != head[hk]]
+        diff, unverifiable, rev, head_withheld = found
         if head_withheld:
-            # Legacy withheld head (new revisions never carry a path, so none is withheld any more). Its content is
-            # unknown, so an enumerated field (status, confidence, claim_type) may legitimately have changed in
-            # that very revision: unverifiable, not a failure. A string field that differs and carries no scrub
-            # marker still fails (an edit of the claim text cannot hide behind a forged stub head).
-            # A scrub marker excuses only the marker-bearing substring: the text left after removing those tokens
-            # must still equal the last non-withheld revision's, or an edit could hide behind an appended marker.
-            # Applied to the claim text, the only prose the crate projects. The rationale and limitations are
-            # not projected, and a revision that rewrote them wholesale around a path is the honest legacy case,
-            # so a marker excuses them (still reported as unverifiable).
-            hk_of = dict(_HEAD_FIELDS)
-            unverifiable = [f for f in differing if f in _ENUM_FIELDS or (_scrubbed(claim[f]) and (
-                f != "claim" or _strip_markers(claim[f]) == _strip_markers(head[hk_of[f]])))]
-            diff = [f for f in differing if f not in unverifiable]
-            out(f"NOTE  claim {cid}: head withheld; comparison limited to revision {rows[k].get('revision')}")
+            out(f"NOTE  claim {cid}: head withheld; comparison limited to revision {rev}")
             if unverifiable:
+                if partial is not None:
+                    partial.append(True)
                 out(f"NOTE  claim {cid}: unverifiable: head withheld, so session.json's "
                     f"{', '.join(unverifiable)} cannot be compared with the sealed chain (partial coverage)")
-        else:
-            diff = differing
         if diff:
             bad.append((cid, diff))
             out(f"FAIL  claim {cid}: session.json differs from the sealed "
-                f"{'last non-withheld' if head_withheld else 'head'} revision "
-                f"{rows[k].get('revision')} in {', '.join(diff)} (edited after the last revision?)")
+                f"{'last non-withheld' if head_withheld else 'head'} revision {rev} in {', '.join(diff)} "
+                "(edited after the last revision?)")
     return bad
 
 
@@ -1925,10 +1965,12 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
     bindings_ok = verify_data_bindings(capsule_dir, out=out)
     session_bad = check_session_ids(capsule_dir, json.loads(rl_path.read_text(encoding="utf-8"))
                                     if rl_path.exists() else {}, out=out)
-    head_bad = check_claims_against_heads(capsule_dir, out=out)
+    head_partial = []
+    head_bad = check_claims_against_heads(capsule_dir, out=out, partial=head_partial)
     if session_bad or head_bad:
         records_ok = False
 
+    core_partial = False
     bundle_res = verify_bundle(capsule_dir) if check_crate else None
     heads = bundle_res["claim_heads"] if bundle_res else None
     claims = verify_claims(capsule_dir, heads, out=out)
@@ -1954,6 +1996,7 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
             for f in core_res.failures:
                 out(f"FAIL  {f.rule}{' ' + f.entity if getattr(f, 'entity', None) else ''}: {f.message}")
             crate_ok = crate_ok and core_res.ok
+            core_partial = bool(getattr(core_res, "partial", False))
             out("Crate regenerated by aihydro_core and byte-compared: "
                 + ("ok" if core_res.ok else "FAILED"))
             try:
@@ -1990,8 +2033,13 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
         integrity_ok = False        # nothing was actually checked
         out("FAIL  archive has no files and no records; nothing was verified.")
     status = replay_status(integrity_ok, live, len(comparisons), comparisons_ok)
-    partial = bool((summary and summary["redacted"]) or (claims and claims["partial"])
+    partial = bool((summary and summary["redacted"]) or (claims and claims["partial"]) or head_partial
+                   or (bundle_res and bundle_res.get("partial")) or core_partial
                    or (coverage and coverage.get("records_verified") != coverage.get("records_total")))
+    # F13 outcome: ok (0), ok_partial_withheld (3: verified except privacy-withheld records or an unverifiable
+    # withheld head, which a consumer may reject by policy), failed (1)
+    ok_all = integrity_ok and comparisons_ok and approvals_ok
+    outcome = "failed" if not ok_all else ("ok_partial_withheld" if partial else "ok")
     out(f"\nreplay_status: {status}")
     if integrity_ok and coverage:
         out(f"coverage: {coverage.get('records_verified')} of {coverage.get('records_total')} sealed records "
@@ -2001,21 +2049,31 @@ def assess(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOL
     out("recomputation: not_performed")
     if live:
         out(f"comparisons: {len(comparisons)}")
-    return {"status": status, "integrity_ok": integrity_ok, "approvals_ok": approvals_ok,
+    out(f"replay_outcome: {outcome}")
+    return {"outcome": outcome, "status": status, "integrity_ok": integrity_ok, "approvals_ok": approvals_ok,
             "comparisons": comparisons, "comparisons_ok": comparisons_ok, "live": live,
             "partial": partial, "coverage": coverage, "hashes_ok": hashes_ok, "records_ok": records_ok,
             "claims": claims, "bundle": bundle_res, "session_bad": session_bad, "head_bad": head_bad}
 
 
+EXIT_OK, EXIT_FAILED, EXIT_NO_COMPARISONS, EXIT_PARTIAL = 0, 1, 2, 3
+
+
 def run(capsule_dir: Path, live: bool = False, tolerance: float = DEFAULT_TOLERANCE, out=print,
         allowed_signers=None) -> int:
+    """Exit codes: 0 ok, 1 failed, 2 ``--live`` found nothing to compare, 3 ok_partial_withheld (verified except
+    declared privacy-withheld records or an unverifiable withheld head; a consumer may reject it by policy).
+    A ``replay_outcome: <ok|ok_partial_withheld|failed>`` line is the machine-readable outcome."""
     a = assess(capsule_dir, live, tolerance, out, allowed_signers)
-    if not (a["integrity_ok"] and a["comparisons_ok"] and a["approvals_ok"]):
-        return 1
+    if a["outcome"] == "failed":
+        return EXIT_FAILED
     if live and not a["comparisons"]:
         out("FAIL  --live found no comparable values; nothing was cross-checked.")
-        return 2
-    return 0
+        return EXIT_NO_COMPARISONS
+    if a["outcome"] == "ok_partial_withheld":
+        out("NOTE  partial by withholding: exit code 3 lets a consumer reject this by policy.")
+        return EXIT_PARTIAL
+    return EXIT_OK
 
 
 def main(argv=None, capsule_dir: Path | None = None) -> int:

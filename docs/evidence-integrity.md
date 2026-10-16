@@ -327,3 +327,10 @@ a legacy marker (`<abs>`, `~/`, `workspace:`, `session-data:`) inserted into a f
 "unverifiable" NOTE. It needs the same attacker power as a forged uncited run stub (a4: a full rewrite of unsealed capsule
 state plus a bundle reseal), which already defeats every in-capsule check, so it adds no new capability.
 
+**Outcome and exit codes (F13).** Both `replay.py` and `python -m aihydro_core.export.rocrate verify` report one of three
+outcomes: `ok` (exit 0), `ok_partial_withheld` (exit 3: everything verified except records declared privacy-withheld, or a
+claim whose sealed head is withheld so its enumerated fields cannot be compared) and `failed` (exit 1); `replay.py --live`
+exit 2 still means nothing was comparable. The machine-readable line is `replay_outcome: <status>`. Library callers that
+test `.ok` on core's `VerifyResult` must also check `.partial` if their policy rejects withholding. Scripts that gate on
+`replay.py` returning 0 should decide explicitly what to do with 3.
+
