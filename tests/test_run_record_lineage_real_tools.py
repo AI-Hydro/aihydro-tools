@@ -7,8 +7,10 @@ no workspace, so the lean session JSON kept only ``q_cms_n`` and the signatures
 tool never saw the series (it silently refetched its own NWIS data).
 
 Here both real tools run through the server (FastMCP Client, recording
-middleware on). Only the network is mocked, at the lowest layers:
-``dataretrieval.nwis.get_dv`` (NWIS HTTP client) and the precipitation fetch.
+middleware on). Only the network is mocked, at the lowest layers: the USGS adapter's
+single transport seam ``aihydro_data.sources.usgs_waterdata._http_get`` (the site record
+replays the recorded API body; the daily values are SYNTHETIC, answered in the API's
+own response shape) and the precipitation fetch.
 """
 from __future__ import annotations
 
@@ -27,6 +29,8 @@ from ai_hydro.session import store
 from ai_hydro.session.chat_binding import ChatBindingStore
 from ai_hydro.session.store import HydroSession
 
+from _usgs_replay import Replay, ok
+
 pytestmark = pytest.mark.skipif(
     int(fastmcp.__version__.split(".")[0]) >= 3,
     reason="real ai_hydro tools need the pinned FastMCP 2.x API",
@@ -39,13 +43,17 @@ SQUARE = json.dumps({"type": "Polygon", "coordinates": [[[-77.5, 39.2], [-77.4, 
                                                          [-77.5, 39.3], [-77.5, 39.2]]]})
 
 
-def _cfs_frame(start, end):
+def _daily_body(start, end):
+    """SYNTHETIC daily discharge in the Water Data API's response shape (ft^3/s strings)."""
     idx = pd.date_range(start, end, freq="D")
     rng = np.random.default_rng(7)
     cfs = 200 + 150 * np.abs(np.sin(np.arange(len(idx)) / 30.0)) + rng.uniform(0, 40, len(idx))
-    df = pd.DataFrame({"00060_Mean": cfs, "00060_Mean_cd": "A"}, index=idx)
-    df.index.name = "datetime"
-    return df
+    feats = [{"type": "Feature", "id": f"f{i}", "properties": {
+        "time": d.strftime("%Y-%m-%d"), "value": repr(float(v)), "unit_of_measure": "ft^3/s",
+        "approval_status": "Approved", "qualifier": None, "time_series_id": "ts-synthetic",
+        "monitoring_location_id": f"USGS-{GAUGE}", "parameter_code": "00060", "statistic_id": "00003",
+        "last_modified": "2026-10-17T00:00:00+00:00"}} for i, (d, v) in enumerate(zip(idx, cfs))]
+    return {"type": "FeatureCollection", "features": feats, "numberReturned": len(feats), "links": []}
 
 
 @pytest.fixture
@@ -53,7 +61,7 @@ def world(tmp_path, monkeypatch):
     from ai_hydro.session import chat_binding
 
     # aihydro-data caches fetches under ~/.aihydro/cache: isolate it per test so
-    # the mocked NWIS call is really made (and never reads a real cache).
+    # the mocked fetch is really made (and never reads a real cache).
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(store, "_SESSIONS_DIR", tmp_path)
     monkeypatch.setattr(store, "SESSIONS_DIR", tmp_path)
@@ -65,21 +73,15 @@ def world(tmp_path, monkeypatch):
 
     calls = []
 
-    def fake_get_dv(sites=None, parameterCd=None, statCd=None, start=None, end=None, **kw):
-        calls.append((sites, start, end))
-        return _cfs_frame(start, end), object()
+    def override(url, params):
+        if url.endswith("/collections/daily/items"):
+            start, end = params["time"].split("/")
+            calls.append((params["monitoring_location_id"], start, end))
+            return ok(_daily_body(start, end))
+        return None                          # site records: the recorded fixtures
 
-    import dataretrieval.nwis as nwis
-    monkeypatch.setattr(nwis, "get_dv", fake_get_dv)
-
-    def fake_get_info(sites=None, **kw):
-        # Site-metadata lookup made by the internal NWIS fetch (the other NWIS
-        # HTTP entry point); mocked so the refetch path never leaves the box.
-        df = pd.DataFrame({"site_no": [str(sites)], "station_nm": ["Synthetic test gauge"],
-                           "dec_lat_va": [45.0], "dec_long_va": [-68.5]})
-        return df, object()
-
-    monkeypatch.setattr(nwis, "get_info", fake_get_info)
+    from aihydro_data.sources import usgs_waterdata as uw
+    monkeypatch.setattr(uw, "_http_get", Replay(override))
 
     def fake_precip(geom, start_date, end_date):
         idx = pd.date_range(start_date, end_date, freq="D")

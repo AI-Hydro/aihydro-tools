@@ -1,0 +1,32 @@
+{
+  "library": "dataretrieval_waterdata",
+  "version_tested": "not run here: dataretrieval>=1.4 is not installed in the development environment (no installs, no network); the names below follow the USGS announcement of the waterdata module and the OGC API parameters recorded in the aihydro-data fixtures",
+  "purpose": "dataretrieval.waterdata: the USGS-maintained Python client for the Water Data OGC API. For code the agent writes itself; the aihydro tools use the aihydro-data adapter instead (usgs_waterdata card).",
+  "install": "pip install 'dataretrieval>=1.4'",
+  "field_mappings": {
+    "waterdata.get_daily": {
+      "collection": "daily",
+      "note": "daily values; discharge is parameter_code '00060', mean statistic_id '00003'"
+    },
+    "waterdata.get_continuous": {
+      "collection": "continuous",
+      "note": "instantaneous values; at most 3 years per query; timestamps are UTC"
+    },
+    "waterdata.get_monitoring_locations": {
+      "collection": "monitoring-locations",
+      "note": "site metadata; coordinates EPSG:4326"
+    }
+  },
+  "gotchas": [
+    "Set API_USGS_PAT (an api.data.gov key) in the environment before heavy use; without a key the service answers HTTP 429 above a few queries per hour.",
+    "The legacy dataretrieval.nwis functions call waterservices.usgs.gov, decommissioned on 2027-02-22. Do not use them in new code.",
+    "Values arrive as strings and missing values as null: convert and check explicitly.",
+    "approval_status (Approved / Provisional) and qualifier are separate fields; keep both with the values.",
+    "Discharge is in ft^3/s; convert with 0.028316846592 m^3 per ft^3.",
+    "Verify the function and argument names against the installed dataretrieval version before relying on them: this card was not executed."
+  ],
+  "common_patterns": {
+    "api_key": "import os\nos.environ['API_USGS_PAT'] = '<your api.data.gov key>'  # never commit or log it"
+  },
+  "version_compatible": ">=1.4"
+}

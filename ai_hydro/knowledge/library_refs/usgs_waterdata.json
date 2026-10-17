@@ -1,0 +1,40 @@
+{
+  "library": "usgs_waterdata",
+  "version_tested": "aihydro-data 0.2.3 (adapter aihydro_data.sources.usgs_waterdata)",
+  "purpose": "USGS Water Data OGC API (https://api.waterdata.usgs.gov/ogcapi/v1) through the aihydro-data adapter: daily and continuous discharge with per-value approval/qualifier, monitoring locations, and gauge resolution. Replaces the waterservices / NWIS path (decommissioned 2027-02-22).",
+  "install": "pip install 'aihydro-data>=0.2.3' (requests + pandas only; no dataretrieval needed)",
+  "field_mappings": {
+    "get_daily(site, start, end, parameter_code='00060', statistic_id='00003')": {
+      "returns": "UsgsSeries: site_id ('USGS-xxxxxxxx'), time_series_id, units_native, frame, quality_summary, upstream",
+      "frame_columns": "time, value_native, value_m3s, negative_flag, approval_status (Approved|Provisional), approval_code (A|P), qualifier (list of raw tokens), qualifier_code ('e' for ESTIMATED, other tokens raw)",
+      "units": "value_native is in units_native exactly as the API states ('ft^3/s'); value_m3s uses the single exact factor 0.028316846592. Unknown units raise USGS_UNIT_UNKNOWN.",
+      "time": "daily: calendar date, no zone"
+    },
+    "get_continuous(site, start, end, parameter_code='00060')": {
+      "time": "UTC instants; windows over 1095 days are chunked (the server rejects more than 1100)"
+    },
+    "get_monitoring_locations(ids=, bbox=, name=)": {
+      "returns": "MonitoringLocation: site_id, name, lon, lat ([lon, lat]; the API does not state the CRS), hydrologic_unit_code, horizontal_datum, drainage_area_raw (unit unstated in the body; USGS documents square miles)",
+      "note": "ids: unknown id raises USGS_SITE_NOT_FOUND. name is an EXACT match; partial name matching is not used (name_contains is refused)."
+    },
+    "resolve_gauge(geometry=, gauge_id=, basin_ref=, outlet=)": {
+      "returns": "GaugeResolution: site, method (explicit_id | basin_ref_alias | outlet_snap), distance_m, comid, candidates, alias_verified, area_check, warnings",
+      "precedence": "explicit gauge_id > BasinRef usgs: alias > outlet. Thresholds are pre-registered (ADR-003 A2) and not an agent-facing option."
+    }
+  },
+  "gotchas": [
+    "Refusals are final. TerminalSourceError (GAUGE_REQUIRED, GAUGE_NOT_FOUND, GAUGE_AMBIGUOUS, USGS_NO_DATA, USGS_MULTIPLE_SERIES, ...) means the gauge or series cannot be established; never answer it with another source or modelled flow. Transport failures (USGS_RATE_LIMITED, USGS_TIMEOUT, ...) are plain SourceUnavailable: retry later.",
+    "The approval field is approval_status (Approved / Provisional), a separate field from qualifier. Qualifier tokens outside A/P/e (ESTIMATED is 'e'; FORCEINTERPOLATION, ice, equipment ...) are kept raw and counted in quality_summary['qualifiers_other'].",
+    "Negative discharge values are flagged (negative_flag, n_negative) and kept; they can be real at tidal or backwater sites.",
+    "Last-Modified and ETag were not sent by the server in the recorded session; upstream records response sha256 and retrieval time instead.",
+    "An API key (env API_USGS_PAT) is only needed if 429 responses occur; it is sent as the X-Api-Key header and never recorded.",
+    "Provisional data is revised by USGS: cache entries with provisional values expire (AIHYDRO_DATA_PROVISIONAL_TTL_DAYS, default 7).",
+    "AIHYDRO_USGS_BACKEND=legacy_waterservices is a temporary rollback switch removed on 2027-01-08."
+  ],
+  "common_patterns": {
+    "daily_discharge": "from aihydro_data.sources import usgs_waterdata as uw\nser = uw.get_daily('01013500', '2000-01-01', '2009-12-31')\nq = ser.frame.set_index('time')['value_m3s']\nprint(ser.quality_summary['provisional_fraction'], ser.upstream['response_sha256'])",
+    "through_the_tool": "data_fetch(variable='streamflow', geometry='01013500', start='2000-01-01', end='2009-12-31', session_id=...)  # writes the session streamflow slot with qualification codes",
+    "explicit_gauge": "data_fetch(variable='streamflow', geometry=<basin polygon>, gauge_id='01013500', start=..., end=...)"
+  },
+  "version_compatible": ">=0.2.3,<0.3"
+}

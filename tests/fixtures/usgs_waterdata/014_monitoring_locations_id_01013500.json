@@ -1,0 +1,95 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "USGS-01013500",
+        "agency_code": "USGS",
+        "agency_name": "U.S. Geological Survey",
+        "monitoring_location_number": "01013500",
+        "monitoring_location_name": "Fish River near Fort Kent, Maine",
+        "district_code": "23",
+        "country_code": "US",
+        "country_name": "United States of America",
+        "state_code": "23",
+        "state_name": "Maine",
+        "county_code": "003",
+        "county_name": "Aroostook County",
+        "minor_civil_division_code": null,
+        "site_type_code": "ST",
+        "site_type": "Stream",
+        "hydrologic_unit_code": "010100030403",
+        "basin_code": null,
+        "altitude": 510.64,
+        "altitude_accuracy": 0.09,
+        "altitude_method_code": "X",
+        "altitude_method_name": "GNSS2 - Level 2 Quality Survey Grade Global Navigation Satellite System",
+        "vertical_datum": "NAVD88",
+        "vertical_datum_name": "North American Vertical Datum of 1988",
+        "horizontal_positional_accuracy_code": "S",
+        "horizontal_positional_accuracy": "Accurate to + or - 1 sec.",
+        "horizontal_position_method_code": "N",
+        "horizontal_position_method_name": "Interpolated from Digital MAP.",
+        "original_horizontal_datum": "NAD83",
+        "original_horizontal_datum_name": "North American Datum of 1983",
+        "drainage_area": 870.0,
+        "contributing_drainage_area": 870.0,
+        "time_zone_abbreviation": "EST",
+        "uses_daylight_savings": "Y",
+        "construction_date": null,
+        "aquifer_code": null,
+        "national_aquifer_code": null,
+        "aquifer_type_code": null,
+        "well_constructed_depth": null,
+        "hole_constructed_depth": null,
+        "depth_source_code": null,
+        "revision_note": "WSP 2101: 1969(M). WDR ME-82-1: Drainage area.",
+        "revision_created": "2017-11-13T06:00:00+00:00",
+        "revision_modified": null
+      },
+      "id": "USGS-01013500",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -68.5827777777778,
+          47.2375
+        ]
+      }
+    }
+  ],
+  "numberReturned": 1,
+  "links": [
+    {
+      "type": "application/geo+json",
+      "rel": "self",
+      "title": "This document as GeoJSON",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=json&id=USGS-01013500"
+    },
+    {
+      "rel": "alternate",
+      "type": "application/ld+json",
+      "title": "This document as RDF (JSON-LD)",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=jsonld&id=USGS-01013500"
+    },
+    {
+      "type": "text/html",
+      "rel": "alternate",
+      "title": "This document as HTML",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=html&id=USGS-01013500"
+    },
+    {
+      "type": "text/csv; charset=utf-8",
+      "rel": "alternate",
+      "title": "This document as CSV",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=csv&id=USGS-01013500"
+    },
+    {
+      "type": "application/json",
+      "title": "Monitoring locations",
+      "rel": "collection",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations"
+    }
+  ],
+  "timeStamp": "2026-10-17T09:58:05.734011Z"
+}

@@ -1,0 +1,95 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "USGS-01109000",
+        "agency_code": "USGS",
+        "agency_name": "U.S. Geological Survey",
+        "monitoring_location_number": "01109000",
+        "monitoring_location_name": "WADING RIVER NEAR NORTON, MA",
+        "district_code": "25",
+        "country_code": "US",
+        "country_name": "United States of America",
+        "state_code": "25",
+        "state_name": "Massachusetts",
+        "county_code": "005",
+        "county_name": "Bristol County",
+        "minor_civil_division_code": null,
+        "site_type_code": "ST",
+        "site_type": "Stream",
+        "hydrologic_unit_code": "010900040301",
+        "basin_code": null,
+        "altitude": 54.35,
+        "altitude_accuracy": 0.01,
+        "altitude_method_code": "L",
+        "altitude_method_name": "Level or other surveyed method.",
+        "vertical_datum": "NAVD88",
+        "vertical_datum_name": "North American Vertical Datum of 1988",
+        "horizontal_positional_accuracy_code": "S",
+        "horizontal_positional_accuracy": "Accurate to + or - 1 sec.",
+        "horizontal_position_method_code": "M",
+        "horizontal_position_method_name": "Interpolated from MAP.",
+        "original_horizontal_datum": "NAD27",
+        "original_horizontal_datum_name": "North American Datum of 1927",
+        "drainage_area": 43.3,
+        "contributing_drainage_area": 43.3,
+        "time_zone_abbreviation": "EST",
+        "uses_daylight_savings": "Y",
+        "construction_date": null,
+        "aquifer_code": null,
+        "national_aquifer_code": null,
+        "aquifer_type_code": null,
+        "well_constructed_depth": null,
+        "hole_constructed_depth": null,
+        "depth_source_code": null,
+        "revision_note": "WSP 871: 1938. WSP 1301: 1929-33(M). WSP 1621: 1925-58 (monthly runoff). WDR MA-RI-84-1: Drainage area.",
+        "revision_created": "2017-11-13T06:00:00+00:00",
+        "revision_modified": null
+      },
+      "id": "USGS-01109000",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -71.1767154983626,
+          41.9476001464146
+        ]
+      }
+    }
+  ],
+  "numberReturned": 1,
+  "links": [
+    {
+      "type": "application/geo+json",
+      "rel": "self",
+      "title": "This document as GeoJSON",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=json&id=USGS-01109000"
+    },
+    {
+      "rel": "alternate",
+      "type": "application/ld+json",
+      "title": "This document as RDF (JSON-LD)",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=jsonld&id=USGS-01109000"
+    },
+    {
+      "type": "text/html",
+      "rel": "alternate",
+      "title": "This document as HTML",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=html&id=USGS-01109000"
+    },
+    {
+      "type": "text/csv; charset=utf-8",
+      "rel": "alternate",
+      "title": "This document as CSV",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items?f=csv&id=USGS-01109000"
+    },
+    {
+      "type": "application/json",
+      "title": "Monitoring locations",
+      "rel": "collection",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations"
+    }
+  ],
+  "timeStamp": "2026-10-17T09:48:37.131026Z"
+}

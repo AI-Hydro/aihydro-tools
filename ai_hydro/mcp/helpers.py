@@ -833,11 +833,16 @@ def _legacy_data_shim(
     FetchResult.
 
     On success  → ``(FetchResult, None)``
-    On failure  → ``(None, {"_aihydro_data_unavailable": True, "detail": "…"})``
+    On a transient or unsupported failure
+                → ``(None, {"_aihydro_data_unavailable": True, "code": "…", "detail": "…"})``
+    On a terminal refusal (``TerminalSourceError``: GAUGE_AMBIGUOUS, GAUGE_NOT_FOUND,
+    USGS_NO_DATA, ...) → the exception **propagates**.
 
-    Used by legacy MCP tools to attempt routing through the new variable-centric
-    data layer while falling back gracefully if ``aihydro-data`` is unavailable,
-    the variable is unsupported, or the remote fetch fails.
+    A terminal refusal means "I looked and this gauge/series cannot be established".
+    Folding it into the ``(None, err)`` fallback return let callers re-answer the
+    request with another fetcher (Wave U D2); it must reach the caller as a refusal.
+    Only "could not look" (aihydro-data absent, variable unsupported, transport
+    failure) is returned as ``err`` for the caller to handle.
 
     Parameters
     ----------
@@ -857,7 +862,17 @@ def _legacy_data_shim(
         result = _adata_fetch(variable, geometry, start, end, **kw)
         return result, None
     except Exception as exc:
-        return None, {"_aihydro_data_unavailable": True, "detail": str(exc)[:300]}
+        try:
+            from aihydro_data.exceptions import TerminalSourceError
+            if isinstance(exc, TerminalSourceError):
+                raise
+        except ImportError:
+            pass
+        return None, {
+            "_aihydro_data_unavailable": True,
+            "code": getattr(exc, "code", None),
+            "detail": str(exc)[:300],
+        }
 
 
 def _strip_forcing_arrays(data: dict) -> dict:

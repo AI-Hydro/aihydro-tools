@@ -139,21 +139,39 @@ def _from_data_file(data: dict) -> tuple[tuple[list[str], list[float | None]], P
     return (got, Path(path)) if got else None
 
 
-def _from_aihydro_data(params: dict) -> tuple[tuple[list[str], list[float | None]], dict] | None:
+def _from_aihydro_data(params: dict) -> tuple[tuple[list[str], list[float | None]] | None, dict] | None:
+    """Re-query the recorded request. Returns ``None`` when the request is not recorded,
+    ``(series, info)`` on success and ``(None, {"error": {...}})`` on failure.
+
+    The re-query is pinned to the USGS observation product (``NWIS_STREAMFLOW``): a
+    refused or failed observed request is never answered with modelled flow. A terminal
+    refusal (``TerminalSourceError``) is recorded as such, distinct from a transient
+    failure ("could not look"), so the capsule says which one it was.
+    """
     gauge, start, end = params.get("gauge_id"), params.get("start_date"), params.get("end_date")
     if not (gauge and start and end):
         return None
     try:
         from aihydro_data import fetch  # type: ignore[import]
 
-        result = fetch("streamflow", gauge, start, end)
+        result = fetch("streamflow", gauge, start, end, mode="manual", product="NWIS_STREAMFLOW")
         df = result.data
         dates = df["date"].dt.strftime("%Y-%m-%d").tolist()
         q = [float(v) if _isnum(v) else None for v in df["streamflow"].tolist()]
-    except Exception:
-        return None
+    except Exception as exc:
+        try:
+            from aihydro_data.exceptions import TerminalSourceError
+            terminal = isinstance(exc, TerminalSourceError)
+        except ImportError:
+            terminal = False
+        return None, {"error": {
+            "code": getattr(exc, "code", None) or type(exc).__name__,
+            "message": str(exc)[:300],
+            "terminal": terminal,
+        }}
     if not dates:
-        return None
+        return None, {"error": {"code": "EMPTY_SERIES", "message": "re-query returned no rows",
+                                "terminal": False}}
     info = {
         "product": getattr(result, "product", None),
         "source": getattr(result, "source", None),
@@ -277,7 +295,9 @@ def collect_data_artifacts(session: Any, capsule_dir: Path) -> list[dict]:
         series, entry["retrieval"] = got, {"mechanism": "session_slot"}
     else:
         fetched = _from_aihydro_data(params)
-        if fetched is not None:
+        if fetched is not None and fetched[0] is None:
+            entry["requery_error"] = fetched[1]["error"]
+        elif fetched is not None:
             series, info = fetched
             entry["retrieval"] = {"mechanism": "aihydro_data_refetch", **info}
             # A re-query is not the run's output: do not attribute it to the run.
@@ -285,9 +305,15 @@ def collect_data_artifacts(session: Any, capsule_dir: Path) -> list[dict]:
             entry["requested_by_record_digest"] = entry.pop("producer_record_digest")
             entry["produced_by_run_id"] = None
     if series is None:
-        entry.update(status="unavailable",
-                     reason="series not in the session slot or workspace, and not retrievable "
-                            "from aihydro-data for the recorded request")
+        err = entry.get("requery_error")
+        if err:
+            kind = "refused (terminal)" if err.get("terminal") else "failed (transient)"
+            reason = (f"series not in the session slot or workspace; the re-query of the recorded "
+                      f"request {kind}: {err.get('code')}: {err.get('message')}")
+        else:
+            reason = ("series not in the session slot or workspace, and not retrievable "
+                      "from aihydro-data for the recorded request")
+        entry.update(status="unavailable", reason=reason)
         return [entry]
 
     dates, q = series

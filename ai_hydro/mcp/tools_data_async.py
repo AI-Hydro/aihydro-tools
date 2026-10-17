@@ -64,6 +64,7 @@ def data_fetch_background(
     end: str,
     product: str | None = None,
     aggregation: str = "basin_mean",
+    gauge_id: str | None = None,
 ) -> dict:
     """
     Kick off a data fetch as a background job and return a job_id immediately.
@@ -88,6 +89,10 @@ def data_fetch_background(
         Pin a specific product ID (e.g. 'GLOFAS_STREAMFLOW'). None = auto-route.
     aggregation : str
         'basin_mean' (default) | 'basin_sum' | 'centroid' | 'raw_raster'.
+    gauge_id : str | None
+        streamflow only. USGS site number that names the gauge explicitly (same
+        meaning and precedence as on data_fetch). A gauge refusal is final: it is
+        never answered with modelled flow.
 
     Returns
     -------
@@ -111,6 +116,14 @@ def data_fetch_background(
                 "next_tools": ["data_validate_request"],
             }
 
+        if gauge_id is not None and variable != "streamflow":
+            return {
+                "error": True, "code": "GAUGE_ID_NOT_APPLICABLE",
+                "message": f"gauge_id names a USGS gauge and only applies to variable='streamflow' (got {variable!r}).",
+                "recovery": "Drop gauge_id, or request variable='streamflow'.",
+                "next_tools": ["data_fetch_background"],
+            }
+
         job_id     = uuid.uuid4().hex[:12]
         art_dir    = _artifact_dir(job_id)
         art_dir.mkdir(parents=True, exist_ok=True)
@@ -123,6 +136,7 @@ def data_fetch_background(
             "end":         end,
             "product":     product,
             "aggregation": aggregation,
+            "gauge_id":    gauge_id,
         }
 
         job = jobs.start_job(

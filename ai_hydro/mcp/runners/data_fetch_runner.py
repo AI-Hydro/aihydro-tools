@@ -70,6 +70,7 @@ class DataFetchRunner(BaseJobRunner):
         product     = cfg.get("product")
         aggregation = cfg.get("aggregation", "basin_mean")
         mode        = "manual" if product else "auto"
+        gauge_id    = cfg.get("gauge_id")
 
         log.info(
             "data_fetch: variable=%s start=%s end=%s product=%s",
@@ -86,6 +87,7 @@ class DataFetchRunner(BaseJobRunner):
             mode=mode,
             product=product,
             aggregation=aggregation,
+            **({"gauge_id": gauge_id} if gauge_id else {}),
         )
 
         # ── Persist result to disk ────────────────────────────────────────────

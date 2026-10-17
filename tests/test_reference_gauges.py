@@ -195,7 +195,7 @@ class TestStreamflowTool:
     @pytest.mark.parametrize("gauge", REFERENCE_GAUGES[:2])
     def test_fetch_streamflow_data_returns_hydroresult(self, gauge):
         """Live integration: fetch streamflow and validate HydroResult contract."""
-        pytest.importorskip("hydrofunctions", reason="hydrofunctions not installed")
+        pytest.importorskip("aihydro_data", reason="aihydro-data not installed")
 
         from ai_hydro.data.streamflow import fetch_streamflow_data
 
