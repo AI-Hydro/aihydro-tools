@@ -189,3 +189,41 @@ def mirror_streamflow_source(data: dict, src: Any) -> None:
         data["streamflow_error_code"] = err.get("code")
         data["streamflow_error_message"] = err.get("message")
         data["streamflow_error_terminal"] = err.get("terminal")
+
+
+def mirror_gauge_area_check(data: dict) -> dict | None:
+    """Seal the watershed's gauge-vs-polygon area check and return a quality flag for a failure.
+
+    aihydro-watershed writes ``gauge_area_check`` (pass | fail | unavailable), ``gauge_area_ratio``,
+    ``gauge_area_km2`` (scalars: already sealed) and ``streamflow_warnings`` (a list: dropped by
+    the run log and the evidence). This adds the list as ``streamflow_warnings_text`` /
+    ``streamflow_warnings_n`` and, from ``_streamflow_source.site_resolution``, the non-underscore
+    ``streamflow_site_resolution``. Returns a ``quality_flags`` entry when the check failed
+    (the gauge's drainage area disagrees with the polygon), else None.
+    """
+    if not isinstance(data, dict):
+        return None
+    warns = data.get("streamflow_warnings")
+    if isinstance(warns, list):
+        data["streamflow_warnings_n"] = len(warns)
+        data["streamflow_warnings_text"] = " | ".join(str(w) for w in warns)
+    src = data.get("_streamflow_source")
+    if isinstance(src, dict) and isinstance(src.get("site_resolution"), dict):
+        data["streamflow_site_resolution"] = src["site_resolution"]
+    if data.get("gauge_area_check") != "fail":
+        return None
+    ratio = data.get("gauge_area_ratio")
+    return {
+        "validator": "gauge_area_check",
+        "status": "warning",
+        "severity": "high",
+        "message": ("The gauge's drainage area disagrees with the basin polygon "
+                    f"(gauge/polygon area ratio {ratio}; gauge area {data.get('gauge_area_km2')} km2). "
+                    "The signatures describe the gauge's catchment, which may not be this basin."
+                    + (f" {data.get('streamflow_warnings_text')}" if data.get("streamflow_warnings_text") else "")),
+        "recommendation": ("Confirm the gauge id is the outlet gauge of this basin, or pass the correct "
+                           "gauge_id; do not present these signatures as describing the polygon."),
+        "affected_slots": ["signatures"],
+        "metadata": {"quality_flag": "gauge_area_mismatch", "gauge_area_ratio": ratio,
+                     "gauge_area_km2": data.get("gauge_area_km2")},
+    }

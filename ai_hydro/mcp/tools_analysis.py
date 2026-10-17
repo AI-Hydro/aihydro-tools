@@ -1332,6 +1332,10 @@ def extract_hydrological_signatures(
         _src = _dd.get("_streamflow_source")
         from ai_hydro.mcp.streamflow_slot import mirror_streamflow_source as _mirror_src
         _mirror_src(_dd, _src)
+        from ai_hydro.mcp.streamflow_slot import mirror_gauge_area_check as _mirror_area
+        _area_flag = _mirror_area(_dd)
+        if _area_flag:
+            d.setdefault("quality_flags", []).append(_area_flag)
         for _e in _internal:
             if isinstance(_src, dict):
                 _e["observed_source"] = _src

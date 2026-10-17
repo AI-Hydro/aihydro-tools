@@ -301,8 +301,14 @@ def _sealed_row(monkeypatch, tmp_path, gauge, start, end, area_km2):
                                                start_date=start, end_date=end)
     d = {"data": dict(res.data), "meta": {"version": "x"}}
     mirror_streamflow_source(d["data"], d["data"].get("_streamflow_source"))
+    from ai_hydro.mcp.streamflow_slot import mirror_gauge_area_check
+    flag = mirror_gauge_area_check(d["data"])
+    if flag:
+        d["quality_flags"] = [flag]
     out = post_run("extract_hydrological_signatures", "seal", d)
-    return (HydroSession.load("seal").get("_run_log") or {})[out["_run_id"]]
+    row = (HydroSession.load("seal").get("_run_log") or {})[out["_run_id"]]
+    row["_response_flags"] = out.get("quality_flags")
+    return row
 
 
 def test_signatures_streamflow_provenance_is_sealed(world, monkeypatch, tmp_path):
@@ -528,3 +534,24 @@ def test_no_legacy_usgs_calls_in_ai_hydro():
     for card in ("usgs_waterdata", "dataretrieval_waterdata"):
         c = json.loads((root / "knowledge" / "library_refs" / f"{card}.json").read_text())
         assert c["library"] == card
+
+
+def test_gauge_area_fail_is_sealed_and_surfaced(world, monkeypatch, tmp_path):
+    """01013500 drains 870 mi2 (2253 km2, recorded); a supplied area_km2 of 250 disagrees."""
+    row = _sealed_row(monkeypatch, tmp_path, "01013500", "1989-10-01", "2009-09-30", 250.0)
+    ev, ko = row["evidence"]["data"], row["key_outputs"]
+    assert ev["gauge_area_check"] == "fail" and ko["gauge_area_check"] == "fail"
+    assert ev["gauge_area_ratio"] == pytest.approx(2253.2 / 250.0, rel=1e-3)
+    assert ev["gauge_area_km2"] == pytest.approx(2253.2, rel=1e-3)
+    assert "area_check=fail" in ev["streamflow_warnings_text"] and ev["streamflow_warnings_n"] == 1
+    assert ko["streamflow_warnings_text"] == ev["streamflow_warnings_text"]      # a list would have been dropped
+    assert ev["streamflow_site_resolution"]["area_check"] == "fail"
+    flags = {f["validator"]: f for f in row["_response_flags"]}
+    assert flags["gauge_area_check"]["status"] == "warning"
+    assert flags["gauge_area_check"]["metadata"]["quality_flag"] == "gauge_area_mismatch"
+
+
+def test_gauge_area_pass_raises_no_flag(world, monkeypatch, tmp_path):
+    row = _sealed_row(monkeypatch, tmp_path, "01013500", "1989-10-01", "2009-09-30", 2253.0)
+    assert row["evidence"]["data"]["gauge_area_check"] == "pass"
+    assert "gauge_area_check" not in {f["validator"] for f in (row["_response_flags"] or [])}
