@@ -125,6 +125,52 @@ class TestVersionAndEnvironment:
         rec = _build(result={"data": {}})
         assert (rec.tool_version, rec.version_source) == ("1.2.3", "distribution")
 
+    def test_stale_distribution_metadata_is_flagged_and_never_the_version(self, monkeypatch):
+        import ai_hydro
+        monkeypatch.setattr(rr, "_distribution_version", lambda: "0.0.1")
+        rec = _build(result={"data": {}})
+        assert (rec.tool_version, rec.version_source) == (ai_hydro.__version__, "package")
+        vc = rec.extra["version_check"]
+        assert vc["version_mismatch"] is True
+        assert vc["package_version"] == ai_hydro.__version__ and vc["distribution_version"] == "0.0.1"
+        assert rec.verify()
+
+    def test_metadata_lookup_is_simulated_through_importlib(self, monkeypatch):
+        """Same, one level lower: importlib.metadata.version reports an old release."""
+        import importlib.metadata as md
+        import ai_hydro
+        real = md.version
+        monkeypatch.setattr(md, "version", lambda n: "2.3.7" if n == "aihydro-tools" else real(n))
+        monkeypatch.setattr(rr, "_ENV_CACHE", None)
+        try:
+            rec = _build(result={"data": {}})
+            assert rec.tool_version == ai_hydro.__version__ != "2.3.7"
+            assert rec.extra["version_check"]["distribution_version"] == "2.3.7"
+            assert rec.extra["version_check"]["version_mismatch"] is True
+        finally:
+            monkeypatch.undo()
+            rr._ENV_CACHE = None
+
+    def test_agreeing_versions_add_nothing(self, monkeypatch):
+        import ai_hydro
+        monkeypatch.setattr(rr, "_distribution_version", lambda: ai_hydro.__version__)
+        assert "version_check" not in _build(result={"data": {}}).extra
+
+    def test_meta_version_disagreeing_with_its_producer_module_is_flagged(self, monkeypatch):
+        import sys
+        import types
+        import ai_hydro
+        mod = types.ModuleType("fake_producer"); mod.__version__ = "4.5.6"
+        monkeypatch.setitem(sys.modules, "fake_producer", mod)
+        monkeypatch.setattr(rr, "_distribution_version", lambda: ai_hydro.__version__)
+        ok = rr.version_check({"meta": {"tool": "fake_producer.f", "version": "4.5.6"}})
+        assert ok is None
+        bad = rr.version_check({"meta": {"tool": "fake_producer.f", "version": "1.0.0"}})
+        assert bad["version_mismatch"] is True
+        assert bad["result_meta_version"] == "1.0.0" and bad["producer_module_version"] == "4.5.6"
+        rec = _build(result={"data": {}, "meta": {"tool": "fake_producer.f", "version": "1.0.0"}})
+        assert rec.extra["version_check"]["version_mismatch"] is True
+
     def test_environment_fingerprint_is_memoised(self):
         assert rr.process_environment() is rr.process_environment()
         assert _build().env_digest == _build(run_id="other").env_digest

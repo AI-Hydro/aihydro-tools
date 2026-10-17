@@ -58,8 +58,8 @@ warnings.filterwarnings('ignore')
 
 def _get_version() -> str:
     try:
-        from importlib.metadata import version
-        return version("aihydro-tools")
+        from ai_hydro import __version__
+        return __version__      # the running code, not (possibly stale) dist-info
     except Exception:
         return "unknown"
 

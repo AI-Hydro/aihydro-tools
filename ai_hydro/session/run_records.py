@@ -46,6 +46,7 @@ import dataclasses
 import json
 import logging
 import re
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -173,6 +174,40 @@ def resolve_tool_version(result: Any) -> Tuple[Optional[str], str]:
     return version, ("distribution" if version else "unavailable")
 
 
+def version_check(result: Any) -> Optional[Dict[str, Any]]:
+    """Cross-check the versions available for a record; None when they agree.
+
+    The version of record is always code that ran (``ai_hydro.__version__``, or
+    the ``meta.version`` of the producing module), never distribution metadata.
+    Returned, with ``version_mismatch: True`` and every value seen, when
+
+    * the ``aihydro-tools`` distribution metadata differs from
+      ``ai_hydro.__version__`` (stale editable-install ``dist-info``), or
+    * ``meta.version`` differs from both ``ai_hydro.__version__`` and the
+      ``__version__`` of the already-imported package named by ``meta.tool``.
+
+    Neither value is silently preferred: the record keeps both.
+    """
+    package = _package_version()
+    dist = _distribution_version()
+    meta = result.get("meta") if isinstance(result, dict) else None
+    meta_v = meta.get("version") if isinstance(meta, dict) else None
+    meta_v = meta_v if isinstance(meta_v, str) and meta_v else None
+    producer_v: Optional[str] = None
+    tool_path = meta.get("tool") if isinstance(meta, dict) else None
+    if meta_v and isinstance(tool_path, str) and tool_path:
+        mod = sys.modules.get(tool_path.split(".", 1)[0])
+        pv = getattr(mod, "__version__", None)
+        producer_v = pv if isinstance(pv, str) and pv else None
+    dist_bad = bool(package and dist and package != dist)
+    meta_bad = bool(meta_v and package and producer_v and meta_v not in (package, producer_v))
+    if not (dist_bad or meta_bad):
+        return None
+    return {"version_mismatch": True, "package_version": package,
+            "distribution_version": dist, "result_meta_version": meta_v,
+            "producer_module_version": producer_v}
+
+
 # --------------------------------------------------------------------------- #
 # Building records
 # --------------------------------------------------------------------------- #
@@ -237,6 +272,13 @@ def build_run_record(
             env_digest = None
             errors.append(f"env_digest: {type(exc).__name__}: {exc}")
         merged_extra = dict(extra or {})
+        try:
+            vcheck = version_check(result)
+        except Exception as exc:
+            vcheck = None
+            errors.append(f"version_check: {type(exc).__name__}: {exc}")
+        if vcheck:
+            merged_extra["version_check"] = vcheck
         if entry is not None:
             entry_digest = _digest("entry_digest", {k: v for k, v in entry.items() if k != "record"})
             if entry_digest:

@@ -108,8 +108,8 @@ def _example_value(param: str, info: dict):
 def _get_version() -> str:
     """Return the installed ai-hydro package version."""
     try:
-        from importlib.metadata import version
-        return version("aihydro-tools")
+        from ai_hydro import __version__
+        return __version__      # the running code, not (possibly stale) dist-info
     except Exception:
         return "unknown"
 
