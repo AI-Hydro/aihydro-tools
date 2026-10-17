@@ -359,6 +359,17 @@ except Exception as _e:
         "WS-4 arg-repair middleware not installed: %s", _e
     )
 
+# Error contract (U4): registered AFTER arg-repair, so it is the innermost middleware. Any tool
+# result dict with ``error is True`` becomes an MCP error (isError) carrying the same envelope.
+try:
+    from ai_hydro.mcp.error_contract import install_error_contract as _install_error_contract
+    _install_error_contract(mcp)
+except Exception as _e:
+    import logging
+    logging.getLogger("ai_hydro.mcp").warning(
+        "error-contract middleware not installed: %s", _e
+    )
+
 
 def main() -> None:
     """Entry point for the ``aihydro-mcp`` console script."""

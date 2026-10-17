@@ -750,7 +750,11 @@ class RunRecordMiddleware(Middleware):
 
             result_dict, size = (None, None) if tool_result is None else _tool_result_dict(tool_result)
             if failure is not None:
-                result_dict = {"error": True, "message": f"{type(failure).__name__}: {failure}"}
+                # A StructuredToolError carries the envelope the caller sees: seal that, so a
+                # dict-error tool digests identically to when it returned the dict (v2.3.7).
+                envelope = getattr(failure, "envelope", None)
+                result_dict = (dict(envelope) if isinstance(envelope, dict)
+                               else {"error": True, "message": f"{type(failure).__name__}: {failure}"})
             outcome = run_records.record_call(
                 tool=tool,
                 arguments=arguments,

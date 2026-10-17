@@ -8,6 +8,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **Error contract (Wave U, U4).** A failed tool call is an MCP error (`isError` true) whose
+  text is the JSON envelope.
+  - `ArgRepairMiddleware` raises `StructuredToolError(help_payload)`; the fastmcp-4-fragile
+    `ToolResult` import is gone.
+  - New `ErrorContractMiddleware` (innermost) turns any result dict with `error is True` into
+    `StructuredToolError(envelope)`. One rule, no per-tool carve-outs.
+  - `RunRecordMiddleware` seals `failure.envelope`: the output digest of a dict-error call is
+    identical to 2.3.7 and status stays `error`. No `_run_id` is injected on an error.
+  - Eval arm C1 strips advisory fields from error envelopes too.
+
 ## [2.3.7] - 2026-10-16
 
 It requires aihydro-core 0.2.10 or later.

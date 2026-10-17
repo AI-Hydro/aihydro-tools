@@ -327,7 +327,7 @@ def _refusal(message: str, kind: str = "tool") -> ToolError:
         "next_tools": []})
 
 
-def _scrub_exception(exc: Exception, pattern: "re.Pattern[str]") -> Exception:
+def _scrub_exception(exc: Exception, pattern: "re.Pattern[str]", strip: bool = False) -> Exception:
     """``exc`` with hidden tool names removed from its text; ``exc`` itself if nothing changed.
 
     A ``StructuredToolError`` keeps its type and gets a scrubbed ``.envelope`` (``str()`` is
@@ -336,7 +336,8 @@ def _scrub_exception(exc: Exception, pattern: "re.Pattern[str]") -> Exception:
     """
     from ai_hydro.mcp.errors import StructuredToolError
     if isinstance(exc, StructuredToolError):
-        scrubbed = scrub_hidden_names(copy.deepcopy(exc.envelope), pattern)
+        envelope = strip_fields(exc.envelope) if strip else copy.deepcopy(exc.envelope)
+        scrubbed = scrub_hidden_names(envelope, pattern)
         return exc if scrubbed == exc.envelope else StructuredToolError(scrubbed)
     text = str(exc)
     new_text = pattern.sub(UNAVAILABLE, text)
@@ -409,7 +410,9 @@ class EvalConditionMiddleware(Middleware):
         try:
             live = await context.fastmcp_context.fastmcp.get_tools()
             pattern = hidden_name_pattern(state.condition, live.keys())
-            return _scrub_exception(exc, pattern)
+            # C1 strips advisory fields from error envelopes too (a dict-error result used to pass
+            # through the result sanitiser; it now travels as a StructuredToolError).
+            return _scrub_exception(exc, pattern, strip=state.condition == "C1")
         except Exception as inner:   # never let an unscrubbed message through
             log.warning("eval exception scrub failed: %s", inner)
             return _refusal(f"could not sanitise the error: {inner}")

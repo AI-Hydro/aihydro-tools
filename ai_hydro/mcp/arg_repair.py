@@ -259,10 +259,11 @@ class ArgRepairMiddleware(Middleware):
                 raise  # the tool already produced a structured error envelope
             count = self._failures.get(key, 0) + 1
             self._failures[key] = count
-            from fastmcp.tools.tool import ToolResult
+            from ai_hydro.mcp.errors import StructuredToolError
             help_payload = self._build_help(name, info, args, str(e), repeated=count >= 2)
             log.info("arg_repair: returning self-help for failed call to %s", name)
-            return ToolResult(structured_content=help_payload)
+            # An MCP error (isError true) whose text is the help JSON; no ToolResult import.
+            raise StructuredToolError(help_payload) from e
 
 
 def install_arg_repair(mcp) -> None:
