@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -153,8 +154,11 @@ class TestMiddleware:
         async def call_next(c):
             raise ValueError("missing required argument index_name")
 
-        result = _run(mw.on_call_tool(ctx, call_next))
-        payload = result.structured_content
+        from ai_hydro.mcp.errors import StructuredToolError
+        with pytest.raises(StructuredToolError) as ei:
+            _run(mw.on_call_tool(ctx, call_next))
+        payload = ei.value.envelope
+        assert json.loads(str(ei.value)) == payload   # the error text IS the help payload
         assert payload["error"] is True
         assert payload["tool"] == "compute_spectral_index"
         assert "index_name" in payload["required"]
@@ -168,11 +172,14 @@ class TestMiddleware:
             raise ValueError("boom")
 
         # First failure: normal teaching message
-        r1 = _run(mw.on_call_tool(_ctx("compute_spectral_index", {"bogus": 1}), call_next))
-        assert "already tried" not in r1.structured_content["message"].lower()
+        from ai_hydro.mcp.errors import StructuredToolError
+        with pytest.raises(StructuredToolError) as e1:
+            _run(mw.on_call_tool(_ctx("compute_spectral_index", {"bogus": 1}), call_next))
+        assert "already tried" not in e1.value.envelope["message"].lower()
         # Second identical failure: escalated guidance
-        r2 = _run(mw.on_call_tool(_ctx("compute_spectral_index", {"bogus": 1}), call_next))
-        assert "already tried" in r2.structured_content["message"].lower()
+        with pytest.raises(StructuredToolError) as e2:
+            _run(mw.on_call_tool(_ctx("compute_spectral_index", {"bogus": 1}), call_next))
+        assert "already tried" in e2.value.envelope["message"].lower()
 
     def test_unknown_tool_passes_through(self):
         mw = _make_mw()
@@ -223,5 +230,7 @@ class TestStructuredRefusalPassthrough:
         async def call_next(c):
             raise ToolError("Error calling tool: bad")
 
-        res = _run(mw.on_call_tool(_ctx("compute_spectral_index", {"bogus": 1}), call_next))
-        assert res.structured_content["error"] is True
+        from ai_hydro.mcp.errors import StructuredToolError
+        with pytest.raises(StructuredToolError) as ei:
+            _run(mw.on_call_tool(_ctx("compute_spectral_index", {"bogus": 1}), call_next))
+        assert ei.value.envelope["error"] is True and "example_call" in ei.value.envelope

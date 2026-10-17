@@ -619,7 +619,9 @@ def _minimal_entry(run_id: str, tool: str, session_id: str, result: Any, failure
             detail = result.get("code") or result.get("message") or ""
         else:
             detail = ""
-        if failure is not None:
+        from ai_hydro.mcp.errors import envelope_from_exception
+        if failure is not None and not (detail and envelope_from_exception(failure) is not None):
+            # A failure carrying its envelope summarises like the dict-error result it replaces.
             detail = f"{type(failure).__name__}: {failure}"
         try:
             from ai_hydro.session.store import HydroSession

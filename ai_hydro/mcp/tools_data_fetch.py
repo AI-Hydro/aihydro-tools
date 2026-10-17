@@ -185,8 +185,8 @@ def data_fetch(
 
     Note — slow backends (GloFAS / queued HPC):
         For variables that route to a queued backend (e.g. global streamflow →
-        GloFAS EWDS), this tool returns an immediate redirect to
-        ``data_fetch_background`` rather than blocking the agent loop for minutes.
+        GloFAS EWDS), this tool raises an MCP error (code USE_ASYNC_TOOL,
+        next_tools=['data_fetch_background']) rather than blocking the agent loop for minutes.
     """
     from aihydro_data.mcp import _data_fetch
 
@@ -194,6 +194,8 @@ def data_fetch(
         variable=variable, geometry=geometry, start=start, end=end, mode=mode,
         product=product, aggregation=aggregation, cache=cache, region=region, outlet=outlet,
     )
+    # ``redirect`` is only returned by older aihydro-data (before U4 the queued redirect was a
+    # success-shaped dict); current aihydro-data raises an MCP error instead.
     if not isinstance(result, dict) or result.get("error") or result.get("redirect"):
         return result
 

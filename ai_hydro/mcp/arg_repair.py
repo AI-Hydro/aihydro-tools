@@ -145,17 +145,8 @@ def _is_structured_refusal(exc: Exception) -> bool:
     plain ``ToolError(json.dumps(envelope))`` (the pre-``StructuredToolError`` contract,
     still possible in community tools); the typed check is the primary mechanism.
     """
-    from fastmcp.exceptions import ToolError
-    from ai_hydro.mcp.errors import StructuredToolError
-    if isinstance(exc, StructuredToolError):
-        return True
-    if not isinstance(exc, ToolError):
-        return False
-    try:
-        body = json.loads(str(exc))
-    except ValueError:
-        return False
-    return isinstance(body, dict) and body.get("error") is True and "code" in body
+    from ai_hydro.mcp.errors import envelope_from_exception
+    return envelope_from_exception(exc) is not None
 
 
 class ArgRepairMiddleware(Middleware):
@@ -259,10 +250,11 @@ class ArgRepairMiddleware(Middleware):
                 raise  # the tool already produced a structured error envelope
             count = self._failures.get(key, 0) + 1
             self._failures[key] = count
-            from fastmcp.tools.tool import ToolResult
+            from ai_hydro.mcp.errors import StructuredToolError
             help_payload = self._build_help(name, info, args, str(e), repeated=count >= 2)
             log.info("arg_repair: returning self-help for failed call to %s", name)
-            return ToolResult(structured_content=help_payload)
+            # An MCP error (isError true) whose text is the help JSON; no ToolResult import.
+            raise StructuredToolError(help_payload) from e
 
 
 def install_arg_repair(mcp) -> None:
