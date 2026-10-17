@@ -8,6 +8,56 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **USGS Water Data API consumers (Wave U, U3).** Requires aihydro-data >= 0.2.3 and
+  aihydro-watershed >= 0.1.3; `hydrofunctions` is no longer a dependency.
+  - `ai_hydro/data/streamflow.py` routes to `aihydro_data.sources.usgs_waterdata`; its own NWIS
+    fetcher, site-info lookup and ft3/s constant are gone (the adapter converts once, exact
+    0.028316846592; values shift by <= 1.6e-6 relative from the old 0.0283168). A refusal is a
+    `ToolError` with `details["terminal"]` (True for GAUGE_NOT_FOUND, USGS_NO_DATA, ...).
+  - `fetch_streamflow_data` has one fetcher and no fallback; `_legacy_data_shim` re-raises
+    `TerminalSourceError` instead of returning `(None, err)`, and the capsule re-query is pinned
+    to `NWIS_STREAMFLOW` and records terminal refusal vs transient failure.
+  - `data_fetch(variable="streamflow", session_id=...)` writes the session `streamflow` slot
+    (single writer, `mcp/streamflow_slot.py`): per-value `qualification_codes` (A/P/e or raw
+    qualifier tokens), `qualifiers_other`, `quality_summary` (n_negative, n_missing,
+    provisional_fraction), `site_resolution`, `upstream`, retained-file digest. The streamflow
+    validators now fire on this path. New `gauge_id` argument on `data_fetch` and
+    `data_fetch_background`; a session BasinRef with verified `usgs:` aliases for the same
+    geometry is passed as `basin_ref`. The A2 thresholds are not exposed.
+  - `check_usgs_qualification_codes` reads the counts; qualifiers outside A/P/e are a warning with
+    their raw values, never "unreadable". Before: always `insufficient_data` on the data_fetch path.
+  - Signatures: `_streamflow_source` (observation, product, site, quality summary, upstream and
+    any refusal code/message/terminal) is mirrored into non-underscore `streamflow_*` fields so
+    it reaches the sealed row and the run-log key_outputs.
+  - Gauge search/in-view layers use `get_monitoring_locations` (id, bbox, EXACT name; partial name
+    is matched client-side inside the map bbox only). Library cards: `usgs_waterdata`,
+    `dataretrieval_waterdata`; NWIS removed from `pygeohydro`; `hydrofunctions` retired.
+  - **U3 review fixes.**
+    - A named gauge (`gauge_id`, or a session BasinRef with verified `usgs:` aliases) is a strict
+      observation request: `data_fetch` / `data_fetch_background` call aihydro-data pinned to
+      `NWIS_STREAMFLOW` with `fallback=[]`, so a 429 is a transient error and never modelled flow.
+      A conflicting `product` or a non-CONUS geometry is refused (`GAUGE_ID_NOT_APPLICABLE`).
+      Refusal envelopes carry `terminal`. The session BasinRef is reused only when it verifies
+      and the geometry is the session watershed (digest equality, else IoU >= 0.99 with areas
+      within 1 %); a near miss declines with `basin_ref_hint`.
+    - `fetch_streamflow_data` reuses its cached slot only for the same gauge, period, interval
+      and backend. It honours `AIHYDRO_USGS_BACKEND=legacy_waterservices` through the data
+      path's own function (daily only).
+    - Both slot writers drop null-value rows and record them (`n_null_values`, null/missing
+      dates). Session meta holds counts and run-length-encoded codes (`qualification_codes_rle`);
+      the per-value list lives in the digest-bound retained file.
+    - `data_fetch(cache=False)` returns `validators_not_run` instead of an empty `quality_flags`.
+    - Gauge search / in-view layers report an outage or an oversized view (`problems`) apart from
+      "no gauges". Removed dead `ai_hydro/data/fetch_runner.py` and `async_dispatch.py`.
+    - Evaluation arm C1 strips advisory/gate output only (`validators_not_run` joins
+      `quality_flags`, `promotion_check`, `next_steps`, `skeptic*`); a data tool's provenance about
+      its own data (quality/approval/qualifier counts, site_resolution, upstream, streamflow_*
+      mirrors, area-check values) stays visible in every arm (DECISIONS.md).
+    - `map_set_time_range` accepts strict ISO-8601 only (date, or date-time with Z/offset), with
+      end >= start.
+  - Behaviour change: `fetch_streamflow_data` slot `data.units` is `m3/s` (was `m^3/s` on the
+    direct path, which the unit validator flagged).
+
 - **Error contract (Wave U, U4).** A failed tool call is an MCP error (`isError` true) whose
   text is the JSON envelope.
   - `ArgRepairMiddleware` raises `StructuredToolError(help_payload)`; the fastmcp-4-fragile

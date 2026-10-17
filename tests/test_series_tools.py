@@ -542,7 +542,9 @@ def test_data_fetch_wrapper_signature_is_a_superset_of_aihydro_data():
     for n, p in theirs.items():
         assert ours[n].default == p.default, n
         assert ours[n].annotation == p.annotation, n
-    assert set(ours) - set(theirs) == {"session_id"}
+    # session_id is ours; gauge_id is ours until aihydro-data's own MCP data_fetch exposes it
+    # (its pipeline fetch() takes it; the wrapper forwards it).
+    assert set(ours) - set(theirs) - {"gauge_id"} == {"session_id"}
 
 
 def test_registered_data_fetch_is_the_retaining_wrapper_and_returns_run_id(serve, mcp_server):

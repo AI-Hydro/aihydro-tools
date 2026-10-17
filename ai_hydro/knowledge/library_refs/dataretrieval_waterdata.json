@@ -1,0 +1,36 @@
+{
+  "library": "dataretrieval_waterdata",
+  "version_tested": "not run here: dataretrieval>=1.4 is not installed in the development environment (no installs, no network); the names below follow the USGS announcement of the waterdata module and the OGC API parameters recorded in the aihydro-data fixtures",
+  "purpose": "dataretrieval.waterdata: the USGS-maintained Python client for the Water Data OGC API. For code the agent writes itself; the aihydro tools use the aihydro-data adapter instead (usgs_waterdata card).",
+  "install": "pip install 'dataretrieval>=1.4'",
+  "field_mappings": {
+    "waterdata.get_daily": {
+      "collection": "daily",
+      "note": "daily values; discharge is parameter_code '00060', mean statistic_id '00003'",
+      "returns": "(DataFrame, metadata) tuple, like the other dataretrieval getters"
+    },
+    "waterdata.get_continuous": {
+      "collection": "continuous",
+      "returns": "(DataFrame, metadata) tuple",
+      "statistic": "statistic_id '00011' (instantaneous); the daily mean '00003' applies to the daily collection only",
+      "note": "at most 3 years per query; timestamps are UTC"
+    },
+    "waterdata.get_monitoring_locations": {
+      "collection": "monitoring-locations",
+      "note": "site metadata; coordinates EPSG:4326",
+      "returns": "(DataFrame, metadata) tuple"
+    }
+  },
+  "gotchas": [
+    "Set API_USGS_PAT (an api.data.gov key) in the environment before heavy use: the service applies an hourly rate limit per key and answers HTTP 429 beyond it (see the dataretrieval README for the current limit).",
+    "Each getter returns a (DataFrame, metadata) tuple. With convert_type=True (the default) dataretrieval converts values to numbers and timestamps; only the raw API body carries values as strings and missing values as null, which is what the aihydro-data adapter parses and checks explicitly.",
+    "The legacy dataretrieval.nwis functions call waterservices.usgs.gov, decommissioned on 2027-02-22. Do not use them in new code.",
+    "approval_status (Approved / Provisional) and qualifier are separate fields; keep both with the values.",
+    "Discharge is in ft^3/s; convert with 0.028316846592 m^3 per ft^3.",
+    "Verify the function and argument names against the installed dataretrieval version before relying on them: this card was not executed."
+  ],
+  "common_patterns": {
+    "api_key": "import os\nos.environ['API_USGS_PAT'] = '<your api.data.gov key>'  # never commit or log it"
+  },
+  "version_compatible": ">=1.4"
+}

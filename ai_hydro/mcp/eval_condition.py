@@ -79,8 +79,14 @@ CONTEXT_MISMATCH = "EVAL_CONTEXT_MISMATCH"
 HIDDEN_ALL_ARMS = frozenset({"write_research_interpretation", "run_python"})
 REGISTRY_TOOLS = frozenset({"promote_claim_to_registry", "list_registry_claims", "check_registry_staleness"})
 C1_ONLY_HIDDEN = frozenset({"run_skeptic", "audit_interpretation", "register_research_plan"})
-STRIPPED_FIELDS = frozenset({"quality_flags", "promotion_check", "next_steps"})
+# C1 strips ADVISORY and GATE output only: text produced by validators, the skeptic and promotion
+# logic (verdicts, messages, "validators did not run" notes) and next-step hints. OBSERVATIONAL
+# PROVENANCE a data tool returns about its own data (approval/qualifier counts, quality_summary,
+# site_resolution, upstream, streamflow_* mirrors, area-check values) is tool output and stays
+# visible in every arm (DECISIONS.md, Wave U U3).
+STRIPPED_FIELDS = frozenset({"quality_flags", "promotion_check", "next_steps", "validators_not_run"})
 _SKEPTIC_PREFIXES = ("skeptic", "_skeptic")
+
 
 
 @dataclass(frozen=True)

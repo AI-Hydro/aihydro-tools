@@ -61,6 +61,20 @@ class DataFetchRunner(BaseJobRunner):
     log_name    = "fetch.log"
     logger_name = "ai_hydro.mcp.runners.data_fetch_runner"
 
+    def _extract_error(self, exc: Exception) -> dict:
+        """Base error plus ``terminal``: True for a final identity/integrity refusal
+        (TerminalSourceError), False for a transient "could not look"; absent otherwise."""
+        err = super()._extract_error(exc)
+        try:
+            from aihydro_data.exceptions import SourceUnavailable, TerminalSourceError
+            if isinstance(exc, TerminalSourceError):
+                err["terminal"] = True
+            elif isinstance(exc, SourceUnavailable):
+                err["terminal"] = False
+        except ImportError:
+            pass
+        return err
+
     def run_job(self, cfg: dict, artifact_dir: Path) -> dict:
         """Fetch a variable via aihydro_data.fetch() and persist the result."""
         variable    = cfg.get("variable", "")
@@ -70,6 +84,7 @@ class DataFetchRunner(BaseJobRunner):
         product     = cfg.get("product")
         aggregation = cfg.get("aggregation", "basin_mean")
         mode        = "manual" if product else "auto"
+        gauge_id    = cfg.get("gauge_id")
 
         log.info(
             "data_fetch: variable=%s start=%s end=%s product=%s",
@@ -78,15 +93,23 @@ class DataFetchRunner(BaseJobRunner):
 
         # ── Fetch ─────────────────────────────────────────────────────────────
         from aihydro_data import fetch as _adata_fetch
-        result = _adata_fetch(
-            variable=variable,
-            geometry=geometry,
-            start=start,
-            end=end,
-            mode=mode,
-            product=product,
-            aggregation=aggregation,
-        )
+        if gauge_id:
+            # A named gauge is an observation request: pinned to the USGS product, no fallbacks.
+            from ai_hydro.mcp.gauge_identity import PIN
+            result = _adata_fetch(
+                variable=variable, geometry=geometry, start=start, end=end,
+                aggregation=aggregation, gauge_id=gauge_id, **PIN,
+            )
+        else:
+            result = _adata_fetch(
+                variable=variable,
+                geometry=geometry,
+                start=start,
+                end=end,
+                mode=mode,
+                product=product,
+                aggregation=aggregation,
+            )
 
         # ── Persist result to disk ────────────────────────────────────────────
         import pandas as pd

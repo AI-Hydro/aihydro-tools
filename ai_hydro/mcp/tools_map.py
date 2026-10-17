@@ -7,6 +7,7 @@ and persist ROI to the workspace without holding a gRPC connection.
 from __future__ import annotations
 
 import json
+import re
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -518,24 +519,66 @@ def map_add_layer_from_run(
         return _tool_error_to_dict(e)
 
 
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_ISO_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$")
+
+
+def _strict_iso(value: str, which: str) -> tuple[str, "datetime"]:
+    """``(normalised, instant)`` for a strict ISO-8601 date (``YYYY-MM-DD``) or date-time with
+    ``Z`` or a numeric offset. A date-time is normalised to UTC (``...Z``); a date is kept.
+    Raises ``ValueError`` naming the argument otherwise (no zone-less date-times, no free text)."""
+    from datetime import datetime, timezone
+
+    v = (value or "").strip()
+    if _ISO_DATE.match(v):
+        try:
+            return v, datetime.strptime(v, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise ValueError(f"{which}={value!r} is not a valid calendar date") from None
+    if _ISO_DATETIME.match(v):
+        t = v.replace(" ", "T").replace("Z", "+00:00")
+        if re.search(r"[+-]\d{4}$", t):
+            t = t[:-2] + ":" + t[-2:]
+        try:
+            dt = datetime.fromisoformat(t).astimezone(timezone.utc)
+        except ValueError:
+            raise ValueError(f"{which}={value!r} is not a valid ISO-8601 date-time") from None
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ"), dt
+    raise ValueError(f"{which}={value!r} is not strict ISO-8601: use YYYY-MM-DD, or a date-time "
+                     "with a zone (2020-01-01T00:00:00Z or 2020-01-01T00:00:00+02:00)")
+
+
 @mcp.tool()
 def map_set_time_range(start_iso: str, end_iso: str) -> dict:
     """
     Set the map time slider to a specific date range.
 
-    Both arguments are ISO 8601 date strings (e.g. "2020-01-01", "2023-12-31").
+    Both arguments are strict ISO 8601: a date ("2020-01-01") or a date-time with a zone
+    ("2020-01-01T00:00:00Z", offsets allowed; normalised to UTC). Anything else, and an end
+    before the start, is refused (the map host rejects non-ISO values silently).
     The time slider (Phase 3.4) will filter layers to those whose `time_start` /
     `time_end` metadata overlaps this range. Layers with no time metadata remain
     visible. Combine with `map_add_layer_from_run` to focus the map on the
     study period of a completed analysis run.
     """
     if not start_iso or not end_iso:
-        return {"ok": False, "message": "start_iso and end_iso are required"}
-    ok = push_set_time_range(start_iso=start_iso.strip(), end_iso=end_iso.strip())
+        return {"ok": False, "error": True, "code": "TIME_RANGE_REQUIRED",
+                "message": "start_iso and end_iso are required",
+                "recovery": "Pass both as YYYY-MM-DD or a zoned ISO-8601 date-time."}
+    try:
+        start_n, start_t = _strict_iso(start_iso, "start_iso")
+        end_n, end_t = _strict_iso(end_iso, "end_iso")
+        if end_t < start_t:
+            raise ValueError(f"end_iso {end_n} is before start_iso {start_n}")
+    except ValueError as exc:
+        return {"ok": False, "error": True, "code": "INVALID_TIME_RANGE", "message": str(exc),
+                "recovery": "Pass start_iso <= end_iso, each as YYYY-MM-DD or a zoned ISO-8601 date-time.",
+                "next_tools": ["map_set_time_range"]}
+    ok = push_set_time_range(start_iso=start_n, end_iso=end_n)
     return {
         "ok": ok,
-        "start_iso": start_iso.strip(),
-        "end_iso": end_iso.strip(),
+        "start_iso": start_n,
+        "end_iso": end_n,
         "message": "Time range command queued for map host" if ok else "Failed to queue set_time_range",
     }
 

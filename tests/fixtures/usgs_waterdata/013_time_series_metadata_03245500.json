@@ -1,0 +1,777 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "032298f63cec4bc09038ea64ebf288e3",
+        "unit_of_measure": "mg/l",
+        "parameter_name": "NO3+NO2, wf as N",
+        "parameter_code": "00631",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:09:40.106906",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Nitrate plus nitrite, water, filtered, milligrams per liter as nitrogen",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "032298f63cec4bc09038ea64ebf288e3",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "051a3a48befb45f98b305756bac2b415",
+        "unit_of_measure": "ft^3/s",
+        "parameter_name": "Discharge",
+        "parameter_code": "00060",
+        "statistic_id": "00011",
+        "last_modified": "2026-10-17T05:44:20.008121",
+        "begin": "1989-10-01T05:00:00+00:00",
+        "end": "2026-10-17T05:30:00+00:00",
+        "computation_period_identifier": "Points",
+        "computation_identifier": "Instantaneous",
+        "thresholds": [
+          {
+            "Name": "VERY LOW",
+            "Type": "ThresholdBelow",
+            "Periods": [
+              {
+                "EndTime": "2017-12-08T00:00:00.0000000-05:00",
+                "StartTime": "2017-04-05T00:00:00.0000000-05:00",
+                "AppliedTime": "2017-05-28T02:24:04.1181153Z",
+                "SuppressData": true,
+                "ReferenceValue": 25
+              }
+            ],
+            "Severity": 0,
+            "Description": "Unspecified threshold value",
+            "DisplayColor": "#800000",
+            "ReferenceCode": "AQUARIUS only",
+            "ProcessingOrder": "Suppression"
+          },
+          {
+            "Name": "VERY HIGH",
+            "Type": "ThresholdAbove",
+            "Periods": [
+              {
+                "EndTime": "2017-12-08T00:00:00.0000000-05:00",
+                "StartTime": "2017-04-05T00:00:00.0000000-05:00",
+                "AppliedTime": "2017-05-28T02:24:04.0655916Z",
+                "SuppressData": true,
+                "ReferenceValue": 98000
+              }
+            ],
+            "Severity": 0,
+            "Description": "Unspecified threshold value",
+            "DisplayColor": "#FF0000",
+            "ReferenceCode": "AQUARIUS only",
+            "ProcessingOrder": "Suppression"
+          }
+        ],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Discharge, cubic feet per second",
+        "parent_time_series_id": "8bcdd5fd5b1d4f9ebfc5adf8cb967b1c",
+        "data_gap_interval": "PT30M",
+        "statistics_begin": "1988"
+      },
+      "id": "051a3a48befb45f98b305756bac2b415",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "1a4d75b0ba9747f9a9f468482e0d60b9",
+        "unit_of_measure": "tons/day",
+        "parameter_name": "Suspnd sedmnt disch",
+        "parameter_code": "80155",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:10:16.610088",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Suspended sediment discharge, short tons per day",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "1a4d75b0ba9747f9a9f468482e0d60b9",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "222ff996dac447a092283e3c46d73dae",
+        "unit_of_measure": "mg/l",
+        "parameter_name": "NH3+orgN, wu, conc as N",
+        "parameter_code": "00625",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:09:57.220011",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Ammonia plus organic nitrogen, water, unfiltered, milligrams per liter as nitrogen",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "222ff996dac447a092283e3c46d73dae",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "322dc45bd59d4febb24f5122d6842613",
+        "unit_of_measure": "mg/l",
+        "parameter_name": "Suspnd sedmnt conc",
+        "parameter_code": "80154",
+        "statistic_id": "00003",
+        "last_modified": "2017-05-28T02:28:29.831231",
+        "begin": "1978-12-28T05:00:00+00:00",
+        "end": "1989-09-29T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Suspended sediment concentration, milligrams per liter",
+        "parent_time_series_id": null,
+        "data_gap_interval": null,
+        "statistics_begin": null
+      },
+      "id": "322dc45bd59d4febb24f5122d6842613",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "402126e69d074beab39fd1d551e2c62a",
+        "unit_of_measure": "lbs/day",
+        "parameter_name": "Orthophosphate, diss",
+        "parameter_code": "91060",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:09:30.523441",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Orthophosphate, water, filtered, pounds per day",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "402126e69d074beab39fd1d551e2c62a",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "47e1f86e89a44779a39535cd16de1414",
+        "unit_of_measure": "mg/l",
+        "parameter_name": "Suspnd sedmnt conc",
+        "parameter_code": "80154",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:10:26.503342",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Suspended sediment concentration, milligrams per liter",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "47e1f86e89a44779a39535cd16de1414",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "49cd98bfa419445a8987b024c03ac82f",
+        "unit_of_measure": "mg/l",
+        "parameter_name": "Orthophosphate, wf as P",
+        "parameter_code": "00671",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:09:18.230239",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Orthophosphate, water, filtered, milligrams per liter as phosphorus",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "49cd98bfa419445a8987b024c03ac82f",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "54e89ae9bc1b449d82b192c9509ec6f7",
+        "unit_of_measure": "tons/day",
+        "parameter_name": "Phosphorus, wu",
+        "parameter_code": "91007",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:06:54.399147",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Phosphorus, water, unfiltered, short tons of phosphorus per day",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "54e89ae9bc1b449d82b192c9509ec6f7",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "5a4e059e8d1246079aa63e6bbcc263d9",
+        "unit_of_measure": "lbs/day",
+        "parameter_name": "NH3+orgN, wu as N",
+        "parameter_code": "91057",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:10:07.940732",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Ammonia plus organic nitrogen, water, unfiltered, pounds of nitrogen per day",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "5a4e059e8d1246079aa63e6bbcc263d9",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "5f23db2f40dc47dba5daa4d10e2e27d3",
+        "unit_of_measure": "ft^3/s",
+        "parameter_name": "Discharge",
+        "parameter_code": "00060",
+        "statistic_id": "00003",
+        "last_modified": "2026-10-17T05:44:29.647596",
+        "begin": "1915-10-01T05:00:00+00:00",
+        "end": "2026-10-16T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Discharge, cubic feet per second",
+        "parent_time_series_id": "051a3a48befb45f98b305756bac2b415",
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "5f23db2f40dc47dba5daa4d10e2e27d3",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "856eab110511476aa87b9b70bc3fb63f",
+        "unit_of_measure": "ft",
+        "parameter_name": "Gage height",
+        "parameter_code": "00065",
+        "statistic_id": null,
+        "last_modified": "2026-10-01T05:44:16.177191",
+        "begin": "1913-03-01T05:00:00+00:00",
+        "end": "2024-04-11T04:00:00+00:00",
+        "computation_period_identifier": "Water Year",
+        "computation_identifier": "Max At Event Time",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Gage height, feet",
+        "parent_time_series_id": "8bcdd5fd5b1d4f9ebfc5adf8cb967b1c",
+        "data_gap_interval": null,
+        "statistics_begin": null
+      },
+      "id": "856eab110511476aa87b9b70bc3fb63f",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "8bcdd5fd5b1d4f9ebfc5adf8cb967b1c",
+        "unit_of_measure": "ft",
+        "parameter_name": "Gage height",
+        "parameter_code": "00065",
+        "statistic_id": "00011",
+        "last_modified": "2026-10-17T06:44:27.979877",
+        "begin": "2007-10-01T05:00:00+00:00",
+        "end": "2026-10-17T06:30:00+00:00",
+        "computation_period_identifier": "Points",
+        "computation_identifier": "Instantaneous",
+        "thresholds": [
+          {
+            "Name": "Operational limit (minimum) approximate GZF",
+            "Type": "ThresholdBelow",
+            "Periods": [
+              {
+                "EndTime": "9999-12-31T23:59:59.9999999+00:00",
+                "StartTime": "2017-04-05T00:00:00.0000000-05:00",
+                "AppliedTime": "2017-05-28T02:23:53.566887Z",
+                "SuppressData": true,
+                "ReferenceValue": 3.5,
+                "SecondaryReferenceValue": 3.7
+              }
+            ],
+            "Severity": 0,
+            "Description": "Values below a specified threshold limit",
+            "DisplayColor": "#666666",
+            "ReferenceCode": "Operational limit - low-Public",
+            "ProcessingOrder": "Suppression"
+          },
+          {
+            "Name": "Operational limit (maximum) approximate height of instrument shelf",
+            "Type": "ThresholdAbove",
+            "Periods": [
+              {
+                "EndTime": "9999-12-31T23:59:59.9999999+00:00",
+                "StartTime": "2017-04-05T00:00:00.0000000-05:00",
+                "AppliedTime": "2017-05-28T02:23:53.4682406Z",
+                "SuppressData": true,
+                "ReferenceValue": 29,
+                "SecondaryReferenceValue": 26.1
+              }
+            ],
+            "Severity": 0,
+            "Description": "Values above a specified threshold limit",
+            "DisplayColor": "#CCCCCC",
+            "ReferenceCode": "Operational limit - high-Public",
+            "ProcessingOrder": "Suppression"
+          },
+          {
+            "Name": "HIGH gage surrounded by water",
+            "Type": "ThresholdAbove",
+            "Periods": [
+              {
+                "EndTime": "9999-12-31T23:59:59.9999999+00:00",
+                "StartTime": "2017-04-05T00:00:00.0000000-05:00",
+                "AppliedTime": "2017-05-28T02:23:53.0968827Z",
+                "SuppressData": false,
+                "ReferenceValue": 21.2
+              }
+            ],
+            "Severity": 0,
+            "Description": "Unspecified threshold value",
+            "DisplayColor": "#FF9933",
+            "ReferenceCode": "AQUARIUS only",
+            "ProcessingOrder": "Suppression"
+          },
+          {
+            "Name": "LOW approximate GZF",
+            "Type": "ThresholdBelow",
+            "Periods": [
+              {
+                "EndTime": "9999-12-31T23:59:59.9999999+00:00",
+                "StartTime": "2017-04-05T00:00:00.0000000-05:00",
+                "AppliedTime": "2017-05-28T02:23:53.5257308Z",
+                "SuppressData": false,
+                "ReferenceValue": 3.9
+              }
+            ],
+            "Severity": 0,
+            "Description": "Unspecified threshold value",
+            "DisplayColor": "#CC6600",
+            "ReferenceCode": "AQUARIUS only",
+            "ProcessingOrder": "Suppression"
+          },
+          {
+            "Name": "Flood Stage",
+            "Type": "None",
+            "Periods": [
+              {
+                "EndTime": "9999-12-31T23:59:59.9999999+00:00",
+                "StartTime": "2017-04-05T00:00:00.0000000-05:00",
+                "AppliedTime": "2017-05-28T02:23:54.0510037Z",
+                "SuppressData": false,
+                "ReferenceValue": 17
+              }
+            ],
+            "Severity": 0,
+            "Description": "Display reference value",
+            "DisplayColor": "#00CCFF",
+            "ReferenceCode": "NWISWeb ref level - Public",
+            "ProcessingOrder": "Suppression"
+          }
+        ],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Gage height, feet",
+        "parent_time_series_id": null,
+        "data_gap_interval": "PT1H12M",
+        "statistics_begin": null
+      },
+      "id": "8bcdd5fd5b1d4f9ebfc5adf8cb967b1c",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "bd8c54e9743343c1a4e1bce503fdf01e",
+        "unit_of_measure": "lbs/day",
+        "parameter_name": "Ammonia, dissolved as N",
+        "parameter_code": "62961",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:06:47.675023",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Ammonia (NH3 + NH4+), water, filtered, pounds per day as nitrogen",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "bd8c54e9743343c1a4e1bce503fdf01e",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "cd85f5c83932454f98d572574d31339a",
+        "unit_of_measure": "ft^3/s",
+        "parameter_name": "Discharge",
+        "parameter_code": "00060",
+        "statistic_id": null,
+        "last_modified": "2026-10-01T05:44:24.768741",
+        "begin": "1916-01-13T05:00:00+00:00",
+        "end": "2025-02-16T05:00:00+00:00",
+        "computation_period_identifier": "Water Year",
+        "computation_identifier": "Max At Event Time",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Discharge, cubic feet per second",
+        "parent_time_series_id": "051a3a48befb45f98b305756bac2b415",
+        "data_gap_interval": null,
+        "statistics_begin": null
+      },
+      "id": "cd85f5c83932454f98d572574d31339a",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "d2aead0e52974ecda4de509db55d15ea",
+        "unit_of_measure": "tons/day",
+        "parameter_name": "Suspnd sedmnt disch",
+        "parameter_code": "80155",
+        "statistic_id": "00003",
+        "last_modified": "2017-05-28T02:24:28.782190",
+        "begin": "1978-12-28T05:00:00+00:00",
+        "end": "1987-09-29T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Suspended sediment discharge, short tons per day",
+        "parent_time_series_id": null,
+        "data_gap_interval": null,
+        "statistics_begin": null
+      },
+      "id": "d2aead0e52974ecda4de509db55d15ea",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "de56d7f57c54468db961c4a8f13e18a0",
+        "unit_of_measure": "mg/l",
+        "parameter_name": "Ammonia, wf as N",
+        "parameter_code": "00608",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:06:42.817498",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Ammonia (NH3 + NH4+), water, filtered, milligrams per liter as nitrogen",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "de56d7f57c54468db961c4a8f13e18a0",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "f15949a2e1a84fafb0653fbeff84ab28",
+        "unit_of_measure": "lbs/day",
+        "parameter_name": "NO3+NO2, dissolved as N",
+        "parameter_code": "91061",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:09:48.400730",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Nitrate plus nitrite, water, filtered, pounds of nitrogen per day",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "f15949a2e1a84fafb0653fbeff84ab28",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ff7adff342e44e41928018b6f5a71500",
+        "unit_of_measure": "mg/l",
+        "parameter_name": "Phosphorus, wu as P",
+        "parameter_code": "00665",
+        "statistic_id": "00003",
+        "last_modified": "2026-04-22T15:09:07.400855",
+        "begin": "2020-03-01T05:00:00+00:00",
+        "end": "2025-09-30T04:00:00+00:00",
+        "computation_period_identifier": "Daily",
+        "computation_identifier": "Mean",
+        "thresholds": [],
+        "sublocation_identifier": null,
+        "primary": "Primary",
+        "monitoring_location_id": "USGS-03245500",
+        "web_description": null,
+        "parameter_description": "Phosphorus, water, unfiltered, milligrams per liter as phosphorus",
+        "parent_time_series_id": null,
+        "data_gap_interval": "P1D",
+        "statistics_begin": null
+      },
+      "id": "ff7adff342e44e41928018b6f5a71500",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -84.2979933317952,
+          39.171448866577
+        ]
+      }
+    }
+  ],
+  "numberReturned": 19,
+  "links": [
+    {
+      "type": "application/geo+json",
+      "rel": "self",
+      "title": "This document as GeoJSON",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/time-series-metadata/items?f=json&monitoring_location_id=USGS-03245500&limit=1000"
+    },
+    {
+      "rel": "alternate",
+      "type": "application/ld+json",
+      "title": "This document as RDF (JSON-LD)",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/time-series-metadata/items?f=jsonld&monitoring_location_id=USGS-03245500&limit=1000"
+    },
+    {
+      "type": "text/html",
+      "rel": "alternate",
+      "title": "This document as HTML",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/time-series-metadata/items?f=html&monitoring_location_id=USGS-03245500&limit=1000"
+    },
+    {
+      "type": "text/csv; charset=utf-8",
+      "rel": "alternate",
+      "title": "This document as CSV",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/time-series-metadata/items?f=csv&monitoring_location_id=USGS-03245500&limit=1000"
+    },
+    {
+      "type": "application/json",
+      "title": "Time series metadata",
+      "rel": "collection",
+      "href": "https://api.waterdata.usgs.gov/ogcapi/v1/collections/time-series-metadata"
+    }
+  ],
+  "timeStamp": "2026-10-17T09:58:01.412009Z"
+}

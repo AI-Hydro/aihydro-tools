@@ -38,11 +38,13 @@ jobs:
             smoke: |
               import pygridmet
               print("pygridmet import: OK")
-          - card: hydrofunctions
-            install: "hydrofunctions"
+          - card: dataretrieval_waterdata
+            install: "dataretrieval>=1.4"
             smoke: |
-              import hydrofunctions as hf
-              print("hydrofunctions import: OK")
+              from dataretrieval import waterdata
+              assert hasattr(waterdata, "get_daily") and hasattr(waterdata, "get_continuous")
+              assert hasattr(waterdata, "get_monitoring_locations")
+              print("dataretrieval.waterdata import: OK")
           - card: pysheds
             install: "pysheds"
             smoke: |

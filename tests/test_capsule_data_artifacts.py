@@ -24,6 +24,7 @@ import fastmcp
 import mcp.types as mcp_types
 import pytest
 
+from _usgs_replay import Replay, ok
 from ai_hydro.session import store
 from ai_hydro.session.chat_binding import ChatBindingStore
 from ai_hydro.session.store import HydroSession
@@ -53,10 +54,14 @@ def _series():
     import pandas as pd
 
     dates = pd.date_range(START, END, freq="D")
-    q = [5.0 + 4.0 * math.sin(i / 23.0) ** 2 + (30.0 if i % 97 == 0 else 0.0) + 0.001 * (i % 7)
-         for i in range(len(dates))]
-    q[40] = float("nan")  # one missing day must round-trip as an empty cell
-    return pd.DataFrame({"date": dates, "streamflow": q})
+    cfs = [5.0 + 4.0 * math.sin(i / 23.0) ** 2 + (30.0 if i % 97 == 0 else 0.0) + 0.001 * (i % 7)
+           for i in range(len(dates))]
+    cfs[40] = float("nan")  # one null day: the tool drops it (as the data layer does) and records it
+    # The API serves ft^3/s; the adapter converts once with the exact factor, so the expected
+    # m3/s series is built with the same multiplication (bit-identical round trip).
+    df = pd.DataFrame({"date": dates, "streamflow": [v * 0.028316846592 for v in cfs]})
+    df.attrs["cfs"] = cfs
+    return df
 
 
 def stdlib_lyne_hollick_bfi(q, a=0.925, passes=3):
@@ -103,11 +108,29 @@ def _build_and_export(mode, tmp_path, monkeypatch):
 
     def stub_fetch(variable, geometry, start, end, **kw):
         calls.append((variable, geometry, start, end))
-        return SimpleNamespace(data=df, product="NWIS_STREAMFLOW", source="direct_api",
+        return SimpleNamespace(data=df.dropna(subset=["streamflow"]).reset_index(drop=True), product="NWIS_STREAMFLOW", source="direct_api",
                                citation="USGS NWIS (stub)", cache_hit=True,
                                fetched_at="2026-10-02T00:00:00+00:00", cache_key="stubkey")
 
-    monkeypatch.setattr(aihydro_data, "fetch", stub_fetch)
+    monkeypatch.setattr(aihydro_data, "fetch", stub_fetch)      # the capsule's re-query of the request
+
+    # fetch_streamflow_data reads through the USGS adapter: its single transport seam answers
+    # with the SYNTHETIC series above in the Water Data API's response shape (NaN -> null);
+    # the site record replays the recorded body.
+    from aihydro_data.sources import usgs_waterdata as uw
+    seam_calls = []
+
+    def api(url, params):
+        if not url.endswith("/collections/daily/items"):
+            return None
+        seam_calls.append(params["time"])
+        feats = [{"type": "Feature", "id": str(i), "properties": {
+            "time": d.strftime("%Y-%m-%d"), "value": None if v != v else repr(float(v)),
+            "unit_of_measure": "ft^3/s", "approval_status": "Approved", "qualifier": None,
+            "time_series_id": "ts-synthetic"}} for i, (d, v) in enumerate(zip(df["date"], df.attrs["cfs"]))]
+        return ok({"type": "FeatureCollection", "features": feats, "numberReturned": len(feats), "links": []})
+
+    monkeypatch.setattr(uw, "_http_get", Replay(api))
 
     def real_signatures(**kwargs):
         import pandas as pd
@@ -121,7 +144,7 @@ def _build_and_export(mode, tmp_path, monkeypatch):
     err, body = call(app.mcp, "fetch_streamflow_data",
                      {"session_id": SID, "gauge_id": GAUGE, "start_date": START, "end_date": END})
     assert not err and not body.get("error"), body
-    assert calls, "stub backend was not used"
+    assert seam_calls, "the adapter seam was not used"
     # The slot really lost the series: this is the defect being fixed.
     assert not HydroSession.load(SID).streamflow["data"].get("q_cms")
 
@@ -166,7 +189,7 @@ def _build_and_export(mode, tmp_path, monkeypatch):
         if mode == "refetch_diff_data":
             other["streamflow"] = [v * (1.0 + 0.5 * ((i // 30) % 2)) for i, v in enumerate(other["streamflow"])]
         monkeypatch.setattr(aihydro_data, "fetch", lambda *a, **k: SimpleNamespace(
-            data=other, product="OTHER_PRODUCT" if mode == "refetch_diff_product" else "NWIS_STREAMFLOW",
+            data=other.dropna(subset=["streamflow"]).reset_index(drop=True), product="OTHER_PRODUCT" if mode == "refetch_diff_product" else "NWIS_STREAMFLOW",
             source="direct_api", citation="x", cache_hit=False,
             fetched_at="2026-10-03T00:00:00+00:00", cache_key="k2"))
 
@@ -196,7 +219,7 @@ def test_series_csv_in_capsule_with_manifest_digest(exported):
     (art,) = manifest["data_artifacts"]
     assert art["path"] == f"data/served_streamflow_{GAUGE}.csv" and art["sha256"] == sha
     assert art["role"] == "served_data" and art["columns"] == ["date", "q_cms"]
-    assert art["n_rows"] == len(df) and art["n_missing"] == 1
+    assert art["n_rows"] == len(df) - 1 and art["n_missing"] == 0     # the null day is dropped, not an empty cell
     slot_run = HydroSession.load(SID).streamflow["meta"]["run_id"]
     run_log = json.loads((cap / "run_log.json").read_text())
     if "retained_artifact" in art:

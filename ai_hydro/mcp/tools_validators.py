@@ -345,8 +345,9 @@ def check_usgs_qualification_codes(session_id: str) -> dict:
     """
     Flag provisional or estimated USGS streamflow data.
 
-    Reads qualification_codes from the streamflow slot metadata. USGS
-    NWIS uses 'P' for provisional (not yet reviewed) and 'e' for estimated
+    Reads qualification_codes, the quality summary (approval / qualifier counts,
+    ``qualifiers_other``, ``provisional_fraction``) from the streamflow slot metadata.
+    USGS uses 'P' for provisional (not yet reviewed) and 'e' for estimated
     records. Provisional data may be revised; using it in published claims
     without noting this is a scientific integrity risk.
 
@@ -374,12 +375,25 @@ def check_usgs_qualification_codes(session_id: str) -> dict:
             meta.get("qualification_codes")
             or data.get("qualification_codes")
         )
+        rle = meta.get("qualification_codes_rle")
+        if qual_codes is None and isinstance(rle, list) and rle and all(
+                isinstance(r, (list, tuple)) and len(r) == 2 and isinstance(r[0], str) for r in rle):
+            qual_codes = [r[0] for r in rle]          # run-length-encoded: the distinct runs are enough
         provisional_flag: bool | None = (
             meta.get("provisional")
             or data.get("provisional")
         )
+        # Quality summary written by the slot writer (approval / qualifier counts as the
+        # USGS Water Data API states them). Flat copies are accepted too.
+        qsum = meta.get("quality_summary") if isinstance(meta.get("quality_summary"), dict) else {}
+        approval_counts = qsum.get("approval_counts") or meta.get("approval_counts") or {}
+        qualifier_counts = qsum.get("qualifier_counts") or meta.get("qualifier_counts") or {}
+        qualifiers_other = qsum.get("qualifiers_other") or meta.get("qualifiers_other") or {}
+        prov_fraction = qsum.get("provisional_fraction", meta.get("provisional_fraction"))
+        has_counts = isinstance(approval_counts, dict) and bool(approval_counts) or (
+            isinstance(qualifier_counts, dict) and bool(qualifier_counts))
 
-        if qual_codes is None and provisional_flag is None:
+        if qual_codes is None and provisional_flag is None and not has_counts:
             # Not propagated by fetch pipeline yet
             source = meta.get("source", "")
             note = (
@@ -396,16 +410,17 @@ def check_usgs_qualification_codes(session_id: str) -> dict:
                 ),
                 affected_slots=["streamflow"],
                 recommendation=(
-                    "Verify the data review status directly from the NWIS data portal "
+                    "Verify the data review status directly from the USGS Water Data portal "
                     "(waterdata.usgs.gov) for the gauge. Note in any claim whether the "
                     "data has been reviewed/approved by USGS."
                 ),
                 metadata={"quality_flag": "qualification_codes_absent"},
             ).model_dump()
 
-        # Never certify "approved" from codes we cannot read: a non-list value,
-        # or tokens other than USGS approved ('A'), provisional ('P') and
-        # estimated ('e'), is not evidence of review status.
+        # Never certify "approved" from codes we cannot read: a non-list value, or a
+        # non-string entry, is not evidence of review status. A string token outside the
+        # USGS approved ('A'), provisional ('P') and estimated ('e') vocabulary IS readable
+        # (ice, equipment malfunction, ...): it is reported with its raw value as a warning.
         _tokens: list[str] = []
         _unreadable = False
         if qual_codes is not None:
@@ -416,19 +431,51 @@ def check_usgs_qualification_codes(session_id: str) -> dict:
                     if not isinstance(c, str):
                         _unreadable = True
                     else:
-                        _tokens.extend(c.split())
-                if any(t not in ("A", "P", "e") for t in _tokens):
-                    _unreadable = True
-        if _unreadable and not provisional_flag and "P" not in _tokens and "e" not in _tokens:
+                        _tokens.extend(c.replace(",", " ").split())
+        # Counts keyed by the API's words or by the short codes.
+        def _count(d: object, *keys: str) -> float:
+            if not isinstance(d, dict):
+                return 0
+            tot = 0
+            for k in keys:
+                v = d.get(k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    tot += v
+            return tot
+
+        n_prov_counts = _count(approval_counts, "Provisional", "P")
+        n_est_counts = _count(qualifier_counts, "ESTIMATED", "e")
+        other: dict[str, int] = {}
+        for t in _tokens:
+            if t not in ("A", "P", "e"):
+                other[t] = other.get(t, 0) + 1
+        if isinstance(qualifiers_other, dict):
+            for k, v in qualifiers_other.items():
+                if k in ("A", "P", "e"):
+                    continue
+                other[k] = max(other.get(k, 0), v) if isinstance(v, (int, float)) else other.get(k, 0)
+        if isinstance(qualifier_counts, dict):
+            for k, v in qualifier_counts.items():
+                if k not in ("ESTIMATED", "e", "A", "P") and isinstance(v, (int, float)):
+                    other[k] = max(other.get(k, 0), v)
+
+        has_provisional = (
+            bool(provisional_flag) or "P" in _tokens or n_prov_counts > 0
+            or (isinstance(prov_fraction, (int, float)) and prov_fraction > 0)
+        )
+        has_estimated = "e" in _tokens or n_est_counts > 0
+
+        if _unreadable and not (has_provisional or has_estimated or other):
             return ValidatorResult(
                 validator="usgs_qualification_codes",
                 status="insufficient_data",
                 message=f"Qualification codes {qual_codes!r} are not in a readable form "
-                        "(expected a list of USGS codes A / P / e); review status unknown.",
+                        "(expected a list of code strings: A / P / e or raw USGS qualifier tokens); "
+                        "review status unknown.",
                 affected_slots=["streamflow"],
                 metadata={"quality_flag": "qualification_codes_unreadable"},
             ).model_dump()
-        if qual_codes is not None and not _tokens and not provisional_flag:
+        if qual_codes is not None and not _tokens and not has_counts and not provisional_flag:
             return ValidatorResult(
                 validator="usgs_qualification_codes",
                 status="insufficient_data",
@@ -437,25 +484,47 @@ def check_usgs_qualification_codes(session_id: str) -> dict:
                 metadata={"quality_flag": "qualification_codes_absent"},
             ).model_dump()
 
-        has_provisional = bool(provisional_flag) or "P" in _tokens
-        has_estimated = "e" in _tokens
-
+        counts_md = {"approval_counts": approval_counts, "qualifier_counts": qualifier_counts,
+                     "qualifiers_other": other}
         if has_provisional:
+            frac = (f" ({prov_fraction:.1%} of values)"
+                    if isinstance(prov_fraction, (int, float)) and prov_fraction > 0 else "")
             return ValidatorResult(
                 validator="usgs_qualification_codes",
                 status="warning",
                 severity="medium",
                 message=(
-                    "Streamflow record contains provisional ('P') data that has not "
+                    f"Streamflow record contains provisional ('P') data{frac} that has not "
                     "yet been reviewed and approved by USGS. Values may be revised."
+                    + (f" Other qualifiers present: {other}." if other else "")
                 ),
                 recommendation=(
                     "Add a limitations entry to any claim using this data: "
                     "'Data is provisional and subject to revision by USGS.' "
-                    "Re-check the NWIS portal before publication."
+                    "Re-check the USGS Water Data portal before publication."
                 ),
                 affected_slots=["streamflow"],
-                metadata={"quality_flag": "provisional_data", "codes": qual_codes},
+                metadata={"quality_flag": "provisional_data", "codes": qual_codes
+                          if not isinstance(qual_codes, list) or len(qual_codes) <= 50 else None,
+                          **counts_md},
+            ).model_dump()
+
+        if other:
+            return ValidatorResult(
+                validator="usgs_qualification_codes",
+                status="warning",
+                severity="medium",
+                message=(
+                    "Streamflow record carries USGS qualifiers outside approved / provisional / "
+                    f"estimated: {other} (raw values, value counts). Such values (ice, equipment "
+                    "malfunction, interpolation, ...) are not ordinary approved observations."
+                ),
+                recommendation=(
+                    "State the qualifier counts as a limitation in any claim, and check the "
+                    "flagged periods in the USGS Water Data portal before using them."
+                ),
+                affected_slots=["streamflow"],
+                metadata={"quality_flag": "other_qualifiers", **counts_md},
             ).model_dump()
 
         if has_estimated:
@@ -472,13 +541,14 @@ def check_usgs_qualification_codes(session_id: str) -> dict:
                     "Estimated records are particularly common during flood peaks."
                 ),
                 affected_slots=["streamflow"],
-                metadata={"quality_flag": "estimated_data", "codes": qual_codes},
+                metadata={"quality_flag": "estimated_data", **counts_md,
+                          "codes": qual_codes if not isinstance(qual_codes, list) or len(qual_codes) <= 50 else None},
             ).model_dump()
 
         return ValidatorResult(
             validator="usgs_qualification_codes",
             status="pass",
-            message="Streamflow data is approved / reviewed (no provisional or estimated codes).",
+            message="Streamflow data is approved / reviewed (no provisional, estimated or other qualifier codes).",
             affected_slots=["streamflow"],
         ).model_dump()
 

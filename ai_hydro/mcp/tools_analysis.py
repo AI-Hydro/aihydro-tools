@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,7 +48,6 @@ from ai_hydro.mcp.helpers import (
     _canonical_workspace_path,
     _ensure_session,
     _get_session_geometry,
-    _legacy_data_shim,
     _normalize_session_id,
     _resolve_session,
     _result_to_dict,
@@ -985,74 +985,40 @@ def fetch_streamflow_data(
         # Cache-hit check — same gauge + date range + interval already computed
         if session.streamflow is not None:
             cached_params = session.streamflow.get("meta", {}).get("params", {})
-            if (cached_params.get("start_date") == start_date
+            _bare = lambda g: str(g or "").upper().removeprefix("USGS-")      # noqa: E731
+            _cached_backend = ((session.streamflow.get("meta", {}).get("upstream") or {}).get("backend")
+                               or "usgs_waterdata")
+            _want_backend = ("legacy_waterservices"
+                             if os.environ.get("AIHYDRO_USGS_BACKEND", "").strip().lower() == "legacy_waterservices"
+                             else "usgs_waterdata")
+            # The slot is reused only for the same gauge, period, interval AND backend: a slot
+            # fetched for another gauge (or by the other backend) is not this request's answer.
+            if (_bare(cached_params.get("gauge_id")) == _bare(resolved_gauge_id)
+                    and _cached_backend == _want_backend
+                    and cached_params.get("start_date") == start_date
                     and cached_params.get("end_date") == end_date
                     and cached_params.get("interval", "daily") == interval):
                 compact = _strip_forcing_arrays(session.streamflow.get("data", {}))
+                from ai_hydro.mcp.streamflow_slot import response_meta as _rmeta
                 return {
                     "data": compact,
-                    "meta": session.streamflow.get("meta", {}),
+                    "meta": _rmeta(session.streamflow.get("meta", {})),
                     "_cached": True,
                     "_note": "Streamflow already cached. Full time series on disk.",
                 }
 
-        # ── Route through aihydro-data (Wave 2.5 Axis 2) ─────────────────
-        # Try the new variable-centric layer first; fall back to the legacy
-        # NWIS fetcher so the tool never breaks even if aihydro-data is absent.
-        import pandas as _pd
-        _shim_result, _shim_err = _legacy_data_shim(
-            "streamflow", resolved_gauge_id, start_date, end_date
+        # ── USGS Water Data API via the aihydro-data adapter (Wave U) ────────
+        # One fetcher, no fallback: an identity or integrity refusal (GAUGE_NOT_FOUND,
+        # USGS_NO_DATA, ...) is raised and returned as the refusal. It is never
+        # answered by another source (D2).
+        from ai_hydro.data.streamflow import fetch_streamflow_data as _fn
+        result = _fn(
+            gauge_id=resolved_gauge_id,
+            start_date=start_date,
+            end_date=end_date,
+            interval=interval,
         )
-        if (
-            _shim_result is not None
-            and isinstance(_shim_result.data, _pd.DataFrame)
-            and "streamflow" in _shim_result.data.columns
-        ):
-            _df = _shim_result.data
-            _dates = _df["date"].dt.strftime("%Y-%m-%d").tolist()
-            _q = [
-                float(v) if (v is not None and v == v) else None  # NaN → None
-                for v in _df["streamflow"].tolist()
-            ]
-            d = {
-                "data": {
-                    "gauge_id": resolved_gauge_id,
-                    "dates": _dates,
-                    "q_cms": _q,
-                    "units": "m3/s",
-                    "n_days": len(_q),
-                    "gauge_name": "",   # NWIS site-info not returned by aihydro-data
-                    "gauge_lat": None,
-                    "gauge_lon": None,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "interval": interval,
-                    "_aihydro_data_product": _shim_result.product,
-                    "_aihydro_data_source": _shim_result.source,
-                },
-                "meta": {
-                    "tool": "fetch_streamflow_data",
-                    "source": f"{_shim_result.product} (aihydro-data)",
-                    "citation": _shim_result.citation,
-                    "params": {
-                        "gauge_id": resolved_gauge_id,
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "interval": interval,
-                    },
-                },
-            }
-        else:
-            # Legacy fallback — keeps CONUS gauges working when aihydro-data
-            # is unavailable or returns an unexpected structure.
-            from ai_hydro.data.streamflow import fetch_streamflow_data as _fn
-            result = _fn(
-                gauge_id=resolved_gauge_id,
-                start_date=start_date,
-                end_date=end_date,
-                interval=interval,
-            )
-            d = _result_to_dict(result)
+        d = _result_to_dict(result)
 
         # Persist gauge metadata if not already set
         if not session.site_id:
@@ -1060,39 +1026,10 @@ def fetch_streamflow_data(
             session.site_type = "usgs_gauge"
             session.save()
 
-        files_saved: list[str] = []
-        saved = _workspace_write(
-            session_id, f"streamflow_{resolved_gauge_id}.json", d["data"]
-        )
-        if not saved:
-            # No workspace: the lean session JSON would keep only q_cms_n and
-            # the series would be unrecoverable for the tools that consume it.
-            from ai_hydro.session import store as _store
-            saved = _store.write_session_data_file(
-                session_id, f"streamflow_{resolved_gauge_id}.json", d["data"]
-            )
-        if saved:
-            files_saved.append(saved)
-
-        # Record the data file path in the slot so downstream tools (FDC plot,
-        # model training) can reload raw arrays without re-fetching from USGS.
-        if saved:
-            d["data"]["_data_file"] = saved
-            # Bind the retained series to this run: digest of the file bytes
-            # goes in the slot (a later consumer re-digests the file and
-            # compares) and in this run's record (extra.retained_files).
-            try:
-                from aihydro_core.records import digest_bytes as _dbytes
-                from ai_hydro.session import run_records as _rr0
-                _fdig = _dbytes(Path(saved).read_bytes())
-                d.setdefault("meta", {})["retained_series"] = {"path": saved, "digest": _fdig}
-                from ai_hydro.session.refs import to_ref as _to_ref
-                _rr0.declare_lineage(retained_files=[{
-                    "path": _to_ref(saved, getattr(session, "workspace_dir", None)),
-                    "digest": _fdig, "role": "artifact"}])
-            except Exception as _fe:
-                log.warning("could not digest retained streamflow file: %s", _fe)
-        _session_store(session_id, "streamflow", d, tool_name="fetch_streamflow_data")
+        from ai_hydro.mcp.streamflow_slot import persist_streamflow_slot, response_meta
+        saved = persist_streamflow_slot(
+            session_id, d, resolved_gauge_id, tool_name="fetch_streamflow_data")
+        files_saved: list[str] = [saved] if saved else []
 
         # Strip raw arrays from response — saved to disk, not needed in context
         data = d["data"]
@@ -1125,7 +1062,7 @@ def fetch_streamflow_data(
 
         resp: dict = {
             "data": compact,
-            "meta": d.get("meta", {}),
+            "meta": response_meta(d.get("meta", {})),
             "_files_saved": files_saved,
             "_note": (
                 f"Full time series ({compact.get('n_days', '?')} records) saved to "
@@ -1404,6 +1341,12 @@ def extract_hydrological_signatures(
         # recorded as "not reported" -- never as a product that was used.
         _dd = d.get("data") if isinstance(d.get("data"), dict) else {}
         _src = _dd.get("_streamflow_source")
+        from ai_hydro.mcp.streamflow_slot import mirror_streamflow_source as _mirror_src
+        _mirror_src(_dd, _src)
+        from ai_hydro.mcp.streamflow_slot import mirror_gauge_area_check as _mirror_area
+        _area_flag = _mirror_area(_dd)
+        if _area_flag:
+            d.setdefault("quality_flags", []).append(_area_flag)
         for _e in _internal:
             if isinstance(_src, dict):
                 _e["observed_source"] = _src

@@ -1,5 +1,12 @@
 """
-NWIS / NID search and gauge layers for the AI-Hydro map panel.
+USGS gauge / NID search and gauge layers for the AI-Hydro map panel.
+
+Gauges come from the USGS Water Data API monitoring-locations collection through the
+aihydro-data adapter (``aihydro_data.sources.usgs_waterdata.get_monitoring_locations``):
+by site id, by bounding box, or by EXACT monitoring-location name. The API's partial
+(substring) name match is unverified, so it is not used: a text query is matched
+client-side against the gauges inside the map bbox (id or name substring), and a
+CONUS-wide search without a bbox matches only an exact monitoring-location name.
 """
 
 from __future__ import annotations
@@ -27,19 +34,40 @@ _MAX_GAUGES_IN_VIEW = 250
 _SITE_ID_RE = re.compile(r"^\d{5,15}$")
 
 
-def _site_to_hit(row: Any, source: str = "gauge") -> dict[str, Any]:
-    lat = float(row.dec_lat_va)
-    lon = float(row.dec_long_va)
-    site_no = str(row.site_no)
-    name = str(getattr(row, "station_nm", site_no))
+def _problem(exc: BaseException) -> dict[str, Any]:
+    """A USGS lookup failure as data: ``terminal`` True for a final refusal, False for "could not
+    look" (rate limit, timeout, outage). Lets a caller say "no gauges" apart from "could not ask"."""
+    try:
+        from aihydro_data.exceptions import TerminalSourceError
+        terminal = isinstance(exc, TerminalSourceError)
+    except ImportError:
+        terminal = False
+    return {"code": getattr(exc, "code", type(exc).__name__), "message": str(exc)[:300], "terminal": terminal}
+
+
+def _site_no(loc: Any) -> str:
+    sid = str(loc.site_id or "")
+    return sid[5:] if sid.upper().startswith("USGS-") else sid
+
+
+def _site_to_hit(loc: Any, source: str = "gauge") -> dict[str, Any]:
+    """Map-search hit for a ``MonitoringLocation`` (EPSG:4326 point, [lon, lat])."""
+    site_no = _site_no(loc)
+    name = str(loc.name or site_no)
     label = f"{site_no} — {name}"
     meta: dict[str, str] = {"gauge_id": site_no}
-    if hasattr(row, "drain_area_va") and row.drain_area_va is not None:
-        try:
-            meta["drainage_area_sqmi"] = str(row.drain_area_va)
-        except Exception:
-            pass
-    return {"label": label, "lat": lat, "lon": lon, "source": source, "meta": meta}
+    if loc.drainage_area_raw is not None:
+        # The API does not state the unit; USGS documents square miles and the adapter
+        # cross-checked one gauge against the legacy site record (870 = 870).
+        meta["drainage_area_sqmi"] = str(loc.drainage_area_raw)
+    return {"label": label, "lat": float(loc.lat), "lon": float(loc.lon), "source": source, "meta": meta}
+
+
+_MAX_BBOX_DEG2 = 25.0     # the former NWIS site service refused larger boxes; keep the paging bounded
+
+
+def _bbox_within_service_limit(min_lon: float, min_lat: float, max_lon: float, max_lat: float) -> bool:
+    return (max_lon - min_lon) * (max_lat - min_lat) <= _MAX_BBOX_DEG2
 
 
 def _dam_display_name(row: Any) -> str:
@@ -183,9 +211,13 @@ def search_hydrology(
     max_lon: float | None = None,
     max_lat: float | None = None,
     limit: int = _MAX_SEARCH_HITS,
+    problems: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Search USGS gauges and NID dams. Returns hit dicts for the map SearchBar.
+
+    ``problems`` (optional list) receives one dict per USGS lookup that failed or was skipped
+    (``code``, ``message``, ``terminal``), so an empty result can be told from an outage.
     """
     query = (q or "").strip()
     if len(query) < 2:
@@ -195,21 +227,24 @@ def search_hydrology(
     limit = max(1, min(limit, _MAX_SEARCH_HITS))
 
     try:
-        from pygeohydro import NWIS, NID
+        from aihydro_data.sources import usgs_waterdata as uw
     except ImportError as e:
-        raise ImportError("pygeohydro is required for hydrology search") from e
+        raise ImportError("aihydro-data is required for hydrology search") from e
 
-    nwis = NWIS()
-    nid = NID()
-
-    # Site ID lookup (USGS 5–15 digit ids)
-    if _SITE_ID_RE.match(query):
+    def _locations(**kw: Any) -> list:
         try:
-            sites = nwis.get_info({"sites": query}, expanded=True)
-            for _, row in sites.head(limit).iterrows():
-                hits.append(_site_to_hit(row))
-        except Exception as e:
-            log.debug("NWIS site_no search failed: %s", e)
+            return list(uw.get_monitoring_locations(**kw))
+        except Exception as e:     # map search degrades to "no hits"; the reason is reported, not hidden
+            log.warning("USGS monitoring-location search %s failed: [%s] %s",
+                        sorted(kw), getattr(e, "code", type(e).__name__), e)
+            if problems is not None:
+                problems.append(_problem(e))
+            return []
+
+    # Site ID lookup (USGS 5–15 digit ids; the API wants 8-15, shorter ids simply find nothing)
+    if _SITE_ID_RE.match(query):
+        for loc in _locations(ids=[query.zfill(8)])[:limit]:
+            hits.append(_site_to_hit(loc))
 
     # Bbox search (gauges + dams in view)
     if (
@@ -220,31 +255,25 @@ def search_hydrology(
         and max_lat is not None
         and is_conus_bbox(min_lon, min_lat, max_lon, max_lat)
     ):
-        bbox_str = ",".join(f"{v:.06f}" for v in (min_lon, min_lat, max_lon, max_lat))
-        try:
-            sites = nwis.get_info(
-                {"bBox": bbox_str, "siteTypeCd": "ST", "siteStatus": "all"},
-                expanded=True,
-            )
-            q_lower = query.lower()
-            for _, row in sites.iterrows():
+        q_lower = query.lower()
+        if not _bbox_within_service_limit(min_lon, min_lat, max_lon, max_lat) and problems is not None:
+            problems.append({"code": "BBOX_TOO_LARGE", "terminal": False,
+                             "message": f"map view larger than {_MAX_BBOX_DEG2:g} deg2: gauges not queried"})
+        if _bbox_within_service_limit(min_lon, min_lat, max_lon, max_lat):
+            for loc in _locations(bbox=[min_lon, min_lat, max_lon, max_lat], site_type_code="ST"):
                 if len(hits) >= limit:
                     break
-                site_no = str(row.site_no)
-                name = str(getattr(row, "station_nm", ""))
+                site_no = _site_no(loc)
+                name = str(loc.name or "")
                 if _SITE_ID_RE.match(query) and site_no != query:
                     continue
                 if len(query) >= 2 and q_lower not in site_no.lower() and q_lower not in name.lower():
                     continue
-                hit = _site_to_hit(row)
                 if not any(h.get("meta", {}).get("gauge_id") == site_no for h in hits):
-                    hits.append(hit)
-        except Exception as e:
-            log.debug("NWIS bbox search failed: %s", e)
+                    hits.append(_site_to_hit(loc))
 
         try:
             dams = fetch_nid_dams_in_bbox(min_lon, min_lat, max_lon, max_lat)
-            q_lower = query.lower()
             for _, row in dams.iterrows():
                 if len(hits) >= limit:
                     break
@@ -258,25 +287,13 @@ def search_hydrology(
         except Exception as e:
             log.debug("NID bbox search failed: %s", e)
 
-    # Name search (CONUS-wide, no bbox required)
+    # Name search (CONUS-wide, no bbox required): EXACT monitoring-location name only.
     if len(hits) < limit and len(query) >= 3:
-        try:
-            sites = nwis.get_info(
-                {
-                    "siteName": query,
-                    "siteNameMatch": "2",
-                    "siteTypeCd": "ST",
-                    "siteStatus": "all",
-                },
-                expanded=True,
-            )
-            for _, row in sites.head(limit - len(hits)).iterrows():
-                site_no = str(row.site_no)
-                if any(h.get("meta", {}).get("gauge_id") == site_no for h in hits):
-                    continue
-                hits.append(_site_to_hit(row))
-        except Exception as e:
-            log.debug("NWIS siteName search failed: %s", e)
+        for loc in _locations(name=query)[: limit - len(hits)]:
+            site_no = _site_no(loc)
+            if any(h.get("meta", {}).get("gauge_id") == site_no for h in hits):
+                continue
+            hits.append(_site_to_hit(loc))
 
     return hits[:limit]
 
@@ -290,44 +307,46 @@ def gauges_in_view_layer(
     lat: float,
     lon: float,
     limit: int = _MAX_GAUGES_IN_VIEW,
+    problems: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build a single point layer spec with NWIS sites in the map bbox."""
+    """Build a single point layer spec with NWIS sites in the map bbox.
+
+    ``problems`` (optional list) receives the reason when no layer could be built because the
+    lookup failed or the view was too large, as opposed to the view holding no gauges."""
     if not is_conus_point(lat, lon) or not is_conus_bbox(min_lon, min_lat, max_lon, max_lat):
         return []
 
+    if not _bbox_within_service_limit(min_lon, min_lat, max_lon, max_lat):
+        if problems is not None:
+            problems.append({"code": "BBOX_TOO_LARGE", "terminal": False,
+                             "message": f"map view larger than {_MAX_BBOX_DEG2:g} deg2: gauges not queried"})
+        return []
     try:
-        from pygeohydro import NWIS
+        from aihydro_data.sources import usgs_waterdata as uw
     except ImportError as e:
-        raise ImportError("pygeohydro is required for gauges-in-view") from e
+        raise ImportError("aihydro-data is required for gauges-in-view") from e
 
-    bbox_str = ",".join(f"{v:.06f}" for v in (min_lon, min_lat, max_lon, max_lat))
-    nwis = NWIS()
     try:
-        sites = nwis.get_info(
-            {"bBox": bbox_str, "siteTypeCd": "ST", "siteStatus": "all"},
-            expanded=False,
-        )
+        sites = list(uw.get_monitoring_locations(
+            bbox=[min_lon, min_lat, max_lon, max_lat], site_type_code="ST"))
     except Exception as e:
-        log.warning("gauges_in_view NWIS query failed: %s", e)
+        log.warning("gauges_in_view USGS query failed: [%s] %s", getattr(e, "code", type(e).__name__), e)
+        if problems is not None:
+            problems.append(_problem(e))
         return []
 
-    if sites is None or sites.empty:
+    if not sites:
         return []
 
-    sites = sites.head(max(1, min(limit, _MAX_GAUGES_IN_VIEW)))
+    sites = sites[: max(1, min(limit, _MAX_GAUGES_IN_VIEW))]
     features: list[dict[str, Any]] = []
-    for _, row in sites.iterrows():
-        try:
-            lat_v = float(row.dec_lat_va)
-            lon_v = float(row.dec_long_va)
-        except (TypeError, ValueError):
-            continue
-        site_no = str(row.site_no)
-        name = str(getattr(row, "station_nm", site_no))
+    for loc in sites:
+        site_no = _site_no(loc)
+        name = str(loc.name or site_no)
         features.append(
             {
                 "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [lon_v, lat_v]},
+                "geometry": {"type": "Point", "coordinates": [float(loc.lon), float(loc.lat)]},
                 "properties": {
                     "site_no": site_no,
                     "name": name,

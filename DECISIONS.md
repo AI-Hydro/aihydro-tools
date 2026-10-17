@@ -1,5 +1,20 @@
 # Decisions
 
+## 2026-10-17 — Evaluation arm C1 strips advisory and gate output, not data provenance (Wave U, U3)
+
+Lead ruling. C1 ("tools only") removes ADVISORY and GATE output from agent-visible results:
+text produced by validators, the skeptic and promotion logic (`quality_flags` and their verdicts
+and messages, `promotion_check`, `skeptic*`, "validators did not run" notes) and `next_steps` hints.
+OBSERVATIONAL PROVENANCE that a data tool returns about its own data is tool output and stays
+visible in all arms: quality/approval/qualifier counts and columns, `quality_summary`,
+`site_resolution`, `upstream`, the `streamflow_*` mirrors and area-check values
+(`gauge_area_check`, `gauge_area_ratio`). The general rule is: advisory = a judgement produced by a
+validator/skeptic/promotion step; provenance = a fact about the served data. There are no per-tool
+carve-outs: `eval_condition.STRIPPED_FIELDS` plus the `skeptic*` prefix is the whole rule, applied at
+every depth (so `quality_summary` is never stripped). The failed gauge-area check still reaches C1
+agents as data (`gauge_area_check: "fail"`); only its `quality_flags` verdict is stripped. P1 runs at
+its pinned tools commit and is unaffected.
+
 ## 2026-09-07 — Gate promotion on retained evidence
 
 The adversarial ecosystem assessment reproduced promotion of a nonexistent
