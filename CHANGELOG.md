@@ -6,7 +6,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [2.4.0] - 2026-10-17 (Wave U)
 
 - **USGS Water Data API consumers (Wave U, U3).** Requires aihydro-data >= 0.2.3 and
   aihydro-watershed >= 0.1.3; `hydrofunctions` is no longer a dependency.
