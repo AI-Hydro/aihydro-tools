@@ -91,8 +91,9 @@ def data_fetch_background(
         'basin_mean' (default) | 'basin_sum' | 'centroid' | 'raw_raster'.
     gauge_id : str | None
         streamflow only. USGS site number that names the gauge explicitly (same
-        meaning and precedence as on data_fetch). A gauge refusal is final: it is
-        never answered with modelled flow.
+        meaning and precedence as on data_fetch). The job is pinned to the USGS observation
+        product with no fallback chain: a refusal or transient failure is reported as such
+        (``error.terminal``), never answered with modelled flow.
 
     Returns
     -------
@@ -116,13 +117,11 @@ def data_fetch_background(
                 "next_tools": ["data_validate_request"],
             }
 
-        if gauge_id is not None and variable != "streamflow":
-            return {
-                "error": True, "code": "GAUGE_ID_NOT_APPLICABLE",
-                "message": f"gauge_id names a USGS gauge and only applies to variable='streamflow' (got {variable!r}).",
-                "recovery": "Drop gauge_id, or request variable='streamflow'.",
-                "next_tools": ["data_fetch_background"],
-            }
+        if gauge_id is not None:
+            from ai_hydro.mcp.gauge_identity import identity_refusal
+            refusal = identity_refusal(variable, geometry, product, "data_fetch_background")
+            if refusal:
+                return refusal
 
         job_id     = uuid.uuid4().hex[:12]
         art_dir    = _artifact_dir(job_id)

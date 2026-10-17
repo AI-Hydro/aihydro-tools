@@ -34,6 +34,17 @@ _MAX_GAUGES_IN_VIEW = 250
 _SITE_ID_RE = re.compile(r"^\d{5,15}$")
 
 
+def _problem(exc: BaseException) -> dict[str, Any]:
+    """A USGS lookup failure as data: ``terminal`` True for a final refusal, False for "could not
+    look" (rate limit, timeout, outage). Lets a caller say "no gauges" apart from "could not ask"."""
+    try:
+        from aihydro_data.exceptions import TerminalSourceError
+        terminal = isinstance(exc, TerminalSourceError)
+    except ImportError:
+        terminal = False
+    return {"code": getattr(exc, "code", type(exc).__name__), "message": str(exc)[:300], "terminal": terminal}
+
+
 def _site_no(loc: Any) -> str:
     sid = str(loc.site_id or "")
     return sid[5:] if sid.upper().startswith("USGS-") else sid
@@ -200,9 +211,13 @@ def search_hydrology(
     max_lon: float | None = None,
     max_lat: float | None = None,
     limit: int = _MAX_SEARCH_HITS,
+    problems: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Search USGS gauges and NID dams. Returns hit dicts for the map SearchBar.
+
+    ``problems`` (optional list) receives one dict per USGS lookup that failed or was skipped
+    (``code``, ``message``, ``terminal``), so an empty result can be told from an outage.
     """
     query = (q or "").strip()
     if len(query) < 2:
@@ -219,9 +234,11 @@ def search_hydrology(
     def _locations(**kw: Any) -> list:
         try:
             return list(uw.get_monitoring_locations(**kw))
-        except Exception as e:     # map search degrades to "no hits"; the reason is logged, not hidden
+        except Exception as e:     # map search degrades to "no hits"; the reason is reported, not hidden
             log.warning("USGS monitoring-location search %s failed: [%s] %s",
                         sorted(kw), getattr(e, "code", type(e).__name__), e)
+            if problems is not None:
+                problems.append(_problem(e))
             return []
 
     # Site ID lookup (USGS 5–15 digit ids; the API wants 8-15, shorter ids simply find nothing)
@@ -239,6 +256,9 @@ def search_hydrology(
         and is_conus_bbox(min_lon, min_lat, max_lon, max_lat)
     ):
         q_lower = query.lower()
+        if not _bbox_within_service_limit(min_lon, min_lat, max_lon, max_lat) and problems is not None:
+            problems.append({"code": "BBOX_TOO_LARGE", "terminal": False,
+                             "message": f"map view larger than {_MAX_BBOX_DEG2:g} deg2: gauges not queried"})
         if _bbox_within_service_limit(min_lon, min_lat, max_lon, max_lat):
             for loc in _locations(bbox=[min_lon, min_lat, max_lon, max_lat], site_type_code="ST"):
                 if len(hits) >= limit:
@@ -287,12 +307,19 @@ def gauges_in_view_layer(
     lat: float,
     lon: float,
     limit: int = _MAX_GAUGES_IN_VIEW,
+    problems: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build a single point layer spec with NWIS sites in the map bbox."""
+    """Build a single point layer spec with NWIS sites in the map bbox.
+
+    ``problems`` (optional list) receives the reason when no layer could be built because the
+    lookup failed or the view was too large, as opposed to the view holding no gauges."""
     if not is_conus_point(lat, lon) or not is_conus_bbox(min_lon, min_lat, max_lon, max_lat):
         return []
 
     if not _bbox_within_service_limit(min_lon, min_lat, max_lon, max_lat):
+        if problems is not None:
+            problems.append({"code": "BBOX_TOO_LARGE", "terminal": False,
+                             "message": f"map view larger than {_MAX_BBOX_DEG2:g} deg2: gauges not queried"})
         return []
     try:
         from aihydro_data.sources import usgs_waterdata as uw
@@ -304,6 +331,8 @@ def gauges_in_view_layer(
             bbox=[min_lon, min_lat, max_lon, max_lat], site_type_code="ST"))
     except Exception as e:
         log.warning("gauges_in_view USGS query failed: [%s] %s", getattr(e, "code", type(e).__name__), e)
+        if problems is not None:
+            problems.append(_problem(e))
         return []
 
     if not sites:

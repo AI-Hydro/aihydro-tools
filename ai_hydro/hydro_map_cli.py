@@ -385,6 +385,7 @@ def cmd_huc_at_point(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_search_hydrology(args: argparse.Namespace) -> dict[str, Any]:
     from ai_hydro.data.hydro_search import search_hydrology
 
+    problems: list = []
     hits = search_hydrology(
         args.q,
         min_lon=args.min_lon,
@@ -392,13 +393,18 @@ def cmd_search_hydrology(args: argparse.Namespace) -> dict[str, Any]:
         max_lon=args.max_lon,
         max_lat=args.max_lat,
         limit=args.limit,
+        problems=problems,
     )
-    return {
+    out = {
         "ok": True,
         "type": "search_hydrology",
         "hits": hits,
         "message": f"{len(hits)} result(s)",
     }
+    if problems:      # an empty result may be an outage, not "no match"
+        out["problems"] = problems
+        out["message"] += f" (USGS lookup incomplete: {problems[0]['code']})"
+    return out
 
 
 def cmd_gauges_in_view(args: argparse.Namespace) -> dict[str, Any]:
@@ -419,6 +425,7 @@ def cmd_gauges_in_view(args: argparse.Namespace) -> dict[str, Any]:
             "layers": [],
             "message": "Map bounding box (min/max lon/lat) is required.",
         }
+    problems: list = []
     layers = gauges_in_view_layer(
         min_lon=args.min_lon,
         min_lat=args.min_lat,
@@ -427,7 +434,18 @@ def cmd_gauges_in_view(args: argparse.Namespace) -> dict[str, Any]:
         lat=args.lat,
         lon=args.lon,
         limit=args.limit,
+        problems=problems,
     )
+    if problems and not layers:
+        p0 = problems[0]
+        return {
+            "ok": False,
+            "type": "gauges_in_view",
+            "layers": [],
+            "problems": problems,
+            "message": (f"USGS gauges could not be listed ({p0['code']}): {p0['message']}"
+                        + (" Retry later." if not p0.get("terminal") else "")),
+        }
     return {
         "ok": len(layers) > 0,
         "type": "gauges_in_view",

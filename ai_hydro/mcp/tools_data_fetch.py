@@ -153,56 +153,50 @@ def _retain(session_id: str, result: dict, variable: str, files_out: list | None
         return None
 
 
+def _mark_terminal(result: Any) -> Any:
+    """Add ``terminal`` to a USGS refusal/failure envelope: True for an identity or integrity
+    refusal (final: never answered by another product), False for "could not look" (retry)."""
+    if isinstance(result, dict) and result.get("error") is True and "terminal" not in result:
+        try:
+            from aihydro_data.sources import usgs_waterdata as uw
+
+            code = result.get("code")
+            if code in uw.TERMINAL_CODES:
+                result["terminal"] = True
+            elif code in uw.TRANSIENT_CODES:
+                result["terminal"] = False
+        except Exception:
+            pass
+    return result
+
+
 def _fetch_with_identity(**kw: Any) -> dict[str, Any]:
-    """``aihydro_data.fetch`` with a gauge identity (``gauge_id`` / ``basin_ref``), serialised
-    and error-enveloped exactly like aihydro-data's own ``data_fetch`` implementation."""
-    from aihydro_data.mcp import _result_to_dict, _tool_envelope
+    """Strict observation fetch for a named gauge: ``aihydro_data.fetch`` pinned to the USGS
+    product with no fallback chain (``gauge_identity.PIN``). Any failure is returned as an
+    envelope carrying ``terminal``; it is never answered with another product.
 
-    @_tool_envelope
-    def _go() -> dict[str, Any]:
-        from aihydro_data import fetch
+    Serialisation reuses aihydro-data's ``_result_to_dict`` (no public equivalent exists)."""
+    from aihydro_data import fetch
+    from aihydro_data.exceptions import AihydroDataError, TerminalSourceError
+    from aihydro_data.mcp import _result_to_dict
+    from ai_hydro.mcp.gauge_identity import PIN
 
-        outlet = kw.get("outlet")
+    outlet = kw.get("outlet")
+    try:
         return _result_to_dict(fetch(
             variable=kw["variable"], geometry=kw["geometry"], start=kw["start"], end=kw["end"],
-            mode=kw["mode"], product=kw["product"], aggregation=kw["aggregation"],
-            cache=kw["cache"], region=kw["region"], outlet=tuple(outlet) if outlet else None,
-            gauge_id=kw.get("gauge_id"), basin_ref=kw.get("basin_ref"),
+            aggregation=kw["aggregation"], cache=kw["cache"], region=kw["region"],
+            outlet=tuple(outlet) if outlet else None,
+            gauge_id=kw.get("gauge_id"), basin_ref=kw.get("basin_ref"), **PIN,
         ))
-    return _go()
-
-
-def _session_basin_ref(session_id: str, geometry: Any) -> dict | None:
-    """The session's BasinRef, when it can name the gauge for the geometry being fetched.
-
-    Passed only if (a) the watershed slot holds a BasinRef whose ``usgs:`` aliases are all
-    verified, and (b) the requested geometry is that watershed (GeoJSON bounds agree): a
-    different basin must not inherit this one's gauge. Anything else returns None and the
-    request is resolved by aihydro-data from the geometry alone. Never raises.
-    """
-    try:
-        from ai_hydro.session import HydroSession
-
-        ws = (HydroSession.load(session_id).watershed or {}).get("data") or {}
-        ref = ws.get("basin_ref")
-        if not isinstance(ref, dict):
-            return None
-        usgs = [a for a in (ref.get("aliases") or [])
-                if isinstance(a, dict) and a.get("scheme") == "usgs" and a.get("relation", "same_as") == "same_as"]
-        if not usgs or not all(a.get("verified") for a in usgs):
-            return None
-        if not isinstance(geometry, dict):
-            return None
-        from shapely.geometry import shape
-        from ai_hydro.mcp.helpers import _get_session_geometry
-
-        want = shape(_get_session_geometry(session_id)).bounds
-        got = shape(geometry).bounds
-        if all(abs(a - b) <= 1e-6 for a, b in zip(want, got)):
-            return ref
+    except AihydroDataError as exc:
+        d = exc.to_dict()
+        d["terminal"] = isinstance(exc, TerminalSourceError)
+        return d
     except Exception as exc:
-        log.debug("data_fetch: no session BasinRef used (%s)", exc)
-    return None
+        return {"error": True, "code": "UNEXPECTED_ERROR",
+                "message": f"Unexpected error in data_fetch: {exc}",
+                "recovery": "Check arguments and try again.", "next_tools": ["data_doctor"]}
 
 
 def _write_streamflow_slot(session_id: str, result: dict, start: str, end: str,
@@ -235,7 +229,7 @@ def _write_streamflow_slot(session_id: str, result: dict, start: str, end: str,
                 saved = persist_streamflow_slot(session_id, d, gid, tool_name="data_fetch",
                                                 extra_retained=retained_files)
                 retained_files = []                 # declared by persist_streamflow_slot
-                n_codes = len(d["meta"].get("qualification_codes") or [])
+                n_codes = sum(int(c) for _, c in d["meta"].get("qualification_codes_rle") or [])
                 slot = {"slot": "streamflow", "gauge_id": gid, "data_file": saved,
                         "n_values": d["data"].get("n_days", len(d["data"].get("q_cms") or [])),
                         "qualification_codes_n": n_codes,
@@ -330,28 +324,34 @@ def data_fetch(
     except Exception as exc:
         log.debug("data_fetch: no session resolved, call is not recorded (%s)", exc)
 
-    if gauge_id is not None and variable != "streamflow":
-        return {
-            "error": True, "code": "GAUGE_ID_NOT_APPLICABLE",
-            "message": f"gauge_id names a USGS gauge and only applies to variable='streamflow' (got {variable!r}).",
-            "recovery": "Drop gauge_id, or request variable='streamflow'.",
-            "next_tools": ["data_fetch"],
-        }
-    basin_ref = _session_basin_ref(sid, geometry) if (sid and variable == "streamflow") else None
+    from ai_hydro.mcp import gauge_identity as gi
+
+    hint = None
+    basin_ref = None
+    if gauge_id is not None:
+        refusal = gi.identity_refusal(variable, geometry, product, "data_fetch")
+        if refusal:
+            return refusal
+    elif sid and variable == "streamflow" and product in (None, gi.NWIS_PRODUCT):
+        basin_ref, hint = gi.session_basin_ref(sid, geometry)
+        if basin_ref is not None and gi.identity_refusal(variable, geometry, product, "data_fetch"):
+            basin_ref = None                     # a session ref never forces a refusal on the request
 
     if gauge_id is not None or basin_ref is not None:
         result = _fetch_with_identity(
-            variable=variable, geometry=geometry, start=start, end=end, mode=mode,
-            product=product, aggregation=aggregation, cache=cache, region=region,
+            variable=variable, geometry=geometry, start=start, end=end,
+            aggregation=aggregation, cache=cache, region=region,
             outlet=outlet, gauge_id=gauge_id, basin_ref=basin_ref,
         )
     else:
         from aihydro_data.mcp import _data_fetch
 
-        result = _data_fetch(
+        result = _mark_terminal(_data_fetch(
             variable=variable, geometry=geometry, start=start, end=end, mode=mode,
             product=product, aggregation=aggregation, cache=cache, region=region, outlet=outlet,
-        )
+        ))
+    if hint and isinstance(result, dict):
+        result["basin_ref_hint"] = hint
     # ``redirect`` is only returned by older aihydro-data (before U4 the queued redirect was a
     # success-shaped dict); current aihydro-data raises an MCP error instead.
     if not isinstance(result, dict) or result.get("error") or result.get("redirect"):
@@ -378,6 +378,12 @@ def data_fetch(
         run_records.declare_lineage(retained_files=retained_files)
     if flags:
         result["quality_flags"] = flags
+    elif variable == "streamflow":
+        result["validators_not_run"] = (
+            "cache=False: nothing was retained, so no streamflow slot was written and the streamflow "
+            "validators did not run" if not cache else
+            "the served series is not a USGS observation (no site resolution), so no streamflow slot "
+            "was written and the streamflow validators did not run")
 
     from ai_hydro.mcp.enforcement import post_run
 
@@ -389,7 +395,10 @@ def data_fetch(
         inputs["gauge_id"] = gauge_id
     if isinstance(geometry, str):
         inputs["geometry"] = geometry
-    return post_run("data_fetch", sid, result, inputs=inputs)
+    out = post_run("data_fetch", sid, result, inputs=inputs)
+    if out.get("validators_not_run") and not out.get("quality_flags"):
+        out.pop("quality_flags", None)        # an empty list would read as "validators ran and found nothing"
+    return out
 
 
 def register_data_fetch(mcp: Any) -> bool:

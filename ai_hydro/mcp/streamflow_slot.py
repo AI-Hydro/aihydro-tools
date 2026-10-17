@@ -9,8 +9,9 @@ validators, capsule replay) cannot tell which tool wrote it.
 (``_data_file``) and scalar descriptors. ``meta`` holds the quality provenance the
 validators and the sealed record need:
 
-* ``qualification_codes``  per value, ``A`` / ``P`` (approval) and ``e`` or the raw
-  qualifier token (``ICE`` ...) separated by spaces; aligned with ``dates``
+* ``qualification_codes_rle``  run-length-encoded per-value codes, ``A`` / ``P`` (approval) and
+  ``e`` or the raw qualifier token (``ICE`` ...) separated by spaces; the per-value list itself
+  is in the digest-bound retained file (``qualification_codes``, aligned with ``dates``)
 * ``qualifiers_other``     raw counts of every qualifier outside A/P/e
 * ``quality_summary``      approval/qualifier counts, ``n_negative``, ``n_missing``,
   ``provisional_fraction``, provisional span, gap statistics
@@ -24,20 +25,43 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
+from ai_hydro.data.streamflow import missing_dates  # noqa: E402  (one definition for both writers)
+
 log = logging.getLogger("ai_hydro.mcp.streamflow_slot")
 
 #: Slot ``data`` keys that are provenance, not series: moved to ``meta`` once the file is written.
-_QUALITY_KEYS = ("qualification_codes", "quality_summary", "site_resolution", "upstream")
+_QUALITY_KEYS = ("quality_summary", "site_resolution", "upstream")
+#: Per-value arrays that live in the digest-bound retained file only, never in session meta.
+_PER_VALUE_KEYS = ("qualification_codes", "null_dates", "missing_dates")
+
+
+def rle(codes: list) -> list:
+    """Run-length encoding ``[[code, count], ...]`` of a per-value code list (order kept)."""
+    out: list = []
+    for c in codes:
+        if out and out[-1][0] == c:
+            out[-1][1] += 1
+        else:
+            out.append([c, 1])
+    return out
 
 
 def move_quality_to_meta(d: dict) -> None:
-    """Move quality/provenance keys from ``d["data"]`` into ``d["meta"]`` (in place)."""
+    """Move quality/provenance keys from ``d["data"]`` into ``d["meta"]`` (in place).
+
+    Session meta keeps summary counts and the run-length-encoded per-value codes
+    (``qualification_codes_rle``); the per-value arrays stay in the retained file.
+    """
     data, meta = d.get("data"), d.setdefault("meta", {})
     if not isinstance(data, dict):
         return
     for k in _QUALITY_KEYS:
         if k in data:
             meta[k] = data.pop(k)
+    if isinstance(data.get("qualification_codes"), list):
+        meta["qualification_codes_rle"] = rle(data["qualification_codes"])
+    for k in _PER_VALUE_KEYS:
+        data.pop(k, None)
     qs = meta.get("quality_summary")
     if isinstance(qs, dict):
         meta.setdefault("qualifiers_other", dict(qs.get("qualifiers_other") or {}))
@@ -45,9 +69,11 @@ def move_quality_to_meta(d: dict) -> None:
 
 def response_meta(meta: dict) -> dict:
     """``meta`` for a tool response: the per-value code list is replaced by its length."""
-    out = {k: v for k, v in (meta or {}).items() if k != "qualification_codes"}
-    if isinstance((meta or {}).get("qualification_codes"), list):
-        out["qualification_codes_n"] = len(meta["qualification_codes"])
+    out = {k: v for k, v in (meta or {}).items() if k not in ("qualification_codes", "qualification_codes_rle")}
+    rl = (meta or {}).get("qualification_codes_rle")
+    if isinstance(rl, list):
+        out["qualification_codes_n"] = sum(int(c) for _, c in rl)
+        out["qualification_codes_runs"] = len(rl)
     return out
 
 
@@ -125,6 +151,9 @@ def slot_from_fetch_result(result: dict, fetched: Any, *, gauge_id: str, start: 
     sr = result.get("site_resolution") or {}
     qmeta = slot_quality_meta(df, result.get("quality"), sr, result.get("upstream"))
     dates = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d").tolist()
+    miss = missing_dates(dates, start, end)
+    qmeta["quality_summary"]["n_missing_dates"] = len(miss)
+    qmeta["quality_summary"]["missing_dates_head"] = miss[:20]
     data = {
         "dates": dates,
         "q_cms": [float(v) for v in df["streamflow"].to_numpy()],
@@ -138,6 +167,7 @@ def slot_from_fetch_result(result: dict, fetched: Any, *, gauge_id: str, start: 
         "end_date": end,
         "interval": "daily",
         "qualification_codes": qmeta["qualification_codes"],
+        "missing_dates": miss,
         "quality_summary": qmeta["quality_summary"],
         "site_resolution": qmeta.get("site_resolution", {}),
         "upstream": qmeta.get("upstream", {}),

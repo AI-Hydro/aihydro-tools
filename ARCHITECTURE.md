@@ -52,13 +52,11 @@ ai_hydro/
 │   └── digest.py            Content hash (delegates to aihydro_core.primitives.hashing)
 │
 ├── data/                    DATA FETCH TOOLS
-│   ├── fetch_runner.py      data_fetch() MCP tool (wraps aihydro_data.fetch)
 │   ├── forcing.py           forcing download / time-series tools
-│   ├── streamflow.py        streamflow fetch + NWIS gauge lookup
+│   ├── streamflow.py        USGS Water Data API streamflow (aihydro-data adapter)
 │   ├── soil.py              soil data tools
 │   ├── landcover.py         land cover tools
 │   ├── hydro_search.py      NLDI reach / NHD search tools
-│   ├── async_dispatch.py    parallel data fetch dispatcher
 │   └── merit_*/wbd_layers   MERIT tile management (re-exports → aihydro-watershed)
 │
 ├── analysis/                ANALYSIS TOOLS (→ aihydro-watershed shims)

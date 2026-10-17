@@ -375,6 +375,10 @@ def check_usgs_qualification_codes(session_id: str) -> dict:
             meta.get("qualification_codes")
             or data.get("qualification_codes")
         )
+        rle = meta.get("qualification_codes_rle")
+        if qual_codes is None and isinstance(rle, list) and rle and all(
+                isinstance(r, (list, tuple)) and len(r) == 2 and isinstance(r[0], str) for r in rle):
+            qual_codes = [r[0] for r in rle]          # run-length-encoded: the distinct runs are enough
         provisional_flag: bool | None = (
             meta.get("provisional")
             or data.get("provisional")

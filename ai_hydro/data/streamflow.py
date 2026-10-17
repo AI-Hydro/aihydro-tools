@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Sequence
 import logging
+import os
 import warnings
 
 import pandas as pd
@@ -79,6 +80,16 @@ def qualification_codes(approval_code: Sequence[Any], qualifier_code: Sequence[A
     tokens (``e`` for ESTIMATED; every other qualifier stays as the raw token the API sent).
     Tokens are space separated, one string per value."""
     return [" ".join(_tokens(a) + _tokens(q)) for a, q in zip(approval_code, qualifier_code)]
+
+
+def missing_dates(dates: Sequence[Any], start: str, end: str) -> list[str]:
+    """Calendar days in [start, end] with no served value (null values and absent days alike)."""
+    try:
+        want = pd.date_range(str(start)[:10], str(end)[:10], freq="D")
+        have = {str(d)[:10] for d in dates}
+        return [d.strftime("%Y-%m-%d") for d in want if d.strftime("%Y-%m-%d") not in have]
+    except Exception:
+        return []
 
 
 def slot_quality_meta(
@@ -152,7 +163,7 @@ def fetch_streamflow_data(
     HydroResult
         result.data keys: dates, q_cms, units, n_days, gauge_id, gauge_name,
         gauge_lat, gauge_lon, start_date, end_date, interval, qualification_codes,
-        quality_summary, site_resolution, upstream
+        null_dates, quality_summary, site_resolution, upstream
 
     Raises
     ------
@@ -175,19 +186,37 @@ def fetch_streamflow_data(
     try:
         log.info("Fetching USGS streamflow for %s (%s)", gauge_id, interval)
         res = uw.resolve_gauge(gauge_id=gauge_id)
-        if interval == "daily":
-            ser = uw.get_daily(res.site, start_date, end_date)
+        legacy = os.environ.get("AIHYDRO_USGS_BACKEND", "").strip().lower() == "legacy_waterservices"
+        if legacy:
+            # The same D3 rollback switch, through the same internal function, as the data path.
+            if interval != "daily":
+                raise uw._err("USGS_UNSUPPORTED", "the legacy_waterservices backend serves daily values only",
+                              "unset AIHYDRO_USGS_BACKEND for hourly data")
+            from aihydro_data.sources.direct_api import _legacy_waterservices_daily
+            frame, summary, upstream = _legacy_waterservices_daily(res.site, start_date, end_date, "00060", "00003")
+            df = frame.rename(columns={"date": "time", "streamflow": "value_m3s"})
+            units_native, backend = "ft^3/s", "legacy_waterservices"
+            summary = dict(summary)
         else:
-            ser = uw.get_continuous(res.site, start_date, end_date)
+            if interval == "daily":
+                ser = uw.get_daily(res.site, start_date, end_date)
+            else:
+                ser = uw.get_continuous(res.site, start_date, end_date)
+            df, upstream, units_native, backend = ser.frame.copy(), dict(ser.upstream), ser.units_native, "usgs_waterdata"
+            summary = None
     except AihydroDataError as e:
         raise refusal_from(e) from e
 
     try:
-        # Rows whose value the API reports as null stay in the series as None so dates,
-        # values and per-value codes stay aligned (n_missing / n_null_values count them).
-        df = ser.frame.copy().reset_index(drop=True)
-        n_null = int(df["value_native"].isna().sum())
-        if n_null == len(df):
+        # Rows the API reports with a null value are DROPPED (as the data layer does) and
+        # recorded: n_null_values and the list of their dates; dates, values and codes stay aligned.
+        df = df.reset_index(drop=True)
+        null_mask = df["value_m3s"].isna()
+        n_null = int(null_mask.sum())
+        null_dates = [pd.Timestamp(t).strftime("%Y-%m-%d" if interval == "daily" else "%Y-%m-%dT%H:%M:%SZ")
+                      for t in df.loc[null_mask, "time"]] if n_null else []
+        df = df.loc[~null_mask].reset_index(drop=True)
+        if df.empty:
             raise ToolError(
                 code="NO_VALID_DATA",
                 message=f"No valid streamflow values for gauge {gauge_id} ({start_date} to {end_date}).",
@@ -198,18 +227,24 @@ def fetch_streamflow_data(
         if times.tz is not None:                 # continuous: UTC instants -> naive UTC
             times = times.tz_convert("UTC").tz_localize(None)
 
-        summary = uw.summarize_frame(df, null_dropped=n_null)
-        summary.update({k: v for k, v in ser.quality_summary.items()
-                        if k in ("n_expected", "n_missing", "median_step_s", "max_gap_s", "n_gaps_gt_2x_median")})
-        summary.update({"units_native": ser.units_native, "time_series_id": ser.time_series_id,
-                        "site_id": ser.site_id, "backend": "usgs_waterdata"})
+        if summary is None:
+            summary = uw.summarize_frame(df, null_dropped=n_null)
+            summary.update({k: v for k, v in ser.quality_summary.items()
+                            if k in ("n_expected", "n_missing", "median_step_s", "max_gap_s", "n_gaps_gt_2x_median")})
+            summary.update({"units_native": units_native, "time_series_id": ser.time_series_id,
+                            "site_id": ser.site_id, "backend": backend})
+        summary["n_null_values"] = n_null
+        summary["null_dates_head"] = null_dates[:20]
+        miss = missing_dates([str(t)[:10] for t in times], start_date, end_date) if interval == "daily" else []
+        summary["n_missing_dates"] = len(miss)
+        summary["missing_dates_head"] = miss[:20]
         site_resolution = res.to_dict()
-        qmeta = slot_quality_meta(df, summary, site_resolution, dict(ser.upstream))
+        qmeta = slot_quality_meta(df, summary, site_resolution, upstream)
         loc = res.location
 
         data = {
             "dates": [t.isoformat() for t in times.to_pydatetime()],
-            "q_cms": [None if v != v else float(v) for v in df["value_m3s"].to_numpy()],
+            "q_cms": [float(v) for v in df["value_m3s"].to_numpy()],
             "units": "m3/s",
             "n_days": len(df),
             "gauge_id": gauge_id,
@@ -219,10 +254,12 @@ def fetch_streamflow_data(
             "start_date": start_date,
             "end_date": end_date,
             "interval": interval,
-            "source_units": ser.units_native,
+            "source_units": units_native,
             "_aihydro_data_product": "NWIS_STREAMFLOW",
             "_aihydro_data_source": "direct_api",
             "qualification_codes": qmeta["qualification_codes"],
+            "null_dates": null_dates,
+            "missing_dates": miss,
             "quality_summary": qmeta["quality_summary"],
             "site_resolution": site_resolution,
             "upstream": qmeta["upstream"],

@@ -56,7 +56,7 @@ def _series():
     dates = pd.date_range(START, END, freq="D")
     cfs = [5.0 + 4.0 * math.sin(i / 23.0) ** 2 + (30.0 if i % 97 == 0 else 0.0) + 0.001 * (i % 7)
            for i in range(len(dates))]
-    cfs[40] = float("nan")  # one missing day must round-trip as an empty cell
+    cfs[40] = float("nan")  # one null day: the tool drops it (as the data layer does) and records it
     # The API serves ft^3/s; the adapter converts once with the exact factor, so the expected
     # m3/s series is built with the same multiplication (bit-identical round trip).
     df = pd.DataFrame({"date": dates, "streamflow": [v * 0.028316846592 for v in cfs]})
@@ -108,7 +108,7 @@ def _build_and_export(mode, tmp_path, monkeypatch):
 
     def stub_fetch(variable, geometry, start, end, **kw):
         calls.append((variable, geometry, start, end))
-        return SimpleNamespace(data=df, product="NWIS_STREAMFLOW", source="direct_api",
+        return SimpleNamespace(data=df.dropna(subset=["streamflow"]).reset_index(drop=True), product="NWIS_STREAMFLOW", source="direct_api",
                                citation="USGS NWIS (stub)", cache_hit=True,
                                fetched_at="2026-10-02T00:00:00+00:00", cache_key="stubkey")
 
@@ -189,7 +189,7 @@ def _build_and_export(mode, tmp_path, monkeypatch):
         if mode == "refetch_diff_data":
             other["streamflow"] = [v * (1.0 + 0.5 * ((i // 30) % 2)) for i, v in enumerate(other["streamflow"])]
         monkeypatch.setattr(aihydro_data, "fetch", lambda *a, **k: SimpleNamespace(
-            data=other, product="OTHER_PRODUCT" if mode == "refetch_diff_product" else "NWIS_STREAMFLOW",
+            data=other.dropna(subset=["streamflow"]).reset_index(drop=True), product="OTHER_PRODUCT" if mode == "refetch_diff_product" else "NWIS_STREAMFLOW",
             source="direct_api", citation="x", cache_hit=False,
             fetched_at="2026-10-03T00:00:00+00:00", cache_key="k2"))
 
@@ -219,7 +219,7 @@ def test_series_csv_in_capsule_with_manifest_digest(exported):
     (art,) = manifest["data_artifacts"]
     assert art["path"] == f"data/served_streamflow_{GAUGE}.csv" and art["sha256"] == sha
     assert art["role"] == "served_data" and art["columns"] == ["date", "q_cms"]
-    assert art["n_rows"] == len(df) and art["n_missing"] == 1
+    assert art["n_rows"] == len(df) - 1 and art["n_missing"] == 0     # the null day is dropped, not an empty cell
     slot_run = HydroSession.load(SID).streamflow["meta"]["run_id"]
     run_log = json.loads((cap / "run_log.json").read_text())
     if "retained_artifact" in art:

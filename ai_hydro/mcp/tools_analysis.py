@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -984,7 +985,17 @@ def fetch_streamflow_data(
         # Cache-hit check — same gauge + date range + interval already computed
         if session.streamflow is not None:
             cached_params = session.streamflow.get("meta", {}).get("params", {})
-            if (cached_params.get("start_date") == start_date
+            _bare = lambda g: str(g or "").upper().removeprefix("USGS-")      # noqa: E731
+            _cached_backend = ((session.streamflow.get("meta", {}).get("upstream") or {}).get("backend")
+                               or "usgs_waterdata")
+            _want_backend = ("legacy_waterservices"
+                             if os.environ.get("AIHYDRO_USGS_BACKEND", "").strip().lower() == "legacy_waterservices"
+                             else "usgs_waterdata")
+            # The slot is reused only for the same gauge, period, interval AND backend: a slot
+            # fetched for another gauge (or by the other backend) is not this request's answer.
+            if (_bare(cached_params.get("gauge_id")) == _bare(resolved_gauge_id)
+                    and _cached_backend == _want_backend
+                    and cached_params.get("start_date") == start_date
                     and cached_params.get("end_date") == end_date
                     and cached_params.get("interval", "daily") == interval):
                 compact = _strip_forcing_arrays(session.streamflow.get("data", {}))

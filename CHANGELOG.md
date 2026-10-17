@@ -32,6 +32,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   - Gauge search/in-view layers use `get_monitoring_locations` (id, bbox, EXACT name; partial name
     is matched client-side inside the map bbox only). Library cards: `usgs_waterdata`,
     `dataretrieval_waterdata`; NWIS removed from `pygeohydro`; `hydrofunctions` retired.
+  - **U3 review fixes.**
+    - A named gauge (`gauge_id`, or a session BasinRef with verified `usgs:` aliases) is a strict
+      observation request: `data_fetch` / `data_fetch_background` call aihydro-data pinned to
+      `NWIS_STREAMFLOW` with `fallback=[]`, so a 429 is a transient error and never modelled flow.
+      A conflicting `product` or a non-CONUS geometry is refused (`GAUGE_ID_NOT_APPLICABLE`).
+      Refusal envelopes carry `terminal`. The session BasinRef is reused only when it verifies
+      and the geometry is the session watershed (digest equality, else IoU >= 0.99 with areas
+      within 1 %); a near miss declines with `basin_ref_hint`.
+    - `fetch_streamflow_data` reuses its cached slot only for the same gauge, period, interval
+      and backend. It honours `AIHYDRO_USGS_BACKEND=legacy_waterservices` through the data
+      path's own function (daily only).
+    - Both slot writers drop null-value rows and record them (`n_null_values`, null/missing
+      dates). Session meta holds counts and run-length-encoded codes (`qualification_codes_rle`);
+      the per-value list lives in the digest-bound retained file.
+    - `data_fetch(cache=False)` returns `validators_not_run` instead of an empty `quality_flags`.
+    - Gauge search / in-view layers report an outage or an oversized view (`problems`) apart from
+      "no gauges". Removed dead `ai_hydro/data/fetch_runner.py` and `async_dispatch.py`.
+    - Evaluation arm C1 strips quality-bearing streamflow fields by one key rule
+      (`eval_condition.QUALITY_BEARING_FIELDS` and `streamflow_*` / `gauge_area_*` keys carrying a
+      quality marker word).
+    - `map_set_time_range` accepts strict ISO-8601 only (date, or date-time with Z/offset), with
+      end >= start.
   - Behaviour change: `fetch_streamflow_data` slot `data.units` is `m3/s` (was `m^3/s` on the
     direct path, which the unit validator flagged).
 

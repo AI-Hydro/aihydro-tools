@@ -6,21 +6,25 @@
   "field_mappings": {
     "waterdata.get_daily": {
       "collection": "daily",
-      "note": "daily values; discharge is parameter_code '00060', mean statistic_id '00003'"
+      "note": "daily values; discharge is parameter_code '00060', mean statistic_id '00003'",
+      "returns": "(DataFrame, metadata) tuple, like the other dataretrieval getters"
     },
     "waterdata.get_continuous": {
       "collection": "continuous",
-      "note": "instantaneous values; at most 3 years per query; timestamps are UTC"
+      "returns": "(DataFrame, metadata) tuple",
+      "statistic": "statistic_id '00011' (instantaneous); the daily mean '00003' applies to the daily collection only",
+      "note": "at most 3 years per query; timestamps are UTC"
     },
     "waterdata.get_monitoring_locations": {
       "collection": "monitoring-locations",
-      "note": "site metadata; coordinates EPSG:4326"
+      "note": "site metadata; coordinates EPSG:4326",
+      "returns": "(DataFrame, metadata) tuple"
     }
   },
   "gotchas": [
-    "Set API_USGS_PAT (an api.data.gov key) in the environment before heavy use; without a key the service answers HTTP 429 above a few queries per hour.",
+    "Set API_USGS_PAT (an api.data.gov key) in the environment before heavy use: the service applies an hourly rate limit per key and answers HTTP 429 beyond it (see the dataretrieval README for the current limit).",
+    "Each getter returns a (DataFrame, metadata) tuple. With convert_type=True (the default) dataretrieval converts values to numbers and timestamps; only the raw API body carries values as strings and missing values as null, which is what the aihydro-data adapter parses and checks explicitly.",
     "The legacy dataretrieval.nwis functions call waterservices.usgs.gov, decommissioned on 2027-02-22. Do not use them in new code.",
-    "Values arrive as strings and missing values as null: convert and check explicitly.",
     "approval_status (Approved / Provisional) and qualifier are separate fields; keep both with the values.",
     "Discharge is in ft^3/s; convert with 0.028316846592 m^3 per ft^3.",
     "Verify the function and argument names against the installed dataretrieval version before relying on them: this card was not executed."
