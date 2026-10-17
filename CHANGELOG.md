@@ -49,9 +49,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
     - `data_fetch(cache=False)` returns `validators_not_run` instead of an empty `quality_flags`.
     - Gauge search / in-view layers report an outage or an oversized view (`problems`) apart from
       "no gauges". Removed dead `ai_hydro/data/fetch_runner.py` and `async_dispatch.py`.
-    - Evaluation arm C1 strips quality-bearing streamflow fields by one key rule
-      (`eval_condition.QUALITY_BEARING_FIELDS` and `streamflow_*` / `gauge_area_*` keys carrying a
-      quality marker word).
+    - Evaluation arm C1 strips advisory/gate output only (`validators_not_run` joins
+      `quality_flags`, `promotion_check`, `next_steps`, `skeptic*`); a data tool's provenance about
+      its own data (quality/approval/qualifier counts, site_resolution, upstream, streamflow_*
+      mirrors, area-check values) stays visible in every arm (DECISIONS.md).
     - `map_set_time_range` accepts strict ISO-8601 only (date, or date-time with Z/offset), with
       end >= start.
   - Behaviour change: `fetch_streamflow_data` slot `data.units` is `m3/s` (was `m^3/s` on the

@@ -32,8 +32,7 @@ What each arm gets (the kernel is identical; only the surface differs)::
     C1        also hide every ``check_*`` validator, run_skeptic, audit_interpretation,
               register_research_plan; and strip at every depth from every agent-visible result
               ``quality_flags``/``_quality_flags``, ``promotion_check``, ``next_steps`` and the skeptic
-              fields (``skeptic*`` / ``_skeptic*``). ``_run_id`` is kept. Quality-bearing observation fields (``QUALITY_BEARING_FIELDS``,
-              ``streamflow_*`` / ``gauge_area_*`` keys with a quality marker word) go the same way.
+              fields (``skeptic*`` / ``_skeptic*``). ``_run_id`` is kept.
     C3        nothing more: the production gate surface.
 
 Code execution is hidden in every arm because ``run_python`` runs as the same OS user as
@@ -80,22 +79,14 @@ CONTEXT_MISMATCH = "EVAL_CONTEXT_MISMATCH"
 HIDDEN_ALL_ARMS = frozenset({"write_research_interpretation", "run_python"})
 REGISTRY_TOOLS = frozenset({"promote_claim_to_registry", "list_registry_claims", "check_registry_staleness"})
 C1_ONLY_HIDDEN = frozenset({"run_skeptic", "audit_interpretation", "register_research_plan"})
-STRIPPED_FIELDS = frozenset({"quality_flags", "promotion_check", "next_steps"})
+# C1 strips ADVISORY and GATE output only: text produced by validators, the skeptic and promotion
+# logic (verdicts, messages, "validators did not run" notes) and next-step hints. OBSERVATIONAL
+# PROVENANCE a data tool returns about its own data (approval/qualifier counts, quality_summary,
+# site_resolution, upstream, streamflow_* mirrors, area-check values) is tool output and stays
+# visible in every arm (DECISIONS.md, Wave U U3).
+STRIPPED_FIELDS = frozenset({"quality_flags", "promotion_check", "next_steps", "validators_not_run"})
 _SKEPTIC_PREFIXES = ("skeptic", "_skeptic")
 
-# Quality-bearing observation fields are advisory in the same sense as ``quality_flags``: they
-# tell the agent how far to trust a series (provisional share, qualifiers, refusal reasons,
-# area-agreement checks). C1 strips them by ONE documented key rule, not per tool:
-#   a key (leading underscores ignored) is quality-bearing when it is in QUALITY_BEARING_FIELDS,
-#   or starts with ``streamflow_`` / ``gauge_area_`` and carries a quality marker word, or is a
-#   per-value code summary (``qualification_codes*``).
-QUALITY_BEARING_FIELDS = frozenset({
-    "quality_summary", "qualifiers_other", "validators_not_run", "gauge_area_check",
-    "gauge_area_ratio", "gauge_area_km2", "basin_ref_hint",
-})
-QUALITY_MARKERS = ("quality", "provisional", "error", "warning", "n_negative", "n_missing", "area",
-                   "qualifier", "site_resolution", "upstream")
-_QUALITY_PREFIXES = ("streamflow_", "gauge_area_", "qualification_codes")
 
 
 @dataclass(frozen=True)
@@ -166,11 +157,7 @@ def _is_stripped(key: Any) -> bool:
     if not isinstance(key, str):
         return False
     bare = key.lstrip("_")
-    if bare in STRIPPED_FIELDS or bare.startswith("skeptic") or bare in QUALITY_BEARING_FIELDS:
-        return True
-    if bare.startswith("qualification_codes"):
-        return True
-    return bare.startswith(_QUALITY_PREFIXES[:2]) and any(m in bare for m in QUALITY_MARKERS)
+    return bare in STRIPPED_FIELDS or bare.startswith("skeptic")
 
 
 def strip_fields(value: Any) -> Any:

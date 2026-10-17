@@ -664,20 +664,36 @@ def test_cli_gauges_in_view_says_outage_not_empty(world):
 
 
 # --------------------------------------------------------------- C1 key rule, library card, map time range
-def test_c1_strips_quality_bearing_fields_by_rule():
+def test_c1_strips_advisory_and_gate_output_but_keeps_provenance():
+    """Lead ruling: C1 strips validator/skeptic/promotion output; data provenance stays visible."""
     from ai_hydro.mcp.eval_condition import strip_fields
 
-    tree = {"data": {"streamflow_quality_summary": {"a": 1}, "streamflow_provisional_fraction": 0.3,
-                     "streamflow_error_code": "X", "streamflow_error_message": "m", "gauge_area_check": "fail",
-                     "gauge_area_ratio": 9.0, "streamflow_warnings_text": "w", "streamflow_warnings_n": 1,
-                     "streamflow_site_resolution": {}, "streamflow_observation": "observed", "q_mean": 1.0},
-            "meta": {"qualifiers_other": {"ICE": 1}, "quality_summary": {}, "qualification_codes_rle": [["A", 1]]},
-            "streamflow_slot": {"qualifiers_other": {}, "n_values": 3}, "validators_not_run": "cache=False",
-            "_run_id": "r1"}
+    tree = {"data": {"streamflow_quality_summary": {"provisional_fraction": 0.3}, "streamflow_provisional_fraction": 0.3,
+                     "streamflow_error_code": "X", "gauge_area_check": "fail", "gauge_area_ratio": 9.0,
+                     "streamflow_warnings_text": "w", "streamflow_site_resolution": {"method": "explicit_id"},
+                     "streamflow_observation": "observed", "q_mean": 1.0},
+            "meta": {"qualifiers_other": {"ICE": 1}, "quality_summary": {"approval_counts": {"A": 1}},
+                     "qualification_codes_rle": [["A", 1]], "upstream": {"backend": "usgs_waterdata"}},
+            "streamflow_slot": {"qualifiers_other": {}, "n_values": 3}, "site_resolution": {"site": "USGS-1"},
+            "quality_flags": [{"validator": "usgs_qualification_codes", "status": "warning"}],
+            "validators_not_run": "cache=False", "next_steps": [{"tool": "t"}], "skeptic_x": 1, "_run_id": "r1"}
     out = strip_fields(tree)
-    assert out["data"] == {"streamflow_observation": "observed", "q_mean": 1.0}
-    assert out["meta"] == {} and out["streamflow_slot"] == {"n_values": 3}
-    assert "validators_not_run" not in out and out["_run_id"] == "r1"
+    assert out["data"] == tree["data"] and out["meta"] == tree["meta"]          # provenance untouched at depth
+    assert out["streamflow_slot"] == tree["streamflow_slot"] and out["site_resolution"] == {"site": "USGS-1"}
+    assert set(out) == {"data", "meta", "streamflow_slot", "site_resolution", "_run_id"}
+
+
+@pytest.mark.parametrize("cond,stripped", [("C1", True), ("C2", False), ("C3", False)])
+def test_validator_output_is_stripped_in_c1_only_provenance_in_none(cond, stripped):
+    import re as _re
+    from ai_hydro.mcp.eval_condition import EvalState, _sanitize
+
+    state = EvalState(cond, "x" * 16)
+    out = _sanitize({"data": {"streamflow_provisional_fraction": 0.4, "q_mean": 2.0},
+                     "quality_flags": [{"validator": "v"}], "validators_not_run": "cache=False"},
+                    state, _re.compile(r"(?!x)x"))
+    assert out["data"] == {"streamflow_provisional_fraction": 0.4, "q_mean": 2.0}      # all arms
+    assert ("quality_flags" not in out and "validators_not_run" not in out) is stripped
 
 
 def test_dataretrieval_card_is_accurate():
@@ -806,14 +822,3 @@ def test_gauge_area_pass_raises_no_flag(world, monkeypatch, tmp_path):
     row = _sealed_row(monkeypatch, tmp_path, "01013500", "1989-10-01", "2009-09-30", 2253.0)
     assert row["evidence"]["data"]["gauge_area_check"] == "pass"
     assert "gauge_area_check" not in {f["validator"] for f in (row["_response_flags"] or [])}
-
-
-@pytest.mark.parametrize("cond,stripped", [("C1", True), ("C2", False), ("C3", False)])
-def test_quality_fields_are_stripped_in_c1_only(cond, stripped):
-    import re as _re
-    from ai_hydro.mcp.eval_condition import EvalState, _sanitize
-
-    state = EvalState(cond, "x" * 16)
-    out = _sanitize({"data": {"streamflow_provisional_fraction": 0.4, "q_mean": 2.0}}, state,
-                    _re.compile(r"(?!x)x"))
-    assert ("streamflow_provisional_fraction" not in out["data"]) is stripped and out["data"]["q_mean"] == 2.0
