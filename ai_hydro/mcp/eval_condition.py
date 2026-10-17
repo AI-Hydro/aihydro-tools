@@ -334,11 +334,16 @@ def _scrub_exception(exc: Exception, pattern: "re.Pattern[str]", strip: bool = F
     the scrubbed JSON); any other exception is rebuilt as the same type from the scrubbed
     message when that type accepts one string, else as a plain ``ToolError``.
     """
-    from ai_hydro.mcp.errors import StructuredToolError
-    if isinstance(exc, StructuredToolError):
-        envelope = strip_fields(exc.envelope) if strip else copy.deepcopy(exc.envelope)
+    from ai_hydro.mcp.errors import StructuredToolError, envelope_from_exception
+    carried = envelope_from_exception(exc)
+    if carried is not None:
+        envelope = strip_fields(carried) if strip else copy.deepcopy(carried)
         scrubbed = scrub_hidden_names(envelope, pattern)
-        return exc if scrubbed == exc.envelope else StructuredToolError(scrubbed)
+        if isinstance(exc, StructuredToolError) and scrubbed == exc.envelope:
+            return exc
+        if not isinstance(exc, StructuredToolError) and scrubbed == carried:
+            return exc
+        return StructuredToolError(scrubbed)
     text = str(exc)
     new_text = pattern.sub(UNAVAILABLE, text)
     if new_text == text:

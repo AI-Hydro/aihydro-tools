@@ -17,6 +17,7 @@ import json
 import mcp.types as mcp_types
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 
 from ai_hydro.session import run_records as rr
 from ai_hydro.session import store
@@ -28,6 +29,8 @@ SID = "ec-session"
 # Output digest of {"error": True, "code": "NOPE", "message": "refused for a reason"}, sealed by
 # RunRecordMiddleware at tag v2.3.7 (git-archive scratch tree, same synthetic tool and call).
 V237_DICT_ERROR_DIGEST = "sha256:c920171390655dee184d966f29bb69440e28b337a79872f24eb396254f9f8df3"
+REDIRECT_ENVELOPE = {"error": True, "code": "USE_ASYNC_TOOL", "message": "m",
+                     "next_tools": ["data_fetch_background"], "quality_flags": ["adv"]}
 ERROR_DICT = {"error": True, "code": "NOPE", "message": "refused for a reason"}
 
 
@@ -88,6 +91,15 @@ def server(env):
     @srv.tool()
     def list_tool(session_id: str) -> list:
         return [1, 2]
+
+    @srv.tool()
+    def plain_toolerror_tool(session_id: str) -> dict:
+        # what aihydro-data's queued redirect raises (it cannot import StructuredToolError)
+        raise ToolError(json.dumps(dict(REDIRECT_ENVELOPE)))
+
+    @srv.tool()
+    def big_error_tool(session_id: str) -> dict:
+        return {"error": True, "code": "BIG", "message": "x" * 600_000}
 
     @srv.tool(name="needs_args")
     def needs_args(variable: str, session_id: str) -> dict:
@@ -187,3 +199,43 @@ def test_c1_arm_still_strips_advisory_fields_from_a_dict_error(server, monkeypat
     out = _scrub_exception(exc, hidden_name_pattern("C1", []), strip=True)
     assert out.envelope == {"error": True, "code": "X", "keep": 1}
     assert _scrub_exception(exc, hidden_name_pattern("C1", []), strip=False).envelope["quality_flags"] == ["f"]
+
+
+def test_plain_toolerror_json_is_sealed_as_its_envelope(server):
+    """aihydro-data's redirect (a plain ToolError): digest = digest(envelope), summary = the code."""
+    from aihydro_core.records import digest
+
+    is_error, body, _ = call(server, "plain_toolerror_tool", {"session_id": SID})
+    assert is_error is True and body == REDIRECT_ENVELOPE
+    (row,) = rows()
+    assert row["record"]["status"] == "error"
+    assert row["record"]["output_digest"] == digest(rr.output_payload(REDIRECT_ENVELOPE))   # transport keys excluded
+    assert row["error_summary"] == "USE_ASYNC_TOOL"
+
+
+def test_envelope_from_exception_rules():
+    from ai_hydro.mcp.errors import StructuredToolError, envelope_from_exception
+
+    assert envelope_from_exception(ToolError(json.dumps({"error": True, "code": "X"}))) == {"error": True, "code": "X"}
+    assert envelope_from_exception(ToolError("plain text")) is None
+    assert envelope_from_exception(ToolError(json.dumps({"error": True}))) is None          # no code
+    assert envelope_from_exception(ToolError(json.dumps({"error": False, "code": "X"}))) is None
+    assert envelope_from_exception(ValueError(json.dumps({"error": True, "code": "X"}))) is None
+    assert envelope_from_exception(StructuredToolError({"error": True, "m": 1})) == {"error": True, "m": 1}
+
+
+def test_c1_strips_and_scrubs_a_plain_toolerror_envelope():
+    from ai_hydro.mcp.eval_condition import _scrub_exception, hidden_name_pattern
+
+    exc = ToolError(json.dumps(REDIRECT_ENVELOPE))
+    out = _scrub_exception(exc, hidden_name_pattern("C1", []), strip=True)
+    assert "quality_flags" not in out.envelope and out.envelope["code"] == "USE_ASYNC_TOOL"
+    assert _scrub_exception(exc, hidden_name_pattern("C1", []), strip=False) is exc
+
+
+def test_large_error_body_keeps_the_digest_size_limit(server, monkeypatch):
+    monkeypatch.setattr(rr, "MAX_DIGEST_BYTES", 1000)
+    call(server, "big_error_tool", {"session_id": SID})
+    (row,) = rows()
+    assert row["record"]["status"] == "error"
+    assert row["record"].get("output_digest") is None          # > MAX_DIGEST_BYTES: skipped, as for a returned dict

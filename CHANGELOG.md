@@ -16,7 +16,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
     `StructuredToolError(envelope)`. One rule, no per-tool carve-outs.
   - `RunRecordMiddleware` seals `failure.envelope`: the output digest of a dict-error call is
     identical to 2.3.7 and status stays `error`. No `_run_id` is injected on an error.
-  - Eval arm C1 strips advisory fields from error envelopes too.
+  - Any `ToolError` whose text is a JSON dict with `error` true and a `code` counts as an
+    envelope (`errors.envelope_from_exception`), for arg-repair, the run record and the eval
+    layer alike. aihydro-data's queued redirect is one, so its sealed row is the envelope
+    (digest = digest(envelope), `error_summary` = `USE_ASYNC_TOOL`).
+  - Eval arm behaviour change: C1 now strips advisory fields (`quality_flags`,
+    `promotion_check`, `next_steps`, `skeptic*`) from every structured error, not only from
+    returned dicts. An error dict that names a hidden tool now reaches the client as the
+    envelope with the name replaced by "[tool unavailable in this configuration]", instead of
+    a plain "Unknown tool" refusal.
+  - Failed calls seal with the envelope's byte size, so `MAX_DIGEST_BYTES` still applies to
+    large error bodies. A `_record_error` on a failed call is logged, not injected (an error
+    call has no result to carry it).
 
 ## [2.3.7] - 2026-10-16
 

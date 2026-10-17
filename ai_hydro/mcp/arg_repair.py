@@ -145,17 +145,8 @@ def _is_structured_refusal(exc: Exception) -> bool:
     plain ``ToolError(json.dumps(envelope))`` (the pre-``StructuredToolError`` contract,
     still possible in community tools); the typed check is the primary mechanism.
     """
-    from fastmcp.exceptions import ToolError
-    from ai_hydro.mcp.errors import StructuredToolError
-    if isinstance(exc, StructuredToolError):
-        return True
-    if not isinstance(exc, ToolError):
-        return False
-    try:
-        body = json.loads(str(exc))
-    except ValueError:
-        return False
-    return isinstance(body, dict) and body.get("error") is True and "code" in body
+    from ai_hydro.mcp.errors import envelope_from_exception
+    return envelope_from_exception(exc) is not None
 
 
 class ArgRepairMiddleware(Middleware):

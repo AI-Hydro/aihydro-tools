@@ -38,3 +38,25 @@ class StructuredPromptError(PromptError):
     def __init__(self, envelope: dict[str, Any]):
         self.envelope = dict(envelope)
         super().__init__(json.dumps(self.envelope, default=str))
+
+
+def envelope_from_exception(exc: BaseException) -> dict[str, Any] | None:
+    """The error envelope an exception carries, else ``None``.
+
+    A ``StructuredToolError`` carries it as ``.envelope``. A plain ``ToolError`` (a community
+    tool, or aihydro-data, which cannot import this module) counts when its text is a JSON dict
+    with ``error`` true and a ``code``. One rule for every consumer: arg-repair, the run
+    record and the evaluation layer.
+    """
+    envelope = getattr(exc, "envelope", None)
+    if isinstance(exc, StructuredToolError) and isinstance(envelope, dict):
+        return envelope
+    if not isinstance(exc, ToolError):
+        return None
+    try:
+        body = json.loads(str(exc))
+    except ValueError:
+        return None
+    if isinstance(body, dict) and body.get("error") is True and "code" in body:
+        return body
+    return None

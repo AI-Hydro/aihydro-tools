@@ -750,11 +750,17 @@ class RunRecordMiddleware(Middleware):
 
             result_dict, size = (None, None) if tool_result is None else _tool_result_dict(tool_result)
             if failure is not None:
-                # A StructuredToolError carries the envelope the caller sees: seal that, so a
-                # dict-error tool digests identically to when it returned the dict (v2.3.7).
-                envelope = getattr(failure, "envelope", None)
-                result_dict = (dict(envelope) if isinstance(envelope, dict)
-                               else {"error": True, "message": f"{type(failure).__name__}: {failure}"})
+                # An exception carrying an envelope (StructuredToolError, or a plain ToolError whose
+                # text is the JSON error dict) seals that envelope, so a dict-error tool digests
+                # identically to when it returned the dict (v2.3.7).
+                from ai_hydro.mcp.errors import envelope_from_exception
+
+                envelope = envelope_from_exception(failure)
+                if isinstance(envelope, dict):
+                    result_dict = dict(envelope)
+                    size = len(_json.dumps(result_dict, default=str))
+                else:
+                    result_dict = {"error": True, "message": f"{type(failure).__name__}: {failure}"}
             outcome = run_records.record_call(
                 tool=tool,
                 arguments=arguments,
@@ -778,6 +784,8 @@ class RunRecordMiddleware(Middleware):
             record_error = f"recording: {type(exc).__name__}: {exc}"
 
         if failure is not None:
+            if record_error:   # an error call has no result to carry it; log, never inject
+                _record_log.warning("run record problem on failed call %s: %s", tool, record_error)
             raise failure
         if record_error:
             _inject_record_error(tool_result, record_error)
