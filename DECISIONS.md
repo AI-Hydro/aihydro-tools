@@ -47,3 +47,26 @@ Flood overlap metrics now intersect finite binary observations with explicit cal
 GeoJSON extent alone does not establish valid observed dry cells. Scoring requires an explicit reference validity grid and model CRS; the supported path currently requires WGS84, finite invertible transforms and pixel-center rasterization. Other cases are not assessed or fail explicitly. Acquisition-time suitability remains caller responsibility; automatic GFM scoring stays gated. Morphology calibration rejects no-event targets explicitly instead of optimizing an undefined metric.
 
 Ratio definitions and threshold/context dependence: [CAWCR integrated verification procedures](https://www.cawcr.gov.au/projects/verification/Mason/IntegratedVerificationProcedures.pdf), consulted 2026-09-08. Map work follows the same principle: rendering capability must not imply scientific adequacy.
+
+
+## 2026-10-17 — Run-record `tool_version` is the serving host's code; the producer is separate (2.4.1)
+
+Wave U proof 3 (E7) found sealed records stating `tool_version` 2.3.7 on 2.4.0 code: the version came from
+`result.meta.version`, which the watershed package filled from stale editable-install `dist-info`. Two
+causes, two rules.
+
+1. **Precedence (new).** `RunRecord.tool_version` is `ai_hydro.__version__` of the process that executed and
+   recorded the call (`version_source = "package"`), unconditionally. Distribution metadata is a last-resort
+   fallback only (`version_source = "distribution"`, or `"unavailable"`). A result's own `meta.tool` and
+   `meta.version` identify its *producer* (possibly another package) and are recorded in
+   `extra.producer` / `extra.producer_version`; no sealed-schema field changed. Producers state only their own
+   module `__version__` (watershed, lsh, data); none looks at, or guesses, a layer above it. `version_check`
+   (in `extra`) appears when the `aihydro-tools` dist-info differs from `ai_hydro.__version__` or a producer's
+   `meta.version` differs from its imported module, keeps every value and sets `version_mismatch: true`;
+   nothing is silently preferred.
+2. **Old records.** Records sealed under 2.4.0 and earlier keep their meaning: for them `tool_version` is
+   `meta.version` when `version_source == "result_meta"` (the producer's claim, not necessarily the host's).
+   `verify` and replay check seal and digests only; they do not interpret `tool_version`, so old records
+   still verify unchanged and are not rewritten. Readers that need the host version for an old record read
+   `env_digest` / the environment fingerprint, not `tool_version`. Paper A is pinned at 2.3.7 and its
+   records are unaffected.

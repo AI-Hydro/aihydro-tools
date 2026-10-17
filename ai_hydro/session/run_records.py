@@ -155,18 +155,17 @@ def _package_version() -> Optional[str]:
 
 
 def resolve_tool_version(result: Any) -> Tuple[Optional[str], str]:
-    """``(version, version_source)``.
+    """``(version, version_source)`` of the code serving the call.
 
-    ``meta.version`` of the result (the producing package's own version) wins;
-    then the running package's own ``ai_hydro.__version__`` ("package"); the
-    installed ``aihydro-tools`` distribution metadata is only a fallback, since
-    it can lag the source (stale editable-install dist-info).
+    ``ai_hydro.__version__`` ("package"): the running source of the host that
+    executed and recorded the tool, whichever package computed the result. The
+    installed ``aihydro-tools`` distribution metadata is only a last-resort
+    fallback ("distribution"), since it can lag the source (stale editable-install
+    dist-info). A result's own ``meta.tool`` / ``meta.version`` (the producer, which
+    may be another package such as aihydro-watershed) is not the tool version; it is
+    kept in ``extra.producer`` / ``extra.producer_version`` (see
+    :func:`producer_fields`). ``result`` is unused and kept for call compatibility.
     """
-    meta = result.get("meta") if isinstance(result, dict) else None
-    if isinstance(meta, dict):
-        version = meta.get("version")
-        if isinstance(version, str) and version:
-            return version, "result_meta"
     version = _package_version()
     if version:
         return version, "package"
@@ -174,38 +173,48 @@ def resolve_tool_version(result: Any) -> Tuple[Optional[str], str]:
     return version, ("distribution" if version else "unavailable")
 
 
+def producer_fields(result: Any) -> Dict[str, Any]:
+    """``{producer, producer_version}`` from a result's ``meta`` (absent keys omitted)."""
+    meta = result.get("meta") if isinstance(result, dict) else None
+    out: Dict[str, Any] = {}
+    if isinstance(meta, dict):
+        tool, ver = meta.get("tool"), meta.get("version")
+        if isinstance(tool, str) and tool:
+            out["producer"] = tool
+        if isinstance(ver, str) and ver:
+            out["producer_version"] = ver
+    return out
+
+
 def version_check(result: Any) -> Optional[Dict[str, Any]]:
     """Cross-check the versions available for a record; None when they agree.
 
-    The version of record is always code that ran (``ai_hydro.__version__``, or
-    the ``meta.version`` of the producing module), never distribution metadata.
     Returned, with ``version_mismatch: True`` and every value seen, when
 
     * the ``aihydro-tools`` distribution metadata differs from
       ``ai_hydro.__version__`` (stale editable-install ``dist-info``), or
-    * ``meta.version`` differs from both ``ai_hydro.__version__`` and the
-      ``__version__`` of the already-imported package named by ``meta.tool``.
+    * the producer's ``meta.version`` differs from the ``__version__`` of the
+      already-imported package named by ``meta.tool``.
 
-    Neither value is silently preferred: the record keeps both.
+    Neither value is silently preferred: the record keeps both. The producer
+    version is always included when the result states one.
     """
     package = _package_version()
     dist = _distribution_version()
-    meta = result.get("meta") if isinstance(result, dict) else None
-    meta_v = meta.get("version") if isinstance(meta, dict) else None
-    meta_v = meta_v if isinstance(meta_v, str) and meta_v else None
-    producer_v: Optional[str] = None
-    tool_path = meta.get("tool") if isinstance(meta, dict) else None
-    if meta_v and isinstance(tool_path, str) and tool_path:
-        mod = sys.modules.get(tool_path.split(".", 1)[0])
+    prod = producer_fields(result)
+    producer_v = prod.get("producer_version")
+    module_v: Optional[str] = None
+    if producer_v and prod.get("producer"):
+        mod = sys.modules.get(prod["producer"].split(".", 1)[0])
         pv = getattr(mod, "__version__", None)
-        producer_v = pv if isinstance(pv, str) and pv else None
+        module_v = pv if isinstance(pv, str) and pv else None
     dist_bad = bool(package and dist and package != dist)
-    meta_bad = bool(meta_v and package and producer_v and meta_v not in (package, producer_v))
-    if not (dist_bad or meta_bad):
+    producer_bad = bool(producer_v and module_v and producer_v != module_v)
+    if not (dist_bad or producer_bad):
         return None
     return {"version_mismatch": True, "package_version": package,
-            "distribution_version": dist, "result_meta_version": meta_v,
-            "producer_module_version": producer_v}
+            "distribution_version": dist, "producer_version": producer_v,
+            "producer_module_version": module_v}
 
 
 # --------------------------------------------------------------------------- #
@@ -277,6 +286,8 @@ def build_run_record(
         except Exception as exc:
             vcheck = None
             errors.append(f"version_check: {type(exc).__name__}: {exc}")
+        for k, v in producer_fields(result).items():
+            merged_extra.setdefault(k, v)
         if vcheck:
             merged_extra["version_check"] = vcheck
         if entry is not None:

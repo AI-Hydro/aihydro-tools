@@ -8,17 +8,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [2.4.1] - 2026-10-17 (Wave U patch, proof 3 findings E6/E7)
 
+### Changed (precedence; see DECISIONS.md 2026-10-17)
+
+- **`RunRecord.tool_version` is now always `ai_hydro.__version__`** (`version_source = "package"`), no longer
+  `meta.version` ("result_meta"). Distribution metadata is a last-resort fallback only. The result's
+  `meta.tool` / `meta.version` move to `record.extra.producer` / `extra.producer_version`. Records sealed
+  before 2.4.1 keep their old semantics; `verify` and replay check seals and digests only and are unaffected.
+
 ### Fixed
 
-- **A record's version is the running code's, never `dist-info`.** `streamflow`, `tools_docs`, `mcp.app` and
-  `mcp.__main__` read `importlib.metadata.version("aihydro-tools")`; they now return `ai_hydro.__version__`
-  (a stale editable-install `dist-info` made sealed records say 2.3.7 on 2.4.0 code).
-  `run_records.version_check` cross-checks `ai_hydro.__version__`, the distribution metadata and a result's
-  `meta.version` against its producing module; on disagreement `record.extra.version_check` carries every
-  value with `version_mismatch: true` (nothing is silently preferred). The environment digest still lists
-  installed distribution versions, by design (it describes the environment).
-- Floors: `aihydro-data>=0.2.4` (Water Data API `content_sha256` / `features_sha256` in the upstream
-  provenance, E6), `aihydro-watershed>=0.1.4` (E7 fix in result `meta.version`).
+- A record's version is the running code's, never `dist-info`. `streamflow`, `tools_docs`, `mcp.app`,
+  `mcp.__main__` and the environment.yml pin list (`tools_session`) use `ai_hydro.__version__`.
+  `run_records.version_check` records, in `extra.version_check` with `version_mismatch: true`, a stale
+  `aihydro-tools` dist-info and any producer `meta.version` that disagrees with its imported module.
+  The environment digest still lists installed distribution versions, by design (it describes the environment).
+- Floors: `aihydro-data>=0.2.4` (E6 content digests in upstream provenance), `aihydro-watershed>=0.1.4` (E7).
 
 ## [2.4.0] - 2026-10-17 (Wave U)
 

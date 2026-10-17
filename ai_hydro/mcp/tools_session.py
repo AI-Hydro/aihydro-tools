@@ -839,6 +839,11 @@ def _build_environment_yml(name: str) -> str:
                     versions[pkg] = _imeta.version(pkg)
                 except Exception:
                     pass
+            try:    # the running code, not (possibly stale) dist-info
+                from ai_hydro import __version__ as _own
+                versions["aihydro-tools"] = _own
+            except Exception:
+                pass
         except Exception:
             pass
 

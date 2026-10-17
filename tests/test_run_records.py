@@ -110,9 +110,12 @@ class TestNeverRaises:
 
 
 class TestVersionAndEnvironment:
-    def test_meta_version_wins_and_is_labelled(self):
-        rec = _build(result={"data": {}, "meta": {"version": "9.9.9"}})
-        assert (rec.tool_version, rec.version_source) == ("9.9.9", "result_meta")
+    def test_meta_version_is_the_producer_not_the_tool_version(self):
+        import ai_hydro
+        rec = _build(result={"data": {}, "meta": {"tool": "other_pkg.fn", "version": "9.9.9"}})
+        assert (rec.tool_version, rec.version_source) == (ai_hydro.__version__, "package")
+        assert rec.extra["producer"] == "other_pkg.fn" and rec.extra["producer_version"] == "9.9.9"
+        assert rec.verify()
 
     def test_uses_package_version_and_says_so(self):
         import ai_hydro
@@ -133,6 +136,7 @@ class TestVersionAndEnvironment:
         vc = rec.extra["version_check"]
         assert vc["version_mismatch"] is True
         assert vc["package_version"] == ai_hydro.__version__ and vc["distribution_version"] == "0.0.1"
+        assert vc["producer_version"] is None
         assert rec.verify()
 
     def test_metadata_lookup_is_simulated_through_importlib(self, monkeypatch):
@@ -147,6 +151,7 @@ class TestVersionAndEnvironment:
             assert rec.tool_version == ai_hydro.__version__ != "2.3.7"
             assert rec.extra["version_check"]["distribution_version"] == "2.3.7"
             assert rec.extra["version_check"]["version_mismatch"] is True
+            assert rec.version_source == "package"
         finally:
             monkeypatch.undo()
             rr._ENV_CACHE = None
@@ -167,7 +172,7 @@ class TestVersionAndEnvironment:
         assert ok is None
         bad = rr.version_check({"meta": {"tool": "fake_producer.f", "version": "1.0.0"}})
         assert bad["version_mismatch"] is True
-        assert bad["result_meta_version"] == "1.0.0" and bad["producer_module_version"] == "4.5.6"
+        assert bad["producer_version"] == "1.0.0" and bad["producer_module_version"] == "4.5.6"
         rec = _build(result={"data": {}, "meta": {"tool": "fake_producer.f", "version": "1.0.0"}})
         assert rec.extra["version_check"]["version_mismatch"] is True
 

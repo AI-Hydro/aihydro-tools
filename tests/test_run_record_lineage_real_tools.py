@@ -287,3 +287,38 @@ def test_precipitation_skip_makes_no_request_and_is_declared_not_attempted(world
                      {"session_id": SID, "start_date": START, "end_date": END, "geometry_geojson": SQUARE,
                       "precipitation": "bogus"})
     assert body2.get("error") and body2["code"] == "INVALID_PARAMETER"
+
+
+def test_e7_every_sealed_row_states_the_serving_code_version_and_the_producer(world, monkeypatch):
+    """Wave U proof 3, E7. tool_version is ai_hydro.__version__ read from source (not dist-info);
+    the watershed producer's own version rides in extra.producer_version."""
+    import re
+    from pathlib import Path
+    import aihydro_watershed
+    import ai_hydro
+
+    # stale editable-install dist-info, as on the proof machine
+    monkeypatch.setattr(rr, "_distribution_version", lambda: "2.3.7")
+    declared = re.search(r'^__version__\s*=\s*"([^"]+)"',
+                         (Path(ai_hydro.__file__)).read_text(), re.MULTILINE).group(1)
+
+    server, _ = world
+    is_err, fetched = _call(server, "fetch_streamflow_data",
+                            {"session_id": SID, "gauge_id": GAUGE, "start_date": START, "end_date": END})
+    assert not is_err, fetched
+    is_err, sigs = _call(server, "extract_hydrological_signatures",
+                         {"session_id": SID, "start_date": START, "end_date": END, "geometry_geojson": SQUARE})
+    assert not is_err, sigs
+    rows = _rows()
+    sealed = {k: r for k, r in rows.items() if r.get("record")}
+    assert sigs["_run_id"] in sealed and len(sealed) >= 2
+    for run_id, row in sealed.items():
+        rec = row["record"]
+        assert rec["tool_version"] == declared == ai_hydro.__version__, run_id
+        assert rec["version_source"] == "package" and rr.verify_run_log_entry(row)["record_ok"]
+    rec = rows[sigs["_run_id"]]["record"]
+    assert rec["extra"]["producer"].startswith("aihydro_watershed")
+    assert rec["extra"]["producer_version"] == aihydro_watershed.__version__
+    # negative control: the stale dist-info is flagged, not adopted
+    assert rec["extra"]["version_check"]["version_mismatch"] is True
+    assert rec["extra"]["version_check"]["distribution_version"] == "2.3.7"

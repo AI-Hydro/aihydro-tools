@@ -225,8 +225,10 @@ def test_every_row_a_call_wrote_is_recorded_and_labelled(server):
     for run_id, row in rows.items():
         assert rr.verify_run_log_entry(row)["record_ok"] is True
         assert row["record"]["tool"] == "both_writers_tool"
-        assert row["record"]["tool_version"] == "7.1.0"
-        assert row["record"]["version_source"] == "result_meta"
+        import ai_hydro
+        assert row["record"]["tool_version"] == ai_hydro.__version__
+        assert row["record"]["version_source"] == "package"
+        assert row["record"]["extra"]["producer_version"] == "7.1.0"
         if run_id == primary:
             assert row["record"]["extra"]["writer"] == "post_run"
             assert "call_run_id" not in row["record"]["extra"]
