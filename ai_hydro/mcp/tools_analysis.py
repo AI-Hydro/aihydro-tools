@@ -1817,47 +1817,40 @@ async def map_flood_inundation(
     geometry_geojson: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
-    """
-    Map fluvial flood inundation (HAND + synthetic Manning rating curve).
+    """Map fluvial flood inundation (HAND + synthetic Manning rating curve).
 
-    Produces depth raster + low/likely/high extent bands with scope metadata
-    and a plain-language caveat chip. Requires delineated watershed geometry.
+    Produces a depth raster and low/likely/high extent bands with scope metadata and a
+    plain-language caveat chip. Requires delineated watershed geometry.
 
     Parameters
     ----------
     session_id : str | None
-        Research session (auto-resolved from chat when omitted).
+        Auto-resolved from the chat when omitted.
     discharge_m3s : float | None
-        Peak discharge in m³/s. Provide this OR return_period.
+        Peak discharge in m3/s. Give this OR return_period.
     return_period : int | None
-        Return period in years (e.g. 100). Uses session.flood_frequency if
-        available, otherwise prompts to run compute_flood_frequency first.
+        Years (e.g. 100); uses session.flood_frequency (run compute_flood_frequency first).
     use_design_peak : bool
-        When True and discharge is omitted, use peak_discharge_cms from
-        session.design_hydrograph (run compute_design_hydrograph first).
+        With no discharge, use peak_discharge_cms from session.design_hydrograph.
     use_session_peak : bool
-        When True and discharge is omitted, use peak from session.streamflow
-        (fetch_streamflow_data or data_fetch streamflow).
+        With no discharge, use the peak of session.streamflow.
     hindcast_date : str | None
-        Event date (YYYY-MM-DD) for GFM hindcast validation. Fetches GFM reference
-        extent (fixture when live unavailable) and reports CSI/POD/FAR.
-    validate_gfm : bool
-        When hindcast_date is set, run GFM validation (default True).
+        YYYY-MM-DD event for GFM hindcast validation (fixture if live GFM is unavailable);
+        reports CSI/POD/FAR. validate_gfm (default True) switches that validation off.
     use_worldpop : bool
-        When True, attempt WorldPop population sum inside likely extent (requires GEE auth).
+        Add a WorldPop population sum inside the likely extent (needs GEE auth).
     manning_n : float
-        Likely Manning's n for SRC (default 0.035). Low/high band uses ± sweep.
+        Likely Manning's n (default 0.035); the low/high bands sweep around it.
     reference_extent_geojson : str | None
-        Optional GeoJSON (string) of observed/reference inundation extent for
-        CSI/POD/FAR validation against the likely band.
+        Observed extent (GeoJSON string) for CSI/POD/FAR against the likely band.
     resolution : int
         DEM resolution in metres (10 / 30 / 60).
     create_map : bool
-        Push depth raster and extent polygons to the AI-Hydro map panel.
+        Push depth raster and extents to the map panel.
     feature : str | None
         Feature id for multi-geometry sessions.
     geometry_geojson : str | None
-        GeoJSON override when session watershed is wrong.
+        GeoJSON override when the session watershed is wrong.
     """
     try:
         session_id = _resolve_session(session_id, None)
@@ -2507,47 +2500,37 @@ async def create_cn_grid(
     dual_hsg: str = "drained",
     ctx: Context | None = None,
 ) -> dict:
-    """
-    NRCS Curve Number grid: land cover × soil → distributed CN.
+    """NRCS Curve Number grid: land cover x soil -> distributed CN.
 
-    Globally robust via region-routed data acquisition: land cover auto-routes
-    NLCD (CONUS) → ESA WorldCover / Dynamic World (global). Soil auto-routes
-    SSURGO (CONUS: gNATSGO map units + USDA Soil Data Access, hydrologic
-    soil group as recorded per component) → POLARIS if SSURGO is unreachable
-    → ISRIC SoilGrids outside CONUS (group inferred from texture). Non-NLCD
-    land cover is remapped onto NLCD classes so one TR-55 table applies.
-    ``hsg_method`` in the output says whether groups were recorded or inferred.
+    Region-routed data: land cover NLCD (CONUS) -> ESA WorldCover / Dynamic World (global), remapped
+    onto NLCD classes so one TR-55 table applies; soil SSURGO (gNATSGO + Soil Data Access) -> POLARIS
+    if SSURGO is unreachable -> ISRIC SoilGrids outside CONUS (group inferred from texture).
+    `hsg_method` in the output says whether hydrologic soil groups were recorded or inferred.
 
-    Requires delineate_watershed first. Returns CN stats, zone percentages,
-    LULC + soil breakdowns, and the served data products under
-    ``data_provenance``. Saves GeoTIFF / NetCDF / PNG / HTML.
+    Requires delineate_watershed first. Returns CN stats, zone percentages, LULC and soil
+    breakdowns and the served products under `data_provenance`; saves GeoTIFF / NetCDF / PNG / HTML.
 
     Parameters
     ----------
-    session_id : str | None (optional from Wave 3)
-        Research session identifier. Auto-resolved from chat context when omitted.
+    session_id : str | None
+        Auto-resolved from the chat context when omitted.
     year : int
-        Land-cover year (default 2021, the latest NLCD release). NLCD snaps to
-        the nearest available epoch.
+        Land-cover year (default 2021); NLCD snaps to the nearest epoch.
     resolution : int
         Output resolution in metres (default 30).
     create_map : bool
-        Generate PNG + HTML visualisations.
-    feature : str | None, optional
-        Feature id or name to compute the CN grid for. Omit to use the active
-        feature or session watershed geometry.
+        PNG + HTML visualisations.
+    feature : str | None
+        Feature id or name; omit for the active feature or session watershed.
     geometry_geojson : str, optional
-        Override watershed geometry as a GeoJSON string.
-    product : str | None, optional
-        Pin the land-cover product (e.g. ``"NLCD"``, ``"ESA_WORLDCOVER_STAC"``,
-        ``"DYNAMIC_WORLD"``). ``None`` (default) → auto region-routing.
-    soil_product : str | None, optional
-        Pin the soil product (``"SSURGO"``, ``"POLARIS"``, ``"SOILGRIDS"``).
-        ``None`` (default) → auto region-routing (SSURGO in CONUS).
+        Override watershed geometry (GeoJSON string).
+    product : str | None
+        Pin land cover ("NLCD", "ESA_WORLDCOVER_STAC", "DYNAMIC_WORLD"); None = auto-route.
+    soil_product : str | None
+        Pin soil ("SSURGO", "POLARIS", "SOILGRIDS"); None = auto-route.
     dual_hsg : str
-        ``"drained"`` (default) or ``"undrained"``: which condition of a
-        SSURGO dual group (A/D, B/D, C/D) to map. The CN mean for the other
-        condition is returned too. Ignored for texture-based soil products.
+        "drained" (default) or "undrained": which condition of a SSURGO dual group (A/D, B/D, C/D)
+        to map; the other condition's CN mean is returned too. Ignored for texture-based soil.
     """
     # C3: batch fan-out (async tool → asyncio concurrent gather)
     if isinstance(feature, list):
@@ -2723,41 +2706,33 @@ async def fetch_forcing_data(
     product: str | None = None,
     ctx: Context | None = None,
 ) -> dict:
-    """
-    Basin-averaged daily forcing data. Globally robust via aihydro-data routing:
+    """Basin-averaged daily forcing; the only tool that fills the session `forcing` slot.
 
-    - **CONUS**:         GridMET (pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc)
-    - **North America**: Daymet / ERA5-Land
-    - **Global**:        CHIRPS (precipitation), ERA5-Land (temperature, PET)
+    Routed via aihydro-data: CONUS GridMET (pr, tmmx, tmmn, srad, vs, rmax, rmin, pet, erc);
+    North America Daymet / ERA5-Land; global CHIRPS (precipitation) and ERA5-Land (temperature,
+    PET). Region routing and fallback are automatic; `product` pins a dataset.
 
-    Region routing and product fallback are automatic. Use ``product`` to pin a
-    preferred dataset when you want a specific source regardless of region.
-
-    Requires ``delineate_watershed`` or ``delineate_watershed_from_point`` first,
-    or pass ``geometry_geojson`` directly.
+    Requires delineate_watershed or delineate_watershed_from_point first, or geometry_geojson.
 
     Parameters
     ----------
-    start_date : str (required)  YYYY-MM-DD
-    end_date   : str (required)  YYYY-MM-DD
+    start_date, end_date : str (required)
+        YYYY-MM-DD.
     session_id : str | None
-        Research session identifier. Auto-resolved from chat context when omitted.
-    variables  : list[str], optional
-        Variables to fetch. Routable: ``[pr, tmmx, tmmn, pet]`` (default, global).
-        CONUS-only: ``[srad, vs, sph, rmax, rmin, erc]`` (added when in CONUS).
-    product : str | None, optional
-        Preferred dataset. Family names (``"GRIDMET"``, ``"ERA5L"``, ``"DAYMET"``,
-        ``"CHIRPS"``, ``"IMERG"``) apply across all variables. A full product ID
-        (e.g. ``"ERA5L_PRECIP"``) applies to precipitation only. Default: auto.
+        Auto-resolved from the chat context when omitted.
+    variables : list[str], optional
+        Routable (default, global): [pr, tmmx, tmmn, pet]. CONUS-only, added in CONUS: srad, vs,
+        sph, rmax, rmin, erc.
+    product : str | None
+        Family ("GRIDMET", "ERA5L", "DAYMET", "CHIRPS", "IMERG") applies to all variables; a full
+        id (e.g. "ERA5L_PRECIP") applies to precipitation only. Default: auto.
     geometry_geojson : str, optional
-        Override watershed geometry as a raw GeoJSON string.
-    feature : str | list | None, optional
-        Feature reference (id/name) or list for batch fan-out.
+        Raw GeoJSON string overriding the watershed geometry.
+    feature : str | list | None
+        Feature id/name, or a list for batch fan-out.
 
-    Returns
-    -------
-    dict with ``data`` (per-variable mean arrays), ``product``, ``source``
-    (what actually served the data), ``feature_id``, ``_data_file`` pointer.
+    Returns dict with `data` (per-variable mean arrays), `product`, `source` (what actually served
+    the data), `feature_id`, `_data_file` pointer.
     """
     # C3: batch fan-out
     if isinstance(feature, list):
@@ -4303,50 +4278,32 @@ def show_on_map(
     fill_opacity: float | None = None,
     auto_zoom: bool = True,
 ) -> dict:
-    """
-    Push any GeoJSON geometry directly onto the AI-Hydro map panel.
+    """Push any GeoJSON geometry onto the AI-Hydro map panel (opens it if hidden).
 
-    Use this to visualize custom geometries, study area boundaries,
-    analysis outputs, or any spatial data the agent generates.
-    The map panel opens automatically if it is not already visible.
+    Use for custom geometries, study-area boundaries or analysis outputs.
 
     Parameters
     ----------
     geojson : str
-        GeoJSON FeatureCollection, Feature, or Geometry as a JSON string.
-        Must be valid GeoJSON in EPSG:4326 (longitude/latitude degrees).
+        FeatureCollection, Feature or Geometry as a JSON string, EPSG:4326 lon/lat.
     name : str
-        Display name shown in the Layers panel (default: 'Layer').
+        Display name in the Layers panel (default 'Layer').
     layer_id : str, optional
-        Unique layer key. Re-sending the same ID replaces the existing
-        layer. Auto-generated if not provided.
+        Unique layer key; re-sending the same id replaces that layer. Auto-generated if omitted.
     layer_type : str
-        Geometry type hint: 'polygon', 'line', 'point', or 'raster'.
-        Controls the icon in the Layers panel (default: 'polygon').
+        'polygon' (default), 'line', 'point' or 'raster'; sets the Layers-panel icon.
     style_preset : str
-        Colour theme: 'watershed' (blue), 'flowlines' (light blue),
-        'gauge' (orange point), or 'default' (mid blue).
-    fill_color : str, optional
-        Hex fill colour override, e.g. '#FF5733'. Overrides preset.
-    stroke_color : str, optional
-        Hex outline colour override. Overrides preset.
+        'watershed' (blue), 'flowlines' (light blue), 'gauge' (orange point) or 'default'.
+    fill_color, stroke_color : str, optional
+        Hex overrides, e.g. '#FF5733'.
     fill_opacity : float, optional
-        Fill opacity 0.0–1.0. Overrides preset.
+        0.0-1.0 override.
     auto_zoom : bool
-        Fit the map to this layer's bounding box (default: True).
+        Fit the map to the layer's bounds (default True).
 
-    Returns
-    -------
-    dict:
-        ok     : True if the layer event was queued for the map.
-        layer_id : The layer ID used (auto-generated or provided).
-        message  : Human-readable status.
+    Returns {ok (layer event queued), layer_id, message}.
 
-    Examples
-    --------
-    >>> show_on_map(watershed_geojson_string, name='My AOI')
-    >>> show_on_map(river_geojson, name='Main Stem', layer_type='line',
-    ...             style_preset='flowlines')
+    Example: show_on_map(river_geojson, name='Main Stem', layer_type='line', style_preset='flowlines')
     """
     try:
         import uuid as _uuid

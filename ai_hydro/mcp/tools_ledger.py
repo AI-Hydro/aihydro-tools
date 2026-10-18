@@ -236,47 +236,28 @@ def add_claim(
     prereg_id: str | None = None,
     basin_refs: list[dict] | None = None,
 ) -> dict:
-    """
-    Add a scoped scientific claim to the session ledger.
+    """Add a scoped scientific claim to the session ledger.
 
-    basin_refs: canonical basin identity for the claim scope. Each entry is a
-        BasinRef dict from delineate_watershed / delineate_watershed_from_point
-        (data.basin_ref, verified here) or {"id": "aihydro:basin:sha256:<hex>",
-        "label": ...}. If omitted and the session watershed slot holds a basin_ref
-        whose usgs alias or gauge label matches one of `basins`, the claim is bound
-        to it automatically (response field `auto_bound`). Promotion of a claim
-        with basins but no basin_refs is refused (BASIN_REF_REQUIRED).
+    basin_refs: canonical basin identity: BasinRef dicts from delineate_watershed* (data.basin_ref)
+        or {"id": "aihydro:basin:sha256:<hex>", "label": ...}. If omitted and the session
+        watershed's basin_ref matches one of `basins`, it is bound (`auto_bound`). Promotion with
+        basins but no basin_refs is refused (BASIN_REF_REQUIRED).
+    evidence_spans: [{"source_type": "run", "source_id": "<run_id>", "metric_ref": "kge"}].
+    evidence: legacy untyped dicts (auto-migrated). Pass one of the two.
+    prereg_id: id from register_research_plan; marks the claim confirmatory, not exploratory.
 
-    evidence_spans: preferred format — list of dicts matching EvidenceSpan schema:
-        [{"source_type": "run", "source_id": "<run_id>", "metric_ref": "kge"}]
-    evidence: legacy format — list of untyped dicts (auto-migrated to evidence_spans).
-        Pass either evidence or evidence_spans, not both.
-    prereg_id: if this claim was anticipated in a pre-registered research plan,
-        pass the prereg_id returned by register_research_plan. Marks the claim as
-        confirmatory (planned) vs exploratory (post-hoc) in the defensibility report.
+    status="supported" on a metric-scoped claim (scope.metric or an evidence metric_ref) is
+    refused (`uncertainty_gate`), new or redefined: record another status, then call
+    update_claim_status(uncertainty_verified=True).
 
-    status="supported" on a metric-scoped empirical claim (scope.metric or an evidence
-    metric_ref) is refused with the same `uncertainty_gate` teaching error as
-    update_claim_status: add_claim cannot assert uncertainty_verified, so record the claim
-    with another status and call update_claim_status(uncertainty_verified=True). The rule
-    applies to a new or redefined id alike; claims already stored as supported without it
-    are not rewritten (promotion_check flags them; promotion refuses them).
+    Local paths: this machine's prefixes (workspace, AIHYDRO_HOME, home, temp) in the statement,
+    rationale and limitations become <workspace>, <aihydro-home>, <home>, <tmp> (`paths_scrubbed`).
+    Text that still looks like a local path (evidence source_id included) is refused with
+    LOCAL_PATH_IN_TEXT and nothing is recorded: rephrase, or cite the file via evidence_spans.
+    Only "~/" and "$HOME" count as home. To fix a stored claim, call add_claim on the same id.
 
-    Local paths: concrete local prefixes of this machine in the statement, rationale and limitations (the
-    session workspace, AIHYDRO_HOME, the home directory, the system temp directory) are replaced by
-    <workspace>, <aihydro-home>, <home>, <tmp> before the claim is stored and sealed (`paths_scrubbed` lists the
-    fields). Text that still looks like a local file path is refused with LOCAL_PATH_IN_TEXT (field and offending
-    text named) and nothing is recorded: rephrase it, or cite the file through evidence_spans. For example write
-    "HDF streamflow files" rather than "HDF /var/streamflow", and "the ratio of A to B" rather than "A:/B ratio".
-    The check covers the whole recorded revision, so a path-like evidence source_id is refused too (the field is
-    named, e.g. evidence_spans[2].source_id); identifiers are never rewritten. Tilde approximations such as
-    "~mm/day" are fine; only "~/" and "$HOME" count as home. For a claim stored earlier with such a path,
-    update_claim_status cannot rephrase it: call add_claim on the same id with rephrased text first.
-
-    Returns `promotion_check`: every violation (`code`, `message`, `family`,
-    `blocking`) that promote_claim_to_registry would raise on this claim as stored.
-    It is advisory here; an empty list means no blocking evidence/limitation gate applies
-    (the human approval step is separate).
+    Returns `promotion_check`: violations (`code`, `message`, `family`, `blocking`) that
+    promote_claim_to_registry would raise on the claim as stored. Advisory here.
     """
     try:
         identity.require_safe_ids(session_id, claim_id)

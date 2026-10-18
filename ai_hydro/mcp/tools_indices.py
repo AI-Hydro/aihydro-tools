@@ -51,73 +51,37 @@ async def compute_spectral_index(
     native_resolution: bool = False,
     ctx: Context | None = None,
 ) -> dict:
-    """Compute a spectral index (NDWI, NDVI, NDBI, NBR, MNDWI, …) for the
-    current study watershed.
+    """Compute a spectral index (NDWI, NDVI, NDBI, NBR, MNDWI, ...) for the study watershed.
 
-    Fetches the required optical bands from ``sensor``, applies cloud masking
-    (if ``mask_clouds=True``), and computes a cloud-free median composite over
-    ``[start, end]``.
-
-    With ``frequency="monthly"`` or ``"yearly"``, returns a temporal stack with
-    per-period statistics and a Mann-Kendall trend slope (useful for detecting
-    drought, water-body expansion, or urbanisation trends).
+    Fetches bands from `sensor`, cloud-masks them (mask_clouds) and returns a median composite
+    over [start, end]. With frequency="monthly"/"yearly" it returns a temporal stack with
+    per-period stats and a Mann-Kendall-compatible trend slope.
 
     Parameters
     ----------
     index_name : str
-        Index to compute.  Call ``list_spectral_indices()`` to discover
-        available indices and their required bands.  Case-insensitive.
-        Examples: ``"NDWI"``, ``"ndvi"``, ``"NBR"``, ``"MNDWI"``.
+        Case-insensitive, e.g. "NDWI", "ndvi". list_spectral_indices() lists all and their bands.
     session_id : str, optional
-        Research session identifier.  Auto-resolved from chat context if
-        omitted (same resolution as all other analysis tools).
-    start : str, optional
-        Start date ISO-8601 (``"YYYY-MM-DD"``).  Defaults to one year before
-        ``end`` (or one year before today when both are omitted).
-    end : str, optional
-        End date ISO-8601.  Defaults to today.
+        Auto-resolved from the chat context when omitted.
+    start, end : str, optional
+        ISO dates. end defaults to today; start to one year before end.
     sensor : str
-        Source sensor.  Supported: ``"sentinel2"`` (default), ``"landsat8"``,
-        ``"landsat9"``, ``"modis_mod09"``.  The required bands are resolved
-        from ``SENSOR_BAND_MAPS`` automatically.
+        "sentinel2" (default), "landsat8", "landsat9", "modis_mod09".
     frequency : str or None
-        ``None`` (default) — single median composite over the full date range.
-        ``"monthly"`` — one composite per month; returns time-series stats.
-        ``"yearly"`` — one composite per year; returns time-series stats.
+        None = one composite; "monthly" or "yearly" = time series.
     mask_clouds : bool
-        Apply sensor-appropriate cloud masking before computing the index
-        (default ``True``).  Set ``False`` only if the input data is already
-        cloud-free.
+        Default True; False only for already cloud-free input.
     create_map : bool
-        Push the index raster to the map panel (default ``True``).
+        Push the raster to the map panel (default True).
     native_resolution : bool
-        Force the sensor's native resolution (10–20 m for Sentinel-2, 30 m for
-        Landsat) regardless of basin size.  By default (``False``) very large
-        basins are auto-coarsened so the single GEE request stays under the
-        ~48 MB download cap.  With ``True`` the basin is downloaded as a grid
-        of full-resolution tiles and mosaicked — no coarsening, at the cost of
-        several extra round-trips (slower for large basins).
+        True keeps the native 10-30 m by tiling large basins (extra round-trips); False
+        auto-coarsens big basins to stay under the ~48 MB GEE download cap.
 
     Returns
     -------
-    dict with:
-
-    - ``index_name``   — normalised index name (upper-case)
-    - ``data``         — ``{mean, median, std, p10, p25, p75, p90, valid_px}``
-    - ``colormap``     — matplotlib colormap from ``INDEX_REGISTRY``
-    - ``citation``     — original paper citation string
-    - ``use_case``     — one-line use-case description
-    - ``threshold_hint`` — typical threshold for binary mapping
-    - ``_files_saved`` — list of saved file paths (GeoTIFF, PNG)
-    - ``_map_layer``   — map layer id pushed (or ``None``)
-    - ``next_steps``   — suggested follow-on tools
-
-    In **time-series mode**, additional keys are present:
-
-    - ``time_axis``          — list of ISO-8601 period strings
-    - ``period_means``       — per-period mean values
-    - ``trend_slope_per_year`` — Mann-Kendall-compatible linear slope
-    - ``p_value``            — Mann-Kendall p-value (None if pymannkendall unavailable)
+    dict: index_name, data {mean, median, std, p10, p25, p75, p90, valid_px}, colormap, citation,
+    use_case, threshold_hint, _files_saved, _map_layer, next_steps. Time-series mode adds
+    time_axis, period_means, trend_slope_per_year and p_value (None without pymannkendall).
     """
     from ai_hydro.mcp.helpers import _resolve_session, _maybe_set_workspace
     from ai_hydro.session import HydroSession

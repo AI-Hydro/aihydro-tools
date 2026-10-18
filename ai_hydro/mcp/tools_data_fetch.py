@@ -275,46 +275,29 @@ def data_fetch(
     session_id: str | None = None,
     gauge_id: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Fetch a single hydrology variable for one geometry / time window.
+    """Fetch a single hydrology variable for one geometry / time window.
 
     Args:
-        variable:    Canonical variable name ('precipitation', 'tmax', 'et', …).
-                     Call data_list_products() with no args to see all variables.
-        geometry:    One of: (lat, lon) tuple, [minx, miny, maxx, maxy] bbox,
-                     GeoJSON dict, WKT string, or a dict with 'type'+'coordinates'.
+        variable:    Canonical name ('precipitation', 'tmax', 'et', ...); see data_list_products().
+        geometry:    (lat, lon) tuple, [minx, miny, maxx, maxy] bbox, GeoJSON dict or WKT string.
         start:       ISO-8601 start date, e.g. '2015-01-01'.
-        end:         ISO-8601 end date (inclusive), e.g. '2015-12-31'.
-        mode:        'auto' (router picks best product for the region) or
-                     'manual' (must also supply product=).
-        product:     Product ID, e.g. 'CHIRPS', 'GRIDMET_PRECIP'. Required if
-                     mode='manual'; ignored otherwise.
-        aggregation: How to aggregate the raster over the geometry.
-                     'basin_mean' (default) → 1-D time series.
-                     'raw_raster' → full clipped xarray.DataArray.
-        cache:       True (default) — read from / write to disk cache. The
-                     series is retained from the cache entry; with False
-                     nothing is retained (the record is aggregate-only).
-        session_id:  Session to record the call in. Auto-resolved from the
-                     chat/study context when omitted.
-        gauge_id:    streamflow only. USGS site number ('01013500' or 'USGS-01013500')
-                     that names the gauge explicitly; it outranks a BasinRef alias and
-                     an outlet. Without any identity a polygon is refused (GAUGE_REQUIRED),
-                     an ambiguous outlet is refused (GAUGE_AMBIGUOUS): a refusal is final
-                     and is never answered with modelled flow.
+        end:         ISO-8601 end date (inclusive).
+        mode:        'auto' (router picks the product for the region) or 'manual' (needs product=).
+        product:     Product ID, e.g. 'CHIRPS', 'GRIDMET_PRECIP'. Required for mode='manual'.
+        aggregation: 'basin_mean' (default, 1-D series) or 'raw_raster' (clipped DataArray).
+        cache:       True (default) uses the disk cache and retains the series; False retains none.
+        session_id:  Session to record the call in; auto-resolved from the chat when omitted.
+        gauge_id:    streamflow only. USGS site number ('01013500' or 'USGS-01013500'); outranks a
+                     BasinRef alias and an outlet. A polygon with no identity -> GAUGE_REQUIRED,
+                     an ambiguous outlet -> GAUGE_AMBIGUOUS; refusals are final.
 
     Returns:
-        On success: result dict with keys variable, product, source, cache_hit,
-                    data (head + shape), license, citation, next_steps, plus
-                    ``_run_id`` — pass it as ``series`` to summarize_series,
-                    detect_threshold_runs, compare_series or bootstrap_statistic.
-                    ``data.retained_series`` describes the retained series.
-        On failure: structured error envelope with recovery hints.
+        Success: variable, product, source, cache_hit, data (head + shape; data.retained_series),
+        license, citation, next_steps and `_run_id`, the `series` argument of summarize_series,
+        detect_threshold_runs, compare_series and bootstrap_statistic. Failure: error envelope
+        with recovery hints.
 
-    Note — slow backends (GloFAS / queued HPC):
-        For variables that route to a queued backend (e.g. global streamflow →
-        GloFAS EWDS), this tool raises an MCP error (code USE_ASYNC_TOOL,
-        next_tools=['data_fetch_background']) rather than blocking the agent loop for minutes.
+    Queued backends (GloFAS / HPC) raise USE_ASYNC_TOOL (next_tools=['data_fetch_background']).
     """
     sid = None
     try:

@@ -451,32 +451,26 @@ def export_session(
     capsule_path: str | None = None,
     format: str = "capsule",
 ) -> dict:
-    """
-    Export the session.
+    """Export the session.
 
-    format='capsule' (default): reproducible folder (README.md + methods.md +
-        citations.bib + environment.yml + session.json + run_log.json +
-        capsule_manifest.json + replay.py + data/figures/model/). data/ holds
-        the served streamflow series (CSV; sha256 and producing run in the
-        manifest's ``data_artifacts``). approvals/ holds the approval record
-        each promoted claim consumed plus its registry stamp (claims with no
-        approval are listed as such); ``replay.py --allowed-signers FILE``
-        verifies the signatures against a key file the verifier supplies. replay.py
-        verifies file hashes and run-record digests (replay status
-        ``archive_integrity``); ``--live`` also cross-checks the run log
-        against session.json and exits 2 if nothing could be compared. No
-        computation is re-executed. records/claim_revisions.json carries each
-        claim's sealed revision chain (replay.py verifies the chains);
-        bundle.json, ro-crate-metadata.json (RO-Crate 1.3 / Process Run Crate
-        0.6 projection) and manifest-sha256.txt are written last, and the result
-        returns crate_file and bundle_id (crate_error says why a crate was not
-        written). A crate shows integrity, not origin.
-    format='defensibility_report': Markdown accountability report — claims
-        table, audit summary, uncertainty coverage, validator flags, and numbers
-        manifest (every cited numeric bound to its run_id).
+    format='capsule' (default): reproducible folder with README.md, methods.md, citations.bib,
+        environment.yml, session.json, run_log.json, capsule_manifest.json, replay.py and
+        data/figures/model/. data/ holds the served streamflow series (CSV; sha256 and producing
+        run in the manifest's `data_artifacts`). approvals/ holds the approval record each
+        promoted claim consumed plus its registry stamp (claims without one are listed as such);
+        `replay.py --allowed-signers FILE` verifies signatures against a key file the verifier
+        supplies. replay.py verifies file hashes and run-record digests (status
+        `archive_integrity`); `--live` also cross-checks the run log against session.json and
+        exits 2 if nothing could be compared. Nothing is re-executed. records/claim_revisions.json
+        holds each claim's sealed revision chain (verified by replay.py). bundle.json,
+        ro-crate-metadata.json (RO-Crate 1.3 / Process Run Crate 0.6) and manifest-sha256.txt are
+        written last; the result returns crate_file and bundle_id (crate_error if no crate). A
+        crate shows integrity, not origin.
+    format='defensibility_report': Markdown report with claims table, audit summary, uncertainty
+        coverage, validator flags and a numbers manifest (each cited numeric bound to its run_id).
     format='bibtex' | 'json': single-file exports.
 
-    capsule_path: override default capsule directory location.
+    capsule_path: override the default capsule directory.
     """
     try:
         session_id = _resolve_session(session_id, None, allow_auto_create=False)

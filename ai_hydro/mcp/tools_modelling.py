@@ -490,51 +490,39 @@ def run_autoresearch(
     comparison_metric: str = "nse",
     full_retrain: bool = True,
 ) -> dict:
-    """
-    Launch a CI-aware autoresearch episode.
+    """Launch a CI-aware autoresearch episode.
 
-    Proposes → trains (fast-proxy) → CI-aware keep/discard → repeats until the
-    budget is exhausted.  The champion is re-trained at full epochs if
-    full_retrain=True.  Every run is recorded to leaderboard.json in the job
-    artifact dir; retrieve with get_leaderboard(job_id).
-
-    The keep/discard decision uses a paired-difference bootstrap CI on
-    skill(challenger) − skill(incumbent): the challenger must be statistically
-    better (ci_lower > 0) to replace the incumbent — not merely higher on a
-    point estimate.
+    Proposes -> trains (fast proxy) -> CI-aware keep/discard, repeating until the budget is
+    exhausted; the champion is re-trained at full epochs if full_retrain=True. Every run goes to
+    leaderboard.json in the job artifact dir (get_leaderboard(job_id)). A challenger replaces
+    the incumbent only if the paired-difference bootstrap CI on skill(challenger) -
+    skill(incumbent) has ci_lower > 0, not on a higher point estimate.
 
     Parameters
     ----------
     hypothesis : str
-        One sentence describing what you expect to improve and why.
-        Recorded in the job and passed to register_research_plan if prereg_id
-        is supplied.
+        One sentence: what you expect to improve and why. Recorded in the job and passed to
+        register_research_plan if prereg_id is supplied.
     backend : str
-        "hbv" (default), "nh_lstm", "nh_ealstm", etc.
-        Call describe_model_space() to see available backends.
+        "hbv" (default), "nh_lstm", "nh_ealstm", ...; describe_model_space() lists what is available.
     strategy : str
         "random" (default) or "grid".
     budget_hours : float | None
-        Wall-clock ceiling in hours (None = no time limit).
+        Wall-clock ceiling (None = no limit).
     max_experiments : int | None
-        Max training runs (default 20).  Supply both for a joint cap.
+        Max training runs (default 20); with budget_hours both caps apply.
     proxy_epochs : int
-        Fast-proxy epoch count during search (default 50).  The winner is
-        re-trained at base_spec.epochs if full_retrain=True.
+        Epochs per proxy run (default 50).
     space_overrides_json : str | None
-        JSON string of ModelSpec overrides applied to the base spec, e.g.:
-        '{"n_restarts": 5, "epochs": 300}'.
+        ModelSpec overrides as JSON, e.g. '{"n_restarts": 5, "epochs": 300}'.
     prereg_id : str | None
-        Pre-registration ID from register_research_plan (recommended).
+        Pre-registration id from register_research_plan (recommended).
     comparison_metric : str
         "nse" (default) or "kge".
     full_retrain : bool
-        Re-train the winning config at base_spec.epochs after search (default True).
+        Re-train the winner at base_spec.epochs after the search (default True).
 
-    Returns
-    -------
-    {job_id, status: "pending", ...} — poll with wait_for_job(job_id),
-    retrieve with get_leaderboard(job_id).
+    Returns {job_id, status: "pending", ...}; wait with wait_for_job(job_id).
     """
     import json as _json
 
