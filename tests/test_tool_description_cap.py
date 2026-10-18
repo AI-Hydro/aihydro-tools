@@ -20,7 +20,8 @@ def test_trimmed_descriptions_keep_their_required_usage_info():
     tools = _registered()
     must = {
         "add_claim": ["basin_refs", "evidence_spans", "prereg_id", "uncertainty_gate",
-                      "LOCAL_PATH_IN_TEXT", "promotion_check", "BASIN_REF_REQUIRED"],
+                      "LOCAL_PATH_IN_TEXT", "promotion_check", "BASIN_REF_REQUIRED",
+                      "HDF streamflow files", "human approval step is separate"],
         "data_fetch": ["variable", "geometry", "start", "end", "mode", "product", "aggregation",
                        "cache", "session_id", "gauge_id", "GAUGE_REQUIRED", "GAUGE_AMBIGUOUS",
                        "_run_id", "USE_ASYNC_TOOL"],

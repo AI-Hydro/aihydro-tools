@@ -238,26 +238,26 @@ def add_claim(
 ) -> dict:
     """Add a scoped scientific claim to the session ledger.
 
-    basin_refs: canonical basin identity: BasinRef dicts from delineate_watershed* (data.basin_ref)
-        or {"id": "aihydro:basin:sha256:<hex>", "label": ...}. If omitted and the session
-        watershed's basin_ref matches one of `basins`, it is bound (`auto_bound`). Promotion with
-        basins but no basin_refs is refused (BASIN_REF_REQUIRED).
-    evidence_spans: [{"source_type": "run", "source_id": "<run_id>", "metric_ref": "kge"}].
-    evidence: legacy untyped dicts (auto-migrated). Pass one of the two.
-    prereg_id: id from register_research_plan; marks the claim confirmatory, not exploratory.
+    basin_refs: BasinRef dicts from delineate_watershed* (data.basin_ref) or {"id":
+        "aihydro:basin:sha256:<hex>", "label": ...}. If omitted and the session watershed's
+        basin_ref matches `basins`, it is bound (`auto_bound`); promotion with basins but no
+        basin_refs is refused (BASIN_REF_REQUIRED).
+    evidence_spans: [{"source_type": "run", "source_id": "<run_id>", "metric_ref": "kge"}]; legacy
+        `evidence` (untyped dicts) is auto-migrated. Pass one of the two.
+    prereg_id: from register_research_plan; marks the claim confirmatory, not exploratory.
 
-    status="supported" on a metric-scoped claim (scope.metric or an evidence metric_ref) is
-    refused (`uncertainty_gate`), new or redefined: record another status, then call
-    update_claim_status(uncertainty_verified=True).
+    status="supported" on a metric-scoped claim (scope.metric or evidence metric_ref) is refused
+    (`uncertainty_gate`): record another status, then update_claim_status(uncertainty_verified=True).
 
-    Local paths: this machine's prefixes (workspace, AIHYDRO_HOME, home, temp) in the statement,
+    Local paths: this machine's prefixes (workspace, AIHYDRO_HOME, home, temp) in statement,
     rationale and limitations become <workspace>, <aihydro-home>, <home>, <tmp> (`paths_scrubbed`).
-    Text that still looks like a local path (evidence source_id included) is refused with
-    LOCAL_PATH_IN_TEXT and nothing is recorded: rephrase, or cite the file via evidence_spans.
-    Only "~/" and "$HOME" count as home. To fix a stored claim, call add_claim on the same id.
+    Text still looking like a local path (evidence source_id included) is refused with
+    LOCAL_PATH_IN_TEXT and nothing is recorded: write "HDF streamflow files", not
+    "HDF /var/streamflow", or cite the file via evidence_spans. Only "~/" and "$HOME" count as
+    home ("~mm/day" is fine). Fix a stored claim by calling add_claim again.
 
-    Returns `promotion_check`: violations (`code`, `message`, `family`, `blocking`) that
-    promote_claim_to_registry would raise on the claim as stored. Advisory here.
+    Returns `promotion_check`: the violations (`code`, `message`, `family`, `blocking`)
+    promote_claim_to_registry would raise. Advisory; the human approval step is separate.
     """
     try:
         identity.require_safe_ids(session_id, claim_id)

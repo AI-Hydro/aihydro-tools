@@ -9,36 +9,49 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [2.5.0] - 2026-10-18 (Wave U, U5a tool surface)
 
 No tool is added or removed (U5b, retiring `fetch_streamflow_data` / `fetch_forcing_data`, is not done:
-see DECISIONS.md 2026-10-18). HRB fixture bench: 78/78 passed at 2.4.1 and at 2.5.0 (no delta); full
-suite 2066 passed, 2 skipped, offline.
+see DECISIONS.md 2026-10-18). HRB fixture bench: 78/78 passed at 2.4.1 and at 2.5.0 (no delta).
 
 ### Added
 
 - **MCP tool annotations.** `ai_hydro/mcp/tool_annotations.toml` has one row per registered tool
   (173, including the `aihydro-data` and `aihydro-lsh` entry-point tools) with `readOnlyHint`,
-  `destructiveHint`, `idempotentHint`, `openWorldHint` and an `evidence` column justifying each from
-  the code. `ai_hydro/mcp/tool_surface.py` stamps them after registration (same pass pattern as the
-  tier tags) and they are served in `tools/list`. `readOnlyHint = true` means no write of any kind and
-  no network call; the call's own run record, `post_run` run-log row and session-resolution
-  bookkeeping are not counted. Rules: `docs/tool-surface.md`.
-- **`AIHYDRO_TOOL_SURFACE=full|hot`** (default `full`). `hot` makes `tools/list` return the hot tools
-  (every Tier 1 tool plus `HOT_TOOL_ALLOWLIST`, which includes the discovery tools) and nothing else,
-  for hosts that, unlike the VS Code extension, show whatever `tools/list` returns. Other tools stay
-  callable by name and are found through `aihydro_describe_capability`, `list_available_tools` and
-  `describe_tool`. No new tool.
-- **`allow_recent_fallback`** on `_resolve_session`, and `AIHYDRO_RECENT_SESSION_FALLBACK=off` to
-  remove the "most recent study on disk" guess for every tool.
+  `destructiveHint`, `idempotentHint`, `openWorldHint` and an `evidence` column (a grouped
+  justification plus the guard result for the tool). `ai_hydro/mcp/tool_surface.py` stamps them after
+  registration and they are served in `tools/list`. The classification was made by reading the code;
+  it is checked, not proved: a static deny-list scan (`tests/test_tool_surface.py`) and a runtime
+  `sys.addaudithook` guard that calls every read-only tool against a fixture session
+  (`tests/test_readonly_runtime_guard.py`), plus a mutation test that relabels all 97 non-read-only
+  tools as read-only and requires a guard to flag each. A read-only call may append run records (the
+  middleware's sealed record, `post_run`'s run-log row) and create an empty cache directory, nothing
+  else. Rules and limits: `docs/tool-surface.md`.
+- **`AIHYDRO_TOOL_SURFACE=full|hot`** (default `full`; always `full` in an evaluation run, i.e. when
+  `AIHYDRO_EVAL_NONCE` is set). `hot` makes `tools/list` return the hot tools (every Tier 1 tool plus
+  `HOT_TOOL_ALLOWLIST`, which includes the discovery tools) and nothing else, for hosts that, unlike
+  the VS Code extension, show whatever `tools/list` returns. Other tools stay callable by name and
+  are found through `aihydro_describe_capability`, `list_available_tools` and `describe_tool`.
+- **`session_warning`.** A result whose session came from the recent-study guess carries a top-level
+  `session_warning` ("No study was named or bound; wrote to most-recent study <id> ...") in addition
+  to `extra.session_resolution = "recent_fallback"`.
 
 ### Changed
 
+- **Read-only calls resolve their session without side effects.** For a tool whose annotation row has
+  `readOnlyHint = true`, `_resolve_session` no longer rebinds the chat to the session it read and no
+  longer backfills `workspace_dir` (a save that bumped the session's mtime and so fed the
+  recent-study guess). `get_model_results` now echoes the `session_id` it read, like `list_features`.
+- **Recent-study fallback.** `AIHYDRO_RECENT_SESSION_FALLBACK` accepts `off`/`0`/`false`/`no`, and the
+  fallback is always off in an evaluation run. Default stays on for interactive use.
+  `audit_interpretation` also passes `allow_recent_fallback=False`: hardening only, it already
+  refused to guess (`allow_auto_create=False`).
+- `list_cached_citations` no longer creates its cache directory; `get_data_fetch_result` rejects a
+  `job_id` with path separators or `..`.
+- `draft_claim_from_run` and `preview_get_pending_changes` are annotated read-only (they only read).
 - `tools/list` is sorted by tool name, so the order no longer depends on import or entry-point
-  iteration order (two servers with shuffled registration give byte-identical lists).
-- `audit_interpretation` passes `allow_recent_fallback=False`: an audit needs an explicit, `_meta`
-  or chat-bound study.
+  iteration order.
 - Nine tool descriptions over 1500 characters were tightened to at most 1500 (`add_claim`,
   `compute_spectral_index`, `data_fetch`, `create_cn_grid`, `map_flood_inundation`,
   `run_autoresearch`, `show_on_map`, `fetch_forcing_data`, `export_session`); parameters, error codes
-  and return keys are kept. Total description size 90,057 -> 83,914 characters.
+  and return keys are kept. Total description size 90,057 -> 83,938 characters.
 
 ## [2.4.1] - 2026-10-17 (Wave U patch, proof 3 findings E6/E7)
 
