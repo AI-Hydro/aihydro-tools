@@ -84,6 +84,12 @@ def test_minimal_toml_parser_matches_tomllib():
     assert _parse_minimal_toml(text) == tomllib.loads(text)
 
 
+def test_minimal_toml_parser_rejects_duplicate_tables():
+    text = '["a"]\nreadOnlyHint = true\n\n["a"]\nreadOnlyHint = false\n'
+    with pytest.raises(ValueError, match="duplicate table"):
+        _parse_minimal_toml(text)
+
+
 def test_annotations_are_served_in_tools_list():
     listed = _run(_client_list())
     by_name = {t.name: t for t in listed}
@@ -102,52 +108,112 @@ _WRITE_ATTRS = {
     "to_csv", "savefig", "set_slot", "bind", "Popen", "write_map_command", "write_preview_command",
     "write_ledger_event", "persist_streamflow_slot", "write_workspace_file",
     "write_session_data_file", "record_change", "register", "set_active", "cancel_job",
-    "archive", "export_bibtex",
+    "archive", "export_bibtex", "start_job", "submit_job", "submit", "cancel", "mkdir", "makedirs",
+    "rmdir", "to_file", "to_json_file", "dump", "check_call", "check_output", "system", "popen",
+    "run_cell", "exec_module",
+}
+# Helpers whose side effects are infrastructure by the rules in the annotations header: session
+# resolution bookkeeping (itself disabled for read-only calls at run time) and cache-root creation.
+_INFRA_HELPERS = {
+    "_resolve_session", "_resolve_session_with_rule", "_resolve_session_impl", "_maybe_set_workspace",
+    "cache_dir", "_cache_dir", "_artifact_dir",
+}
+_FLAGGED_QUALIFIED = {
+    "os.remove", "os.rename", "os.replace", "os.rmdir", "os.unlink", "os.makedirs", "os.mkdir",
+    "os.system", "os.popen", "os.truncate", "os.chmod", "jobs.start_job", "jobs.submit_job",
+    "jobs.cancel_job", "jobs.create_job", "jobs.launch", "jobs.run_job",
 }
 _WRITE_NAMES = {
     "write_map_command", "write_preview_command", "write_ledger_event", "persist_streamflow_slot",
     "_save_experiments", "_save_progress", "_write_all", "rmtree", "_save", "save_skill",
-    "_write_csv", "_workspace_write", "_write_tools_md",
+    "_write_csv", "_workspace_write", "_write_tools_md", "start_job", "submit_job", "Popen",
+    "exec", "eval", "execfile", "system", "_run_feature", "_launch_job", "_start_job", "MeritDataManager",
 }
 # Provenance recording of the call itself (see the header of tool_annotations.toml).
 _EXCLUDED = {"_write_run_log", "post_run", "_post_run"}
-_NET_ATTRS = {"urlopen", "Initialize", "getInfo"}
+_NET_ATTRS = {"urlopen", "Initialize", "getInfo", "urlretrieve", "data_fetch", "fetch_dem", "fetch"}
+_NET_PREFIXES = ("fetch_", "download", "nldi_", "stac_", "ensure_")
+_BASES_FLAGGED = {"subprocess", "ee", "requests", "httpx", "urllib", "jobs", "shutil", "os"}
 
 
-def _own_calls(fn, depth: int = 2, _seen=None) -> set[str]:
-    """Names of calls in the tool body and in the same-module helpers it calls (AST, no strings)."""
+def _resolve_local_imports(tree, fn) -> dict[str, object]:
+    """Objects bound by imports inside the function body (function-local imports)."""
+    import importlib
+
+    bound: dict[str, object] = {}
+    for node in ast.walk(tree):
+        try:
+            if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                mod = importlib.import_module(node.module)
+                for a in node.names:
+                    bound[a.asname or a.name] = getattr(mod, a.name, None)
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    bound[(a.asname or a.name).split(".")[0]] = importlib.import_module(a.name.split(".")[0])
+        except Exception:
+            continue
+    return bound
+
+
+def _own_calls(fn, depth: int = 3, _seen=None) -> set[str]:
+    """Names of calls in the tool body and in the helpers it calls (AST, no strings).
+
+    Helpers are followed through module globals, function-local imports and ``module.func`` calls.
+    """
     _seen = _seen if _seen is not None else set()
     try:
         tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
     except (OSError, TypeError, SyntaxError):
         return set()
     names: set[str] = set()
-    helpers: set[str] = set()
+    targets: list[object] = []
+    local = _resolve_local_imports(tree, fn)
+    mod = inspect.getmodule(fn)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         f = node.func
         if isinstance(f, ast.Attribute):
             names.add(f.attr)
-            if isinstance(f.value, ast.Name) and f.value.id in {"requests", "httpx", "ee"}:
-                names.add(f"{f.value.id}.{f.attr}")
+            if isinstance(f.value, ast.Name):
+                base = f.value.id
+                if base in _BASES_FLAGGED:
+                    names.add(f"{base}.{f.attr}")
+                obj = local.get(base) or getattr(mod, base, None)
+                target = getattr(obj, f.attr, None) if inspect.ismodule(obj) else None
+                if inspect.isfunction(target):
+                    targets.append(target)
         elif isinstance(f, ast.Name):
             names.add(f.id)
-            helpers.add(f.id)
-        if (isinstance(f, ast.Name) and f.id == "open") and len(node.args) > 1:
+            target = local.get(f.id) or getattr(mod, f.id, None)
+            if inspect.isfunction(target):
+                targets.append(target)
+        if isinstance(f, ast.Name) and f.id == "open" and len(node.args) > 1:
             mode = node.args[1]
             if isinstance(mode, ast.Constant) and isinstance(mode.value, str) and set(mode.value) & set("wax"):
                 names.add("open(write)")
     if depth > 0:
-        mod = inspect.getmodule(fn)
-        for h in helpers:
-            target = getattr(mod, h, None)
-            if inspect.isfunction(target) and target.__module__.startswith(("ai_hydro", "aihydro_")):
-                key = (target.__module__, target.__qualname__)
-                if key not in _seen:
-                    _seen.add(key)
-                    names |= _own_calls(target, depth - 1, _seen)
+        for target in targets:
+            if not getattr(target, "__module__", "").startswith(("ai_hydro", "aihydro_")):
+                continue
+            key = (target.__module__, target.__qualname__)
+            if target.__name__ in _INFRA_HELPERS:
+                continue
+            if key not in _seen:
+                _seen.add(key)
+                names |= _own_calls(target, depth - 1, _seen)
     return names
+
+
+def _static_violations(fn) -> set[str]:
+    calls = _own_calls(fn) - _EXCLUDED
+    bad = (calls & _WRITE_ATTRS) | (calls & _WRITE_NAMES) | (calls & _NET_ATTRS)
+    bad |= {c for c in calls if c.startswith(_NET_PREFIXES) or c == "open(write)"}
+    bad |= {c for c in calls if c.split(".")[0] in ("subprocess", "ee", "requests", "httpx", "urllib")
+            and "." in c}
+    bad |= {c for c in calls if c.startswith("shutil.") and c != "shutil.which"}
+    bad |= calls & _FLAGGED_QUALIFIED
+    return bad
 
 
 def test_no_read_only_tool_calls_a_known_writer_or_the_network():
@@ -156,9 +222,7 @@ def test_no_read_only_tool_calls_a_known_writer_or_the_network():
     for name, row in ROWS.items():
         if not row["readOnlyHint"] or name not in tools:
             continue
-        calls = _own_calls(tools[name].fn) - _EXCLUDED
-        bad = (calls & _WRITE_ATTRS) | (calls & _WRITE_NAMES) | (calls & _NET_ATTRS) \
-            | {c for c in calls if c.startswith(("requests.", "httpx.", "ee.")) or c == "open(write)"}
+        bad = _static_violations(tools[name].fn)
         if bad:
             offenders[name] = sorted(bad)
     assert not offenders, f"readOnlyHint=true but the code writes or reaches the network: {offenders}"

@@ -325,9 +325,9 @@ def get_citation_by_doi(doi: str, force_refresh: bool = False) -> dict:
 def list_cached_citations() -> dict:
     """List cached DOIs in ~/.aihydro/citations/. No API calls."""
     try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         items = []
-        for fp in sorted(_CACHE_DIR.glob("*.json")):
+        # Listing never creates the cache directory (a read-only tool).
+        for fp in (sorted(_CACHE_DIR.glob("*.json")) if _CACHE_DIR.is_dir() else []):
             try:
                 entry = json.loads(fp.read_text(encoding="utf-8"))
                 items.append({
