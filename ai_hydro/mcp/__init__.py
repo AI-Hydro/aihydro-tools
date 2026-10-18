@@ -345,6 +345,18 @@ except Exception as _e:
     )
 
 
+# Tool surface (U5a): MCP annotations from tool_annotations.toml, tools/list sorted by name, and
+# the optional AIHYDRO_TOOL_SURFACE=hot listing. After tier tagging (it reads the `hot` flag) and before the call middlewares, so the error contract stays innermost.
+try:
+    from ai_hydro.mcp.tool_surface import install_tool_surface as _install_tool_surface
+    _install_tool_surface(mcp)
+except Exception as _e:
+    import logging
+    logging.getLogger("ai_hydro.mcp").warning(
+        "tool surface (annotations / sorted list) not installed: %s", _e
+    )
+
+
 # ── WS-4: argument-repair + self-correcting-error middleware ──────────────────
 # Sits in front of every tool call: repairs aliased/mistyped arguments before
 # execution, and on unrecoverable failure returns a structured self-help payload
@@ -369,6 +381,7 @@ except Exception as _e:
     logging.getLogger("ai_hydro.mcp").warning(
         "error-contract middleware not installed: %s", _e
     )
+
 
 
 def main() -> None:

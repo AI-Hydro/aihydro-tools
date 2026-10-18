@@ -194,6 +194,7 @@ include = ["ai_hydro*", "bench*"]
 ai_hydro = []
 "ai_hydro.knowledge" = ["library_refs/*.json"]
 "ai_hydro.data" = ["merit_manifest.yaml"]
+"ai_hydro.mcp" = ["tool_annotations.toml"]
 bench = ["tasks.yaml", "BENCHMARK.md"]
 
 # ── Pytest ────────────────────────────────────────────────────────────────────

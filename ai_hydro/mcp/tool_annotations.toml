@@ -1,0 +1,1414 @@
+# MCP tool annotations -- one row per registered tool (U5a).
+#
+# Applied by ai_hydro.mcp.tool_surface.apply_tool_annotations() after all tools are
+# registered (same pass pattern as _tag_tools_with_tier_meta) and served in tools/list as
+# ToolAnnotations. tests/test_tool_annotations.py fails when a registered tool lacks a row,
+# when a row has no tool, and when a tool that writes is marked readOnlyHint = true.
+#
+# Classification rules (grep-backed against the code of each tool and the helpers it calls):
+#   readOnlyHint    true ONLY if the tool writes nothing (no session slot, session field, workspace
+#                   file, map/preview command file, ledger/registry/claims, job, cache entry,
+#                   profile/project/skill file) AND makes no network call (including Earth Engine
+#                   initialisation).
+#   destructiveHint true if it deletes, cancels, or overwrites researcher-authored state (claims,
+#                   assumptions, interpretation, notes cleared, profile, skills, cache entries, a
+#                   running job) or can run arbitrary code. Recomputed derived slots/files and
+#                   queue files are overwrites of derived data, so they are NOT destructive.
+#   idempotentHint  true if repeating the call with the same arguments leaves the same state
+#                   (derived-slot overwrite, replace-style commands, deletes). false for appends,
+#                   new job ids, or arbitrary code.
+#   openWorldHint   true if the tool calls any network service (NLDI, USGS, GEE, Crossref, DEM and
+#                   forcing servers, ...) or executes arbitrary code.
+#
+# Recording that is NOT counted as a tool write (it happens for every call and is infrastructure):
+#   - RunRecordMiddleware's run record and post_run()'s run-log row for the call itself,
+#   - _resolve_session bookkeeping (chat-binding store, one-time workspace_dir backfill),
+#   - creating an empty tool-owned cache/queue root directory (mkdir exist_ok) before listing it.
+# Everything else a tool persists makes readOnlyHint false.
+#
+# `source` is the distribution that registers the tool (builtin = aihydro-tools); rows for an
+# optional plugin are only enforced when that plugin is importable.
+
+["add_assumption"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via session.save]"
+
+["add_claim"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via claim_revisions.record_change, event_file.write_text, session.save, write_ledger_event]"
+
+["add_journal_entry"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [code: writes via project.save]"
+
+["add_note"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [code: writes via session.save]"
+
+["add_session_to_project"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [code: writes via project.save]"
+
+["aihydro_chat_status"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["aihydro_describe_capability"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["aihydro_rebind_chat"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session state (feature registry / binding / archive flag); idempotent [code: writes via store.bind]"
+
+["archive_session"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session state (feature registry / binding / archive flag); idempotent [code: writes via session.archive]"
+
+["audit_interpretation"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["bind_map_to_claim"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes workspace files (scaffold/export); recomputed from session [code: writes via event_file.write_text, session.save, write_ledger_event]"
+
+["bootstrap_statistic"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [code: run-log row via post_run only (excluded provenance)]"
+
+["cancel_job"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "cancels a running job / deletes cache entry [code: writes via jobs.cancel_job]"
+
+["check_record_length"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["check_registry_staleness"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via claim_revisions.record_change, session.save]"
+
+["check_regulated_basin"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["check_stationarity"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["check_temporal_alignment"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["check_unit_consistency"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["check_usgs_qualification_codes"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["check_water_balance_consistency"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["clear_session"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via session.save]"
+
+["compare_series"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [code: run-log row via post_run only (excluded provenance)]"
+
+["compute_design_hydrograph"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads session slots (no network); writes derived session slot and/or workspace files [code: writes via session.save]"
+
+["compute_drought_index"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via session.save, session.write_workspace_file]"
+
+["compute_flood_frequency"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads session slots (no network); writes derived session slot and/or workspace files [code: writes via _store.write_session_data_file, _write_run_log, persist_streamflow_slot, session.save]"
+
+["compute_flow_duration_curve"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads session slots (no network); writes derived session slot and/or workspace files [code: writes via _store.write_session_data_file, _write_run_log, persist_streamflow_slot, session.save]"
+
+["compute_soil_loss_rusle"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads session slots (no network); writes derived session slot and/or workspace files [code: writes via session.save]"
+
+["compute_spectral_index"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via event_file.write_text, session.save]"
+
+["compute_twi"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via event_file.write_text, json.dump, os.unlink, session.save]"
+
+["course_get_curriculum"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["course_get_state"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["course_navigate"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session state (feature registry / binding / archive flag); idempotent [code: writes via tmp.write_text]"
+
+["course_scaffold"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes workspace files (scaffold/export); recomputed from session [code: writes via module_file.write_text, tmp.write_text]"
+
+["course_set_progress"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session state (feature registry / binding / archive flag); idempotent [code: writes via _save_progress, tmp.write_text]"
+
+["create_cn_grid"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via event_file.write_text, session.save, session.workspace_dir=]"
+
+["data_batch_fetch"]
+source = "aihydro-data"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes cache + (when session_id given) session slot / background job artifacts [code: writes via Path(data_file).unlink, _to_save.to_netcdf, data.to_parquet]"
+
+["data_describe_product"]
+source = "aihydro-data"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [code: reviewed, no persisting or network call in the tool body]"
+
+["data_doctor"]
+source = "aihydro-data"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [code: reviewed, no persisting or network call in the tool body]"
+
+["data_fetch"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via HydroSession.load(session.write_workspace_file, Path(data_file).unlink, _store.write_session_data_file, _to_save.to_netcdf]"
+
+["data_fetch_background"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes cache + (when session_id given) session slot / background job artifacts [code: no persisting call found]"
+
+["data_get_cache_status"]
+source = "aihydro-data"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [code: reviewed, no persisting or network call in the tool body]"
+
+["data_help"]
+source = "aihydro-data"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [code: reviewed, no persisting or network call in the tool body]"
+
+["data_invalidate_cache"]
+source = "aihydro-data"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "cancels a running job / deletes cache entry [code: writes via p.unlink]"
+
+["data_list_products"]
+source = "aihydro-data"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [code: reviewed, no persisting or network call in the tool body]"
+
+["data_validate_request"]
+source = "aihydro-data"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [code: reviewed, no persisting or network call in the tool body]"
+
+["define_experiment"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via _save_experiments, session.save]"
+
+["delineate_watershed"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via event_file.write_text, json.dump, session.save, session.workspace_dir=]"
+
+["delineate_watershed_from_point"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via event_file.write_text, json.dump, session.save, session.workspace_dir=]"
+
+["delineation_doctor"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network (Earth Engine initialisation or fetch); no session write [code: no persisting call found]"
+
+["describe_model_space"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["describe_tool"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["describe_tools"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["detect_threshold_runs"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [code: run-log row via post_run only (excluded provenance)]"
+
+["draft_claim_from_run"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [code: writes via claim_revisions.record_change, event_file.write_text, session.save, write_ledger_event]"
+
+["export_inundation_surrogate_dataset"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes workspace files (scaffold/export); recomputed from session [code: no persisting call found]"
+
+["export_session"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes workspace files (scaffold/export); recomputed from session [code: writes via capsule_dir / 'README.md'.write_text, capsule_dir / 'citations..write_text, capsule_dir / 'environmen.write_text, capsule_dir / 'methods.md.write_text]"
+
+["extract_geomorphic_parameters"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via session.write_workspace_file]"
+
+["extract_hydrological_signatures"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via _store.write_session_data_file, _write_run_log, persist_streamflow_slot, session.save]"
+
+["fetch_camels_us"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via session.save, session.write_workspace_file]"
+
+["fetch_forcing_data"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via session.write_workspace_file]"
+
+["fetch_soil_attributes_ssurgo"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via session.save, session.workspace_dir=]"
+
+["fetch_streamflow_data"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via _store.write_session_data_file, _write_run_log, persist_streamflow_slot, session.save]"
+
+["gee.extract_timeseries"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "Earth Engine network call; writes GEE provenance/output files under the workspace [code: writes via out_path.write_text, summary_path.write_text]"
+
+["gee.preview_layer"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "Earth Engine network call; writes GEE provenance/output files under the workspace [code: writes via event_file.write_text, out_path.write_text]"
+
+["gee.status"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "Earth Engine network call; writes GEE provenance/output files under the workspace [code: writes via out_path.write_text]"
+
+["get_citation_by_doi"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network citation lookup (Crossref/Semantic Scholar/DataCite); writes the citation cache [code: writes via fp.write_text]"
+
+["get_data_fetch_result"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads job status/artifacts from the job store; no writes [code: reviewed, no persisting or network call in the tool body]"
+
+["get_dataset_info"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["get_equation_definition"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["get_experiment_table"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["get_inundation_physics_result"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["get_inundation_surrogate_result"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["get_leaderboard"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads job status/artifacts from the job store; no writes [code: reviewed, no persisting or network call in the tool body]"
+
+["get_library_reference"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["get_metric_definition"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["get_model_results"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["get_project_summary"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["get_researcher_profile"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["get_session_health"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["get_session_raw_state"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["get_session_summary"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["get_training_status"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads job status/artifacts from the job store; no writes [code: reviewed, no persisting or network call in the tool body]"
+
+["get_variable_definition"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["get_workflow_manifest"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["index_literature"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session state (feature registry / binding / archive flag); idempotent [code: writes via index_path.write_text, project.save]"
+
+["index_passages"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session state (feature registry / binding / archive flag); idempotent [code: writes via tmp.write_text]"
+
+["list_assumptions"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["list_available_tools"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["list_available_workflows"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["list_cached_citations"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["list_claims"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["list_features"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["list_jobs"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads job status/artifacts from the job store; no writes [code: reviewed, no persisting or network call in the tool body]"
+
+["list_known_datasets"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["list_known_metrics"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["list_known_variables"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["list_registry_claims"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["list_relevant_clis"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["list_skills"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["list_spectral_indices"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["load_skill"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["log_researcher_observation"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [code: writes via profile.save]"
+
+["lookup_citation"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network citation lookup (Crossref/Semantic Scholar/DataCite); writes the citation cache [code: writes via fp.write_text]"
+
+["lsh_attribute_info"]
+source = "aihydro-lsh"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static/local recipe metadata; no network, no writes [code: reviewed, no persisting or network call in the tool body]"
+
+["lsh_attributes"]
+source = "aihydro-lsh"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [code: no persisting call found]"
+
+["lsh_batch"]
+source = "aihydro-lsh"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [code: no persisting call found]"
+
+["lsh_compare_to_ref"]
+source = "aihydro-lsh"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [code: no persisting call found]"
+
+["lsh_dynamic_attributes"]
+source = "aihydro-lsh"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [code: no persisting call found]"
+
+["lsh_events"]
+source = "aihydro-lsh"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [code: no persisting call found]"
+
+["lsh_families"]
+source = "aihydro-lsh"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static/local recipe metadata; no network, no writes [code: reviewed, no persisting or network call in the tool body]"
+
+["lsh_forcing"]
+source = "aihydro-lsh"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [code: no persisting call found]"
+
+["lsh_geomorphic_attributes"]
+source = "aihydro-lsh"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [code: no persisting call found]"
+
+["lsh_recipe_status"]
+source = "aihydro-lsh"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static/local recipe metadata; no network, no writes [code: reviewed, no persisting or network call in the tool body]"
+
+["lsh_reliability_matrix"]
+source = "aihydro-lsh"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static/local recipe metadata; no network, no writes [code: reviewed, no persisting or network call in the tool body]"
+
+["map_add_layer_from_run"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "adds a layer to the map (command queue + run-derived layer); repeat adds layers [code: writes via event_file.write_text, write_map_command]"
+
+["map_apply_symbology"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the map command queue (replace-style commands) [code: writes via event_file.write_text, write_map_command]"
+
+["map_fit_extent"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the map command queue (replace-style commands) [code: writes via event_file.write_text, write_map_command]"
+
+["map_fit_layer"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the map command queue (replace-style commands) [code: writes via event_file.write_text, write_map_command]"
+
+["map_flood_inundation"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via _write_run_log, event_file.write_text, session.write_workspace_file]"
+
+["map_flood_inundation_hydrograph"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [code: writes via _write_run_log, event_file.write_text, os.unlink, session.save]"
+
+["map_fly_to"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the map command queue (replace-style commands) [code: writes via event_file.write_text, write_map_command]"
+
+["map_get_state"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["map_list_layers"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["map_remove_layer"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the map command queue (replace-style commands) [code: writes via event_file.write_text, write_map_command]"
+
+["map_save_roi"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session fields (workspace_dir, ROI, working geometry) and/or ROI files [code: writes via event_file.write_text, session.save, session.workspace_dir=, session.write_workspace_file]"
+
+["map_set_basemap"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the map command queue (replace-style commands) [code: writes via event_file.write_text, write_map_command]"
+
+["map_set_roi"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session fields (workspace_dir, ROI, working geometry) and/or ROI files [code: writes via event_file.write_text, session.save, session.workspace_dir=, write_map_command]"
+
+["map_set_time_range"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the map command queue (replace-style commands) [code: writes via event_file.write_text, write_map_command]"
+
+["map_set_working_geometry"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session fields (workspace_dir, ROI, working geometry) and/or ROI files [code: writes via session.save, session.workspace_dir=]"
+
+["map_show"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the map command queue (replace-style commands) [code: writes via event_file.write_text, write_map_command]"
+
+["map_update_layer"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the map command queue (replace-style commands) [code: writes via event_file.write_text, write_map_command]"
+
+["measure_feature"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [code: run-log row via post_run only (excluded provenance)]"
+
+["merge_session_shards"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via main_session.interpretation=, main_session.save, path.unlink]"
+
+["merit_add_map_layers"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads local MERIT cache; writes a map event file for the UI [code: writes via event_file.write_text]"
+
+["merit_ensure_basin"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network download of regional MERIT data into the data cache (download=True); no session write [code: no persisting call found]"
+
+["merit_ensure_basins_region"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network download of regional MERIT data into the data cache (download=True); no session write [code: no persisting call found]"
+
+["merit_ensure_region"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network download of regional MERIT data into the data cache (download=True); no session write [code: no persisting call found]"
+
+["merit_ensure_routing_region"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network download of regional MERIT data into the data cache (download=True); no session write [code: no persisting call found]"
+
+["preview_address_comment"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the preview command queue [code: writes via event_file.write_text, write_preview_command]"
+
+["preview_focus_cell"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the preview command queue [code: writes via event_file.write_text, write_preview_command]"
+
+["preview_get_pending_changes"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the preview command queue [code: writes via event_file.write_text, write_preview_command]"
+
+["preview_get_state"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["preview_list_modules"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["preview_recent_events"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["preview_revise_section"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the preview command queue [code: writes via event_file.write_text, write_preview_command]"
+
+["promote_claim_to_registry"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [code: writes via claim_revisions.record_change, event_file.write_text, session.save, write_ledger_event]"
+
+["propose_and_train"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "starts a background job writing artifacts (new job_id per call) [code: writes via jobs.cancel_job]"
+
+["register_feature"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session state (feature registry / binding / archive flag); idempotent [code: writes via registry.register]"
+
+["register_research_plan"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [code: writes via claim_revisions.record_change, event_file.write_text, session.save, write_ledger_event]"
+
+["resolve_passage"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["run_autoresearch"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "starts a background job writing artifacts (new job_id per call) [code: no persisting call found]"
+
+["run_experiment"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "runs a registered analysis tool per feature (some fetch network data); writes session experiment results [code: writes via _save_experiments, session.save]"
+
+["run_inundation_physics_validation"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "starts a background job writing artifacts (new job_id per call) [code: no persisting call found]"
+
+["run_python"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = false
+openWorldHint = true
+evidence = "executes arbitrary Python in a subprocess (can read/write/delete anywhere and use the network) [code: writes via subprocess.run]"
+
+["run_skeptic"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["save_skill"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via skill_path.write_text]"
+
+["search_experiments"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["search_literature"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [code: reviewed, no persisting or network call in the tool body]"
+
+["search_passages_tool"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [code: reviewed, no persisting or network call in the tool body]"
+
+["separate_baseflow"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads session slots (no network); writes derived session slot and/or workspace files [code: writes via _store.write_session_data_file, _write_run_log, persist_streamflow_slot, session.save]"
+
+["set_active_feature"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session state (feature registry / binding / archive flag); idempotent [code: writes via registry.set_active]"
+
+["show_html_preview"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes a UI command file to the preview command queue [code: writes via marker_path.write_text]"
+
+["show_on_map"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads local MERIT cache; writes a map event file for the UI [code: writes via event_file.write_text]"
+
+["start_project"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [code: writes via profile.save, project.save]"
+
+["start_session"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes session state (feature registry / binding / archive flag); idempotent [code: writes via session.save, session.workspace_dir=, subprocess.run]"
+
+["summarize_series"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [code: run-log row via post_run only (excluded provenance)]"
+
+["train_hydro_model"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "starts a background job writing artifacts (new job_id per call) [code: writes via jobs.cancel_job]"
+
+["train_inundation_surrogate"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = false
+openWorldHint = false
+evidence = "starts a background job writing artifacts (new job_id per call) [code: writes via path.write_text]"
+
+["update_claim_status"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via claim_revisions.record_change, event_file.write_text, session.save, write_ledger_event]"
+
+["update_researcher_profile"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via profile.save]"
+
+["wait_for_job"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads job status/artifacts from the job store; no writes [code: reviewed, no persisting or network call in the tool body]"
+
+["write_research_interpretation"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = true
+idempotentHint = true
+openWorldHint = false
+evidence = "overwrites or removes researcher-authored session/profile/skill state [code: writes via session.interpretation=, session.save, session.write_workspace_file, tools_md.write_text]"
