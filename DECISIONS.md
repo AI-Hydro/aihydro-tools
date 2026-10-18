@@ -1,5 +1,39 @@
 # Decisions
 
+## 2026-10-18 — Tool annotations are write-and-network based; U5b is not done (Wave U, U5)
+
+**Annotations.** `readOnlyHint` is true only for a tool that persists nothing and calls no network,
+so a network fetch that only fills a cache is not read-only, and `delineation_doctor` /
+`gee.status` (Earth Engine initialisation) are open-world. Three kinds of recording are not counted
+as a tool write because every call has them: the run record the middleware makes, the run-log row
+`post_run` writes for the call itself (so `summarize_series` and its siblings are read-only), and
+`_resolve_session` bookkeeping. Creating an empty tool-owned cache root before listing it is not a
+write either. Derived slots and files that a re-run recomputes are overwrites of derived data, so they
+are idempotent and not destructive; claims, assumptions, the interpretation, profile, skills, cleared
+slots, cache entries and running jobs are researcher-authored or irreplaceable state, so changing them
+is destructive.
+
+**Hot listing.** `AIHYDRO_TOOL_SURFACE` defaults to `full` so no host changes behaviour on upgrade. A
+host that refuses to call an unlisted tool name cannot reach the tools `hot` omits; such hosts stay on
+`full`. The extension is unaffected (it reads `_meta.hot` from the full list).
+
+**Recent-study fallback.** `audit_interpretation` already refused to guess a study (it passes
+`allow_auto_create=False`); it now also states `allow_recent_fallback=False`, with a test. 27 write
+tools and 2 read tools still use the fallback by default (listed in `docs/context.md`). Removing it for
+them would turn a weak model's omitted `session_id` into an error, which is a behaviour change for the
+extension, so it is an operator switch (`AIHYDRO_RECENT_SESSION_FALLBACK=off`) and not the default.
+The rule that fired is already in `extra.session_resolution` of each run record.
+
+**U5b not done.** `fetch_forcing_data` is the only writer of the session `forcing` slot. `data_fetch`
+writes the `streamflow` slot (D6) but not `forcing`, and `train_hydro_model`, `propose_and_train`,
+the forecast tools, `compute_drought_index`, `compute_soil_loss_rusle` and
+`ai_hydro.modelling.metrics` read `session.forcing`. Unregistering it would leave no tool that
+produces their input. `fetch_streamflow_data` could be retired alone, but the plan retires both
+together, and its consumers (recovery hints in about 15 analysis tools, `inundation_drivers`, the
+rainfall-runoff workflow, `datasets.yaml`, `security_policy.yaml`, the extension `xs/overrides.ts`,
+about 85 test references) should move in the same change as a `data_fetch(variable="forcing")`
+slot writer. That writer is the prerequisite.
+
 ## 2026-10-17 — Evaluation arm C1 strips advisory and gate output, not data provenance (Wave U, U3)
 
 Lead ruling. C1 ("tools only") removes ADVISORY and GATE output from agent-visible results:

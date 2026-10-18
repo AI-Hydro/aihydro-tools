@@ -6,6 +6,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.5.0] - 2026-10-18 (Wave U, U5a tool surface)
+
+No tool is added or removed (U5b, retiring `fetch_streamflow_data` / `fetch_forcing_data`, is not done:
+see DECISIONS.md 2026-10-18). HRB fixture bench: 78/78 passed at 2.4.1 and at 2.5.0 (no delta); full
+suite 2066 passed, 2 skipped, offline.
+
+### Added
+
+- **MCP tool annotations.** `ai_hydro/mcp/tool_annotations.toml` has one row per registered tool
+  (173, including the `aihydro-data` and `aihydro-lsh` entry-point tools) with `readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint` and an `evidence` column justifying each from
+  the code. `ai_hydro/mcp/tool_surface.py` stamps them after registration (same pass pattern as the
+  tier tags) and they are served in `tools/list`. `readOnlyHint = true` means no write of any kind and
+  no network call; the call's own run record, `post_run` run-log row and session-resolution
+  bookkeeping are not counted. Rules: `docs/tool-surface.md`.
+- **`AIHYDRO_TOOL_SURFACE=full|hot`** (default `full`). `hot` makes `tools/list` return the hot tools
+  (every Tier 1 tool plus `HOT_TOOL_ALLOWLIST`, which includes the discovery tools) and nothing else,
+  for hosts that, unlike the VS Code extension, show whatever `tools/list` returns. Other tools stay
+  callable by name and are found through `aihydro_describe_capability`, `list_available_tools` and
+  `describe_tool`. No new tool.
+- **`allow_recent_fallback`** on `_resolve_session`, and `AIHYDRO_RECENT_SESSION_FALLBACK=off` to
+  remove the "most recent study on disk" guess for every tool.
+
+### Changed
+
+- `tools/list` is sorted by tool name, so the order no longer depends on import or entry-point
+  iteration order (two servers with shuffled registration give byte-identical lists).
+- `audit_interpretation` passes `allow_recent_fallback=False`: an audit needs an explicit, `_meta`
+  or chat-bound study.
+- Nine tool descriptions over 1500 characters were tightened to at most 1500 (`add_claim`,
+  `compute_spectral_index`, `data_fetch`, `create_cn_grid`, `map_flood_inundation`,
+  `run_autoresearch`, `show_on_map`, `fetch_forcing_data`, `export_session`); parameters, error codes
+  and return keys are kept. Total description size 90,057 -> 83,914 characters.
+
 ## [2.4.1] - 2026-10-17 (Wave U patch, proof 3 findings E6/E7)
 
 ### Changed (precedence; see DECISIONS.md 2026-10-17)
