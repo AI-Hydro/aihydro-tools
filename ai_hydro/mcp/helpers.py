@@ -94,6 +94,22 @@ def _maybe_set_workspace(session: "Any") -> None:
         log.debug("_maybe_set_workspace failed (non-fatal): %s", exc)
 
 
+_FALLBACK_OFF_VALUES = frozenset({"off", "0", "false", "no"})
+
+
+def recent_fallback_enabled() -> bool:
+    """False when AIHYDRO_RECENT_SESSION_FALLBACK is off/0/false/no, or in an evaluation run.
+
+    An evaluation run is one the P1 harness started (see eval_condition.in_evaluation_run): a guessed study
+    would silently change what an arm computes. Interactive use keeps the fallback.
+    """
+    from ai_hydro.mcp.eval_condition import in_evaluation_run
+
+    if in_evaluation_run():
+        return False
+    return os.environ.get("AIHYDRO_RECENT_SESSION_FALLBACK", "").strip().lower() not in _FALLBACK_OFF_VALUES
+
+
 def _extract_chat_id(args: dict) -> tuple[str | None, dict]:
     """
     Pop ``_chat_id`` from *args* and return ``(chat_id, remaining_args)``.
@@ -153,8 +169,9 @@ def _resolve_session(
         silently create sessions.  Also disables the recent-study fallback.
     allow_recent_fallback:
         Set to ``False`` to forbid the most-recent-study guess even though
-        auto-create is allowed.  ``AIHYDRO_RECENT_SESSION_FALLBACK=off``
-        forbids it for every tool.
+        auto-create is allowed.  ``AIHYDRO_RECENT_SESSION_FALLBACK=off`` (or
+        off/0/false/no), or an evaluation run, forbids it for every
+        tool.  When it does fire, the result carries a top-level ``session_warning``.
 
     Returns
     -------
@@ -206,7 +223,11 @@ def _resolve_session_impl(
     # per-request ContextVar populated by _ContextInjectionMiddleware (from
     # _meta, else the legacy hidden args).  No-op when it holds None (direct
     # Python calls, tests, CLI invocations).
-    from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_STUDY_ID
+    from ai_hydro.mcp.app import ACTIVE_CALL_NOTES, ACTIVE_CHAT_ID, ACTIVE_READ_ONLY, ACTIVE_STUDY_ID
+
+    # A tool annotated readOnlyHint=true must not change anything by resolving its session: no
+    # chat rebinding, no workspace_dir backfill (which saves the session and bumps its mtime).
+    read_only = ACTIVE_READ_ONLY.get()
 
     if chat_id is None:
         chat_id = ACTIVE_CHAT_ID.get()
@@ -236,7 +257,7 @@ def _resolve_session_impl(
     # 1. Explicit session_id (or _meta study_id) → use it; optionally rebind chat
     if session_id:
         sid = _normalize_session_id(session_id)
-        if chat_id and store.lookup_study(chat_id) != sid:
+        if chat_id and not read_only and store.lookup_study(chat_id) != sid:
             try:
                 store.bind(chat_id, sid)
                 log.debug("Rebound chat=%s → study=%s (explicit override)", chat_id, sid)
@@ -251,11 +272,12 @@ def _resolve_session_impl(
             log.debug("Resolved study=%s from chat binding chat=%s", bound, chat_id)
             # Opportunistically backfill workspace_dir if the session was
             # created before _workspace injection was wired.
-            try:
-                from ai_hydro.session import HydroSession
-                _maybe_set_workspace(HydroSession.load(bound))
-            except Exception:
-                pass
+            if not read_only:
+                try:
+                    from ai_hydro.session import HydroSession
+                    _maybe_set_workspace(HydroSession.load(bound))
+                except Exception:
+                    pass
             return bound, "chat_binding"
 
     # 3. Auto-create from hint
@@ -266,10 +288,11 @@ def _resolve_session_impl(
             session = HydroSession.load(sid)  # creates if not exists
             # Populate workspace_dir from the injected _workspace ContextVar
             # so file outputs (TWI, geomorphic, etc.) land in the VS Code project.
-            _maybe_set_workspace(session)
+            if not read_only:
+                _maybe_set_workspace(session)
         except Exception as exc:
             log.debug("Auto-create session %s: %s", sid, exc)
-        if chat_id:
+        if chat_id and not read_only:
             try:
                 store.bind(chat_id, sid)
                 log.debug("Auto-created study=%s and bound to chat=%s", sid, chat_id)
@@ -284,11 +307,7 @@ def _resolve_session_impl(
     # allow_auto_create so query/admin tools that opt out are unaffected, and by
     # allow_recent_fallback / AIHYDRO_RECENT_SESSION_FALLBACK=off for tools (the
     # audit) or deployments that must never act on a guessed study.
-    if (
-        allow_auto_create
-        and allow_recent_fallback
-        and os.environ.get("AIHYDRO_RECENT_SESSION_FALLBACK", "").strip().lower() != "off"
-    ):
+    if allow_auto_create and allow_recent_fallback and recent_fallback_enabled():
         try:
             # Reference the private symbol: tests patch ``_SESSIONS_DIR`` to a
             # tmp dir, so reading it here keeps the fallback test-isolated.
@@ -304,16 +323,20 @@ def _resolve_session_impl(
                     "No session_id and no chat binding; falling back to most "
                     "recent study '%s'. Pass session_id to target another.", sid
                 )
-                if chat_id:
+                if chat_id and not read_only:
                     try:
                         store.bind(chat_id, sid)
                     except Exception as exc:
                         log.debug("Could not persist fallback binding: %s", exc)
-                try:
-                    from ai_hydro.session import HydroSession
-                    _maybe_set_workspace(HydroSession.load(sid))
-                except Exception:
-                    pass
+                if not read_only:
+                    try:
+                        from ai_hydro.session import HydroSession
+                        _maybe_set_workspace(HydroSession.load(sid))
+                    except Exception:
+                        pass
+                notes = ACTIVE_CALL_NOTES.get()
+                if notes is not None:          # the middleware adds a visible `session_warning`
+                    notes.setdefault("recent_fallback_session", sid)
                 return sid, "recent_fallback"
         except Exception as exc:
             log.debug("Most-recent-session fallback skipped: %s", exc)

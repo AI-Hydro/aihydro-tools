@@ -44,7 +44,15 @@ HOT_MODE_NOTE = (
 
 
 def tool_surface_mode() -> str:
-    """``"full"`` (default) or ``"hot"``, from ``AIHYDRO_TOOL_SURFACE``; unknown values mean full."""
+    """``"full"`` (default) or ``"hot"``, from ``AIHYDRO_TOOL_SURFACE``; unknown values mean full.
+
+    Always ``"full"`` in an evaluation run: every arm sees the same
+    complete tool surface, and the eval middleware already decides what each arm may see.
+    """
+    from ai_hydro.mcp.eval_condition import in_evaluation_run
+
+    if in_evaluation_run():
+        return "full"
     value = os.environ.get(SURFACE_ENV, "").strip().lower()
     return "hot" if value == "hot" else "full"
 
@@ -63,7 +71,9 @@ def _parse_minimal_toml(text: str) -> dict[str, dict[str, Any]]:
             continue
         m = re.fullmatch(r'\["(.+)"\]', line)
         if m:
-            current = rows.setdefault(m.group(1), {})
+            if m.group(1) in rows:
+                raise ValueError(f"tool_annotations.toml: duplicate table [{m.group(1)!r}]")
+            current = rows[m.group(1)] = {}
             continue
         m = re.fullmatch(r'(\w+)\s*=\s*(.+)', line)
         if not m or current is None:
@@ -129,8 +139,33 @@ def _is_hot(tool: Any) -> bool:
     return is_hot_tool(getattr(tool, "name", ""))
 
 
+_READ_ONLY_TOOLS: frozenset[str] | None = None
+
+
+def read_only_tools() -> frozenset[str]:
+    """Names of the tools whose annotation row has ``readOnlyHint = true`` (cached)."""
+    global _READ_ONLY_TOOLS
+    if _READ_ONLY_TOOLS is None:
+        _READ_ONLY_TOOLS = frozenset(n for n, r in load_annotation_rows().items() if r.get("readOnlyHint"))
+    return _READ_ONLY_TOOLS
+
+
 class ToolSurfaceMiddleware(Middleware):
-    """Sort ``tools/list`` by name; under ``AIHYDRO_TOOL_SURFACE=hot`` list hot tools only."""
+    """Sort ``tools/list`` by name; under ``AIHYDRO_TOOL_SURFACE=hot`` list hot tools only.
+
+    Also marks calls to ``readOnlyHint`` tools (ACTIVE_READ_ONLY), so session resolution has no
+    side effects for them. The marker is derived from the annotation table, never per tool.
+    """
+
+    async def on_call_tool(self, context, call_next):
+        from ai_hydro.mcp.app import ACTIVE_READ_ONLY
+
+        name = getattr(context.message, "name", "") or ""
+        token = ACTIVE_READ_ONLY.set(name in read_only_tools())
+        try:
+            return await call_next(context)
+        finally:
+            ACTIVE_READ_ONLY.reset(token)
 
     async def on_list_tools(self, context, call_next):
         tools = list(await call_next(context))

@@ -717,6 +717,7 @@ def get_model_results(session_id: str | None = None, job_id: str | None = None) 
                 if partial:
                     nse = partial.get("nse")
                     return {
+                        "session_id": session_id,
                         "model_trained": True,
                         "source": "job_artifact",
                         **partial,
@@ -728,6 +729,7 @@ def get_model_results(session_id: str | None = None, job_id: str | None = None) 
                     }
             elif not status.get("error"):
                 return {
+                    "session_id": session_id,
                     "model_trained": False,
                     "job_status": status.get("status"),
                     "progress": status.get("progress"),
@@ -739,6 +741,7 @@ def get_model_results(session_id: str | None = None, job_id: str | None = None) 
 
         if session.model is None:
             return {
+                "session_id": session_id,
                 "error": False,
                 "model_trained": False,
                 "message": (
@@ -754,6 +757,7 @@ def get_model_results(session_id: str | None = None, job_id: str | None = None) 
         result = session.model
         nse = result.get("nse")
         return {
+            "session_id": session_id,
             "model_trained": True,
             "source": "session_cache",
             **result,

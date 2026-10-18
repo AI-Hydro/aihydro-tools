@@ -29,7 +29,12 @@ The "most recent study on disk" step (`recent_fallback`) is a guess. It runs onl
 tool that allows auto-create and does not opt out. `audit_interpretation` passes
 `allow_recent_fallback=False` (and `allow_auto_create=False`), so an audit always needs an
 explicit, `_meta`, or chat-bound study and otherwise returns `SESSION_RESOLUTION_FAILED`.
-Setting `AIHYDRO_RECENT_SESSION_FALLBACK=off` removes the guess for every tool. Tools that
+Setting `AIHYDRO_RECENT_SESSION_FALLBACK` to `off`, `0`, `false` or `no` removes the guess for every
+tool, and it is always off in an evaluation run (`AIHYDRO_EVAL_NONCE` set). When it does fire, the
+result carries a top-level `session_warning` ("No study was named or bound; wrote to most-recent
+study <id> -- name a session to be sure") in addition to `extra.session_resolution`. A read-only
+tool (`readOnlyHint`) resolves its session with no side effects: it never rebinds the chat and never
+backfills `workspace_dir`. Tools that
 still use it by default (the `session_resolution` field of their run record says when it
 fired): the analysis writers `compute_*`, `extract_*`, `separate_baseflow`, `create_cn_grid`,
 `fetch_*`, `map_flood_inundation*`, `delineate_watershed*` (when no gauge/point hint is

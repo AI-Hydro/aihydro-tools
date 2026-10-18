@@ -72,6 +72,11 @@ log = logging.getLogger("ai_hydro.mcp.eval_condition")
 
 MARKER_FILE = "eval_home.json"
 NONCE_ENV = "AIHYDRO_EVAL_NONCE"
+
+
+def in_evaluation_run() -> bool:
+    """True in an evaluation run (the nonce environment variable is set, whatever the marker state)."""
+    return bool(os.environ.get(NONCE_ENV))
 MARKER_SCHEMA = "aihydro.eval_home/1"
 CONDITIONS = ("C1", "C2", "C3")
 CONTEXT_MISMATCH = "EVAL_CONTEXT_MISMATCH"

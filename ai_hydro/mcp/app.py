@@ -22,7 +22,7 @@ from fastmcp import FastMCP, Context
 __all__ = [
     "mcp", "Context", "TOOL_TIERS", "get_tool_tiers", "get_tool_tier",
     "ACTIVE_CHAT_ID", "ACTIVE_WORKSPACE", "ACTIVE_STUDY_ID",
-    "ACTIVE_CONTEXT_SOURCE", "ACTIVE_CONTEXT_CLIENT", "CONTEXT_META_KEY",
+    "ACTIVE_CONTEXT_SOURCE", "ACTIVE_CONTEXT_CLIENT", "CONTEXT_META_KEY", "ACTIVE_READ_ONLY",
 ]
 
 # ---------------------------------------------------------------------------
@@ -66,6 +66,17 @@ ACTIVE_CONTEXT_SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 ACTIVE_CONTEXT_CLIENT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "ACTIVE_CONTEXT_CLIENT", default=None
+)
+# True while a tool annotated readOnlyHint=true (tool_annotations.toml) runs through the MCP server.
+# Session resolution then has no side effects: no chat rebinding, no workspace_dir backfill/save.
+ACTIVE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ACTIVE_READ_ONLY", default=False
+)
+# A per-call mutable dict (set by _SessionWarningMiddleware) that session resolution writes into
+# when it guesses the "most recent study" (key ``recent_fallback_session``). A tool runs in a worker
+# thread with a copy of the context, so only a shared mutable object carries the note back.
+ACTIVE_CALL_NOTES: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "ACTIVE_CALL_NOTES", default=None
 )
 
 # ---------------------------------------------------------------------------
@@ -579,6 +590,27 @@ class _ContextInjectionMiddleware(Middleware):
                 var.reset(token)
 
 
+class _SessionWarningMiddleware(Middleware):
+    """Outermost: add a visible top-level ``session_warning`` to a result whose session was guessed.
+
+    Applies to every tool (including record-exempt ones) and runs after the run record is sealed, so
+    the sealed digest is unaffected. Errors are left alone.
+    """
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
+        notes: dict = {}
+        token = ACTIVE_CALL_NOTES.set(notes)
+        try:
+            result = await call_next(context)
+        finally:
+            ACTIVE_CALL_NOTES.reset(token)
+        sid = notes.get("recent_fallback_session")
+        if sid:
+            _inject_session_warning(result, sid)
+        return result
+
+
+mcp.add_middleware(_SessionWarningMiddleware())
 mcp.add_middleware(_ContextInjectionMiddleware())
 # Evaluation arms (P1/W2): registered BEFORE RunRecordMiddleware so it wraps it and strips only after sealing.
 from ai_hydro.mcp.eval_condition import EvalConditionMiddleware as _EvalConditionMiddleware  # noqa: E402
@@ -696,6 +728,40 @@ def _inject_run_id(tool_result, run_id: str) -> None:
         _record_log.debug("could not inject _run_id: %s", exc)
 
 
+RECENT_FALLBACK_WARNING = (
+    "No study was named or bound; wrote to most-recent study {sid} \u2014 name a session to be sure"
+)
+
+
+def _inject_session_warning(tool_result, session_id: str) -> None:
+    """Add a visible top-level ``session_warning`` to a successful dict result.
+
+    Set when the call's session came from the recent-study guess (``recent_fallback``). Added after
+    the run record is sealed, like ``_run_id``, so the sealed digest is unaffected. Best effort.
+    """
+    text = RECENT_FALLBACK_WARNING.format(sid=session_id)
+    try:
+        structured = getattr(tool_result, "structured_content", None)
+        if isinstance(structured, dict) and set(structured) != {"result"}:
+            if not structured.get("error"):
+                structured.setdefault("session_warning", text)
+        for block in getattr(tool_result, "content", None) or []:
+            raw = getattr(block, "text", None)
+            if not isinstance(raw, str):
+                continue
+            try:
+                parsed = _json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                if not parsed.get("error") and "session_warning" not in parsed:
+                    parsed["session_warning"] = text
+                    block.text = _json.dumps(parsed, default=str)
+                return
+    except Exception as exc:
+        _record_log.debug("could not inject session_warning: %s", exc)
+
+
 def _mcp_client_label(context) -> str | None:
     try:
         info = context.fastmcp_context.session.client_params.clientInfo
@@ -779,6 +845,7 @@ class RunRecordMiddleware(Middleware):
                     and isinstance(result_dict, dict) and not result_dict.get("error")
                     and "_run_id" not in result_dict):
                 _inject_run_id(tool_result, outcome.call_run_id)
+
         except Exception as exc:
             _record_log.warning("run recording failed for %s: %s", tool, exc)
             record_error = f"recording: {type(exc).__name__}: {exc}"

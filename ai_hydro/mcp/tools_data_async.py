@@ -20,6 +20,7 @@ it lives in tools but calls aihydro_data.fetch() as a subprocess.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import uuid
 from pathlib import Path
@@ -32,7 +33,17 @@ from ai_hydro.mcp.helpers import _tool_error_to_dict
 log = logging.getLogger("ai_hydro.mcp.tools_data_async")
 
 
+_JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+
+
 def _artifact_dir(job_id: str) -> Path:
+    # A job id names a directory under data_jobs: refuse separators, "..", and anything else
+    # that could address a path outside it.
+    if not isinstance(job_id, str) or not _JOB_ID_RE.fullmatch(job_id):
+        raise ValueError(
+            f"Invalid job_id {str(job_id)[:40]!r}: use the job_id returned by data_fetch_background "
+            "(letters, digits, '-' and '_' only)."
+        )
     base = Path.home() / ".aihydro" / "data_jobs"
     base.mkdir(parents=True, exist_ok=True)
     return base / job_id
