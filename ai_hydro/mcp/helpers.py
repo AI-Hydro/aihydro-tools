@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -114,6 +115,7 @@ def _resolve_session(
     *,
     auto_create_hint: str | None = None,
     allow_auto_create: bool = True,
+    allow_recent_fallback: bool = True,
 ) -> str:
     """
     Resolve which study (HydroSession) a tool call should operate on.
@@ -130,7 +132,9 @@ def _resolve_session(
        gauge ID, lat/lon slug, or explicit name) and
        *allow_auto_create* is True, create a new HydroSession with
        that ID and bind it to the chat.
-    3.5. **Most recent study** on disk (rule ``recent_fallback``).
+    3.5. **Most recent study** on disk (rule ``recent_fallback``). Skipped when
+       ``allow_recent_fallback=False`` (audits and other tools that must act on
+       an explicit or bound study) or when ``AIHYDRO_RECENT_SESSION_FALLBACK=off``.
     4. **Error** — raises ``SessionResolutionError`` with a helpful
        recovery message.
 
@@ -146,7 +150,11 @@ def _resolve_session(
         supplied by delineation tools.
     allow_auto_create:
         Set to ``False`` for admin / query tools that should not
-        silently create sessions.
+        silently create sessions.  Also disables the recent-study fallback.
+    allow_recent_fallback:
+        Set to ``False`` to forbid the most-recent-study guess even though
+        auto-create is allowed.  ``AIHYDRO_RECENT_SESSION_FALLBACK=off``
+        forbids it for every tool.
 
     Returns
     -------
@@ -159,6 +167,7 @@ def _resolve_session(
     return _resolve_session_with_rule(
         session_id, chat_id,
         auto_create_hint=auto_create_hint, allow_auto_create=allow_auto_create,
+        allow_recent_fallback=allow_recent_fallback,
     )[0]
 
 
@@ -168,11 +177,13 @@ def _resolve_session_with_rule(
     *,
     auto_create_hint: str | None = None,
     allow_auto_create: bool = True,
+    allow_recent_fallback: bool = True,
 ) -> tuple[str, str]:
     """``(session_id, rule)``; see ``_resolve_session`` for the chain."""
     sid, rule = _resolve_session_impl(
         session_id, chat_id,
         auto_create_hint=auto_create_hint, allow_auto_create=allow_auto_create,
+        allow_recent_fallback=allow_recent_fallback,
     )
     try:
         from ai_hydro.session.run_records import note_session_resolution
@@ -189,6 +200,7 @@ def _resolve_session_impl(
     *,
     auto_create_hint: str | None,
     allow_auto_create: bool,
+    allow_recent_fallback: bool = True,
 ) -> tuple[str, str]:
     # Wave 3 Axis 3: if no chat_id was passed explicitly, read from the
     # per-request ContextVar populated by _ContextInjectionMiddleware (from
@@ -269,8 +281,14 @@ def _resolve_session_impl(
     # The weak model frequently omits session_id on a follow-up call before a
     # chat binding exists. Rather than hard-failing, fall back to the most
     # recently modified study on disk and bind it to the chat. This is gated by
-    # allow_auto_create so query/admin tools that opt out are unaffected.
-    if allow_auto_create:
+    # allow_auto_create so query/admin tools that opt out are unaffected, and by
+    # allow_recent_fallback / AIHYDRO_RECENT_SESSION_FALLBACK=off for tools (the
+    # audit) or deployments that must never act on a guessed study.
+    if (
+        allow_auto_create
+        and allow_recent_fallback
+        and os.environ.get("AIHYDRO_RECENT_SESSION_FALLBACK", "").strip().lower() != "off"
+    ):
         try:
             # Reference the private symbol: tests patch ``_SESSIONS_DIR`` to a
             # tmp dir, so reading it here keeps the fallback test-isolated.

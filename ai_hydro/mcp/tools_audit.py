@@ -40,7 +40,10 @@ def audit_interpretation(
     Tier 1 — enforcement runs post_run() (quality_flags, _run_id) automatically.
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        # An audit judges one study's prose: never guess the study ("most recent on disk").
+        session_id = _resolve_session(
+            session_id, None, allow_auto_create=False, allow_recent_fallback=False
+        )
 
         if not prose or not prose.strip():
             return {

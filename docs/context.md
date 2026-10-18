@@ -25,6 +25,18 @@ Session resolution (`_resolve_session`): explicit `session_id` argument, then
 `study_id` from `_meta`, then the chat binding, then auto-create from a hint,
 then the most recent study on disk, else an error.
 
+The "most recent study on disk" step (`recent_fallback`) is a guess. It runs only for a
+tool that allows auto-create and does not opt out. `audit_interpretation` passes
+`allow_recent_fallback=False` (and `allow_auto_create=False`), so an audit always needs an
+explicit, `_meta`, or chat-bound study and otherwise returns `SESSION_RESOLUTION_FAILED`.
+Setting `AIHYDRO_RECENT_SESSION_FALLBACK=off` removes the guess for every tool. Tools that
+still use it by default (the `session_resolution` field of their run record says when it
+fired): the analysis writers `compute_*`, `extract_*`, `separate_baseflow`, `create_cn_grid`,
+`fetch_*`, `map_flood_inundation*`, `delineate_watershed*` (when no gauge/point hint is
+given), `train_hydro_model`, `propose_and_train`, `run_autoresearch`,
+`run_inundation_physics_validation`, `train_inundation_surrogate`, `register_feature`,
+`set_active_feature`, `bind_map_to_claim`, and the readers `get_model_results` and `list_features`.
+
 ## What is recorded
 
 Each run record's `extra` carries:
