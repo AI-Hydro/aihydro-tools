@@ -606,7 +606,10 @@ class _SessionWarningMiddleware(Middleware):
             ACTIVE_CALL_NOTES.reset(token)
         sid = notes.get("recent_fallback_session")
         if sid:
-            _inject_session_warning(result, sid)
+            from ai_hydro.mcp.tool_surface import read_only_tools
+
+            name = getattr(context.message, "name", "") or ""
+            _inject_session_warning(result, sid, read_only=name in read_only_tools())
         return result
 
 
@@ -729,17 +732,18 @@ def _inject_run_id(tool_result, run_id: str) -> None:
 
 
 RECENT_FALLBACK_WARNING = (
-    "No study was named or bound; wrote to most-recent study {sid} \u2014 name a session to be sure"
+    "No study was named or bound; {verb} most-recent study {sid} \u2014 name a session to be sure"
 )
 
 
-def _inject_session_warning(tool_result, session_id: str) -> None:
+def _inject_session_warning(tool_result, session_id: str, read_only: bool = False) -> None:
     """Add a visible top-level ``session_warning`` to a successful dict result.
 
     Set when the call's session came from the recent-study guess (``recent_fallback``). Added after
     the run record is sealed, like ``_run_id``, so the sealed digest is unaffected. Best effort.
     """
-    text = RECENT_FALLBACK_WARNING.format(sid=session_id)
+    # "used" for a tool annotated readOnlyHint (it changes nothing); "wrote to" for a writer.
+    text = RECENT_FALLBACK_WARNING.format(verb="used" if read_only else "wrote to", sid=session_id)
     try:
         structured = getattr(tool_result, "structured_content", None)
         if isinstance(structured, dict) and set(structured) != {"result"}:

@@ -18,7 +18,11 @@ served in `tools/list`.
 | `idempotentHint` | repeating the call with the same arguments leaves the same state |
 | `openWorldHint` | it calls a network service (NLDI, USGS, Earth Engine, Crossref, DEM and forcing servers) or runs arbitrary code |
 
-A `readOnlyHint = true` call may write only these things, and nothing else:
+"Read-only" here means the call mutates no session or study state: no slot, field, claim, binding,
+file or job. It is not "leaves no trace". A read-only call may still append sealed run-log rows, and
+some mint citable ids: the series tools (`summarize_series`, `compare_series`, `detect_threshold_runs`,
+`bootstrap_statistic`, `measure_feature`) return a `_run_id` that claims can cite as evidence. So a
+`readOnlyHint = true` call may write only these things, and nothing else:
 
 - its run records (the middleware's sealed run record and `post_run`'s run-log row for the call
   itself, `<session>.runlog.sqlite3`): evidence-minting about the call, not a change to the study;
@@ -68,7 +72,7 @@ The VS Code extension does its own progressive disclosure from `_meta.hot`; othe
 (Claude Code, Codex, Desktop) receive whatever `tools/list` returns, so `hot` is the way to
 shrink their tool context. Tools left out of the hot listing stay registered and callable by
 name; `aihydro_describe_capability(domain)`, `list_available_tools()` and `describe_tool(name)`
-find them. When the server starts with `hot` (and not in an evaluation run), its instructions gain one paragraph saying so; the instructions are fixed at start, while the listing filter reads the variable on every `tools/list`. `AIHYDRO_EVAL_NONCE` (an evaluation run) forces `full`, so every arm sees the same tool surface. A host
+find them. When the server starts with `hot` (and not in an evaluation run), its instructions gain one paragraph saying so; the instructions are fixed at start, while the listing filter reads the variable on every `tools/list`. An evaluation run (`AIHYDRO_EVAL_NONCE` set, tested by `eval_condition.in_evaluation_run()`) forces `full`, so every arm sees the same tool surface. A host
 that refuses to call a tool it did not list will not reach them: keep `full` for such hosts.
 Set it per server process in the host's MCP configuration
 (`"env": {"AIHYDRO_TOOL_SURFACE": "hot"}`); the listing filter reads the variable on every

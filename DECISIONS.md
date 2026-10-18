@@ -4,9 +4,9 @@
 
 **Annotations.** `readOnlyHint` is true only for a tool that persists nothing and calls no network,
 so a network fetch that only fills a cache is not read-only, and `delineation_doctor` /
-`gee.status` (Earth Engine initialisation) are open-world. A read-only call may append run records
+`gee.status` (Earth Engine initialisation) are open-world. "Read-only" means no session or state mutation, not no trace: a read-only call may append run records
 (the middleware's sealed record, `post_run`'s run-log row for the call itself: evidence-minting about
-the call) and create an empty tool-owned cache directory; nothing else. Session-resolution
+the call; the series tools mint citable `_run_id`s this way) and create an empty tool-owned cache directory; nothing else. Session-resolution
 bookkeeping is NOT allowed for read-only calls: a read-only call that named a session used to rebind
 the chat to it (re-routing later writes) and backfill `workspace_dir` (a save that bumped the mtime
 the recent-study guess sorts by); both are now switched off for tools whose row says
@@ -17,14 +17,14 @@ or irreplaceable state, so changing them is destructive. The rows are classified
 and guarded by a static deny-list and a runtime audit-hook test; neither is a proof.
 
 **Hot listing.** `AIHYDRO_TOOL_SURFACE` defaults to `full` so no host changes behaviour on upgrade, and
-is forced to `full` in an evaluation run (`AIHYDRO_EVAL_NONCE`) so every arm sees one tool surface. A
+is forced to `full` in an evaluation run (`AIHYDRO_EVAL_NONCE`, via `eval_condition.in_evaluation_run()`) so every arm sees one tool surface. A
 host that refuses to call an unlisted tool name cannot reach the tools `hot` omits; such hosts stay on
 `full`. The extension is unaffected (it reads `_meta.hot` from the full list).
 
 **Recent-study fallback (lead ruling).** The guess stays on for interactive use, because turning it
 off would make a weak model's omitted `session_id` an error in the extension. It is not silent: a
 result produced through it carries a top-level `session_warning` naming the study, as well as
-`extra.session_resolution`. It is off whenever `AIHYDRO_EVAL_NONCE` is set (a guessed study would
+`extra.session_resolution`. It is off whenever `AIHYDRO_EVAL_NONCE` is set (via `in_evaluation_run()`) (a guessed study would
 change what an arm computes) and for `off`/`0`/`false`/`no` in `AIHYDRO_RECENT_SESSION_FALLBACK`.
 `audit_interpretation` already refused to guess (`allow_auto_create=False`); passing
 `allow_recent_fallback=False` is hardening. 27 write tools and 2 read tools still use the fallback by

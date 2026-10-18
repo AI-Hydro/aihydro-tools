@@ -96,10 +96,24 @@ def test_recent_fallback_result_carries_a_visible_session_warning(world):
     res = _call("list_features", {})
     body = _body(res)
     assert body["session_id"] == "s_new"
-    assert "No study was named or bound" in body["session_warning"]
-    assert "s_new" in body["session_warning"]
+    assert body["session_warning"] == (
+        "No study was named or bound; used most-recent study s_new \u2014 name a session to be sure")
     # no binding, no mtime change from the guess itself (read-only)
     assert world["bindings"].lookup_study("chatZ") is None
+
+
+def test_recent_fallback_warning_says_wrote_to_for_a_writer():
+    from types import SimpleNamespace
+
+    from ai_hydro.mcp.app import _inject_session_warning
+    from ai_hydro.mcp.tool_surface import read_only_tools
+
+    assert "compute_flow_duration_curve" not in read_only_tools() and "list_features" in read_only_tools()
+    result = SimpleNamespace(structured_content={"ok": 1}, content=[SimpleNamespace(text=json.dumps({"ok": 1}))])
+    _inject_session_warning(result, "s_new", read_only=False)
+    expected = "No study was named or bound; wrote to most-recent study s_new \u2014 name a session to be sure"
+    assert result.structured_content["session_warning"] == expected
+    assert json.loads(result.content[0].text)["session_warning"] == expected
 
 
 def test_named_session_has_no_warning(world):

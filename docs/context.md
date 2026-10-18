@@ -30,9 +30,10 @@ tool that allows auto-create and does not opt out. `audit_interpretation` passes
 `allow_recent_fallback=False` (and `allow_auto_create=False`), so an audit always needs an
 explicit, `_meta`, or chat-bound study and otherwise returns `SESSION_RESOLUTION_FAILED`.
 Setting `AIHYDRO_RECENT_SESSION_FALLBACK` to `off`, `0`, `false` or `no` removes the guess for every
-tool, and it is always off in an evaluation run (`AIHYDRO_EVAL_NONCE` set). When it does fire, the
-result carries a top-level `session_warning` ("No study was named or bound; wrote to most-recent
-study <id> -- name a session to be sure") in addition to `extra.session_resolution`. A read-only
+tool, and it is always off in an evaluation run (`AIHYDRO_EVAL_NONCE` is set, tested by
+`eval_condition.in_evaluation_run()`; there is no other switch). When it does fire, the
+result carries a top-level `session_warning` ("No study was named or bound; used most-recent study <id> --
+name a session to be sure" for a read-only tool, "wrote to" for a writer) in addition to `extra.session_resolution`. A read-only
 tool (`readOnlyHint`) resolves its session with no side effects: it never rebinds the chat and never
 backfills `workspace_dir`. Tools that
 still use it by default (the `session_resolution` field of their run record says when it

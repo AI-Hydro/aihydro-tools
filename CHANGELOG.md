@@ -17,7 +17,8 @@ see DECISIONS.md 2026-10-18). HRB fixture bench: 78/78 passed at 2.4.1 and at 2.
   (173, including the `aihydro-data` and `aihydro-lsh` entry-point tools) with `readOnlyHint`,
   `destructiveHint`, `idempotentHint`, `openWorldHint` and an `evidence` column (a grouped
   justification plus the guard result for the tool). `ai_hydro/mcp/tool_surface.py` stamps them after
-  registration and they are served in `tools/list`. The classification was made by reading the code;
+  registration and they are served in `tools/list`. "Read-only" means no session or state mutation; the call may still append sealed run-log rows, and the
+  series tools mint citable `_run_id`s. The classification was made by reading the code;
   it is checked, not proved: a static deny-list scan (`tests/test_tool_surface.py`) and a runtime
   `sys.addaudithook` guard that calls every read-only tool against a fixture session
   (`tests/test_readonly_runtime_guard.py`), plus a mutation test that relabels all 97 non-read-only
@@ -30,7 +31,7 @@ see DECISIONS.md 2026-10-18). HRB fixture bench: 78/78 passed at 2.4.1 and at 2.
   the VS Code extension, show whatever `tools/list` returns. Other tools stay callable by name and
   are found through `aihydro_describe_capability`, `list_available_tools` and `describe_tool`.
 - **`session_warning`.** A result whose session came from the recent-study guess carries a top-level
-  `session_warning` ("No study was named or bound; wrote to most-recent study <id> ...") in addition
+  `session_warning` ("No study was named or bound; used most-recent study <id> ..." for a read-only tool, "wrote to" for a writer) in addition
   to `extra.session_resolution = "recent_fallback"`.
 
 ### Changed
@@ -40,7 +41,7 @@ see DECISIONS.md 2026-10-18). HRB fixture bench: 78/78 passed at 2.4.1 and at 2.
   longer backfills `workspace_dir` (a save that bumped the session's mtime and so fed the
   recent-study guess). `get_model_results` now echoes the `session_id` it read, like `list_features`.
 - **Recent-study fallback.** `AIHYDRO_RECENT_SESSION_FALLBACK` accepts `off`/`0`/`false`/`no`, and the
-  fallback is always off in an evaluation run. Default stays on for interactive use.
+  fallback is always off in an evaluation run (`AIHYDRO_EVAL_NONCE`, via `in_evaluation_run()`). Default stays on for interactive use.
   `audit_interpretation` also passes `allow_recent_fallback=False`: hardening only, it already
   refused to guess (`allow_auto_create=False`).
 - `list_cached_citations` no longer creates its cache directory; `get_data_fetch_result` rejects a
