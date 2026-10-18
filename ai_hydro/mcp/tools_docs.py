@@ -73,6 +73,20 @@ def _short_desc(tool) -> str:
     return desc.split("\n\n")[0].replace("\n", " ").strip()
 
 
+def _md_text(text: str) -> str:
+    """Escape ``&``, ``<`` and ``>`` outside backtick code spans.
+
+    Tool descriptions are prose that may mention tags such as ``<html>`` or
+    placeholders such as ``<id>``. Markdown passes raw tags through as HTML,
+    which breaks the rendered page and the site's HTML minifier. Text inside
+    code spans is shown literally by Markdown, so it is left untouched.
+    """
+    parts = text.split("`")
+    for i in range(0, len(parts), 2):
+        parts[i] = parts[i].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return "`".join(parts)
+
+
 def _example_value(param: str, info: dict):
     """Produce a plausible example value for a worked call snippet."""
     ptype = info.get("type", "string")
@@ -218,7 +232,7 @@ def _render_param_table(props: dict, required: set) -> list[str]:
         ptype = info.get("type", "any")
         if "enum" in info:
             ptype = "enum: " + ", ".join(f"`{e}`" for e in info["enum"])
-        pdesc = (info.get("description", "") or "").replace("\n", " ").replace("|", "\\|").strip()
+        pdesc = _md_text((info.get("description", "") or "").replace("\n", " ").replace("|", "\\|").strip())
         req = "yes" if param in required else "—"
         out.append(f"| `{param}` | {ptype} | {req} | {pdesc} |")
     return out
@@ -316,7 +330,7 @@ def generate_tool_reference(target: Path | str) -> Path:
 
                 lines.append(f"#### `{tool.name}`{hot}")
                 lines.append("")
-                short = _short_desc(tool)
+                short = _md_text(_short_desc(tool))
                 if short:
                     lines.append(short)
                     lines.append("")
