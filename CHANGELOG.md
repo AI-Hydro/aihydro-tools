@@ -6,6 +6,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`aihydro-approve` refuses in an agent context (exit 6).** `approve` and `enroll --user-trust` refuse,
+  before the TTY check, when `AIHYDRO_AGENT_CONTEXT` is truthy or `AIHYDRO_ACTIVE` is present (the
+  extension's agent terminals set it). `revoke` and plain `enroll` stay allowed. There is no override flag
+  or env var. This is a speed bump, not a boundary (same-user code can unset the variables); the real
+  boundary is a touch-required `sk-` key. `python -m ai_hydro.approval` is not an entry point (no
+  `__main__.py`; the console script is `aihydro-approve`). See DECISIONS.md 2026-10-19.
+
+---
+
 ## [2.5.0] - 2026-10-18 (Wave U, U5a tool surface)
 
 No tool is added or removed (U5b, retiring `fetch_streamflow_data` / `fetch_forcing_data`, is not done:

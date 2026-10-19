@@ -33,6 +33,10 @@ def _isolated_aihydro_home(tmp_path_factory, monkeypatch):
     # the developer's machine must never leak into the suite.
     monkeypatch.setenv("AIHYDRO_REQUIRE_SIGNED", "0")
     monkeypatch.setenv("AIHYDRO_SYSTEM_TRUST_FILE", str(home / "no-system-trust"))
+    # The approval CLI refuses in an agent context; a suite run from an agent
+    # terminal must not inherit the markers. Tests that need them set them.
+    monkeypatch.delenv("AIHYDRO_AGENT_CONTEXT", raising=False)
+    monkeypatch.delenv("AIHYDRO_ACTIVE", raising=False)
     return home
 
 

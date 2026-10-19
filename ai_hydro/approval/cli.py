@@ -33,15 +33,26 @@ record. ``--approver`` must equal the enrolled principal of the signing key
 (the verifier refuses a mismatch). It never stores private keys and ``enroll`` never runs sudo: it prints
 the line and command for the owner to apply.
 
+Agent-context refusal (defence in depth, exit 6). ``approve`` and
+``enroll --user-trust`` refuse, before the TTY check, when ``AIHYDRO_AGENT_CONTEXT``
+is truthy or ``AIHYDRO_ACTIVE`` is present (the extension's agent terminals set
+them). ``revoke`` and plain ``enroll`` stay allowed (they only tighten or print).
+There is no override flag or env var: any override would be reachable by the
+agent. THIS IS A SPEED BUMP, NOT A BOUNDARY: a process running as you can unset
+the variables, import the writer, or drive a pseudo-terminal. The real boundary
+is a hardware ``sk-`` key that needs a physical touch (ADR-002b).
+
 Exit codes: 0 approved (or already approved); 1 claim/session problem;
 2 usage error; 3 not interactive; 4 confirmation not given; 5 signing needed
-but unavailable (no key, key not enrolled, signing refused).
+but unavailable (no key, key not enrolled, signing refused); 6 agent context
+(refused before any other check).
 """
 from __future__ import annotations
 
 import argparse
 import unicodedata
 import getpass
+import os
 import shlex
 import sys
 from typing import Optional, Sequence, TextIO
@@ -64,8 +75,31 @@ from ai_hydro.approval.trust import SYSTEM_TRUST_FILE, require_signed, trust_roo
 from ai_hydro.approval.writer import write_approval, write_signed_approval
 
 EXIT_OK, EXIT_CLAIM, EXIT_USAGE, EXIT_NOT_TTY, EXIT_DECLINED, EXIT_SIGNING = 0, 1, 2, 3, 4, 5
+EXIT_AGENT_CONTEXT = 6
+_FALSY = ("", "0", "false", "no", "off")
 _CONFIRM_HEX = 12
 _ELIGIBLE = ("supported", "weakly_supported")
+
+
+def _in_agent_context() -> bool:
+    """True when this process looks like it was started from an agent terminal.
+
+    ``AIHYDRO_AGENT_CONTEXT`` counts when truthy (anything but empty/0/false/no/off);
+    the older ``AIHYDRO_ACTIVE`` counts whenever it is present, whatever its value.
+    Fail-closed and only ever adds refusals. A speed bump, not a boundary: same-user
+    code can unset these. There is deliberately no override.
+    """
+    if "AIHYDRO_ACTIVE" in os.environ:
+        return True
+    return os.environ.get("AIHYDRO_AGENT_CONTEXT", "").strip().lower() not in _FALSY
+
+
+def _refuse_agent_context(command: str, stderr: TextIO) -> int:
+    print(f"aihydro-approve {command}: refusing to run in an agent context "
+          "(AIHYDRO_AGENT_CONTEXT or AIHYDRO_ACTIVE is set). Claim approval must be run by you, "
+          "in your own terminal, not by an agent. Open a fresh OS terminal (one that did not "
+          "inherit this environment) and run it there. There is no override.", file=stderr)
+    return EXIT_AGENT_CONTEXT
 
 
 def _is_tty(stream: TextIO) -> bool:
@@ -173,7 +207,10 @@ def _render(session_id: str, claim_id: str, fields: dict, rev: str, refs: Option
 
 def _enroll(argv: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
     parser = argparse.ArgumentParser(prog="aihydro-approve enroll",
-                                     description="Print the allowed_signers line (and command) that enrols a public key.")
+                                     description="Print the allowed_signers line (and command) that enrols a public key. "
+                                                 "--user-trust refuses (exit 6) in an agent context "
+                                                 "(AIHYDRO_AGENT_CONTEXT / AIHYDRO_ACTIVE); a speed bump, "
+                                                 "not a boundary. There is no override.")
     parser.add_argument("pubkey_file")
     parser.add_argument("--principal", default=None, help="identity in allowed_signers (default: the OS user)")
     parser.add_argument("--valid-after", default=None, help="YYYYMMDD[Z] or YYYYMMDDHHMM[SS][Z]")
@@ -185,6 +222,8 @@ def _enroll(argv: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else EXIT_USAGE
+    if args.user_trust and _in_agent_context():
+        return _refuse_agent_context("enroll --user-trust", stderr)
     try:
         pub = read_pubkey_file(args.pubkey_file)
     except (OSError, SigningError, ValueError) as exc:
@@ -257,7 +296,10 @@ def main(
     parser = argparse.ArgumentParser(
         prog="aihydro-approve",
         description="Record a human approval for one claim revision so it can be promoted "
-                    "to the global registry. Interactive terminal only.",
+                    "to the global registry. Interactive terminal only. Refuses (exit 6) when "
+                    "AIHYDRO_AGENT_CONTEXT or AIHYDRO_ACTIVE is set; that is a speed bump, not a "
+                    "boundary (a process running as you can unset it): the real boundary is a "
+                    "touch-required sk- signing key. There is no override.",
     )
     parser.add_argument("session_id")
     parser.add_argument("claim_id")
@@ -269,6 +311,9 @@ def main(
         args = parser.parse_args(argv)
     except SystemExit as exc:  # argparse already printed usage
         return int(exc.code) if isinstance(exc.code, int) else EXIT_USAGE
+
+    if _in_agent_context():          # before the TTY check: a pty-driving agent must not get past it
+        return _refuse_agent_context("approve", stderr)
 
     if not (_is_tty(stdin) and _is_tty(stdout)):
         print("aihydro-approve: refusing to run non-interactively. Approval must be given by a "

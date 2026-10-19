@@ -1,5 +1,30 @@
 # Decisions
 
+## 2026-10-19 — `aihydro-approve` refuses in an agent context; a speed bump, not a boundary (approval policy, AP1)
+
+**Decision.** `approve` and `enroll --user-trust` exit 6 when `AIHYDRO_AGENT_CONTEXT` is truthy
+(not empty/0/false/no/off) or `AIHYDRO_ACTIVE` is present, before the TTY check, so a pseudo-terminal
+cannot get past it. `revoke` (tightens) and plain `enroll` (only prints) stay allowed. There is no override
+flag or env var, because any override is reachable by the agent. A human terminal that inherited the marker
+(for example VS Code launched with `code .` from an agent terminal) is refused too; that only makes approval
+harder and the message says to open a fresh OS terminal.
+
+**Honest limit.** This is a speed bump. A process running as the same user can `unset` the variables, import
+the writer, or drive the CLI otherwise; the CLI cannot stop same-user code. It catches an agent that runs the
+real program in an agent terminal with the marker inherited, independent of command text. The real boundary
+is the ADR-002b signature with user presence: an `sk-` key that needs a physical touch. A non-`sk` key
+unlocked in ssh-agent lets a same-user agent sign silently. The CLI help, the module docstring and the
+CHANGELOG say so.
+
+**Follow-up (proposed, not implemented here).** An opt-in `require_user_presence` policy that the promotion
+verifier enforces (refuse approvals whose verified channel is not `ssh_sig_sk_*`), plus a CLI warning when
+signing with a non-`sk` key obtained from the agent.
+
+**Not done on purpose.** No parent-process check (human and agent VS Code terminals share an ancestor chain)
+and no `__main__.py`: `python -m ai_hydro.approval` fails ("is a package and cannot be directly executed");
+the console script `aihydro-approve` (or `python -m ai_hydro.approval.cli`) is the entry point. Setting the
+marker in the extension's terminals and clearing it in the approval terminal is extension-side work.
+
 ## 2026-10-18 — Tool annotations are write-and-network based; U5b is not done (Wave U, U5)
 
 **Annotations.** `readOnlyHint` is true only for a tool that persists nothing and calls no network,
