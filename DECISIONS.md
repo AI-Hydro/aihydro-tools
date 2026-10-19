@@ -1,5 +1,48 @@
 # Decisions
 
+## 2026-10-19 — Features are basins: experiments fail closed, and retained series are content-addressed (science correctness, WP-1a + H0)
+
+Two silent-wrong-number defects from the 2026-10-19 reviews (experiments/modelling/sessions E1-E5, E13;
+hydrograph/data blocker 1).
+
+1. **An explicitly named feature is its own basin, or an error.** Before: `feature="01013500"` that was not
+   registered resolved to `__legacy__`; a registered feature took its gauge from `session.site_id` and its
+   area from `session.watershed`. A three-gauge experiment returned one basin three times and said
+   `complete`. Now `extract_hydrological_signatures` / `extract_geomorphic_parameters` resolve an explicit
+   `feature=` strictly (registered id or name only; no on-the-fly registration of a JSON string, no
+   fallback). The gauge is `Feature.metadata["gauge_id"]` (set by `register_feature(..., gauge_id=)`), the
+   area is `Feature.area_km2` or the polygon's geodesic area, and the session's streamflow slot is used only
+   when it is that gauge and period with an intact digest. A feature with no gauge is refused
+   (`FEATURE_GAUGE_UNKNOWN`), not given the session's flow. `feature=None` (active feature / session basin)
+   keeps its previous semantics: the session's own gauge, area and slot. Calls with `geometry_geojson=` are
+   an explicit override and also keep the session's gauge. Cache keys include the gauge (and, for a
+   registered feature, geometry hash and area), so re-registering a feature against another gauge cannot
+   serve the old numbers. A cache hit returns the run id that produced it (`source_run_id`); the run id is
+   now persisted on the cached entry. Considered and rejected: inferring a gauge from the feature id when it
+   looks like a USGS number (the id is a label, not evidence); this is the guess that produced the defect.
+2. **`separate_baseflow` is not an experiment tool.** It is a session-singleton tool (no `feature`, one
+   `baseflow` slot, key `bfi`). An adapter would have had to re-acquire each feature's series outside the
+   run record. The per-basin baseflow index already exists with provenance as `baseflow_index` from
+   `extract_hydrological_signatures`. Removing the tool is the smaller and safer change; old stored
+   experiments that named it fail with a structured error at run time.
+3. **Metric names are the tool's real output keys.** `_TOOL_OUTPUT_KEYS` in `tools_experiments.py` lists
+   them and `define_experiment` rejects others. The signature keys are checked against the real tool run
+   offline; the geomorphic keys are checked against the source of
+   `aihydro_watershed.characterize.geomorphic.extract_geomorphic_parameters` because the DEM step needs the
+   network (the experiment routing is tested with a labelled stand-in for that step).
+4. **Retained streamflow files are named by content.** The file is written under a scratch name, hashed and
+   renamed to `streamflow_<gauge>_<sha256[:12]>.json`; an existing file is never replaced. The workspace is
+   shared by all sessions in a folder and a run record seals the digest of the exact file it retained, so
+   any name that depends only on the gauge lets a later fetch invalidate a sealed record. Run-scoped
+   directories were considered; content addressing is simpler, idempotent, and needs no new lookup because
+   records already carry the path. Old records and slots (legacy `streamflow_<gauge>.json`) are read by
+   recorded path and digest, unchanged.
+
+Not done here (out of scope, still open): the experiment is not itself a sealed run record and its id omits
+tool and data versions (E6); a cache entry written by an older code version can still be served (E6); the
+`define_experiment` `destructiveHint` (E14); the quality-code, gap and date-format defects of the generic
+series payload (H0 items 2-6).
+
 ## 2026-10-19 — `aihydro-approve` refuses in an agent context; a speed bump, not a boundary (approval policy, AP1)
 
 **Decision.** `approve` and `enroll --user-trust` exit 6 when `AIHYDRO_AGENT_CONTEXT` is truthy

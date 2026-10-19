@@ -8,6 +8,57 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Multi-basin experiments no longer return the session's basin for every row (WP-1a, S1).**
+  `run_experiment` over several gauges used to fall back to `"__legacy__"` for any id that was not a
+  registered feature, so every row shared one cache key and the second and later rows were the first
+  row's numbers; even for a registered feature the gauge (`session.site_id`) and the area
+  (`session.watershed`) came from the session. Now: an unregistered id fails closed with
+  `FEATURE_NOT_RESOLVED` (per feature in an experiment, and in `extract_hydrological_signatures` /
+  `extract_geomorphic_parameters` when `feature=` is passed); a registered feature needs
+  `gauge_id` (new optional argument of `register_feature`, with `area_km2`, `outlet_lat`,
+  `outlet_lon`) or the tool returns `FEATURE_GAUGE_UNKNOWN`; the session streamflow slot is consumed
+  only when it is that feature's own gauge and period; the area is the feature's (registered
+  `area_km2`, else geodesic from its polygon); the cache key now includes the gauge (and, for a
+  registered feature, its geometry and area). `basin_gauge_id` / `basin_area_km2` are sealed in the
+  result. Per-feature workspace files (`signatures_<canonical>_<feature>.json`) replace one shared
+  name, and no FDC plot is drawn from the session's series for a feature.
+- **Experiment table is complete and honest.** Default signature metrics were `fdc_slope` and
+  `streamflow_elasticity`, which the tool never emits (real keys `slope_fdc`, `stream_elas`); the
+  geomorphic defaults were all invalid (real keys `DA_km2`, `Re`, `H_m`, ...). Defaults now come from
+  the real output keys and `define_experiment` rejects a metric the tool cannot emit. Every defined
+  feature is a row with a `status` (`ok`, `error`, `no_metrics`, `no_run_id`, `not_run`) and a `reason`;
+  a feature that matched no metric is no longer dropped. Each row carries its own `run_id` and
+  `run_id_origin` (`fresh` or `cache`); cache hits name the run that produced them (the run id is now
+  persisted on the cached entry, and `source_run_id` is returned on a hit). Null metrics list the
+  reason in `missing_metrics`. Rows without a run id are excluded from `aggregate_stats`.
+  `extract_geomorphic_parameters` now records a run id (it did not call `post_run`).
+- **`separate_baseflow` is no longer a supported experiment tool.** It has no `feature` argument, reads
+  the session's single streamflow slot and returns `bfi`, so every row errored. `define_experiment`
+  refuses it and points to `baseflow_index` from `extract_hydrological_signatures`.
+- **`session/list`, `session/{id}` and `session/{id}/experiments` MCP resources** counted the
+  `{data, meta}` envelope (always 2) instead of the experiments, and sorted on a key that does not exist.
+- **Retained streamflow files are content-addressed and never overwritten (H0).**
+  `persist_streamflow_slot` wrote `streamflow_<gauge>.json` into the shared workspace with a plain
+  overwrite, so a re-fetch (any window, any session in the folder) rewrote a file an earlier sealed run
+  had digest-bound, and capsule export then reported that run's binding as "differs". The file is now
+  `streamflow_<gauge>_<sha256[:12]>.json` (full digest on a prefix collision); an existing file is
+  never replaced and identical content reuses the same file. Records and slots written before this
+  change keep working: consumers read by recorded path and digest, not by name. The capsule copy is
+  named the same way (`data/streamflow_<gauge>_<sha12>.json`).
+
+- **Modelling jobs never use the session id as a gauge.** `search_runner` read a non-existent
+  `session.usgs_gauge_id` and fell back to the session id; `modelling/runner` used
+  `session.site_id or session_id`. Both now use `site_id` only; an empty one is `GAUGE_NOT_SET`
+  (`ai_hydro/modelling/gauge.py`). `train_hydro_model`, `propose_and_train` and `run_autoresearch`
+  refuse with that error before spawning a job.
+- **`get_leaderboard` serves the episode facts.** New `episode` key from
+  `aihydro_modelling.autoresearch_summary` (0.6.1): `n_trials`, `promotions[*]` (`ci_excludes_zero`,
+  `p_adjusted_holm`, `significant_after_multiplicity`), `seeds_recorded`, `prereg`. No score or grade is
+  returned. No other tools consumer of the old score/grade exists. Pin raised to
+  `aihydro-modelling>=0.6.1,<0.7`.
+
 ### Added
 
 - **`aihydro-approve` refuses in an agent context (exit 6).** `approve` and `enroll --user-trust` refuse,
