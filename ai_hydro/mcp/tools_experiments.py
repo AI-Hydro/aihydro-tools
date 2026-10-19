@@ -89,6 +89,46 @@ _TOOL_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Units of each metric. Geomorphic: the tool's own ``units`` dict. Signatures: the tool declares
+# none, so these are read from aihydro_watershed.signatures.signatures (flows are q_mm_day, i.e.
+# Q divided by basin area; *_freq = event days / n * 365.25; zero_q_freq is a fraction;
+# hfd_mean is the day of the water year starting 1 October).
+_TOOL_UNITS: dict[str, dict[str, str]] = {
+    "extract_hydrological_signatures": {
+        "q_mean": "mm/day", "q_std": "mm/day", "q5": "mm/day", "q95": "mm/day",
+        "q_median": "mm/day", "baseflow_index": "-", "runoff_ratio": "-", "stream_elas": "-",
+        "high_q_freq": "days/year", "high_q_dur": "days", "low_q_freq": "days/year",
+        "low_q_dur": "days", "zero_q_freq": "fraction of days", "flow_variability": "-",
+        "hfd_mean": "day of water year", "half_flow_date_std": "days", "slope_fdc": "-",
+    },
+    "extract_geomorphic_parameters": {
+        "DA_km2": "km2", "Lp_km": "km", "Lb_km": "km", "Lca_km": "km", "Rff": "-", "Rc": "-",
+        "Re": "-", "Sb": "-", "Ru": "-", "H_m": "m", "Rh": "-", "Rp": "-", "Ls_pct": "%",
+        "Cs_m_per_m": "m/m", "D_km_per_km2": "km/km2", "Rn": "-", "C_km2_per_km": "km2/km",
+        "Rf": "-", "Cf_per_km2": "1/km2", "MCh_km": "km", "Slope_10_85_m_per_m": "m/m",
+        "HKR": "-", "G_Gray": "-", "M_Murphey": "-", "pct_water_wetland": "%",
+        "pct_urban": "%", "CN_weighted": "-", "pct_sinks": "%",
+    },
+}
+
+# Call arguments that name the basin. They belong to the feature, never to the shared params:
+# ``geometry_geojson`` in params overrides every feature's polygon (every row would describe
+# the same basin under its own label), ``feature`` collides with the per-row feature, and
+# ``session_id`` is the experiment's own.
+_RESERVED_PARAMS = ("geometry_geojson", "feature", "session_id")
+
+
+def _reserved_param_error(params: dict) -> str | None:
+    bad = [k for k in _RESERVED_PARAMS if k in (params or {})]
+    if not bad:
+        return None
+    return (
+        f"params may not contain {bad}: these select the basin and would make every feature "
+        "describe the same one. Register each basin as a feature "
+        "(register_feature(geojson, name, gauge_id=...)) and list it in `features`."
+    )
+
+
 # Default metrics per tool: a subset of the keys above.
 _TOOL_METRICS: dict[str, list[str]] = {
     "extract_hydrological_signatures": [
@@ -189,6 +229,9 @@ def define_experiment(
             raise ValueError("name must be a non-empty string.")
 
         params = params or {}
+        bad_params = _reserved_param_error(params)
+        if bad_params:
+            raise ValueError(bad_params)
         metrics = metrics or _TOOL_METRICS.get(tool, [])
         if not metrics:
             raise ValueError(f"No default metrics known for tool '{tool}'. Pass metrics explicitly.")
@@ -309,6 +352,11 @@ def run_experiment(
         params = defn["params"]
         metrics = defn["metrics"]
 
+        # Definitions stored before define_experiment refused these still exist on disk.
+        bad_params = _reserved_param_error(params)
+        if bad_params:
+            raise ValueError(f"Experiment '{experiment_id}' cannot be run: {bad_params}")
+
         runners = _get_runners()
         runner = runners.get(tool_name)
         if runner is None:
@@ -428,7 +476,8 @@ def run_experiment(
             "error_codes": error_codes,
             "no_metrics": no_metrics,
             "features": per_feature,
-            "n_success": len(cells),
+            "n_success": n_ok,
+            "n_no_run_id": statuses.count(_ST_NO_RUN_ID),
             "n_error": len(errors),
             "n_no_metrics": len(no_metrics),
             "completed_at": completed_at,
@@ -445,6 +494,7 @@ def run_experiment(
             "status": status,
             "n_features": len(features),
             "n_success": results_payload["n_success"],
+            "n_no_run_id": results_payload["n_no_run_id"],
             "n_error": results_payload["n_error"],
             "n_no_metrics": results_payload["n_no_metrics"],
             "run_ids": run_ids,
@@ -478,7 +528,7 @@ def get_experiment_table(
 
     Returns:
         experiment_id, name, tool, params, columns, rows,
-        n_rows, n_columns, n_with_ci, status_counts,
+        units (metric -> unit as declared by the tool), n_rows, n_columns, n_with_ci, status_counts,
         aggregate_stats (mean/min/max per metric across rows with run ids)
     """
     try:
@@ -596,6 +646,7 @@ def get_experiment_table(
             "tool": defn["tool"],
             "params": defn["params"],
             "columns": columns,
+            "units": {m: _TOOL_UNITS.get(defn["tool"], {}).get(m) for m in metrics},
             "rows": rows,
             "n_rows": len(rows),
             "n_columns": len(columns),

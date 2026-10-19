@@ -59,6 +59,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   returned. No other tools consumer of the old score/grade exists. Pin raised to
   `aihydro-modelling>=0.6.1,<0.7`.
 
+- **Experiments reject basin-selecting params (review B1).** `geometry_geojson`, `feature` and
+  `session_id` in an experiment's shared `params` are refused by `define_experiment` (and by
+  `run_experiment` for definitions stored earlier): `geometry_geojson` overrode every feature's polygon,
+  so each row held the session basin's numbers under its own gauge's label.
+- **The active feature is scoped like an explicit one (review C1).** With `feature=None` and an active
+  registered feature, `extract_hydrological_signatures` / `extract_geomorphic_parameters` now use that
+  feature's gauge, area, outlet and slot rules (or return `FEATURE_GAUGE_UNKNOWN`); they no longer file the
+  session gauge's numbers under the active feature's id. With no registered feature the session-basin
+  behaviour is unchanged.
+- **`get_leaderboard` on aihydro-modelling < 0.6.1** omits `episode` and returns a `version_note`
+  instead of presenting the old structure as facts. **Release note:** aihydro-modelling 0.6.1 must be
+  uploaded to PyPI before this aihydro-tools release (the pin is `>=0.6.1,<0.7`).
+- `get_experiment_table` returns a `units` map; `run_experiment` no longer counts `no_run_id` rows in
+  `n_success` (new `n_no_run_id`).
+
 ### Added
 
 - **`aihydro-approve` refuses in an agent context (exit 6).** `approve` and `enroll --user-trust` refuse,

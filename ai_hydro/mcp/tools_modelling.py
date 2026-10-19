@@ -709,16 +709,27 @@ def get_leaderboard(job_id: str) -> dict:
         # the paired-difference CI and the Holm-adjusted verdict over ALL completed comparisons,
         # whether every trial recorded a seed, and the pre-registration. The deprecated score /
         # grade keys are dropped here so a client cannot render them.
-        episode = {k: v for k, v in autoresearch_summary(entries).items()
-                   if k not in ("episode_score", "episode_grade", "score_breakdown", "deprecation")}
-
-        return {
+        out = {
             "job_id":      job_id,
             "job_status":  status.get("status"),
             "summary":     summary,
-            "episode":     episode,
             "leaderboard": entries,
         }
+        full = autoresearch_summary(entries)
+        if "promotions" in full and "n_trials" in full:
+            out["episode"] = {k: v for k, v in full.items()
+                              if k not in ("episode_score", "episode_grade", "score_breakdown",
+                                           "deprecation")}
+        else:
+            # aihydro-modelling 0.6.0 reads the old flat structure and would report a real
+            # episode as zero CI-significant promotions and no pre-registration. Never present
+            # that as facts.
+            out["version_note"] = (
+                "episode facts omitted: the installed aihydro-modelling is older than 0.6.1 and "
+                "its autoresearch_summary does not read the leaderboard the loop writes. "
+                "Upgrade aihydro-modelling to >=0.6.1."
+            )
+        return out
 
     except Exception as e:
         log.error("get_leaderboard failed: %s", e)

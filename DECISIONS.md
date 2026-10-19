@@ -38,6 +38,15 @@ hydrograph/data blocker 1).
    records already carry the path. Old records and slots (legacy `streamflow_<gauge>.json`) are read by
    recorded path and digest, unchanged.
 
+Review follow-up (B1/C1/C2). Basin-selecting call arguments are not experiment params: `geometry_geojson`
+(an explicit override that silently reuses the session gauge) is refused at definition and at run time.
+`feature=None` is resolved to the registry's active feature and scoped like `feature=<id>`, because the
+cache key and result id already came from it; the alternative (refuse) was rejected as it would break the
+no-argument call after any `register_feature`. A registered active feature without `gauge_id` is therefore
+refused, not given the session's streamflow. aihydro-modelling 0.6.1 is unpublished until the next release
+batch: on 0.6.0 `get_leaderboard` omits the episode facts with a `version_note`; the `>=0.6.1` pin stays and
+0.6.1 must be uploaded before tools.
+
 Not done here (out of scope, still open): the experiment is not itself a sealed run record and its id omits
 tool and data versions (E6); a cache entry written by an older code version can still be served (E6); the
 `define_experiment` `destructiveHint` (E14); the quality-code, gap and date-format defects of the generic

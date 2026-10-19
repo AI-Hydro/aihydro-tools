@@ -183,6 +183,16 @@ def _resolve_registered_feature(session, ref) -> tuple:
     }
 
 
+def _active_registered_feature(session):
+    """The registry's active feature (the one ``resolve(None)`` returns), or ``None``."""
+    from aihydro_core.features.registry import FeatureRegistry
+    from aihydro_core.primitives.errors import FeatureNotFoundError
+    try:
+        return FeatureRegistry(session).resolve(None)
+    except FeatureNotFoundError:
+        return None
+
+
 def _feature_geodesic_area_km2(feat) -> float | None:
     """Area of a feature from its own geometry (WGS84 geodesic), in km2."""
     try:
@@ -1260,6 +1270,13 @@ def extract_hydrological_signatures(
             _scoped, _ferr = _resolve_registered_feature(session, feature)
             if _ferr:
                 return _ferr
+        elif feature is None and not geometry_geojson:
+            # No feature named: the registry's active feature (cache key and result id come
+            # from it), so its gauge, area and slot rules apply exactly as for feature=<id>.
+            # Filing the session gauge's numbers under the active feature's id would put
+            # one basin's numbers under another's name.
+            _scoped = _active_registered_feature(session)
+        if _scoped is not None:
             _eff_gauge, _eff_area = _feature_scope(_scoped)
             if not _eff_gauge:
                 return {
@@ -1611,6 +1628,8 @@ def extract_geomorphic_parameters(
             _scoped, _ferr = _resolve_registered_feature(session, feature)
             if _ferr:
                 return _ferr
+        elif feature is None and not geometry_geojson:
+            _scoped = _active_registered_feature(session)     # see extract_hydrological_signatures
         _cache_params = {"dem_resolution": dem_resolution}
         if _scoped is not None:
             _cache_params["feature_geom"] = _feature_geom_key(_scoped)
