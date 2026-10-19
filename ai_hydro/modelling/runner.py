@@ -106,7 +106,8 @@ def run(artifact_dir: Path) -> None:
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
-        usgs_gauge_id = session.site_id or session_id
+        from ai_hydro.modelling.gauge import require_gauge
+        usgs_gauge_id = require_gauge(session, session_id)     # site_id or a GAUGE_NOT_SET error
 
         # ── M1+ path: ModelSpec-based dispatch ────────────────────────────────
         # propose_and_train embeds the full validated spec in config["spec"].

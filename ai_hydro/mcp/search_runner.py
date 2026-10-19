@@ -92,7 +92,8 @@ def _run_inner(config: dict, artifact_dir: Path, job_id: str) -> None:
     from ai_hydro.session import HydroSession
     session = HydroSession.load(session_id)
 
-    usgs_gauge_id = getattr(session, "usgs_gauge_id", None) or session_id
+    from ai_hydro.modelling.gauge import require_gauge
+    usgs_gauge_id = require_gauge(session, session_id)     # site_id or a GAUGE_NOT_SET error
     workspace_dir = getattr(session, "workspace_dir", None) or str(artifact_dir.parent)
 
     # ── Fetch-once dataset ────────────────────────────────────────────────────

@@ -98,6 +98,11 @@ def train_hydro_model(
                 ),
             }
 
+        from ai_hydro.modelling.gauge import gauge_error
+        _gerr = gauge_error(session, session_id)
+        if _gerr:
+            return _gerr
+
         job_id = uuid.uuid4().hex[:12]
 
         # Resolve artifact dir (preserve workspace-based location)
@@ -414,6 +419,11 @@ def propose_and_train(
                 ),
             }
 
+        from ai_hydro.modelling.gauge import gauge_error
+        _gerr = gauge_error(session, session_id)
+        if _gerr:
+            return _gerr
+
         # ── Kick off job ──────────────────────────────────────────────────
         job_id = uuid.uuid4().hex[:12]
 
@@ -579,6 +589,11 @@ def run_autoresearch(
                 ),
             }
 
+        from ai_hydro.modelling.gauge import gauge_error
+        _gerr = gauge_error(session, session_id)
+        if _gerr:
+            return _gerr
+
         # ── Kick off job ──────────────────────────────────────────────────
         job_id = uuid.uuid4().hex[:12]
 
@@ -664,7 +679,9 @@ def get_leaderboard(job_id: str) -> dict:
     result, and whether this config became the incumbent.
 
     Returns the leaderboard entries + a summary (best metric, n_experiments,
-    n_incumbents).  Works on in-progress jobs (partial leaderboard) too.
+    n_incumbents) + `episode`: n_trials, promotions (CI excludes zero?, Holm-
+    adjusted significance), seeds_recorded, prereg. No score or grade.
+    Works on in-progress jobs (partial leaderboard) too.
 
     job_id : str — from the run_autoresearch response.
     """
@@ -683,14 +700,23 @@ def get_leaderboard(job_id: str) -> dict:
                 "artifact_dir": str(artifact_dir),
             }
 
-        from aihydro_modelling.leaderboard import read_leaderboard, leaderboard_summary
+        from aihydro_modelling.leaderboard import (
+            autoresearch_summary, leaderboard_summary, read_leaderboard)
         entries = read_leaderboard(artifact_dir)
         summary = leaderboard_summary(entries)
+
+        # The episode's facts, not a grade (aihydro-modelling >= 0.6.1): trials, promotions with
+        # the paired-difference CI and the Holm-adjusted verdict over ALL completed comparisons,
+        # whether every trial recorded a seed, and the pre-registration. The deprecated score /
+        # grade keys are dropped here so a client cannot render them.
+        episode = {k: v for k, v in autoresearch_summary(entries).items()
+                   if k not in ("episode_score", "episode_grade", "score_breakdown", "deprecation")}
 
         return {
             "job_id":      job_id,
             "job_status":  status.get("status"),
             "summary":     summary,
+            "episode":     episode,
             "leaderboard": entries,
         }
 
