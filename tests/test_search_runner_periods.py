@@ -26,7 +26,7 @@ def stubbed(monkeypatch):
     from ai_hydro import session as session_pkg
 
     monkeypatch.setattr(session_pkg.HydroSession, "load",
-                        staticmethod(lambda sid: SimpleNamespace(workspace_dir=None)))
+                        staticmethod(lambda sid: SimpleNamespace(workspace_dir=None, site_id="01013500")))
     monkeypatch.setattr(metrics_mod, "extract_basin_data",
                         lambda *a, **k: (SimpleNamespace(gauge_id="g"), "USGS+X"))
 

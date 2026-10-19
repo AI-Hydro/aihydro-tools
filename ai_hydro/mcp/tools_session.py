@@ -1061,14 +1061,12 @@ def register_feature(
         Explicit id to assign. If None, derived from name (slugified) or a
         random hex string.
     gauge_id : str | None
-        The streamflow gauge that observes this basin. Required for
-        extract_hydrological_signatures(feature=...) and experiments: a feature
-        is never given the session's streamflow.
+        Gauge that observes this basin; required for signatures(feature=...) and
+        experiments (a feature never gets the session's streamflow).
     area_km2 : float | None
-        Basin area; computed from the polygon (geodesic) when omitted.
+        Basin area; computed from the polygon when omitted.
     outlet_lat, outlet_lon : float | None
-        Basin outlet, used by extract_geomorphic_parameters (polygon centroid
-        when omitted).
+        Basin outlet for geomorphic parameters (centroid when omitted).
     """
     try:
         session_id = _resolve_session(session_id, None)
