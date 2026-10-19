@@ -21,7 +21,10 @@ validators and the sealed record need:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -77,6 +80,34 @@ def response_meta(meta: dict) -> dict:
     return out
 
 
+def _content_address(scratch_path: str, gauge_id: str) -> str:
+    """Rename a freshly written scratch file to ``streamflow_<gauge>_<sha256[:12]>.json``.
+
+    The name is derived from the file's own bytes, so identical content maps to the same
+    file (idempotent) and different content can never collide with a file an earlier
+    sealed run references. If a different file already holds the 12-hex name (a prefix
+    collision), the full digest is used instead. Falls back to the scratch path on an OS
+    error rather than losing the series.
+    """
+    src = Path(scratch_path)
+    try:
+        raw = src.read_bytes()
+        full = hashlib.sha256(raw).hexdigest()
+        # The session fallback writer names files "<session>.data.<name>"; keep that prefix.
+        prefix = src.name.split(".data.", 1)[0] + ".data." if ".data." in src.name else ""
+        for n in (12, len(full)):
+            dest = src.with_name(f"{prefix}streamflow_{gauge_id}_{full[:n]}.json")
+            if not dest.exists():
+                os.replace(src, dest)
+                return str(dest)
+            if dest.read_bytes() == raw:       # same content already retained: reuse it
+                src.unlink(missing_ok=True)
+                return str(dest)
+    except OSError as exc:
+        log.warning("could not content-address retained streamflow file %s: %s", scratch_path, exc)
+    return scratch_path
+
+
 def persist_streamflow_slot(
     session_id: str,
     d: dict,
@@ -95,12 +126,19 @@ def persist_streamflow_slot(
     from ai_hydro.mcp.helpers import _session_store, _workspace_write
     from ai_hydro.session import store as _store
 
-    fname = f"streamflow_{gauge_id}.json"
-    saved = _workspace_write(session_id, fname, d["data"])
+    # The workspace is shared by every session opened in the folder, and a run record
+    # seals the digest of the exact file it read. A name that depends only on the gauge
+    # would let a later fetch (any window, any session) rewrite that file under an
+    # earlier sealed run. The file is therefore written under a scratch name and
+    # renamed to a content-addressed one; an existing file is never overwritten.
+    scratch = f"streamflow_{gauge_id}.tmp-{uuid.uuid4().hex[:8]}.json"
+    saved = _workspace_write(session_id, scratch, d["data"])
     if not saved:
         # No workspace: the lean session JSON would keep only q_cms_n and the series
         # would be unrecoverable for the tools that consume it.
-        saved = _store.write_session_data_file(session_id, fname, d["data"])
+        saved = _store.write_session_data_file(session_id, scratch, d["data"])
+    if saved:
+        saved = _content_address(saved, gauge_id)
     retained = list(extra_retained or [])
     if saved:
         d["data"]["_data_file"] = saved

@@ -15,6 +15,7 @@ import csv
 import hashlib
 import json
 import math
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +40,12 @@ GAUGE = "01013500"
 START, END = "1999-10-01", "2001-09-30"
 SQUARE = json.dumps({"type": "Polygon", "coordinates": [[[-77.5, 39.2], [-77.4, 39.2], [-77.4, 39.3],
                                                          [-77.5, 39.3], [-77.5, 39.2]]]})
+
+
+def _retained(cap: Path) -> Path:
+    """The capsule's copy of the retained series (content-addressed name: streamflow_<gauge>_<sha12>.json)."""
+    (p,) = sorted((cap / "data").glob(f"streamflow_{GAUGE}_*.json"))
+    return p
 
 
 def call(server, name, arguments):
@@ -237,7 +244,7 @@ def test_series_csv_in_capsule_with_manifest_digest(exported):
     if "retained_artifact" in art:
         assert art["retrieval"]["mechanism"] == "retained_data_file"
         ra = art["retained_artifact"]
-        assert ra["path"] == f"data/streamflow_{GAUGE}.json"
+        assert re.fullmatch(rf"data/streamflow_{GAUGE}_[0-9a-f]{{12}}\.json", ra["path"]), ra["path"]
         assert hashlib.sha256((cap / ra["path"]).read_bytes()).hexdigest() == ra["sha256"]
         assert in_files[ra["path"]] == ra["sha256"]
         # the consumer's recorded series digest matches the exported series
@@ -308,7 +315,7 @@ def test_swapped_series_in_capsule_fails_replay_even_with_regenerated_manifest(t
     from ai_hydro.capsule.manifest import build_manifest
 
     cap, _, _ = _build_and_export("retained", tmp_path, monkeypatch)
-    ra = cap / "data" / f"streamflow_{GAUGE}.json"
+    ra = _retained(cap)
     body = json.loads(ra.read_text())
     body["q_cms"] = [None if v is None else v * 2 for v in body["q_cms"]]
     ra.write_text(json.dumps(body))
@@ -356,7 +363,7 @@ def test_manifest_has_no_absolute_capsule_dir(exported):
 
 def test_listed_sealed_retained_file_that_is_missing_fails_replay(tmp_path, monkeypatch):
     cap, _, _ = _build_and_export("retained", tmp_path, monkeypatch)
-    (cap / "data" / f"streamflow_{GAUGE}.json").unlink()
+    _retained(cap).unlink()
     proc = subprocess.run([sys.executable, str(cap / "replay.py")], capture_output=True, text=True)
     assert proc.returncode == 1
     assert "sealed by" in proc.stdout and "listed in the manifest, but missing" in proc.stdout
@@ -368,7 +375,7 @@ def test_sealed_file_the_manifest_never_listed_is_only_a_note(tmp_path, monkeypa
     cap, _, _ = _build_and_export("retained", tmp_path, monkeypatch)
     for name in ("bundle.json", "ro-crate-metadata.json", "manifest-sha256.txt"):
         (cap / name).unlink()           # models a capsule that predates the crate (the bundle pins file digests)
-    (cap / "data" / f"streamflow_{GAUGE}.json").unlink()
+    _retained(cap).unlink()
     (cap / "data" / f"served_streamflow_{GAUGE}.csv").unlink()
     (cap / "capsule_manifest.json").write_text(json.dumps(build_manifest(cap)))  # lists neither
     proc = subprocess.run([sys.executable, str(cap / "replay.py")], capture_output=True, text=True)
