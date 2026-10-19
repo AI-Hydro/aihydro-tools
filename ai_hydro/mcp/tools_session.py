@@ -1028,6 +1028,10 @@ def register_feature(
     session_id: str | None = None,
     set_active: bool = True,
     feature_id: str | None = None,
+    gauge_id: str | None = None,
+    area_km2: float | None = None,
+    outlet_lat: float | None = None,
+    outlet_lon: float | None = None,
 ) -> dict:
     """
     Register a named geometry in the session's feature registry.
@@ -1056,6 +1060,15 @@ def register_feature(
     feature_id : str | None
         Explicit id to assign. If None, derived from name (slugified) or a
         random hex string.
+    gauge_id : str | None
+        The streamflow gauge that observes this basin. Required for
+        extract_hydrological_signatures(feature=...) and experiments: a feature
+        is never given the session's streamflow.
+    area_km2 : float | None
+        Basin area; computed from the polygon (geodesic) when omitted.
+    outlet_lat, outlet_lon : float | None
+        Basin outlet, used by extract_geomorphic_parameters (polygon centroid
+        when omitted).
     """
     try:
         session_id = _resolve_session(session_id, None)
@@ -1069,11 +1082,20 @@ def register_feature(
             source=source,
             feature_id=feature_id,
             set_active=set_active,
+            area_km2=area_km2,
         )
+        _meta = {k: v for k, v in (("gauge_id", str(gauge_id).strip() if gauge_id else None),
+                                   ("outlet_lat", outlet_lat), ("outlet_lon", outlet_lon))
+                 if v is not None}
+        if _meta:
+            feat.metadata.update(_meta)
+            session.put_feature(feat)
+            session.commit()
         return {
             "feature_id": feat.feature_id,
             "name": feat.name,
             "source": feat.source,
+            "gauge_id": feat.metadata.get("gauge_id"),
             "active": set_active,
             "session_id": session_id,
             "message": (
@@ -1114,6 +1136,7 @@ def list_features(session_id: str | None = None) -> dict:
                     "name": f.name,
                     "source": f.source,
                     "area_km2": f.area_km2,
+                    "gauge_id": (f.metadata or {}).get("gauge_id"),
                     "created_at": f.created_at[:10] if f.created_at else None,
                 }
                 for f in feats

@@ -32,6 +32,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -148,6 +149,63 @@ def _feature_cache_store(session, product: str, feature_id: str, key: str,
     if citations:
         session.add_citations(citations)
     session.commit()
+
+
+def _resolve_registered_feature(session, ref) -> tuple:
+    """Strictly resolve an explicitly named feature: registered ids and names only.
+
+    Returns ``(feature, None)`` or ``(None, error_dict)``. Unlike
+    ``FeatureRegistry.resolve`` this never registers anything on the fly and never
+    falls back to the session's own watershed: a feature id that is not in the
+    registry is an error, because answering it with the session's basin would put one
+    basin's numbers under another basin's name.
+    """
+    if isinstance(ref, str) and ref.strip():
+        feat = session.get_feature(ref)
+        if feat is None:
+            feat = next((f for f in session.list_features() if f.name and f.name == ref), None)
+        if feat is not None:
+            return feat, None
+    available = [f.feature_id for f in session.list_features()]
+    return None, {
+        "error": True,
+        "code": "FEATURE_NOT_RESOLVED",
+        "message": (
+            f"Feature {ref!r} is not registered in session '{session.session_id}'; refusing to "
+            "substitute the session's own watershed for it."
+            + (f" Registered features: {available}." if available else " No features are registered.")
+        ),
+        "recovery": (
+            "Register the basin first: register_feature(geojson=<basin polygon>, name=<id>, "
+            "gauge_id=<USGS gauge id>), then pass that id as feature=."
+        ),
+        "available_features": available,
+    }
+
+
+def _feature_geodesic_area_km2(feat) -> float | None:
+    """Area of a feature from its own geometry (WGS84 geodesic), in km2."""
+    try:
+        from pyproj import Geod
+        from shapely.geometry import shape
+        area_m2, _ = Geod(ellps="WGS84").geometry_area_perimeter(shape(feat.geometry_dict()))
+        return abs(float(area_m2)) / 1e6
+    except Exception:
+        return None
+
+
+def _feature_scope(feat) -> tuple[str | None, float | None]:
+    """``(gauge_id, area_km2)`` of a registered feature. Never read from the session:
+    the session describes one basin, a feature describes its own."""
+    gauge = (getattr(feat, "metadata", None) or {}).get("gauge_id")
+    area = feat.area_km2 if feat.area_km2 else _feature_geodesic_area_km2(feat)
+    return (str(gauge).strip() if gauge else None), area
+
+
+def _feature_geom_key(feat) -> str:
+    """Short content hash of a feature's geometry, folded into cache keys."""
+    from aihydro_core.primitives.hashing import content_hash
+    return content_hash(feat.geometry_dict())[:12]
 
 
 async def _batch_feature_run(
@@ -1191,19 +1249,58 @@ def extract_hydrological_signatures(
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
-        # Non-default only, so existing cache keys for the default are unchanged
-        # and a "skip" result is never served for an "auto" request.
-        _cache_params = {"start_date": start_date, "end_date": end_date}
+        # An explicitly named feature is its own basin: its gauge and its area come
+        # from the feature, never from the session. An id that is not registered is an
+        # error (never answered with the session's basin), and a registered feature that
+        # does not say which gauge observes it cannot be given a streamflow series.
+        _scoped = None
+        _eff_gauge: str | None = session.site_id
+        _eff_area: float | None = None
+        if feature is not None and not geometry_geojson:
+            _scoped, _ferr = _resolve_registered_feature(session, feature)
+            if _ferr:
+                return _ferr
+            _eff_gauge, _eff_area = _feature_scope(_scoped)
+            if not _eff_gauge:
+                return {
+                    "error": True, "code": "FEATURE_GAUGE_UNKNOWN",
+                    "message": (
+                        f"Feature '{_scoped.feature_id}' has no gauge_id, so there is no streamflow "
+                        "series to attribute to it; the session's streamflow belongs to "
+                        f"'{session.site_id}' and is not used for another feature."
+                    ),
+                    "recovery": (
+                        "Re-register the feature with its gauge: register_feature(geojson=..., "
+                        f"name='{_scoped.name or _scoped.feature_id}', "
+                        f"feature_id='{_scoped.feature_id}', gauge_id=<USGS gauge id>)."
+                    ),
+                }
+            if not _eff_area:
+                return {
+                    "error": True, "code": "FEATURE_AREA_UNKNOWN",
+                    "message": f"Feature '{_scoped.feature_id}' has no area and none could be computed from its geometry.",
+                    "recovery": "Re-register the feature with area_km2=... or a valid polygon.",
+                }
+
+        # Non-default only for the precipitation switch, so a "skip" result is never
+        # served for an "auto" request. The gauge (and, for a registered feature, its
+        # geometry and area) are part of the key: a cached signature set belongs to one
+        # basin, and re-registering a feature with another gauge must not serve the old one.
+        _cache_params = {"start_date": start_date, "end_date": end_date, "gauge_id": _eff_gauge}
         if precipitation != "auto":
             _cache_params["precipitation"] = precipitation
+        if _scoped is not None:
+            _cache_params["feature_geom"] = _feature_geom_key(_scoped)
+            _cache_params["area_km2"] = round(float(_eff_area), 6)
         _feature_id, _key, _cached, _geom = _feature_cache_resolve(
             session, "signatures", _cache_params,
             feature, geometry_geojson,
         )
         if _cached is not None:
-            return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
+            return {**_cached, "_cache_hit": True, "feature_id": _feature_id,
+                    "source_run_id": _cached.get("_run_id")}
         watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
-        area_km2 = session.watershed["data"]["area_km2"]
+        area_km2 = _eff_area if _scoped is not None else session.watershed["data"]["area_km2"]
 
         # ── Streamflow source ─────────────────────────────────────────────
         # For USGS gauges: let signatures.py fetch from NWIS automatically.
@@ -1211,10 +1308,13 @@ def extract_hydrological_signatures(
         # session so the function never attempts a USGS call.
         site_type = getattr(session, "site_type", None) or "unknown"
         _q_cms: list | None = None
-        _is_usgs = (
-            site_type == "usgs_gauge"
-            or (session.site_id and session.site_id.isdigit() and len(session.site_id) >= 7)
-        )
+        if _scoped is not None:
+            _is_usgs = _eff_gauge.isdigit() and len(_eff_gauge) >= 7
+        else:
+            _is_usgs = (
+                site_type == "usgs_gauge"
+                or (session.site_id and session.site_id.isdigit() and len(session.site_id) >= 7)
+            )
 
         # --- Which streamflow does this call consume? ---------------------
         # An edge to the fetch run is declared only when ALL hold:
@@ -1234,7 +1334,7 @@ def extract_hydrological_signatures(
         _unresolved: str | None = None
         _slot_mismatch: str | None = None
         if session.streamflow:
-            for _k, _want in (("gauge_id", session.site_id), ("start_date", start_date),
+            for _k, _want in (("gauge_id", _eff_gauge), ("start_date", start_date),
                               ("end_date", end_date)):
                 _have = _slot_params.get(_k)
                 if not _have or not _want or str(_have) != str(_want):
@@ -1258,8 +1358,12 @@ def extract_hydrological_signatures(
         elif session.streamflow:
             _digest_problem = "retained_series_unavailable"
 
+        # A feature-scoped call consumes the session slot only when the slot is that
+        # feature's own series (same gauge and period, digest intact), whatever the
+        # gauge's network; "no alternative source" does not apply to another basin.
         _consume_slot = bool(session.streamflow) and (
-            not _is_usgs or (_slot_mismatch is None and _digest_problem is None)
+            (not _is_usgs and _scoped is None)
+            or (_slot_mismatch is None and _digest_problem is None)
         )
         if _consume_slot:
             _q_cms = _sf_data.get("q_cms")
@@ -1296,14 +1400,15 @@ def extract_hydrological_signatures(
             if _is_usgs:
                 _internal.append({
                     "role": "streamflow", "mode": "internal_nwis_fetch",
-                    "gauge_id": session.site_id, "start_date": start_date, "end_date": end_date,
+                    "gauge_id": _eff_gauge if _scoped is not None else session.site_id,
+                    "start_date": start_date, "end_date": end_date,
                     "session_slot_not_used_because": _why,
                 })
 
         # gauge_id for USGS fetch; None for global basins (uses q_cms_series)
         usgs_gauge_id: str | None = None
         if _is_usgs:
-            usgs_gauge_id = session.site_id or session_id
+            usgs_gauge_id = (_eff_gauge if _scoped is not None else session.site_id) or session_id
 
         if not _is_usgs and _q_cms is None:
             return {
@@ -1376,20 +1481,27 @@ def extract_hydrological_signatures(
             })
         _internal.append(_prec_entry)
         _rr.declare_lineage(internal_acquisitions=_internal)
+        if _scoped is not None and isinstance(d.get("data"), dict):
+            # Sealed with the result: which gauge and area these numbers describe.
+            d["data"]["basin_gauge_id"] = _eff_gauge
+            d["data"]["basin_area_km2"] = round(float(_eff_area), 6)
         _feature_cache_store(session, "signatures", _feature_id, _key, d,
                              citations=["usgs_nwis"])
         d["feature_id"] = _feature_id
         files_saved: list[str] = []
-        saved = _workspace_write(
-            session_id, _canonical_fname(session_id, "signatures", "json"), d["data"]
-        )
+        _sig_fname = _canonical_fname(session_id, "signatures", "json")
+        if _scoped is not None:
+            # One file per feature: a shared name would let the last feature overwrite the rest.
+            _sig_fname = _sig_fname[: -len(".json")] + "_" + re.sub(r"[^A-Za-z0-9_.-]+", "_", str(_feature_id)) + ".json"
+        saved = _workspace_write(session_id, _sig_fname, d["data"])
         if saved:
             files_saved.append(saved)
         # FDC + signature summary PNG
         # q_cms may have been stripped from the session JSON (lean storage);
         # try reloading from the on-disk data file recorded during streamflow fetch.
         ws = session.workspace_dir
-        if ws and session.streamflow:
+        # The session's streamflow is not a feature's series: no FDC plot for a feature.
+        if ws and session.streamflow and _scoped is None:
             q_vals = session.streamflow.get("data", {}).get("q_cms")
             if not q_vals:
                 data_file = session.streamflow.get("data", {}).get("_data_file")
@@ -1424,8 +1536,14 @@ def extract_hydrological_signatures(
                 "feature": feature,
                 "geometry_geojson": geometry_geojson,
                 **({"precipitation": precipitation} if precipitation != "auto" else {}),
+                **({"gauge_id": _eff_gauge, "area_km2": round(float(_eff_area), 6)}
+                   if _scoped is not None else {}),
             },
         )
+        if d.get("_run_id"):
+            # The cached entry is the object just stamped with this run's id; persist it
+            # so a later cache hit can say which run produced the numbers it serves.
+            session.save()
         return d
     except Exception as e:
         log.error("extract_hydrological_signatures failed: %s", e)
@@ -1486,14 +1604,30 @@ def extract_geomorphic_parameters(
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
+        # An explicitly named feature is its own basin (see extract_hydrological_signatures):
+        # unregistered ids are an error, and its outlet is its own, never the session's.
+        _scoped = None
+        if feature is not None and not geometry_geojson:
+            _scoped, _ferr = _resolve_registered_feature(session, feature)
+            if _ferr:
+                return _ferr
+        _cache_params = {"dem_resolution": dem_resolution}
+        if _scoped is not None:
+            _cache_params["feature_geom"] = _feature_geom_key(_scoped)
+            _fmeta = _scoped.metadata or {}
+            _cache_params["outlet"] = [_fmeta.get("outlet_lat"), _fmeta.get("outlet_lon")]
         _feature_id, _key, _cached, _geom = _feature_cache_resolve(
-            session, "geomorphic", {"dem_resolution": dem_resolution},
+            session, "geomorphic", _cache_params,
             feature, geometry_geojson,
         )
         if _cached is not None:
-            return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
+            return {**_cached, "_cache_hit": True, "feature_id": _feature_id,
+                    "source_run_id": _cached.get("_run_id")}
         watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
-        ws_data = session.watershed["data"] if session.watershed else {}
+        ws_data = {} if _scoped is not None else (session.watershed["data"] if session.watershed else {})
+        if _scoped is not None:
+            ws_data = {"outlet_lat": (_scoped.metadata or {}).get("outlet_lat"),
+                       "outlet_lon": (_scoped.metadata or {}).get("outlet_lon")}
 
         # Flexible outlet coordinate resolution:
         #   gauge_lat/gauge_lon  → USGS delineations
@@ -1532,14 +1666,24 @@ def extract_geomorphic_parameters(
         _feature_cache_store(session, "geomorphic", _feature_id, _key, d,
                              citations=["usgs_3dep", "copernicus_glo30"])
         d["feature_id"] = _feature_id
-        saved = _workspace_write(
-            session_id, _canonical_fname(session_id, "geomorphic", "json"), d["data"]
-        )
+        _geo_fname = _canonical_fname(session_id, "geomorphic", "json")
+        if _scoped is not None:
+            # One file per feature: a shared name would let the last feature overwrite the rest.
+            _geo_fname = (_geo_fname[: -len(".json")] + "_"
+                          + re.sub(r"[^A-Za-z0-9_.-]+", "_", str(_feature_id)) + ".json")
+        saved = _workspace_write(session_id, _geo_fname, d["data"])
         if saved:
             d["_file_saved"] = saved
         reminder = _sync_reminder(session_id)
         if reminder:
             d["_sync_required"] = reminder
+        d = _post_run(
+            "extract_geomorphic_parameters", session_id, d,
+            inputs={"dem_resolution": dem_resolution, "feature": feature,
+                    "geometry_geojson": geometry_geojson},
+        )
+        if d.get("_run_id"):
+            session.save()         # persist the run id on the cached entry (see signatures)
         return d
     except Exception as e:
         log.error("extract_geomorphic_parameters failed: %s", e)

@@ -73,6 +73,19 @@ def _define_with_patch(tmp_path: Path, *, name="Test Exp", tool="extract_hydrolo
         )
 
 
+def _register_features(sess: HydroSession, ids) -> None:
+    """Register each id as a basin (own polygon, own gauge) so the experiment resolves it."""
+    from aihydro_core.primitives.geometry import Feature
+    for i, fid in enumerate(ids):
+        x = -90.0 + i
+        sess.put_feature(Feature(
+            feature_id=fid, name=fid, source="test", area_km2=100.0 + i,
+            geojson={"type": "Polygon", "coordinates": [[[x, 40], [x + .1, 40], [x + .1, 40.1],
+                                                          [x, 40.1], [x, 40]]]},
+            metadata={"gauge_id": f"0100000{i}"}))
+    sess.save()
+
+
 # ---------------------------------------------------------------------------
 # TestDefineExperiment
 # ---------------------------------------------------------------------------
@@ -141,12 +154,23 @@ class TestDefineExperiment(unittest.TestCase):
     def test_define_geomorphic_tool(self):
         r = self._define(tool="extract_geomorphic_parameters")
         self.assertNotIn("error", r)
-        self.assertIn("area_km2", r["metrics"])
+        self.assertIn("DA_km2", r["metrics"])
 
-    def test_define_baseflow_tool(self):
+    def test_define_baseflow_tool_is_refused_with_a_recovery_hint(self):
+        # separate_baseflow has no feature argument and reads the session's one slot:
+        # an experiment over it could only ever describe the session's basin.
         r = self._define(tool="separate_baseflow")
-        self.assertNotIn("error", r)
-        self.assertIn("baseflow_index", r["metrics"])
+        self.assertTrue(r.get("error"))
+        self.assertIn("extract_hydrological_signatures", r.get("message", ""))
+
+    def test_define_rejects_metric_the_tool_never_emits(self):
+        r = self._define(metrics=["q_mean", "fdc_slope"])     # real key is slope_fdc
+        self.assertTrue(r.get("error"))
+        self.assertIn("fdc_slope", r.get("message", ""))
+
+    def test_define_flags_unregistered_features(self):
+        r = self._define(features=["nowhere"])
+        self.assertEqual(r["unregistered_features"], ["nowhere"])
 
     def test_define_params_hash_stable(self):
         r1 = self._define(params={"start": "1980-01-01"})
@@ -186,6 +210,7 @@ class TestRunExperiment(unittest.TestCase):
         self._sess = HydroSession(session_id="test-exp-session-001")
         self._sess._storage_dir = self.tmp
         self._sess.save()
+        _register_features(self._sess, ["b001", "b002", "b003"])
 
         # Define an experiment to run
         r = define_experiment(
@@ -256,6 +281,7 @@ class TestGetExperimentTable(unittest.TestCase):
         self._sess = HydroSession(session_id="test-exp-session-001")
         self._sess._storage_dir = self.tmp
         self._sess.save()
+        _register_features(self._sess, ["b001", "b002"])
 
         # Define + run
         r = define_experiment(
@@ -320,7 +346,7 @@ class TestGetExperimentTable(unittest.TestCase):
         r2 = define_experiment(
             session_id="test-exp-session-001",
             name="Pending Exp",
-            tool="separate_baseflow",
+            tool="extract_hydrological_signatures",
             features=["x001"],
             metrics=["baseflow_index"],
         )

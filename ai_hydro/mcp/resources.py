@@ -119,6 +119,22 @@ def _load_session(session_id: str):
         return None
 
 
+def _experiments_of(s) -> dict:
+    """``{experiment_id: {defn, results}}`` from a session's ``_experiments`` slot.
+
+    The slot is stored as a ``{"data": {...experiments...}, "meta": {...}}`` envelope
+    (tools_experiments._save_experiments); counting or iterating the envelope itself
+    reports 2 experiments for any number. A bare ``{experiment_id: ...}`` mapping (older
+    writers and hand-built sessions) is accepted as is.
+    """
+    raw = s.get("_experiments")
+    if not isinstance(raw, dict):
+        return {}
+    if isinstance(raw.get("data"), dict) and "meta" in raw:
+        return raw["data"]
+    return raw
+
+
 def _session_not_found(session_id: str) -> str:
     return json.dumps({
         "error": True,
@@ -158,7 +174,7 @@ def session_list() -> str:
                 "site_id": s.site_id or None,
                 "site_name": s.site_name or None,
                 "n_claims": len(s.claims),
-                "n_experiments": len(s.get("_experiments") or {}),
+                "n_experiments": len(_experiments_of(s)),
                 "created_at": s.created_at,
                 "updated_at": s.updated_at,
                 "archived": s.archived,
@@ -189,7 +205,7 @@ def session_summary(session_id: str) -> str:
         st = c.get("status", "unknown")
         claims_by_status[st] = claims_by_status.get(st, 0) + 1
 
-    exps = s.get("_experiments") or {}
+    exps = _experiments_of(s)
 
     return json.dumps({
         "session_id": s.session_id,
@@ -306,13 +322,13 @@ def session_experiments(session_id: str) -> str:
     if s is None:
         return _session_not_found(session_id)
 
-    exps: dict = s.get("_experiments") or {}
+    exps: dict = _experiments_of(s)
     exp_list = []
     for exp_id, exp_data in exps.items():
         if isinstance(exp_data, dict):
             exp_list.append(exp_data)
 
-    exp_list.sort(key=lambda e: e.get("definition", {}).get("created_at", ""))
+    exp_list.sort(key=lambda e: (e.get("defn") or e.get("definition") or {}).get("created_at", ""))
 
     return json.dumps({
         "session_id": session_id,
