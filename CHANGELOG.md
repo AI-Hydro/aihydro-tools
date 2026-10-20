@@ -59,7 +59,7 @@ Requires `aihydro-watershed` with the signature `units` map (see its changelog).
   ("no confidence interval was computed", "not quantified") and also recognises standard error, sigma and
   "95% interval". Warning only.
 - `skeptic` hint no longer suggests the unaccepted `claim_type='assumption'`. `ErrorHygieneMiddleware` logs the
-  dropped traceback at debug level. Pin: `aihydro-watershed>=0.1.5,<0.2` (merge the watershed PR first).
+  dropped traceback at debug level. Pin: `aihydro-watershed>=0.1.6,<0.2`.
 - **One run id per execution.** A tool that stores its result in a slot and then calls `post_run` used to
   record two rows (`signatures.<hash>` from the slot write and `sigs.<date>...` from `post_run`); the response
   cited one and the slot named the other. `post_run` now adopts the slot row written during the same recorded
