@@ -125,17 +125,23 @@ async def compute_spectral_index(
         if cached is not None and frequency is None:
             log.debug("compute_spectral_index: returning cached %s for session %s",
                       idx_key, session_id)
-            cached["_cached"] = True
             _req = cached.get("requested")
             _now = {"sensor": sensor, "start": start, "end": end}
             _diff = {k: {"cached": _req.get(k), "requested": v} for k, v in _now.items()
                      if isinstance(_req, dict) and v is not None and _req.get(k) is not None and _req.get(k) != v}
             if _diff:
-                cached["cache_mismatch"] = _diff
-                cached["_note"] = (
-                    "This cached index was computed with different parameters than requested "
-                    f"({_diff}); it is NOT the answer to this request. clear_session the slot "
-                    f"'index_{idx_key.lower()}' and call again to compute it.")
+                # Never return the stale index as the answer to a different request.
+                return {
+                    "error": True,
+                    "code": "CACHED_INDEX_PARAMS_MISMATCH",
+                    "message": f"The session's cached {idx_key} was computed with different parameters: {_diff}. "
+                               "It was not returned.",
+                    "recovery": f"Call clear_session('{session_id}', ['index_{idx_key.lower()}']) and call "
+                                "compute_spectral_index again.",
+                    "next_tools": ["clear_session", "compute_spectral_index"],
+                    "cache_mismatch": _diff,
+                }
+            cached["_cached"] = True
             return cached
 
         # ── Date range ───────────────────────────────────────────────────

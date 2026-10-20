@@ -32,9 +32,14 @@ Requires `aihydro-watershed` with the signature `units` map (see its changelog).
   NDWI row. Otherwise the origin is `unresolved` and disclosed as such (the note no longer says "copied from the
   original"). The response exposes `origin_match` (`run_id` | `computed_at` | `latest_by_tool` | `unresolved`);
   an inferred (`latest_by_tool`) origin says so in `_note`.
-- **Cache vs request.** `delineate_watershed` (different gauge) and `compute_spectral_index` (different
-  sensor/dates; the request is now stored with the result) return `cache_mismatch` and a note saying the cached
-  slot is not the answer to this request.
+- **Cache vs request is refused, not served.** `delineate_watershed` with a cached watershed of another gauge
+  (ids normalised: `USGS-` stripped, zero-padded to 8) returns `CACHED_WATERSHED_GAUGE_MISMATCH` with no slot data;
+  `compute_spectral_index` with a cached index computed for another sensor/dates (the request is now stored with the
+  result) returns `CACHED_INDEX_PARAMS_MISMATCH`. Neither seals a reuse row. `clear_session` now accepts
+  `index_<name>` slots so the recovery works.
+- **Tighter identity rule.** If either side carries identity fields they must match exactly (a field on one side
+  only is unresolved, never a fallback to value matching); with no identity on either side at least two equal
+  scalars that are evidence (not bool, 0, None, empty) are required and none may differ.
 - `UNCERTAINTY_ASSERTED_NOT_EVIDENCED` is a heuristic (word match, not meaning): it ignores negated clauses
   ("no confidence interval was computed", "not quantified") and also recognises standard error, sigma and
   "95% interval". Warning only.

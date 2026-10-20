@@ -401,6 +401,22 @@ def delineate_watershed(
 
         # Cache hit — skip the expensive USGS API call
         if session.watershed is not None:
+            _norm = lambda g: (lambda v: v.zfill(8) if v.isdigit() else v)(  # noqa: E731
+                str(g or "").strip().upper().removeprefix("USGS-"))
+            _cached_gauge = _norm((session.watershed.get("data") or {}).get("gauge_id"))
+            if _cached_gauge and _cached_gauge != _norm(resolved_gauge_id):
+                # Never serve (or seal a reuse record for) another basin's watershed as this answer.
+                return {
+                    "error": True,
+                    "code": "CACHED_WATERSHED_GAUGE_MISMATCH",
+                    "message": (f"Session '{session_id}' holds the watershed of gauge {_cached_gauge}, "
+                                f"not the requested {resolved_gauge_id}. It was not returned."),
+                    "recovery": (f"Call clear_session('{session_id}', ['watershed']) and then "
+                                 "delineate_watershed again, or use a separate session for the other gauge."),
+                    "next_tools": ["clear_session", "delineate_watershed"],
+                    "cached_gauge_id": _cached_gauge,
+                    "requested_gauge_id": _norm(resolved_gauge_id),
+                }
             ws_data = session.watershed["data"]
             compact = {k: v for k, v in ws_data.items() if k != "geometry_geojson"}
             files_saved: list[str] = []
@@ -433,13 +449,6 @@ def delineate_watershed(
                     "downstream tools ready. Call clear_session to recompute."
                 ),
             }
-            _cached_gauge = str(compact.get("gauge_id") or "").strip()
-            if _cached_gauge and _cached_gauge != str(resolved_gauge_id).strip():
-                _resp["cache_mismatch"] = {"cached_gauge_id": _cached_gauge, "requested_gauge_id": resolved_gauge_id}
-                _resp["_note"] = (
-                    f"The session's cached watershed is for gauge {_cached_gauge}, NOT the requested "
-                    f"{resolved_gauge_id}; it is returned unchanged. Use a separate session for another "
-                    f"gauge, or clear_session('{session_id}', ['watershed']) to replace it. " + _resp["_note"])
             if not compact.get("basin_ref"):
                 # A slot from before basin identity existed: it can never bind a claim to a
                 # basin, and calling this tool again returns the same slot. Say how to leave

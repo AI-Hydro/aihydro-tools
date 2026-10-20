@@ -152,7 +152,8 @@ def clear_session(session_id: str | None = None, slots: list[str] | None = None)
         from ai_hydro.session.store import _COMMON_SLOTS as _RESULT_SLOTS
         session = HydroSession.load(session_id)
         to_clear = slots if slots else list(_RESULT_SLOTS)
-        invalid = [s for s in to_clear if s not in _RESULT_SLOTS]
+        # compute_spectral_index caches under index_<name>; those slots are clearable too.
+        invalid = [s for s in to_clear if s not in _RESULT_SLOTS and not s.startswith('index_')]
         if invalid:
             hint = (
                 " (notes are always preserved)"
@@ -165,7 +166,10 @@ def clear_session(session_id: str | None = None, slots: list[str] | None = None)
             }
         cleared = []
         for slot in to_clear:
-            if getattr(session, slot) is not None:
+            if slot.startswith('index_') and slot not in _RESULT_SLOTS:
+                if session._slots.pop(slot, None):
+                    cleared.append(slot)
+            elif getattr(session, slot) is not None:
                 setattr(session, slot, None)
                 cleared.append(slot)
         session.save()

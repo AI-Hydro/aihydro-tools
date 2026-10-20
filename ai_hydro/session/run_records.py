@@ -731,8 +731,21 @@ _IDENTITY_KEYS = {"gauge_id": "gauge_id", "basin_gauge_id": "gauge_id", "feature
                   "index": "index", "index_name": "index", "basin_ref": "basin_ref", "site_id": "gauge_id"}
 
 
+def _norm_identity(name: str, val: Any) -> str:
+    v = str(val).strip()
+    if name == "index":
+        return v.upper()
+    if name == "gauge_id":
+        v = v[5:] if v.upper().startswith("USGS-") else v
+        return v.zfill(8) if v.isdigit() else v
+    return v
+
+
 def _identity(*sources: Any) -> Dict[str, Any]:
-    """Identity fields found in the given dicts (first source wins per field)."""
+    """Identity fields found in the given dicts (first source wins per field).
+
+    ``None`` and empty values are not identity: a field with no value is absent.
+    """
     out: Dict[str, Any] = {}
     for src in sources:
         if not isinstance(src, dict):
@@ -743,8 +756,8 @@ def _identity(*sources: Any) -> Dict[str, Any]:
                 continue
             if isinstance(val, dict):
                 val = val.get("id")
-            if isinstance(val, (str, int)) and str(val) != "":
-                out[name] = str(val).strip().upper() if name == "index" else str(val).strip()
+            if isinstance(val, (str, int)) and not isinstance(val, bool) and str(val).strip() != "":
+                out[name] = _norm_identity(name, val)
     return out
 
 
@@ -756,27 +769,37 @@ def _scalar_equal(a: Any, b: Any) -> bool:
     return a == b
 
 
+def _is_evidence(v: Any) -> bool:
+    """Whether an equal value says anything: not a bool, 0, None or an empty string."""
+    if v is None or isinstance(v, bool):
+        return False
+    if isinstance(v, (int, float)):
+        return float(v) != 0.0
+    return isinstance(v, str) and v.strip() != ""
+
+
 def origin_agrees(result: Dict[str, Any], row: Dict[str, Any]) -> bool:
     """Does ``row`` describe what the cached ``result`` serves?
 
-    A candidate found by time or by tool name only is accepted when its identity agrees with
-    the response: every identity field present on both sides (basin_ref, gauge_id, feature_id,
-    index, ...) is equal and at least one is shared; with no shared identity field, every
-    scalar the two share (at least one) must be equal. Anything else is not the same
-    computation, however recent (an NDVI cache hit must never inherit the NDWI row).
+    Identity first: if either side carries identity fields (basin_ref, gauge_id, feature_id,
+    index, ...), both must carry exactly the same fields with equal values. A field present on
+    one side only is "unresolved", never a reason to fall back to value matching. When neither
+    side has identity fields, the two must share at least TWO scalars that are evidence (not
+    bool, 0, None or empty) and every shared scalar must be equal.
     """
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
     ev = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
     mine = _identity(result, data, meta.get("params"), meta)
     theirs = _identity(row.get("key_outputs"), row.get("inputs"), ev.get("data"))
-    shared = set(mine) & set(theirs)
-    if shared:
-        return all(mine[k] == theirs[k] for k in shared)
+    if mine or theirs:
+        return set(mine) == set(theirs) and all(mine[k] == theirs[k] for k in mine)
     ko = row.get("key_outputs") if isinstance(row.get("key_outputs"), dict) else {}
     common = [k for k, v in data.items() if k in ko and isinstance(v, (str, int, float, bool))
               and isinstance(ko[k], (str, int, float, bool))]
-    return bool(common) and all(_scalar_equal(data[k], ko[k]) for k in common)
+    if not all(_scalar_equal(data[k], ko[k]) for k in common):
+        return False
+    return sum(1 for k in common if _is_evidence(data[k])) >= 2
 
 
 def find_origin_row(session_id: str, tool: str, result: Dict[str, Any]) -> Tuple[Optional[str], Optional[Dict[str, Any]], str]:

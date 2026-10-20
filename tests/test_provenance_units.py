@@ -89,11 +89,12 @@ def server(env):
         meta = {"tool": "delineate_watershed"}
         if computed_at:
             meta["computed_at"] = computed_at
-        return {"data": {"area_km2": 774.15}, "meta": meta, "_cached": True, "_note": "Watershed already in session."}
+        return {"data": {"area_km2": 774.15, "gauge_id": "01031500"}, "meta": meta, "_cached": True,
+                "_note": "Watershed already in session."}
 
     @srv.tool()
     def delineate_watershed(session_id: str) -> dict:         # legacy slot: no computed_at in meta
-        return {"data": {"area_km2": 774.15}, "meta": {"tool": "x"}, "_cached": True}
+        return {"data": {"area_km2": 774.15, "gauge_id": "01031500"}, "meta": {"tool": "x"}, "_cached": True}
 
     @srv.tool()
     def gauge_hit_tool(session_id: str) -> dict:
@@ -183,14 +184,38 @@ def test_ndvi_cache_hit_never_inherits_the_ndwi_row(env):
     assert rr.find_origin_row(SID, "compute_spectral_index", other)[0] is None
 
 
-def test_no_shared_identity_needs_equal_shared_values(env):
-    seed_original(rid="w.1", key_outputs={"area_km2": 10.0})
-    same = {"data": {"area_km2": 10.0}, "meta": {"tool": "delineate_watershed"}, "_cached": True}
-    diff = {"data": {"area_km2": 11.0}, "meta": {"tool": "delineate_watershed"}, "_cached": True}
-    none = {"data": {"unrelated": 1}, "meta": {"tool": "delineate_watershed"}, "_cached": True}
-    assert rr.find_origin_row(SID, "delineate_watershed", same)[0] == "w.1"
-    assert rr.find_origin_row(SID, "delineate_watershed", diff)[0] is None
-    assert rr.find_origin_row(SID, "delineate_watershed", none)[0] is None
+def _agrees(resp_data, row_ko, **resp_extra):
+    row = {"key_outputs": row_ko, "evidence": {"data": row_ko}}
+    return rr.origin_agrees({"data": resp_data, **resp_extra}, row)
+
+
+def test_scalar_rule_needs_two_equal_evidential_scalars():
+    assert _agrees({"area_km2": 10.0, "n": 5}, {"area_km2": 10.0, "n": 5, "x": 1})
+    assert not _agrees({"area_km2": 10.0}, {"area_km2": 10.0})                     # one shared scalar
+    assert not _agrees({"area_km2": 11.0, "n": 5}, {"area_km2": 10.0, "n": 5})     # a shared scalar differs
+    assert not _agrees({"unrelated": 1}, {"area_km2": 10.0})                       # nothing shared
+
+
+def test_zero_bool_none_and_empty_are_not_evidence():
+    assert not _agrees({"count": 0}, {"count": 0, "note": "x"})                    # probe: {count:0}
+    assert not _agrees({"ok": True, "count": 0}, {"ok": True, "count": 0})         # probe: ok:True
+    assert not _agrees({"a": None, "b": ""}, {"a": None, "b": ""})
+    assert not _agrees({"count": 0, "area_km2": 10.0}, {"count": 0, "area_km2": 10.0})   # only one evidential
+
+
+def test_identity_on_one_side_only_is_unresolved_never_value_matching():
+    resp = {"area_km2": 10.0, "n": 5}
+    assert not _agrees(resp, {"area_km2": 10.0, "n": 5, "gauge_id": "01031500"})   # row has identity, response not
+    assert not _agrees({**resp, "gauge_id": "01031500"}, {"area_km2": 10.0, "n": 5})
+    assert not _agrees({**resp, "gauge_id": None}, {**{"area_km2": 10.0, "n": 5}, "gauge_id": "01031500"})  # probe
+    assert _agrees({**resp, "gauge_id": "1031500"}, {"area_km2": 10.0, "n": 5, "gauge_id": "USGS-01031500"})
+    assert _agrees({"gauge_id": "01031500"}, {"gauge_id": "01031500"})
+    assert not _agrees({"gauge_id": "01031500"}, {"gauge_id": "01013500"})
+
+
+def test_both_none_identity_with_equal_scalars_uses_the_two_scalar_floor():
+    assert _agrees({"gauge_id": None, "area_km2": 10.0, "n": 5}, {"gauge_id": None, "area_km2": 10.0, "n": 5})
+    assert not _agrees({"gauge_id": None, "area_km2": 10.0}, {"gauge_id": None, "area_km2": 10.0})
 
 
 def test_unresolvable_origin_is_disclosed_and_keeps_response_values(server):
@@ -555,13 +580,43 @@ def test_error_hygiene_logs_the_dropped_traceback_at_debug(caplog):
 
 
 # ------------------------------------------------------ cache vs request (#9)
-def test_cached_watershed_for_another_gauge_says_so(env):
+def _seed_cached_watershed(gauge="01031500"):
+    s = HydroSession.load(SID)
+    s.site_id = gauge
+    s.watershed = {"data": {"area_km2": 774.15, "gauge_id": gauge}, "meta": {"tool": "t"}}
+    s.save()
+
+
+def test_cached_watershed_for_another_gauge_is_refused_and_no_reuse_row_is_written(env):
+    from ai_hydro.mcp.app import mcp as real
+
+    _seed_cached_watershed("01031500")
+    err, body = call(real, "delineate_watershed", {"gauge_id": "01013500", "session_id": SID})
+    assert body["error"] is True and body["code"] == "CACHED_WATERSHED_GAUGE_MISMATCH"
+    assert "data" not in body and "_cached" not in body
+    assert "clear_session" in body["recovery"] and "'watershed'" in body["recovery"]
+    assert not any(r.get("reused") for r in rows().values())
+
+
+@pytest.mark.parametrize("cached", ["1031500", "USGS-01031500", "01031500"])
+def test_padded_and_unpadded_gauge_ids_are_not_a_mismatch(env, cached):
     from ai_hydro.mcp.tools_analysis import delineate_watershed
 
+    _seed_cached_watershed(cached)
+    out = delineate_watershed(gauge_id="01031500", session_id=SID)
+    assert out.get("_cached") is True and not out.get("error")
+
+
+def test_cached_index_with_other_parameters_is_refused(env):
+    from ai_hydro.mcp.tools_indices import compute_spectral_index
+
     s = HydroSession.load(SID)
-    s.site_id = "01031500"
-    s.watershed = {"data": {"area_km2": 774.15, "gauge_id": "01031500"}, "meta": {"tool": "t"}}
+    s.set("index_ndvi", {"data": {"mean": 0.6}, "requested": {"sensor": "sentinel2", "start": "2025-01-01", "end": "2025-12-31"}})
     s.save()
-    out = delineate_watershed(gauge_id="01013500", session_id=SID)
-    assert out["_cached"] is True and out["cache_mismatch"]["cached_gauge_id"] == "01031500"
-    assert "NOT the requested" in out["_note"]
+    out = asyncio.run(compute_spectral_index(index_name="ndvi", session_id=SID, sensor="landsat8"))
+    assert out["error"] is True and out["code"] == "CACHED_INDEX_PARAMS_MISMATCH" and "data" not in out
+    assert "index_ndvi" in out["recovery"]
+    from ai_hydro.mcp.tools_session import clear_session
+    cleared = clear_session(session_id=SID, slots=["index_ndvi"])
+    assert not cleared.get("error")
+    assert HydroSession.load(SID).get("index_ndvi") is None
