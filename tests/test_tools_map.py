@@ -9,6 +9,11 @@ import pytest
 
 _POLYGON = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}
 
+@pytest.fixture(autouse=True)
+def _home_is_dot_aihydro(tmp_path, monkeypatch):
+    """These tests stand ``tmp_path`` in for the user's home: state lives in ``tmp_path/.aihydro``."""
+    monkeypatch.setenv("AIHYDRO_HOME", str(tmp_path / ".aihydro"))
+
 
 @pytest.fixture
 def isolated_sessions(tmp_path, monkeypatch):

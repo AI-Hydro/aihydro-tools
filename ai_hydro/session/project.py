@@ -32,12 +32,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_PROJECTS_DIR = Path.home() / ".aihydro" / "projects"
+from ai_hydro.registry.paths import home_path
+
+_PROJECTS_DIR = home_path("projects")
 
 # Only allow safe project names — prevents path traversal via project_name parameter
-_VALID_PROJECT_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-_SESSIONS_DIR = Path.home() / ".aihydro" / "sessions"
 
+_VALID_PROJECT_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_SESSIONS_DIR = home_path("sessions")
 
 
 class ProjectSession:

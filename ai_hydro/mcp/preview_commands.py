@@ -13,12 +13,13 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from pathlib import Path
 from typing import Any
+
+from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger(__name__)
 
-_PREVIEW_COMMANDS_DIR = Path.home() / ".aihydro" / "preview_commands"
+_PREVIEW_COMMANDS_DIR = home_path("preview_commands")
 
 
 def write_preview_command(payload: dict[str, Any]) -> bool:

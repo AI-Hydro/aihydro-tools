@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from ai_hydro.mcp.app import mcp
@@ -30,12 +29,13 @@ from ai_hydro.mcp.preview_commands import (
     push_focus_cell,
     push_revise_section,
 )
+from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger("ai_hydro.mcp")
 
-_PREVIEW_SESSION_DIR = Path.home() / ".aihydro" / "preview_session"
-_PREVIEW_EVENTS_DIR = Path.home() / ".aihydro" / "preview_events"
-_COMMENTS_DIR = Path.home() / ".aihydro" / "comments"
+_PREVIEW_SESSION_DIR = home_path("preview_session")
+_PREVIEW_EVENTS_DIR = home_path("preview_events")
+_COMMENTS_DIR = home_path("comments")
 
 
 def _safe_module_id(module_id: str) -> str:

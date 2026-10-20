@@ -25,6 +25,7 @@ from ai_hydro.mcp.helpers import (
     _resolve_session,
     _tool_error_to_dict,
 )
+from ai_hydro.registry.paths import aihydro_home
 
 log = logging.getLogger("ai_hydro.mcp")
 
@@ -107,7 +108,7 @@ def train_hydro_model(
 
         # Resolve artifact dir (preserve workspace-based location)
         ws = workspace_dir or session.workspace_dir
-        base = Path(ws) if ws else Path.home() / ".aihydro" / "models"
+        base = Path(ws) if ws else aihydro_home() / "models"
         artifact_dir = base / "runs" / job_id
 
         config = {
@@ -428,7 +429,7 @@ def propose_and_train(
         job_id = uuid.uuid4().hex[:12]
 
         ws = workspace_dir or session.workspace_dir
-        base = Path(ws) if ws else Path.home() / ".aihydro" / "models"
+        base = Path(ws) if ws else aihydro_home() / "models"
         artifact_dir = base / "runs" / job_id
 
         config = {
@@ -598,7 +599,7 @@ def run_autoresearch(
         job_id = uuid.uuid4().hex[:12]
 
         ws = workspace_dir or session.workspace_dir
-        base = Path(ws) if ws else Path.home() / ".aihydro" / "models"
+        base = Path(ws) if ws else aihydro_home() / "models"
         artifact_dir = base / "runs" / job_id
 
         # Extract base periods from session forcing if available

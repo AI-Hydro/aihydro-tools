@@ -33,6 +33,7 @@ from typing import Optional
 
 import numpy as np
 
+from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.mcp.app import mcp, Context
 
 log = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ async def compute_spectral_index(
         workspace = session.workspace_dir
 
         if not workspace:
-            _fallback_ws = Path.home() / ".aihydro" / "sessions" / session_id / "outputs"
+            _fallback_ws = aihydro_home() / "sessions" / session_id / "outputs"
             _fallback_ws.mkdir(parents=True, exist_ok=True)
             workspace = str(_fallback_ws)
 

@@ -17,6 +17,7 @@ from ai_hydro.mcp.helpers import (
     _resolve_session,
     _tool_error_to_dict,
 )
+from ai_hydro.registry.paths import aihydro_home
 
 log = logging.getLogger("ai_hydro.mcp")
 
@@ -96,7 +97,7 @@ def run_inundation_physics_validation(
 
         job_id = uuid.uuid4().hex[:12]
         ws = workspace_dir or session.workspace_dir
-        base = Path(ws) if ws else Path.home() / ".aihydro" / "inundation_physics"
+        base = Path(ws) if ws else aihydro_home() / "inundation_physics"
         artifact_dir = base / "runs" / job_id
 
         config = {
@@ -195,7 +196,7 @@ def export_inundation_surrogate_dataset(
         )
 
         if synthetic_mode:
-            ws = Path(workspace_dir) if workspace_dir else Path.home() / ".aihydro" / "surrogate"
+            ws = Path(workspace_dir) if workspace_dir else aihydro_home() / "surrogate"
             ws.mkdir(parents=True, exist_ok=True)
             out = export_surrogate_dataset(
                 {
@@ -286,7 +287,7 @@ def _resolve_surrogate_dataset_path(
         return path, None
 
     if synthetic_mode:
-        ws = Path(workspace_dir) if workspace_dir else Path.home() / ".aihydro" / "surrogate"
+        ws = Path(workspace_dir) if workspace_dir else aihydro_home() / "surrogate"
         ws.mkdir(parents=True, exist_ok=True)
         out = export_surrogate_dataset(
             {
@@ -359,7 +360,7 @@ def train_inundation_surrogate(
 
         session = HydroSession.load(session_id)
         ws = workspace_dir or session.workspace_dir
-        base = Path(ws) if ws else Path.home() / ".aihydro" / "inundation_surrogate"
+        base = Path(ws) if ws else aihydro_home() / "inundation_surrogate"
         artifact_dir = base / "runs" / job_id
 
         config = {

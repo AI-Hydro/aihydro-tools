@@ -19,12 +19,13 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
+
+from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger(__name__)
 
-_MAP_EVENTS_DIR = Path.home() / ".aihydro" / "map_events"
+_MAP_EVENTS_DIR = home_path("map_events")
 
 
 # Hydrology-specific colour palette ─────────────────────────────────────────

@@ -22,9 +22,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
 
+from ai_hydro.registry.paths import home_path
+
 log = logging.getLogger("ai_hydro.knowledge.embeddings")
 
-KNOWLEDGE_DIR = Path.home() / ".aihydro" / "knowledge"
+KNOWLEDGE_DIR = home_path("knowledge")
 PASSAGE_INDEX_PATH = KNOWLEDGE_DIR / "passage_index.jsonl"
 
 PASSAGE_WORDS = 200          # target words per passage

@@ -90,9 +90,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ai_hydro.registry.paths import home_path
+
 log = logging.getLogger("ai_hydro.session")
 
-SESSIONS_DIR = Path.home() / ".aihydro" / "sessions"
+SESSIONS_DIR = home_path("sessions")
 _SESSIONS_DIR = SESSIONS_DIR  # backward compat alias
 # Deprecated: no longer used for any write (see ai_hydro.registry.paths.rules_dir).
 # Kept only so existing ``patch("...store._REPO_ROOT")`` test fixtures still resolve.

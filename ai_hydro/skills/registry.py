@@ -19,9 +19,11 @@ import logging
 import re
 from pathlib import Path
 
+from ai_hydro.registry.paths import home_path
+
 log = logging.getLogger("ai_hydro.skills")
 
-_USER_SKILLS_DIR = Path.home() / ".aihydro" / "skills"
+_USER_SKILLS_DIR = home_path("skills")
 _SOURCES = ("marketplace", "agent-created", "manual")
 
 

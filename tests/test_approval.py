@@ -492,7 +492,7 @@ def test_cli_real_subprocess_on_a_pseudo_terminal_records_the_approval(tmp_path,
     import select
 
     home = tmp_path / "h"
-    monkeypatch.setattr(store, "_SESSIONS_DIR", home / ".aihydro" / "sessions")
+    monkeypatch.setattr(store, "_SESSIONS_DIR", home / "state" / "sessions")
     s = HydroSession("appr-pty")
     s.claims["c1"] = _claim()
     s.save()

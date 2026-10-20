@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ai_hydro.registry.paths import aihydro_home
+
 log = logging.getLogger("ai_hydro.mcp")
 
 
@@ -58,7 +60,7 @@ def _read_active_workspace_file() -> str | None:
     """
     try:
         import json as _json
-        ws_file = Path.home() / ".aihydro" / "active_workspace.json"
+        ws_file = aihydro_home() / "active_workspace.json"
         if not ws_file.exists():
             return None
         data = _json.loads(ws_file.read_text())
@@ -693,7 +695,7 @@ def _resolve_active_roi_geojson(session_id: str) -> tuple[dict, str]:
                 selection="workspace ROI",
             ), "workspace_roi"
 
-    map_session_path = Path.home() / ".aihydro" / "map_session.json"
+    map_session_path = aihydro_home() / "map_session.json"
     try:
         if map_session_path.exists():
             data = json.loads(map_session_path.read_text(encoding="utf-8"))

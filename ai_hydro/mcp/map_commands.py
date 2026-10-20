@@ -9,12 +9,13 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from pathlib import Path
 from typing import Any
+
+from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger(__name__)
 
-_MAP_COMMANDS_DIR = Path.home() / ".aihydro" / "map_commands"
+_MAP_COMMANDS_DIR = home_path("map_commands")
 
 
 def write_map_command(payload: dict[str, Any]) -> bool:

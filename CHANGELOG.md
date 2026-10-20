@@ -82,6 +82,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   or env var. This is a speed bump, not a boundary (same-user code can unset the variables); the real
   boundary is a touch-required `sk-` key. `python -m ai_hydro.approval` is not an entry point (no
   `__main__.py`; the console script is `aihydro-approve`). See DECISIONS.md 2026-10-19.
+- **One home: `AIHYDRO_HOME` is honoured end to end (WP-0).** Only approvals and the claim registry used
+  to follow `AIHYDRO_HOME`; sessions (and their run-log and claim-revision SQLite files), ledger events,
+  caches, data jobs, map and preview bridges, comments, chat studies, citations, skills, the knowledge
+  index, projects, persona, exports, course state and the model/inundation output fallbacks were fixed at
+  `~/.aihydro`. Every one now goes through `ai_hydro/registry/paths.py`: `aihydro_home()` for inline
+  paths and `home_path(...)` for module-level constants (`store.SESSIONS_DIR`/`_SESSIONS_DIR`,
+  `ledger_commands._LEDGER_EVENTS_DIR`, ...), both evaluated at call time; an unset variable still means
+  `~/.aihydro`. A test that assigns a plain `Path` to such a constant still overrides it.
+- `mcp_server.py` and `setup_mcp.py` take the cache/working directory from the same resolver. `aihydro_home()` returns an absolute path, and `pin_aihydro_home()` rewrites a relative `AIHYDRO_HOME` in the environment before the server `chdir`s into the cache directory, so the home cannot move after startup.
+- Not covered here: `aihydro-core` (`jobs`: `~/.aihydro/jobs`, `subagents`), `aihydro-data` (disk cache,
+  `cds_glofas`/`geoglows_retro` fallbacks) and `aihydro-watershed` (`delineation` cache, `merit`
+  manager and `config.json`) keep their own defaults; only `identity.py` there reads `AIHYDRO_HOME`.
+- `tests/test_aihydro_home.py`: a guard that fails if any module outside the resolver spells the
+  `.aihydro` directory, and tests that put sessions, the run log, ledger events, approval-store reads and
+  the other state directories under a scratch `AIHYDRO_HOME` (with `HOME` also scratch, so a leftover
+  hard-code is caught).
 
 ---
 

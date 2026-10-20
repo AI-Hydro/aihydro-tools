@@ -19,15 +19,15 @@ import logging
 import time
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from typing import Any
 
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import _tool_error_to_dict
+from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger("ai_hydro.mcp")
 
-_CACHE_DIR = Path.home() / ".aihydro" / "citations"
+_CACHE_DIR = home_path("citations")
 _TTL_SECONDS = 30 * 24 * 3600  # 30 days
 _TIMEOUT = 8  # seconds per HTTP call
 _POLITE_UA = "AI-Hydro/0.1.24 (+mailto:gh9690@myamu.ac.in)"

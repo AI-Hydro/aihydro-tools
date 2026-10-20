@@ -17,10 +17,11 @@ from pathlib import Path
 
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import _tool_error_to_dict
+from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger("ai_hydro.mcp")
 
-_PREVIEW_REQUESTS_DIR = Path.home() / ".aihydro" / "preview-requests"
+_PREVIEW_REQUESTS_DIR = home_path("preview-requests")
 
 
 @mcp.tool()
@@ -58,7 +59,7 @@ def show_html_preview(file_path: str, title: str | None = None) -> dict:
             "file_path": abs_path,
             "marker": str(marker_path),
             "_note": (
-                "The AI-Hydro extension is watching ~/.aihydro/preview-requests/ "
+                "The AI-Hydro extension is watching <AIHYDRO_HOME>/preview-requests/ "
                 "and will open the file in the HTML Preview panel within ~1s. "
                 "If the extension is not running, the marker persists until it starts."
             ),

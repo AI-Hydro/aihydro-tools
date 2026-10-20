@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 
-_PROFILE_PATH = Path.home() / ".aihydro" / "researcher.json"
+from ai_hydro.registry.paths import home_path
+
+_PROFILE_PATH = home_path("researcher.json")
 
 
 class ResearcherProfile:
