@@ -27,8 +27,11 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Install sibling packages (pinned git SHAs, pending PyPI batch)
+        run: .github/ci/install-siblings.sh
+
       - name: Install package + dev deps
-        run: pip install -e ".[all,dev]" pyyaml
+        run: pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]" pyyaml
 
       - name: Validate bench catalog schema
         run: pytest tests/test_bench_schema.py -q
@@ -62,8 +65,11 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Install sibling packages (pinned git SHAs, pending PyPI batch)
+        run: .github/ci/install-siblings.sh
+
       - name: Install package + dev deps
-        run: pip install -e ".[all,dev]"
+        run: pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]"
 
       - name: Run bench live tasks
         run: pytest tests/test_bench.py -m bench_live -v --tb=short

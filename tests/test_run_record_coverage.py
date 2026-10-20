@@ -13,12 +13,16 @@ tool's own output.
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
 
 import fastmcp
 import mcp.types as mcp_types
 import pytest
 from fastmcp.server.middleware import MiddlewareContext
 from fastmcp.tools.tool import ToolResult
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 from ai_hydro.session import run_records as rr
 from ai_hydro.session import store
@@ -61,6 +65,10 @@ def session_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+# Owned tools (this repo + declared deps) allowed to skip a run record; see the ratchet test.
+EXEMPT_RATCHET = 74
+
+
 def test_exempt_list_has_no_stale_entries_and_every_entry_has_a_reason():
     registered = set(_registered_tool_names())
     stale = sorted(set(rr.RECORD_EXEMPT) - registered)
@@ -94,11 +102,25 @@ def test_every_registered_tool_is_recorded_or_explicitly_exempt(session_dir):
             failures.append(f"{name}: record has the wrong tool/schema")
     assert not failures, "\n".join(failures)
     assert len(recorded) + len(exempt) == len(names)
-    coverage = len(recorded) / len(names)
-    # Ratchet: tighten as exemptions are removed; never loosen without review.
-    assert coverage >= 0.55, f"record coverage fell to {coverage:.3f} ({len(recorded)}/{len(names)})"
-    print(f"\nrun-record coverage: {len(recorded)}/{len(names)} tools = {coverage:.4f} "
-          f"({len(exempt)} exempt with reasons)")
+    # Ratchet on the tools this repo and its declared dependencies own. Optional community
+    # plugins (e.g. the private aihydro-lsh, absent from public CI) are still verified above when
+    # present, but must not move the ratchet: all 11 lsh tools are recorded, so counting them made
+    # coverage 99/173 = 0.572 on a developer machine and 88/162 = 0.543 in CI.
+    from ai_hydro.mcp.app import TOOL_TIERS, mcp
+    from _plugin_tools import optional_plugin_tool_names
+
+    optional = optional_plugin_tool_names(asyncio.run(mcp.list_tools()), TOOL_TIERS)
+    owned_exempt = [n for n in exempt if n not in optional]
+    owned = [n for n in names if n not in optional]
+    # Exact, self-tightening ratchet on the exemption count (independent of how many tools exist).
+    # Removing an exemption must lower EXEMPT_RATCHET in the same change; new tools must be
+    # recorded, not exempted.
+    n_exempt = len(owned_exempt)
+    assert n_exempt <= EXEMPT_RATCHET, (
+        f"{n_exempt} exempt tools exceeds EXEMPT_RATCHET={EXEMPT_RATCHET}: {sorted(owned_exempt)}")
+    assert n_exempt >= EXEMPT_RATCHET, f"lower EXEMPT_RATCHET to {n_exempt}"
+    print(f"\nrun-record coverage: {len(owned) - len(owned_exempt)}/{len(owned)} owned tools = "
+          f"{(len(owned) - len(owned_exempt)) / len(owned):.4f} ({len(owned_exempt)} exempt with reasons)")
 
 
 def test_tier1_scientific_tools_are_never_exempt():

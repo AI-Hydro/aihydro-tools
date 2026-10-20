@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 
 import pytest
@@ -17,6 +18,12 @@ from ai_hydro.session.chat_binding import ChatBindingStore
 from ai_hydro.session.store import HydroSession
 
 SID = "kings-study"
+
+
+needs_modelling = pytest.mark.skipif(
+    importlib.util.find_spec("aihydro_modelling") is None,
+    reason="needs the optional aihydro-modelling package (private; not installable in public CI)",
+)
 
 
 @pytest.fixture
@@ -53,6 +60,7 @@ def test_gauge_error_helper(home):
     assert e.value.code == "GAUGE_NOT_SET" and SID in str(e.value)
 
 
+@needs_modelling
 def test_search_runner_resolves_site_id_not_the_session_id(home, tmp_path, monkeypatch):
     from ai_hydro.mcp import search_runner
 
@@ -72,6 +80,7 @@ def test_search_runner_resolves_site_id_not_the_session_id(home, tmp_path, monke
     assert seen["gauge"] == "01013500"
 
 
+@needs_modelling
 def test_search_runner_with_no_site_id_fails_closed_before_any_lookup(home, tmp_path, monkeypatch):
     from aihydro_core.primitives.errors import ToolError
     from ai_hydro.mcp import search_runner
@@ -105,7 +114,7 @@ def test_training_runner_with_no_site_id_writes_a_failed_status(home, tmp_path, 
 
 @pytest.mark.parametrize("tool,args", [
     ("train_hydro_model", {}),
-    ("run_autoresearch", {"hypothesis": "h", "max_experiments": 2}),
+    pytest.param("run_autoresearch", {"hypothesis": "h", "max_experiments": 2}, marks=needs_modelling),
 ])
 def test_kickoffs_refuse_without_a_gauge_and_start_no_job(home, monkeypatch, tool, args):
     from ai_hydro.mcp import tools_modelling as tm
@@ -129,6 +138,7 @@ def _loop_entries():
     return [e(0, None, 0, None, True), e(1, True, 0.02, 0.001, True), e(2, False, -0.03, 0.4, False)]
 
 
+@needs_modelling
 def test_get_leaderboard_returns_facts_and_no_grade(home, tmp_path, monkeypatch):
     from ai_hydro.mcp import tools_modelling as tm
     from aihydro_modelling.leaderboard import autoresearch_summary
@@ -150,3 +160,25 @@ def test_get_leaderboard_returns_facts_and_no_grade(home, tmp_path, monkeypatch)
     for k in ("episode_score", "episode_grade", "score_breakdown", "deprecation"):
         assert k not in ep
     assert "grade" not in json.dumps(r).lower().replace("upgrade", "")
+
+
+def test_missing_modelling_package_is_a_structured_setup_error(home, monkeypatch):
+    """Without aihydro-modelling the kickoff tools say so, not UNEXPECTED_ERROR."""
+    import builtins
+
+    from ai_hydro.mcp import tools_modelling as tm
+
+    real_import = builtins.__import__
+
+    def no_modelling(name, *a, **k):
+        if name.split(".")[0] == "aihydro_modelling":
+            raise ModuleNotFoundError("No module named 'aihydro_modelling'", name="aihydro_modelling")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_modelling)
+    monkeypatch.setattr(tm.jobs, "start_job", lambda **k: pytest.fail("a job was started"))
+    _session("01013500")
+    for r in (tm.run_autoresearch(session_id=SID, hypothesis="h", max_experiments=2),
+              tm.propose_and_train(session_id=SID, spec_json="{}")):
+        assert r["error"] and r["code"] == "MODELLING_NOT_INSTALLED"
+        assert "aihydro-tools[modelling]" in r["recovery"]

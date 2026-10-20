@@ -31,8 +31,11 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Install sibling packages (pinned git SHAs, pending PyPI batch)
+        run: .github/ci/install-siblings.sh
+
       - name: Install package + dev deps
-        run: pip install -e ".[all,dev]"
+        run: pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]"
 
       - name: Run capsule unit tests
         run: pytest tests/test_capsule.py -v --tb=short
@@ -65,8 +68,11 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Install sibling packages (pinned git SHAs, pending PyPI batch)
+        run: .github/ci/install-siblings.sh
+
       - name: Install package + dev deps
-        run: pip install -e ".[all,dev]"
+        run: pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]"
 
       - name: Export + replay locked paper sessions
         run: |

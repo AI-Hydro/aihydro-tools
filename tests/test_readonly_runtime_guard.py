@@ -62,6 +62,12 @@ def fixture_home(tmp_path, monkeypatch):
     sessions = tmp_path / "sessions"
     sessions.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # A tool's first lazy import compiles + caches a .pyc whenever the package has no
+    # cached bytecode yet (fresh CI checkout/venv). The interpreter's import machinery
+    # does that write via os-level fd (audit "open: <fd> mode='wb'"), not the tool, so
+    # it is not a tool side effect; keep it out of the recording. All writes by tool
+    # code itself are still recorded.
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
     monkeypatch.setattr(_store, "_SESSIONS_DIR", sessions)
     monkeypatch.setattr(chat_binding, "get_binding_store",
                         lambda: chat_binding.ChatBindingStore(tmp_path / "bindings.json"))

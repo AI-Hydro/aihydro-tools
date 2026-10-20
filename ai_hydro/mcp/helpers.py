@@ -827,6 +827,17 @@ def _tool_error_to_dict(e: Exception) -> dict:
     if hasattr(e, "to_dict"):
         return sanitize_error(e.to_dict())
 
+    # An optional sibling package that is not installed is a setup condition, not a bug.
+    if isinstance(e, ModuleNotFoundError) and (e.name or "").split(".")[0] == "aihydro_modelling":
+        from aihydro_core.primitives.errors import ToolError
+
+        return sanitize_error(ToolError(
+            "MODELLING_NOT_INSTALLED",
+            "This tool needs the optional aihydro-modelling package, which is not installed.",
+            recovery='Install the modelling extra: pip install "aihydro-tools[modelling]" '
+                     "(requires access to aihydro-modelling >= 0.6.1).",
+        ).to_dict())
+
     import traceback as _tb
     log.error("unexpected tool error: %s\n%s", e, _tb.format_exc(limit=8))
 

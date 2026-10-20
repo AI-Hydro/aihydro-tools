@@ -29,14 +29,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install package with dev + all extras
+      - name: Install sibling packages (pinned git SHAs, pending PyPI batch)
+        run: .github/ci/install-siblings.sh
+
+      - name: Install package with dev + extras
         run: |
-          python -m pip install --upgrade pip
-          # The optional modelling backend is intentionally private and is
-          # therefore not installable from public CI. Modelling integration
-          # tests use pytest.importorskip when that package is unavailable.
           pip install import-linter
-          pip install "aihydro-core[contracts] @ git+https://github.com/AI-Hydro/aihydro-core.git@107e3bf" "aihydro-data[stac] @ git+https://github.com/AI-Hydro/AIhydro-data.git@b472a8f" "aihydro-watershed @ git+https://github.com/AI-Hydro/aihydro-watershed.git@41c0b1f" "pygeoglim @ git+https://github.com/galib9690/pygeoglim.git@ebf4ae9"
+          # No `modelling`/`all` extra: aihydro-modelling is private (see
+          # .github/ci/install-siblings.sh); its tests skip when it is absent.
           pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]" pyyaml
 
       - name: Lint with ruff (advisory — pre-existing debt, not yet a merge gate)

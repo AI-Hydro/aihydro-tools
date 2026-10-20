@@ -12,7 +12,6 @@ duplicated calendar date, contradictory arguments).
 What is wrapped, not re-implemented:
 
 - block / iid bootstrap: ``aihydro_core.science._bootstrap``
-- KGE: ``aihydro_modelling.search.comparison._kge``
 - run lengths: ``aihydro_watershed.signatures.signatures._consecutive_event_lengths``
 - polygon area: ``aihydro_data.geometry.measures.geodesic_area_km2``
 
@@ -487,14 +486,34 @@ KGE_CONVENTION = (
 PERCENT_BIAS_CONVENTION = "100 * (mean_b - mean_a) / mean_a over the paired dates (positive: b larger than a)"
 
 
+def _kge(obs: np.ndarray, pred: np.ndarray) -> float:
+    """KGE per ``KGE_CONVENTION``; NaN when undefined (n < 2, zero spread, non-positive mean).
+
+    Implemented here, not imported: ``compare_series`` is a base kernel tool and the
+    modelling package is an optional extra that may not be installed. Parity with
+    ``aihydro_modelling.search.comparison._kge`` is pinned by a test that runs
+    whenever that package is available.
+    """
+    mask = np.isfinite(obs) & np.isfinite(pred)
+    o, p = obs[mask], pred[mask]
+    if len(o) < 2:
+        return float("nan")
+    mu_o, mu_p = np.mean(o), np.mean(p)
+    sig_o, sig_p = np.std(o), np.std(p)
+    if sig_o < 1e-12 or sig_p < 1e-12 or mu_o < 1e-12:
+        return float("nan")
+    r = float(np.corrcoef(o, p)[0, 1])
+    alpha = sig_p / sig_o
+    beta = mu_p / mu_o
+    return float(1.0 - np.sqrt((r - 1) ** 2 + (alpha - 1) ** 2 + (beta - 1) ** 2))
+
+
 def compare(a: DailySeries, b: DailySeries, convert_to: Optional[str] = None) -> dict:
     """Pair two series by calendar date and report agreement statistics.
 
     No unit conversion unless ``convert_to`` is given. Mismatched recorded units
     are echoed, never refused.
     """
-    from aihydro_modelling.search.comparison import _kge
-
     va, vb = a.values, b.values
     conv_a = conv_b = None
     if convert_to is not None:
