@@ -1,0 +1,58 @@
+{
+ "c-01031500-signatures-20261020": {
+  "citations": [],
+  "claim": "The Piscataquis River basin at Dover-Foxcroft, Maine (USGS 01031500) has an NLDI-delineated watershed area of 774 km2 and, over 1989-10-01 to 2009-09-30, exhibits a runoff ratio of 0.61, a baseflow index of 0.45, and a streamflow elasticity of 1.76 using a Lyne-Hollick digital filter.",
+  "claim_type": "empirical_result",
+  "confidence": "high",
+  "confidence_rationale": "Signatures were computed from 7,305 observed daily streamflow values (USGS NWIS) and basin-averaged GridMET precipitation, with bootstrap 90% confidence intervals reported for each statistic; water-balance consistency passed.",
+  "contradictions": [],
+  "created_at": "2026-10-20T08:32:43.347304+00:00",
+  "evidence_spans": [
+   {
+    "metric_ref": "area_km2",
+    "page": null,
+    "passage_hash": null,
+    "source_id": "wshed.20261020.01031500.5fcfedd8",
+    "source_type": "run"
+   },
+   {
+    "metric_ref": "runoff_ratio",
+    "page": null,
+    "passage_hash": null,
+    "source_id": "sigs.20261020.01031500.dd4ed1e7",
+    "source_type": "run"
+   },
+   {
+    "metric_ref": "baseflow_index",
+    "page": null,
+    "passage_hash": null,
+    "source_id": "sigs.20261020.01031500.dd4ed1e7",
+    "source_type": "run"
+   },
+   {
+    "metric_ref": "stream_elas",
+    "page": null,
+    "passage_hash": null,
+    "source_id": "sigs.20261020.01031500.dd4ed1e7",
+    "source_type": "run"
+   }
+  ],
+  "id": "c-01031500-signatures-20261020",
+  "limitations": [
+   "Baseflow separation assumes the Lyne-Hollick one-parameter filter with alpha=0.925 and three passes",
+   "Runoff ratio and elasticity depend on the GridMET precipitation product interpolated over the basin",
+   "Stationarity was not checked because full streamflow arrays were not retained in the session streamflow slot"
+  ],
+  "scope": {
+   "basins": [
+    "01031500"
+   ],
+   "forcing": null,
+   "metric": null,
+   "model_versions": {},
+   "period": "1989-10-01 to 2009-09-30"
+  },
+  "status": "tested",
+  "updated_at": "2026-10-20T08:32:43.347312+00:00"
+ }
+}

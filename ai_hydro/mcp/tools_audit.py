@@ -23,13 +23,20 @@ def audit_interpretation(
     prose: str = "",
 ) -> dict:
     """
-    Verify that every numeric literal in synthesis prose is bound to a
-    run-log entry or a declared whitelist marker ([lit:...]).
+    Verify that every quantity in synthesis prose is bound to a run-log
+    entry or a declared whitelist marker ([lit:...]).
+
+    Ids, codes (HUC/EPSG), dates, years and plain counts ("17 signatures") are
+    not quantities. Decimals, numbers with units and sample sizes ("7,305 daily
+    observations") need a marker in the same sentence/bullet/cell; method
+    parameters ("bootstrap 90% CIs") are advisory.
 
     Checks each [run:<id>#<path>] marker:
       - run_id exists in session run-log
-      - JSON-path resolves to the stored field
+      - JSON-path resolves (canonical key_outputs.<field>; data.<field> and
+        evidence.data.<field> are aliases); the run has outputs (hollow_evidence)
       - prose value matches stored value within rounding tolerance
+      - prose unit matches the run's declared unit, if any (unit_mismatch)
 
     Checks each [claim:<id>] marker:
       - claim exists in session ledger
@@ -64,12 +71,16 @@ def audit_interpretation(
             "cited_numeric_count": report.cited_numeric_count,
             "claim_count": report.claim_count,
             "claim_pass_count": report.claim_pass_count,
-            "violations": violations_raw,
+            "violations": violations_raw,        # hard first; each has a severity
+            "hard_count": report.hard_count,
+            "advisory_count": report.advisory_count,
+            "exempt_by_reason": report.exempt_by_reason,
         }
 
         if not report.passed:
             result["_note"] = (
-                f"Audit FAILED ({len(report.violations)} violation(s)). "
+                f"Audit FAILED ({report.hard_count} hard violation(s), "
+                f"{report.advisory_count} advisory). "
                 "Fix all violations, then re-call write_research_interpretation. "
                 "See 'violations' list for exact fix instructions."
             )
@@ -77,7 +88,9 @@ def audit_interpretation(
         else:
             result["_note"] = (
                 f"Audit passed. {report.cited_numeric_count}/{report.total_numeric_count} "
-                "numerics cited. Proceed with write_research_interpretation."
+                "quantities cited"
+                + (f" ({report.advisory_count} advisory)" if report.advisory_count else "")
+                + ". Proceed with write_research_interpretation."
             )
 
         return result

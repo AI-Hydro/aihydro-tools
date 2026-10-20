@@ -69,6 +69,29 @@ Requires `aihydro-watershed` with the signature `units` map (see its changelog).
   a cached single-gauge answer is decided before the 671-gauge dataset is loaded (it took 29.6 s) and only for
   the same gauge.
 
+### Changed
+
+- **Answer auditor: token-typed number grammar, citation resolution and severities (session study
+  S4).** The 01031500 session answer produced 29 "numbers", 8 "cited" (all through a +/-60-character
+  year whitelist), 21 violations, 0 of 5 markers resolved, the gauge id flagged 4 times, and the one
+  real sample size (7,305) excused by a nearby "1989". The auditor now tokenises before matching:
+  digits in code spans, URLs, file paths, marker brackets and identifier-shaped tokens (run/claim ids,
+  versions, `EPSG:5070`) are not numbers; the number regex no longer splits `.` `-` `:` `_` neighbours.
+  Each remaining number is classified: exempt (session/gauge ids and 8-15-digit ids near
+  USGS/gauge/COMID/HRU, HUC/EPSG/FIPS/NLCD codes, year/date tokens, `Figure N`, list indices,
+  meta-counts such as "17 signatures", bare integers with no unit), **sample sizes** ("7,305 daily
+  observations") that must be cited, **method parameters** ("bootstrap 90% CIs") that only draw an
+  advisory, and **quantities** (a decimal, a unit, or a metric name nearby) that must be cited. A
+  marker binds only inside its own sentence / bullet / table cell. `data.X`, `key_outputs.X` and
+  `evidence.data.X` resolve to the same stored field (canonical: `key_outputs.<field>`); the grammar
+  shown to the model in `research.md` now says so. New violation kinds `hollow_evidence` (marker ->
+  run with no recorded outputs; suggests the `derived_from` run) and `unit_mismatch` (prose unit
+  differs from the run's `units` map). Every violation carries `severity` (`hard` | `advisory`),
+  `category`, `suggested_marker`; reports are sorted hard-first, `passed` means no hard violation,
+  and `hard_count` / `advisory_count` / `exempt_by_reason` are added (fields only added, none renamed).
+  Behaviour change: a percent now only matches a stored fraction at the scaled tolerance ("5%" no longer
+  matches 0.5). Regression: `tests/test_audit_grammar.py` + `tests/fixtures/audit_session_01031500/`.
+
 ### Fixed
 
 - **Multi-basin experiments no longer return the session's basin for every row (WP-1a, S1).**

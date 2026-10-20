@@ -1,0 +1,432 @@
+{
+ "fetch.20261020.01031500.f46b2fc8": {
+  "key_outputs": {},
+  "minimal": true,
+  "record": {
+   "canonicalization": "aihydro.c14n/1",
+   "env_digest": "sha256:5580a6edd4d65ad90e284590704216360561ece80b0e2fb4168153ee8022582f",
+   "extra": {
+    "context_source": "meta",
+    "entry": "minimal",
+    "session_resolution": "explicit_arg",
+    "writer": "middleware"
+   },
+   "input_digest": "sha256:34455be2977311cdd8de38730bea845881d46c75eada67684bc1a91ee292547d",
+   "input_refs": [],
+   "output_digest": "sha256:66f568c2ba096d89af99c6ff1bfe7bf89e1447980f07466bb8e9b052d2e9fc16",
+   "parents": [],
+   "record_digest": "sha256:5ad60a0379458bbbe52e8800e24ab4d30886f8348f770c49246bf5ceed9e3b4c",
+   "recorded_at": "2026-10-20T08:31:16.137978Z",
+   "run_id": "fetch.20261020.01031500.f46b2fc8",
+   "schema": "aihydro.run/2",
+   "session_id": "01031500",
+   "status": "ok",
+   "tool": "fetch_camels_us",
+   "tool_version": "2.3.7",
+   "version_source": "package"
+  },
+  "run_id": "fetch.20261020.01031500.f46b2fc8",
+  "session_id": "01031500",
+  "timestamp": "2026-10-20T08:31:16.136744+00:00",
+  "tool_name": "fetch_camels_us"
+ },
+ "signatures.6723ef70f7cf": {
+  "evidence": {
+   "data": {
+    "baseflow_index": 0.4452308550744162,
+    "flow_quantile_convention": "camels_nonexceedance_v1",
+    "flow_variability": 1.6227913357470454,
+    "half_flow_date_std": 29.42447960457415,
+    "hfd_mean": 181.0,
+    "high_q_dur": 3.2869565217391306,
+    "high_q_freq": 18.9,
+    "low_q_dur": 14.69767441860465,
+    "low_q_freq": 94.8,
+    "precipitation_digest": "sha256:89e0977f73a05f140cbb7f2b9fd6bbc150618b1000c19548b25980a85eb53f42",
+    "precipitation_product": "GRIDMET_PRECIP",
+    "precipitation_status": "used",
+    "precipitation_units": "mm/day",
+    "q5": 0.11029510099815915,
+    "q95": 7.957680925884354,
+    "q_mean": 2.0168551452427717,
+    "q_median": 0.8659271539683555,
+    "q_std": 3.2729350551568186,
+    "runoff_ratio": 0.6050785196101791,
+    "slope_fdc": 3.347549499225733,
+    "stream_elas": 1.76208826110847,
+    "zero_q_freq": 0.0
+   },
+   "error": false,
+   "quality_flags": null,
+   "schema_version": 1,
+   "status": null,
+   "uncertainty": {
+    "baseflow_index": {
+     "block_size": 365,
+     "ci_high": 0.46090147148079363,
+     "ci_level": 0.9,
+     "ci_low": 0.4306218529928009,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "scope": "sampling_variability_of_ratio; excludes filter and observation uncertainty",
+     "value": 0.4452308550744162
+    },
+    "flow_variability": {
+     "ci_high": 1.7065495277595815,
+     "ci_level": 0.9,
+     "ci_low": 1.54507863149547,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 1.6227913357470454
+    },
+    "q5": {
+     "ci_high": 0.126570739111068,
+     "ci_level": 0.9,
+     "ci_low": 0.0948095424052944,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 0.11029510099815915
+    },
+    "q95": {
+     "ci_high": 8.786948390122681,
+     "ci_level": 0.9,
+     "ci_low": 6.7235767155754385,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 7.957680925884354
+    },
+    "q_mean": {
+     "ci_high": 2.203365737079771,
+     "ci_level": 0.9,
+     "ci_low": 1.8124964848636362,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 2.0168551452427717
+    },
+    "q_median": {
+     "ci_high": 0.948095424052944,
+     "ci_level": 0.9,
+     "ci_low": 0.7772802318194052,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 0.8659271539683555
+    }
+   }
+  },
+  "key_outputs": {
+   "baseflow_index": 0.4452308550744162,
+   "flow_quantile_convention": "camels_nonexceedance_v1",
+   "flow_variability": 1.6227913357470454,
+   "half_flow_date_std": 29.42447960457415,
+   "hfd_mean": 181.0,
+   "high_q_dur": 3.2869565217391306,
+   "high_q_freq": 18.9,
+   "low_q_dur": 14.69767441860465,
+   "low_q_freq": 94.8,
+   "precipitation_digest": "sha256:89e0977f73a05f140cbb7f2b9fd6bbc150618b1000c19548b25980a85eb53f42",
+   "precipitation_product": "GRIDMET_PRECIP",
+   "precipitation_status": "used",
+   "precipitation_units": "mm/day",
+   "q5": 0.11029510099815915,
+   "q95": 7.957680925884354,
+   "q_mean": 2.0168551452427717,
+   "q_median": 0.8659271539683555,
+   "q_std": 3.2729350551568186,
+   "runoff_ratio": 0.6050785196101791,
+   "slope_fdc": 3.347549499225733,
+   "stream_elas": 1.76208826110847,
+   "zero_q_freq": 0.0
+  },
+  "record": {
+   "canonicalization": "aihydro.c14n/1",
+   "env_digest": "sha256:5580a6edd4d65ad90e284590704216360561ece80b0e2fb4168153ee8022582f",
+   "extra": {
+    "context_source": "meta",
+    "session_resolution": "explicit_arg",
+    "writer": "put_result"
+   },
+   "input_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+   "input_refs": [],
+   "output_digest": "sha256:a929e20a7a9296dc5e6866a3c38649051d09d30e858eb6ce3c7803222a1b0e09",
+   "parents": [],
+   "record_digest": "sha256:d55a727c35820ab755c751e2a127cd4ffe5dd99e2e8c9745c5fad71459c09172",
+   "recorded_at": "2026-10-20T08:31:43.105820Z",
+   "run_id": "signatures.6723ef70f7cf",
+   "schema": "aihydro.run/2",
+   "session_id": "01031500",
+   "status": "ok",
+   "tool": "extract_hydrological_signatures",
+   "tool_version": "2.3.7",
+   "version_source": "result_meta"
+  },
+  "run_id": "signatures.6723ef70f7cf",
+  "session_id": "01031500",
+  "slot": "signatures",
+  "timestamp": "2026-10-20T08:31:43.091829+00:00",
+  "tool_name": "aihydro_watershed.signatures.signatures.extract_hydrological_signatures"
+ },
+ "sigs.20260627.01031500.7bdf": {
+  "key_outputs": {
+   "_quality_flags": [
+    {
+     "status": "pass",
+     "validator": "water_balance_consistency"
+    },
+    {
+     "status": "pass",
+     "validator": "uncertainty_present"
+    },
+    {
+     "status": "pass",
+     "validator": "stationarity"
+    }
+   ],
+   "baseflow_index": 0.44216985753503796,
+   "flow_variability": 1.6297348604777995,
+   "half_flow_date_std": 31.645655310010564,
+   "hfd_mean": 182.05,
+   "high_q_dur": 3.1982758620689653,
+   "high_q_freq": 17.664939382088384,
+   "low_q_dur": 14.029411764705882,
+   "low_q_freq": 90.8482596793117,
+   "q5": 8.043022863772528,
+   "q95": 0.09797002309506811,
+   "q_mean": 2.0471450036526897,
+   "q_median": 0.9133334411120866,
+   "q_std": 3.3363035769057405,
+   "runoff_ratio": 0.6106123741164513,
+   "slope_fdc": 3.144695585649722,
+   "stream_elas": 1.770682297010906,
+   "zero_q_freq": 0.0
+  },
+  "run_id": "sigs.20260627.01031500.7bdf",
+  "session_id": "01031500",
+  "timestamp": "2026-06-27T21:38:15.792612+00:00",
+  "tool_name": "extract_hydrological_signatures"
+ },
+ "sigs.20261020.01031500.dd4ed1e7": {
+  "evidence": {
+   "data": {
+    "baseflow_index": 0.4452308550744162,
+    "flow_quantile_convention": "camels_nonexceedance_v1",
+    "flow_variability": 1.6227913357470454,
+    "half_flow_date_std": 29.42447960457415,
+    "hfd_mean": 181.0,
+    "high_q_dur": 3.2869565217391306,
+    "high_q_freq": 18.9,
+    "low_q_dur": 14.69767441860465,
+    "low_q_freq": 94.8,
+    "precipitation_digest": "sha256:89e0977f73a05f140cbb7f2b9fd6bbc150618b1000c19548b25980a85eb53f42",
+    "precipitation_product": "GRIDMET_PRECIP",
+    "precipitation_status": "used",
+    "precipitation_units": "mm/day",
+    "q5": 0.11029510099815915,
+    "q95": 7.957680925884354,
+    "q_mean": 2.0168551452427717,
+    "q_median": 0.8659271539683555,
+    "q_std": 3.2729350551568186,
+    "runoff_ratio": 0.6050785196101791,
+    "slope_fdc": 3.347549499225733,
+    "stream_elas": 1.76208826110847,
+    "zero_q_freq": 0.0
+   },
+   "error": false,
+   "quality_flags": [
+    {
+     "message": "Water balance is consistent (Runoff Ratio: 0.61).",
+     "metadata": {},
+     "recommendation": null,
+     "severity": null,
+     "status": "pass",
+     "validator": "water_balance_consistency"
+    },
+    {
+     "message": "Slot 'signatures' contains bootstrap CI uncertainty estimates.",
+     "metadata": {},
+     "recommendation": null,
+     "severity": null,
+     "status": "pass",
+     "validator": "uncertainty_present"
+    },
+    {
+     "message": "Streamflow time-series arrays (dates, q_cms) not found or mismatched in the streamflow slot.",
+     "metadata": {},
+     "recommendation": "The streamflow slot may have been stored in a compact form (arrays stripped to save context). Re-fetch streamflow data to populate the full arrays, or ensure _data_file is set.",
+     "severity": null,
+     "status": "insufficient_data",
+     "validator": "stationarity"
+    }
+   ],
+   "schema_version": 1,
+   "status": null,
+   "uncertainty": {
+    "baseflow_index": {
+     "block_size": 365,
+     "ci_high": 0.46090147148079363,
+     "ci_level": 0.9,
+     "ci_low": 0.4306218529928009,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "scope": "sampling_variability_of_ratio; excludes filter and observation uncertainty",
+     "value": 0.4452308550744162
+    },
+    "flow_variability": {
+     "ci_high": 1.7065495277595815,
+     "ci_level": 0.9,
+     "ci_low": 1.54507863149547,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 1.6227913357470454
+    },
+    "q5": {
+     "ci_high": 0.126570739111068,
+     "ci_level": 0.9,
+     "ci_low": 0.0948095424052944,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 0.11029510099815915
+    },
+    "q95": {
+     "ci_high": 8.786948390122681,
+     "ci_level": 0.9,
+     "ci_low": 6.7235767155754385,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 7.957680925884354
+    },
+    "q_mean": {
+     "ci_high": 2.203365737079771,
+     "ci_level": 0.9,
+     "ci_low": 1.8124964848636362,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 2.0168551452427717
+    },
+    "q_median": {
+     "ci_high": 0.948095424052944,
+     "ci_level": 0.9,
+     "ci_low": 0.7772802318194052,
+     "method": "bootstrap_block",
+     "n": 7305,
+     "value": 0.8659271539683555
+    }
+   }
+  },
+  "inputs": {
+   "end_date": "2009-09-30",
+   "feature": null,
+   "geometry_geojson": null,
+   "start_date": "1989-10-01"
+  },
+  "key_outputs": {
+   "_quality_flags": [
+    {
+     "status": "pass",
+     "validator": "water_balance_consistency"
+    },
+    {
+     "status": "pass",
+     "validator": "uncertainty_present"
+    },
+    {
+     "status": "insufficient_data",
+     "validator": "stationarity"
+    }
+   ],
+   "baseflow_index": 0.4452308550744162,
+   "flow_quantile_convention": "camels_nonexceedance_v1",
+   "flow_variability": 1.6227913357470454,
+   "half_flow_date_std": 29.42447960457415,
+   "hfd_mean": 181.0,
+   "high_q_dur": 3.2869565217391306,
+   "high_q_freq": 18.9,
+   "low_q_dur": 14.69767441860465,
+   "low_q_freq": 94.8,
+   "precipitation_digest": "sha256:89e0977f73a05f140cbb7f2b9fd6bbc150618b1000c19548b25980a85eb53f42",
+   "precipitation_product": "GRIDMET_PRECIP",
+   "precipitation_status": "used",
+   "precipitation_units": "mm/day",
+   "q5": 0.11029510099815915,
+   "q95": 7.957680925884354,
+   "q_mean": 2.0168551452427717,
+   "q_median": 0.8659271539683555,
+   "q_std": 3.2729350551568186,
+   "runoff_ratio": 0.6050785196101791,
+   "slope_fdc": 3.347549499225733,
+   "stream_elas": 1.76208826110847,
+   "zero_q_freq": 0.0
+  },
+  "record": {
+   "canonicalization": "aihydro.c14n/1",
+   "env_digest": "sha256:5580a6edd4d65ad90e284590704216360561ece80b0e2fb4168153ee8022582f",
+   "extra": {
+    "context_source": "meta",
+    "session_resolution": "explicit_arg",
+    "writer": "post_run"
+   },
+   "input_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+   "input_refs": [],
+   "output_digest": "sha256:a929e20a7a9296dc5e6866a3c38649051d09d30e858eb6ce3c7803222a1b0e09",
+   "parents": [],
+   "record_digest": "sha256:0159b7871e865459a1f7ab10e719781a1c2cb8b5912f55061f3be1b1474c3d0e",
+   "recorded_at": "2026-10-20T08:31:43.109865Z",
+   "run_id": "sigs.20261020.01031500.dd4ed1e7",
+   "schema": "aihydro.run/2",
+   "session_id": "01031500",
+   "status": "ok",
+   "tool": "extract_hydrological_signatures",
+   "tool_version": "2.3.7",
+   "version_source": "result_meta"
+  },
+  "run_id": "sigs.20261020.01031500.dd4ed1e7",
+  "session_id": "01031500",
+  "timestamp": "2026-10-20T08:31:43.101686+00:00",
+  "tool_name": "extract_hydrological_signatures"
+ },
+ "watershed.ce56bc643d4c": {
+  "key_outputs": {
+   "area_km2": 774.1535687013434,
+   "gauge_id": "01031500",
+   "gauge_lat": 45.175,
+   "gauge_lon": -69.3147222,
+   "gauge_name": "Piscataquis River Near Dover-Foxcroft, Maine",
+   "huc_02": "01"
+  },
+  "run_id": "watershed.ce56bc643d4c",
+  "session_id": "01031500",
+  "slot": "watershed",
+  "timestamp": "2026-06-27T21:37:05.128708+00:00",
+  "tool_name": "aihydro_watershed.characterize.watershed.delineate_watershed"
+ },
+ "wshed.20261020.01031500.5fcfedd8": {
+  "key_outputs": {},
+  "minimal": true,
+  "record": {
+   "canonicalization": "aihydro.c14n/1",
+   "env_digest": "sha256:5580a6edd4d65ad90e284590704216360561ece80b0e2fb4168153ee8022582f",
+   "extra": {
+    "context_source": "meta",
+    "entry": "minimal",
+    "session_resolution": "explicit_arg",
+    "writer": "middleware"
+   },
+   "input_digest": "sha256:c9fcede04e608499a81c74e5d8c1b6ff2cde2f66b501d9b716e06d7e04a08cdb",
+   "input_refs": [],
+   "output_digest": "sha256:d0eb9d0ef962afd28848cb164113cf13a4dbb5d3393bf152cc90b32689d4ae66",
+   "parents": [],
+   "record_digest": "sha256:f32a78b2f38dbf3516c87511e3b38d55684aaa635fe7e07b3f01c09603024eeb",
+   "recorded_at": "2026-10-20T08:31:25.332915Z",
+   "run_id": "wshed.20261020.01031500.5fcfedd8",
+   "schema": "aihydro.run/2",
+   "session_id": "01031500",
+   "status": "ok",
+   "tool": "delineate_watershed",
+   "tool_version": "2.0.0",
+   "version_source": "result_meta"
+  },
+  "run_id": "wshed.20261020.01031500.5fcfedd8",
+  "session_id": "01031500",
+  "timestamp": "2026-10-20T08:31:25.332689+00:00",
+  "tool_name": "delineate_watershed"
+ }
+}

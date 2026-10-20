@@ -312,6 +312,8 @@ def write_research_interpretation(
                     "audit_passed": False,
                     "numeric_coverage": report.numeric_coverage,
                     "violation_count": len(report.violations),
+                    "hard_count": report.hard_count,
+                    "advisory_count": report.advisory_count,
                     "violations": [v.model_dump() for v in report.violations],
                     "teaching_error": report.teaching_error(),
                     "_note": (

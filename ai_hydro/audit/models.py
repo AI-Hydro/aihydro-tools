@@ -22,6 +22,8 @@ class AuditViolation(BaseModel):
         "claim_bad_status",      # claim exists but status not in allowed set
         "malformed_marker",      # marker present but syntax is wrong
         "lit_unresolvable",      # [lit:<hash>] hash not found in passage index
+        "hollow_evidence",       # marker resolves to a run with no recorded outputs
+        "unit_mismatch",         # prose unit differs from the unit the run declares
     ]
     text_excerpt: str            # the prose snippet containing the violation
     marker_raw: str | None       # the raw marker string, if any
@@ -29,13 +31,19 @@ class AuditViolation(BaseModel):
     stored_value: Any | None     # what the run-log actually says (for mismatches)
     message: str                 # human-readable explanation (also shown to LLM)
     fix_hint: str                # instruction to the LLM on how to correct it
+    # Added in the token-typed grammar (all optional: older consumers ignore them).
+    severity: Literal["hard", "advisory"] = "hard"   # hard blocks; advisory only informs
+    category: str | None = None  # quantity | sample_size | method_parameter | None
+    suggested_marker: str | None = None  # a unique value-match the agent can paste
+    resolved_path: str | None = None     # storage path an aliased marker resolved to
 
 
 class AuditReport(BaseModel):
     """
     Full audit result for one call to write_research_interpretation.
 
-    passed = True only when violations is empty.
+    passed = True only when there is no HARD violation (advisories never block).
+    violations are sorted hard-first; every violation carries a severity.
     numeric_coverage = (cited_count / total_count) or 1.0 if total_count == 0.
 
     lit_span_count     — number of [lit:...] markers found in prose.
@@ -53,20 +61,28 @@ class AuditReport(BaseModel):
     lit_span_count: int = 0
     lit_resolved_count: int = 0
     lit_advisories: list[AuditViolation] = []
+    hard_count: int = 0
+    advisory_count: int = 0
+    # Tokens the grammar deliberately did not treat as quantities, by reason
+    # (identifier, code, date, year, meta_count, ...). Transparency, not findings.
+    exempt_count: int = 0
+    exempt_by_reason: dict[str, int] = {}
 
     def teaching_error(self) -> str:
         """
         Produce the teaching-error string injected into write_research_interpretation
         refusals — lists every violation with its fix_hint.
         """
+        hard = [v for v in self.violations if v.severity == "hard"]
         lines = [
-            f"Audit failed: {len(self.violations)} violation(s) found.",
+            f"Audit failed: {len(hard)} hard violation(s) found"
+            f" ({len(self.violations) - len(hard)} advisory).",
             f"Numeric coverage: {self.cited_numeric_count}/{self.total_numeric_count}.",
             "",
             "Fix each item below, then re-call write_research_interpretation:",
         ]
         for i, v in enumerate(self.violations, 1):
-            lines.append(f"\n[{i}] {v.kind.upper()}")
+            lines.append(f"\n[{i}] {v.kind.upper()} ({v.severity})")
             lines.append(f"    Excerpt : {v.text_excerpt!r}")
             if v.marker_raw:
                 lines.append(f"    Marker  : {v.marker_raw}")
@@ -75,5 +91,7 @@ class AuditReport(BaseModel):
             if v.stored_value is not None:
                 lines.append(f"    Stored  : {v.stored_value}")
             lines.append(f"    Problem : {v.message}")
+            if v.suggested_marker:
+                lines.append(f"    Suggest : {v.suggested_marker}")
             lines.append(f"    Fix     : {v.fix_hint}")
         return "\n".join(lines)
