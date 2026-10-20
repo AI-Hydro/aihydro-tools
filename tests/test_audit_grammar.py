@@ -125,12 +125,13 @@ class TestSessionStudyAnswer:
 
 class TestTokenisation:
     def test_digits_in_code_urls_paths_markers_are_not_numbers(self):
-        txt = ("Run `0.42 in code` and see https://example.org/a/0.5/b?x=7.2 or /tmp/run_3.2/out.csv "
-               "and [run:abc.2026.5#key_outputs.x] then ```\n1.5\n2.5\n``` done.")
+        txt = ("Run `step 3 of 4` and see https://example.org/a/0.5/b?x=7.2 or /tmp/run_3.2/out.csv "
+               "and [run:abc.2026.5#key_outputs.x] then ```\nrow 1\nrow 2\n``` done.")
         assert extract_numerics(txt) == []
 
     def test_identifier_shaped_tokens_are_masked(self):
-        txt = "ids c-01031500-signatures-20261020, v2.3.7, EPSG:5070, wshed.20261020.01031500.5fcfedd8, 2.3.7"
+        txt = ("ids c-01031500-signatures-20261020, v2.3.7, EPSG:5070, version 2.3, "
+               "wshed.20261020.01031500.5fcfedd8, watershed.ce56bc643d4c")
         assert extract_numerics(txt) == []
 
     def test_adjacent_separators_do_not_split_digits(self):
@@ -154,10 +155,10 @@ class TestTokenisation:
 class TestClassification:
     def test_session_ids_and_id_context(self):
         assert _cats("Gauge 01031500 flows", ["01031500"])[0][1:] == ("exempt", "identifier")
-        # 8-15 digit integer near USGS / gauge / COMID, no registry needed
+        # 8-15 digit integer directly beside USGS / gauge / COMID, no registry needed
         assert _cats("USGS 04085427 and COMID 22678241")[0][1:] == ("exempt", "identifier")
-        # zero-padded 5+ digit integers are labels
-        assert _cats("tile 00123")[0][1:] == ("exempt", "identifier")
+        # a zero-padded integer is NOT automatically a label (model-controllable)
+        assert _cats("tile 00123")[0][1:] == ("exempt", "bare_integer")
 
     def test_codes(self):
         assert _cats("HUC-02 = 01")[0][1:] == ("exempt", "code_label")
@@ -394,3 +395,246 @@ class TestSeverityAndReport:
     def test_lit_marker_binds_sample_size(self, monkeypatch):
         rep = _audit("The benchmark used 40 basins [lit:smith2020].", {}, monkeypatch)
         assert rep.passed and rep.lit_span_count == 1
+
+
+# --------------------------------------------------------------------------- #
+# Adversarial review of PR 4 (reviewer scripts adv.py / adv2.py / adv3.py)
+# --------------------------------------------------------------------------- #
+
+RL = {
+    "r1": {"run_id": "r1", "tool_name": "sigs", "timestamp": "2026-01-01",
+           "key_outputs": {"runoff_ratio": 0.61, "area_km2": 774.15, "nse": 0.61, "q95": 8.0,
+                           "units": {"q95": "m3/s", "area_km2": "km2"}, "n_obs": 7305,
+                           "small": 0.0032, "basin": 774},
+           "evidence": {"data": {"runoff_ratio": 0.61},
+                        "uncertainty": {"runoff_ratio": {"value": 0.61, "ci_low": 0.5, "ci_high": 0.7,
+                                                         "n": 1000, "ci_level": 0.9}}},
+           "inputs": {"gauge_id": "01031500", "n_boot": 1000}},
+    "r2": {"run_id": "r2", "tool_name": "hollow", "timestamp": "2026-01-02", "key_outputs": {},
+           "derived_from": ["r1"]},
+}
+CL = {"C-001": {"status": "supported", "scope": {"basins": ["12"]}}}
+
+
+def _a(prose, monkeypatch, sid="S", site_ids=("01031500",)):
+    monkeypatch.setattr(R, "_load_run_log", lambda s: copy.deepcopy(RL))
+    monkeypatch.setattr(R, "_load_claims", lambda s: CL)
+    monkeypatch.setattr(R, "_site_ids", lambda s: set(site_ids))
+    return R.resolve_prose(prose, sid)
+
+
+def _hard(rep):
+    return [(v.kind, v.prose_value) for v in rep.violations if v.severity == "hard"]
+
+
+class TestMarkerTextIsNotProse:
+    """1. Marker brackets contributed the words "run"/"claim" to meta-count detection."""
+
+    def test_q95_80_cited_to_a_run_is_checked(self, monkeypatch):
+        rep = _a("Q95 was 80 [run:r1#q95].", monkeypatch)
+        assert _hard(rep) == [("value_mismatch", "80")]
+        rep = _a("Peak flow was 999 [run:r1#q95].", monkeypatch)
+        assert _hard(rep) == [("value_mismatch", "999")]
+        rep = _a("The area is 5000 [run:r1#area_km2].", monkeypatch)
+        assert _hard(rep) == [("value_mismatch", "5000")]
+
+    def test_meta_count_needs_no_metric_word_in_the_sentence(self):
+        assert _cats("peak 412 runs")[0][1] == "quantity"
+        assert _cats("area is 774 steps")[0][1] == "quantity"
+        assert _cats("17 signatures show 0.61 skill")[0][1] == "quantity"
+        assert _cats("17 signatures")[0][1:] == ("exempt", "meta_count")
+
+    def test_bare_integer_in_a_sentence_with_a_marker_is_a_quantity(self, monkeypatch):
+        assert _cats("we saw 412 [run:r1#nse]")[0][1] == "quantity"
+        rep = _a("We saw 412 of them [run:r1#n_obs].", monkeypatch)
+        assert _hard(rep) == [("value_mismatch", "412")]
+        assert _cats("we saw 412 of them")[0][1:] == ("exempt", "bare_integer")
+
+    def test_claim_marker_never_binds_a_number(self, monkeypatch):
+        assert _hard(_a("Mean flow 3 [claim:C-001]", monkeypatch)) == [("uncited_number", "3")]
+
+
+class TestIdExemptionCannotBeUsedToHide(object):
+    """2. Exact ids / ID context never override a unit and are not model-controllable."""
+
+    def test_unit_beats_id_context(self):
+        assert _cats("12345678 cfs at USGS")[0][1] == "quantity"
+        assert _cats("Flow is 12345678 cfs at USGS.")[0][1] == "quantity"
+        assert _cats("Gauge 01031500 cfs", ["01031500"])[0][1] == "quantity"
+
+    def test_own_id_needs_five_digits_and_no_unit(self):
+        assert _cats("area 774 km2", ["774"])[0][1] == "quantity"
+        assert _cats("area 774", ["774"])[0][1] == "quantity"
+        assert _cats("flow 01031500 m3/s", ["01031500"])[0][1] == "quantity"
+
+    def test_ids_from_claims_and_run_outputs_are_not_exempt(self, monkeypatch):
+        # claim scope.basins=["12"], run inputs.gauge_id="01031500", key_outputs.basin=774:
+        # none of these may exempt a number (site ids come only from the study itself)
+        rep = _a("The area is 774 [run:r1#basin] and flow is 12 here.", monkeypatch, site_ids=())
+        assert ("uncited_number", "12") in _hard(rep)
+        rep = _a("flow 01031500 here", monkeypatch, site_ids=())
+        assert _hard(rep) == [("uncited_number", "01031500")]
+
+    def test_context_id_must_sit_beside_the_keyword(self):
+        assert _cats("Area is 12345678 at USGS.")[0][1] == "quantity"
+        assert _cats("Runoff 12345678 at gauge 12345678.")[1][1:] == ("exempt", "identifier")
+        assert _cats("area is 01031500")[0][1] == "quantity"
+        assert _cats("flow 1031500")[0][1] == "quantity"
+
+
+class TestIdentifierMaskingIsNarrow:
+    """3. Only real id shapes are masked; `letters + separator + number` is prose."""
+
+    @pytest.mark.parametrize("txt,raw", [
+        ("NSE:0.61 was the score.", "0.61"), ("NSE/0.61 was the score.", "0.61"),
+        ("NSE_0.61", "0.61"), ("bias-12.5% overall", "12.5%"), ("KGE-0.61", "0.61"),
+        ("Q95-8.2 m3/s", "8.2"), ("peak 412.5m3/s", "412.5"), ("Area ~774km2", "774"),
+        ("NSE is _0.61_", "0.61"), ("NSE was v0.61.", "0.61"), ("NSE was site_0.61", "0.61"),
+        ("NSE of .61", ".61"), ("NSE is *0.61*", "0.61"), ("NSE ~0.61", "0.61"),
+        ("NSE gauge-0.61", "0.61"), ("NSE was run-774.15.", "774.15"), ("NSE of 0.61.5", "0.61"),
+    ])
+    def test_number_next_to_letters_is_extracted(self, txt, raw):
+        assert raw in [n.raw for n in extract_numerics(txt)], txt
+        assert any(c.span.raw == raw and c.category == "quantity" for c in classify_numerics(txt)), txt
+
+    def test_real_id_shapes_still_masked(self):
+        for tok in ("sigs.20261020.01031500.dd4ed1e7", "q.20260627.01031500.d83c",
+                    "watershed.ce56bc643d4c", "c-01031500-signatures-20261020",
+                    "5fcfedd8-aaaa-bbbb-cccc-0123456789ab", "claim.20261020.01031500.cf55a078"):
+            assert extract_numerics(f"see {tok} now") == [], tok
+
+    def test_unit_exponent_is_not_a_quantity(self):
+        assert [n.raw for n in extract_numerics("flow 45 m3 s-1")] == ["45"]
+
+
+class TestMaskingDoesNotHideNumbers:
+    """4. Malformed markers, code spans with decimals, strict code labels."""
+
+    @pytest.mark.parametrize("txt", [
+        "NSE [run:r1#key_outputs.nse 0.61] fine", "NSE of [run:foo 0.61", "NSE was [lit:fake 0.61].",
+        "NSE 0.99 [lit:] ", "NSE 0.99 [lit: ]", "NSE 0.99 [lit:a]", "x [claim:C 001] y",
+    ])
+    def test_malformed_marker_is_a_hard_violation(self, txt, monkeypatch):
+        rep = _a(txt, monkeypatch)
+        assert "malformed_marker" in [k for k, _ in _hard(rep)], txt
+        assert rep.passed is False
+
+    def test_well_formed_markers_are_not_malformed(self, monkeypatch):
+        rep = _a("NSE 0.61 [run:r1#key_outputs.nse] and [lit:Smith2020] and [claim:C-001].", monkeypatch)
+        assert "malformed_marker" not in [v.kind for v in rep.violations]
+
+    def test_code_with_decimal_unit_or_percent_is_still_audited(self, monkeypatch):
+        for txt in ("The result is `0.61`.", "```\nNSE = 0.61\n```", "peak `8 m3/s` here", "gain `12%`"):
+            assert any(c.category == "quantity" for c in classify_numerics(txt)), txt
+        assert not [c for c in classify_numerics("call `step 3 of 4` now") if c.category != "exempt"]
+        assert _hard(_a("NSE is `0.61`.", monkeypatch)) == [("uncited_number", "0.61")]
+
+    def test_code_labels_are_integer_only(self):
+        assert _cats("HUC8 0.61 NSE")[0][1] == "quantity"
+        assert _cats("EPSG 0.61")[0][1] == "quantity"
+        assert _cats("NLCD 41%")[0][1] == "quantity"
+        assert _cats("FIPS 23021.5")[0][1] == "quantity"
+        assert _cats("HUC-02 = 01")[0][1:] == ("exempt", "code_label")
+        assert _cats("EPSG:5070")[0][1:] == ("exempt", "code_label")
+
+
+class TestHalfUlpTolerance:
+    """5. A true half-ULP: the stored value must round to the printed digits."""
+
+    def test_wide_tolerance_cases_now_fail(self):
+        assert R._values_match("0.7", 0.61) is False
+        assert R._values_match("9", 8.0) is False
+        assert R._values_match("7306", 7305) is False
+        assert R._values_match("0.62", 0.61) is False
+
+    def test_correct_rounding_still_passes(self):
+        assert R._values_match("0.61", 0.6050785) is True
+        assert R._values_match("0.45", 0.4452) is True
+        assert R._values_match("2.02", 2.0169) is True
+        assert R._values_match("0.82", 0.819) is True
+        assert R._values_match("8", 8.4) is True and R._values_match("8", 8.6) is False
+        assert R._values_match("7,305", 7305) is True
+
+    def test_through_resolve(self, monkeypatch):
+        assert _hard(_a("Flow was 9 m3/s [run:r1#q95].", monkeypatch)) == [("value_mismatch", "9")]
+        assert _hard(_a("Flow was 7 m3/s [run:r1#q95].", monkeypatch)) == [("value_mismatch", "7")]
+        assert _hard(_a("Flow was 8.4 m3/s [run:r1#q95].", monkeypatch)) == [("value_mismatch", "8.4")]
+        assert _hard(_a("Flow was 8.00 m3/s [run:r1#q95].", monkeypatch)) == []
+
+
+class TestSuggestedMarkerCannotLaunder:
+    """6. Exact round-half match only, and a compatible unit when one is declared."""
+
+    def test_no_suggestion_for_a_near_miss(self, monkeypatch):
+        rep = _a("The ratio is 0.72.", monkeypatch)
+        assert rep.violations[0].suggested_marker is None
+
+    def test_exact_value_is_suggested(self, monkeypatch):
+        rep = _a("The area is 774.15 km2.", monkeypatch)
+        assert rep.violations[0].suggested_marker == "[run:r1#key_outputs.area_km2]"
+
+    def test_incompatible_unit_is_not_suggested(self, monkeypatch):
+        rep = _a("The q95 is 8.0 mm/day.", monkeypatch)
+        assert rep.violations[0].kind == "uncited_number"
+        assert rep.violations[0].suggested_marker is None
+
+
+class TestCoverageGaps:
+    """7. Units, metric words, header units, years, scientific notation."""
+
+    @pytest.mark.parametrize("txt", [
+        "The basin drains 774 square kilometres.", "The basin drains 774 sq km.",
+        "Area is 774 square miles.", "Area 774 sq. mi.", "Area 774 hectares", "Area 774 acres",
+        "Flow was 45 cubic metres per second.", "Mean flow of 45 cubic feet per second.",
+        "Rate 3 millimetres per day.", "Rate 3 mm per day.", "Flow 45 m\u00b3 s\u207b\u00b9.",
+        "The median was 412 litres per second.", "Flow 45 L/s", "Flow 45 mgd", "Flow 45 cumecs",
+        "A 3 \u00b0C warming.", "Temperature 15 deg C", "Temperature 15 degrees Celsius",
+        "Runoff ratio was 61 per cent.", "Loss of 12 percentage points.",
+        "Mean elevation 1450 metres", "Mean elevation 1450 meters", "Mean elevation 1450 feet",
+        "Mean elevation 1450 ft", "Mean elevation 1,450 metres", "Depth 12 inches",
+    ])
+    def test_unit_phrases_make_a_quantity(self, txt):
+        cn = [c for c in classify_numerics(txt)]
+        assert cn and all(c.category == "quantity" and c.unit for c in cn), (txt, cn)
+
+    @pytest.mark.parametrize("txt", [
+        "Elevation ranges from 120 to 1450.", "The peak was 412 at USGS.", "drainage area, 774",
+        "Total length 88", "Annual rainfall 1200", "Mean altitude 340", "Storage 55", "Recharge 12",
+        "Sediment load 900", "Nitrate concentration 4", "Channel gradient 3", "Basin height 77",
+        "Water yield 300", "Volume 5000",
+    ])
+    def test_metric_words_make_a_bare_integer_a_quantity(self, txt):
+        assert all(c.category == "quantity" for c in classify_numerics(txt) if c.reason != "list_index"), txt
+
+    def test_table_header_unit_and_metric_inheritance(self):
+        one = classify_numerics("| Area (km\u00b2) | 774 |")
+        assert [(c.span.raw, c.category, c.unit) for c in one] == [("774", "quantity", "km\u00b2")]
+        tbl = "| Metric | Value |\n|---|---|\n| Area (km\u00b2) | 774 |\n| Peak flow | 412 |"
+        got = [(c.span.raw, c.category) for c in classify_numerics(tbl)]
+        assert got == [("774", "quantity"), ("412", "quantity")]
+        hdr = "| Site | Area (km2) |\n|---|---|\n| A | 774 |"
+        assert [(c.span.raw, c.category, c.unit) for c in classify_numerics(hdr)] == [("774", "quantity", "km2")]
+
+    def test_header_unit_participates_in_unit_mismatch(self, monkeypatch):
+        rep = _a("| Flow (cfs) | 8 [run:r1#q95] |", monkeypatch)
+        assert _hard(rep) == [("unit_mismatch", "8")]
+
+    def test_year_exempt_only_without_a_metric_word(self):
+        assert _cats("in 2019")[0][1:] == ("exempt", "year")
+        assert _cats("Peak flow in 2019 was 2019")[1][1] == "quantity"
+        assert _cats("flow 1990")[0][1] == "quantity"
+        assert _cats("flow was 1990")[0][1] == "quantity"
+        assert _cats("as of 2024 the flow was 2024")[1][1] == "quantity"
+        assert _cats("as of 2024 the flow was 2024")[0][1:] == ("exempt", "year")
+
+    def test_scientific_notation_is_compared_with_its_exponent(self, monkeypatch):
+        assert _hard(_a("Small 3.2\u00d710\u207b\u00b3 [run:r1#small].", monkeypatch)) == []
+        assert _hard(_a("Small 3.2\u00d710\u207b\u00b3 [run:r1#nse].", monkeypatch)) == [
+            ("value_mismatch", "3.2\u00d710\u207b\u00b3")]
+        assert _hard(_a("Flow 8\u00d710\u2070 [run:r1#q95].", monkeypatch)) == []
+        assert R._values_match("3.2e-3", 0.0032) is True and R._values_match("3.2e-3", 0.0042) is False
+        assert R._values_match("10^3", 1000) is True
+
+    def test_power_form_is_one_number(self):
+        assert [n.raw for n in extract_numerics("Value is 10^3 m.")] == ["10^3"]
+        assert _cats("Value is 10^3 m.")[0][1] == "quantity"

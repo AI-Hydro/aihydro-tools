@@ -29,7 +29,6 @@ from typing import Any
 from .evidence import (
     available_fields,
     canonical_path,
-    collect_known_ids,
     declared_unit,
     derived_from,
     is_hollow,
@@ -46,6 +45,9 @@ from .grammar import (
     _is_whitelisted_standalone,  # noqa: F401  (re-exported for older callers)
     classify_numerics,
     extract_markers,
+    find_malformed_markers,
+    mantissa_ulp,
+    parse_numeric,
     extract_numerics,  # noqa: F401
     segment_of,
     segments,
@@ -61,9 +63,6 @@ _ALLOWED_CLAIM_STATUSES = {"tested", "supported", "weakly_supported"}
 # How far (chars) ahead of a numeric we search for its binding marker.
 _MARKER_LOOKAHEAD = 150
 
-# Rounding tolerance: prose value within this many ULPs of last digit is a pass.
-# E.g. prose "0.82" allows stored 0.815 ≤ v ≤ 0.824999…
-_ROUNDING_TOLERANCE_EXTRA = 0.5  # half-unit-of-last-place cushion
 
 
 _resolve_json_path = resolve_json_path   # kept for older importers
@@ -71,22 +70,16 @@ _resolve_json_path = resolve_json_path   # kept for older importers
 
 def _values_match(prose_raw: str, stored: Any) -> bool:
     """
-    Return True if prose_raw (the numeric literal as found in text) is
-    consistent with stored value within rounding tolerance.
+    True if prose_raw (the numeric literal as found in text) is the stored value
+    correctly rounded to the digits printed: |prose - stored| <= half a unit in the
+    last printed place (plus 1e-9 for float noise).  So 0.61 matches 0.605..0.615 only.
 
-    Handles: plain floats, percentages (prose "42%" vs stored 0.42 OR 42),
-    comma-formatted integers, scientific notation.
+    Handles plain floats, percentages (prose "42%" vs stored 0.42 OR 42), comma-formatted
+    integers, e-notation and 3.2×10⁻³ (compared with its exponent).
     """
-    # Clean the prose value
-    clean = prose_raw.replace("\u2212", "-").replace(",", "").replace(" ", "").rstrip("%")
-    # Remove unicode/ASCII scientific notation suffix for simpler compare
-    clean = re.sub(r"[×x].*", "", clean).strip()
-    try:
-        prose_float = float(clean)
-    except ValueError:
+    prose_float = parse_numeric(prose_raw)
+    if prose_float is None:
         return False
-
-    # Stored value must be numeric
     if isinstance(stored, bool):
         return False
     try:
@@ -94,24 +87,17 @@ def _values_match(prose_raw: str, stored: Any) -> bool:
     except (TypeError, ValueError):
         return False
 
-    # Compute half-ULP tolerance based on prose precision
-    mantissa = re.split(r"[eE]", clean)[0]
-    if "." in mantissa:
-        decimals = len(mantissa.split(".")[1])
-        ulp = 10 ** (-decimals)
-    else:
-        ulp = 1.0
-    tolerance = ulp * (0.5 + _ROUNDING_TOLERANCE_EXTRA)
+    half_ulp = mantissa_ulp(prose_raw) * 0.5 + 1e-9
 
     # If prose had %, try both interpretations: stored as fraction or as percent.
     # The fraction reading is scaled by 100 together with the tolerance.
     if prose_raw.rstrip().endswith("%"):
         return (
-            abs(prose_float - stored_float) <= tolerance
-            or abs(prose_float / 100.0 - stored_float) <= tolerance / 100.0
+            abs(prose_float - stored_float) <= half_ulp
+            or abs(prose_float / 100.0 - stored_float) <= half_ulp / 100.0
         )
 
-    return abs(prose_float - stored_float) <= tolerance
+    return abs(prose_float - stored_float) <= half_ulp
 
 
 def _load_run_log(session_id: str) -> dict:
@@ -172,10 +158,13 @@ _METHOD_LEAVES = {
 }
 
 
-def _suggest_marker(raw: str, category: str, run_log: dict) -> tuple[str | None, int]:
+def _suggest_marker(raw: str, category: str, run_log: dict, unit: str | None = None) -> tuple[str | None, int]:
     """
     A marker the agent could paste for ``raw``, when exactly one stored field
-    (collapsed over mirrors and duplicate runs) carries that value.
+    (collapsed over mirrors and duplicate runs) carries that value as an EXACT
+    round-half match of the printed digits, and (when the run declares a unit for
+    the field and the prose states one) the units agree.  A suggestion is only a
+    pointer: it is never accepted on the agent's behalf.
     Returns (marker or None, number of distinct fields matched).
     """
     hits: dict[tuple[str, str], tuple[str, str]] = {}   # (run, leaf) -> (timestamp, path)
@@ -186,8 +175,11 @@ def _suggest_marker(raw: str, category: str, run_log: dict) -> tuple[str | None,
             leaf = path.rsplit(".", 1)[-1]
             if category == "method_param" and leaf not in _METHOD_LEAVES:
                 continue
-            if _values_match(raw, val):
-                hits.setdefault((rid, leaf), (str(entry.get("timestamp") or ""), path))
+            if not _values_match(raw, val):
+                continue
+            if unit and units_conflict(unit, declared_unit(entry, path)):
+                continue
+            hits.setdefault((rid, leaf), (str(entry.get("timestamp") or ""), path))
     leaves = {leaf for (_, leaf) in hits}
     if not hits or len(leaves) != 1:
         return None, len(leaves)
@@ -244,7 +236,8 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
         run_log = _load_run_log(session_id)
         claims  = _load_claims(session_id)
 
-        known_ids = collect_known_ids(session_id, run_log, claims) | _site_ids(session_id)
+        # only the session's OWN ids: never ids a model can write into claims / run outputs
+        known_ids = _site_ids(session_id)
         classified = classify_numerics(prose, known_ids)
         segs = segments(prose)
 
@@ -271,7 +264,7 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
             advisory = cn.category == "method_param"
 
             if binding is None:
-                suggested, _n = _suggest_marker(num.raw, cn.category, run_log)
+                suggested, _n = _suggest_marker(num.raw, cn.category, run_log, cn.unit)
                 label = {
                     "sample_size": "sample size / record length",
                     "method_param": "method parameter",
@@ -405,6 +398,21 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
                 continue
 
             cited_count += 1
+
+        # ── 1b. Marker-shaped brackets that fail the strict grammar ──────────
+        for ms, me, mraw in find_malformed_markers(prose):
+            violations.append(AuditViolation(
+                kind="malformed_marker",
+                text_excerpt=_context_window(prose, ms, me),
+                marker_raw=mraw,
+                prose_value=None,
+                stored_value=None,
+                message=f"{mraw!r} looks like a citation marker but does not match the grammar, "
+                        f"so it binds nothing.",
+                fix_hint="Use exactly [run:<run_id>#<key_outputs.field>], [claim:<claim_id>] or "
+                         "[lit:<tag>] (one token, no spaces), placed after the value it cites.",
+                severity="hard",
+            ))
 
         # ── 2. Claim-level checks ───────────────────────────────────────────
         claim_markers = [m for m in markers if m.kind == MarkerKind.CLAIM]

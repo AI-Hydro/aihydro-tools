@@ -789,7 +789,8 @@ tasks:
     category: auditor
     call_style: session_op
     rationale: >
-      Synthesis prose where every numeric literal is followed by a
+      Synthesis prose where every quantity (decimal, number with a unit, sample size,
+      or integer next to a metric word) is followed by a
       [run:<id>#<path>] marker that resolves correctly against the session
       run-log must pass the auditor with numeric_coverage=1.0 and no
       violations. This is the happy-path contract; a failure here means the
@@ -829,7 +830,7 @@ tasks:
     category: auditor
     call_style: session_op
     rationale: >
-      Prose containing a bare numeric literal (0.42) with no following
+      Prose containing a quantity (0.42) with no following
       [run:...], [claim:...], or [lit:...] marker must be rejected with
       a violation of kind=uncited_number. This is the primary LLM-hallucination
       guard: fabricated numbers have no marker and therefore fail.
@@ -1646,7 +1647,7 @@ tasks:
     category: hrb
     call_style: session_op
     rationale: >
-      A numeric literal without any [run:...] or [lit:...] marker must
+      A quantity without any [run:...] or [lit:...] marker in its sentence must
       produce a violation of kind 'uncited_number' and flip passed to false.
       This is the primary gate preventing hallucinated numbers.
     setup:
@@ -1672,7 +1673,7 @@ tasks:
     rationale: >
       A number followed by a [lit:tag] marker must count as cited.
       The audit must pass and cited_numeric_count must equal 1.
-      This verifies the whitelist path through the auditor.
+      This verifies the [lit:] (literature / design value) path through the auditor.
     setup:
       session_id: bench-hrb-052
       slots: {}

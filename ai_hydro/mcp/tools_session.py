@@ -294,8 +294,10 @@ def write_research_interpretation(
         from ai_hydro.mcp.tools_docs import _write_tools_md, _list_tools_sync
 
         # ── Answer Auditor gate ───────────────────────────────────────────────
-        # Every numeric literal in the synthesis prose must be bound to a
-        # run-log entry or a [lit:...] whitelist marker.  This is what converts
+        # Every quantity in the synthesis prose (decimal, number with a unit, sample
+        # size, integer beside a metric word) must be bound to a run-log entry or a
+        # [lit:...] marker in its own sentence/cell.  Identifiers, codes, dates,
+        # years and plain counts are not quantities.  This is what converts
         # "the agent said 0.82" into "0.82 was produced by run sigs.20260610.*".
         # override=True bypasses the gate but is logged so it surfaces in
         # the Defensibility Report as a flagged exception.

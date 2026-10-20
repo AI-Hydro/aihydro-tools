@@ -24,7 +24,7 @@ def audit_interpretation(
 ) -> dict:
     """
     Verify that every quantity in synthesis prose is bound to a run-log
-    entry or a declared whitelist marker ([lit:...]).
+    entry or a declared literature marker ([lit:...]).
 
     Ids, codes (HUC/EPSG), dates, years and plain counts ("17 signatures") are
     not quantities. Decimals, numbers with units and sample sizes ("7,305 daily

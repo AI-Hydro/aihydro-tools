@@ -7,7 +7,6 @@ Pure lookups over run-log entries (plain dicts):
   * hollow runs     — an entry that recorded no outputs cannot back any number
   * declared units  — the unit a run states for a field (``units`` map)
   * leaf scan       — every numeric leaf, for "did you mean this marker" hints
-  * known ids       — the session's own site/gauge/claim-basin identifiers
 
 Storage shape of a run-log entry (what the markers resolve against)::
 
@@ -262,56 +261,3 @@ def iter_leaves(entry: Any) -> Iterator[tuple[str, Any]]:
             n += 1
             if n >= _MAX_LEAVES:
                 return
-
-
-# --------------------------------------------------------------------------- #
-# Known identifiers
-# --------------------------------------------------------------------------- #
-
-_ID_KEY_RE = re.compile(
-    r"(^|_)(gauge|gage|site|station|basin|comid|hru|huc\d*|session|nldi|feature)(_id|_ids|_code|_no|_number)?$"
-    r"|_id$|_ids$", re.IGNORECASE)
-
-
-def _add_id(ids: set[str], v: Any) -> None:
-    if isinstance(v, bool):
-        return
-    if isinstance(v, int):
-        ids.add(str(v))
-    elif isinstance(v, str):
-        v = v.strip()
-        if v and len(v) <= 40 and re.search(r"\d", v):
-            ids.add(v)
-    elif isinstance(v, (list, tuple)):
-        for x in v[:50]:
-            _add_id(ids, x.get("id") if isinstance(x, dict) else x)
-
-
-def _scan_id_keys(ids: set[str], node: Any) -> None:
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if isinstance(k, str) and _ID_KEY_RE.search(k):
-                _add_id(ids, v)
-
-
-def collect_known_ids(session_id: str, run_log: dict, claims: dict) -> set[str]:
-    """Identifiers belonging to this session (never quantities): site/gauge ids, claim basins."""
-    ids: set[str] = set()
-    _add_id(ids, session_id)
-    for entry in (run_log or {}).values():
-        if not isinstance(entry, dict):
-            continue
-        _add_id(ids, entry.get("session_id"))
-        ev = entry.get("evidence") if isinstance(entry.get("evidence"), dict) else {}
-        for node in (entry.get("key_outputs"), ev.get("data"), entry.get("inputs")):
-            _scan_id_keys(ids, node)
-    for cid, claim in (claims or {}).items():
-        _add_id(ids, cid)
-        if not isinstance(claim, dict):
-            continue
-        scope = claim.get("scope") if isinstance(claim.get("scope"), dict) else {}
-        for k in ("basins", "basin_refs", "gauges", "sites"):
-            _add_id(ids, scope.get(k))
-        _scan_id_keys(ids, claim)
-        _scan_id_keys(ids, scope)
-    return ids

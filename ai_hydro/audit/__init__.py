@@ -1,8 +1,9 @@
 """
 AI-Hydro Answer Auditor.
 
-Verifies that every quantitative literal in LLM-authored synthesis prose is
-bound to a specific run-log entry or a declared whitelist marker.
+Verifies that every quantity in LLM-authored synthesis prose is bound to a
+specific run-log entry or a declared [lit:] marker (identifiers, codes, dates and
+plain counts are not quantities).
 
 Three public modules:
   grammar   — marker regex parser (extract markers from prose)

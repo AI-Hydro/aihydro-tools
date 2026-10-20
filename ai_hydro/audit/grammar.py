@@ -97,64 +97,112 @@ _CLAIM_MARKER_RE = re.compile(
     r"\[claim:([A-Za-z0-9_\-]+)\]"
 )
 
-# Marker: [lit:<tag>]  — freeform tag (author+year, design, etc.)
+# Marker: [lit:<tag>]  — one token: author+year, design tag, passage hash.
+# No whitespace: "[lit:fake 0.61]" is malformed, not a tag.
 _LIT_MARKER_RE = re.compile(
-    r"\[lit:([^\]]+)\]"
+    r"\[lit:([A-Za-z0-9][\w\-:.+/]{2,})\]"
 )
+
+# Any marker-shaped opener, well-formed or not.
+_MARKER_OPEN_RE = re.compile(r"\[(?:run|claim|lit):")
 
 # Any marker (used for stripping)
 _ANY_MARKER_RE = re.compile(
     r"\[(run:[^\]]+|claim:[^\]]+|lit:[^\]]+)\]"
 )
 
-# Numeric literals: integers, decimals, percentages, comma-thousands,
-# scientific notation (both ASCII × and Unicode ×, and 1.2e-3), negative numbers
-# (ASCII hyphen or U+2212 minus).
+# Numeric literals: integers, decimals (also ".61"), percentages, comma-thousands,
+# scientific notation (1.2e-3 and 3.2×10⁻³ / 3.2x10^-3), negative numbers (ASCII
+# hyphen or U+2212 minus).
 #
-# Boundaries: a number may not start glued to a preceding token character
-# (letter, digit, ``_ . : / #``) — so the digits of ``EPSG:5070``, ``v2.3.7``,
-# ``a.5fcfedd8`` or ``1989-10-01``'s tail are never split out.  A sign is a sign
-# only when it is not itself glued to a token (``5-10`` is a range, not 5 and -10).
-# A number may be followed directly by a short unit (``5mm``) but not by other
-# letters/digits.
+# Boundaries: a number may not start glued to a letter/digit (so ``Q95``, ``m3``,
+# ``R2``, ``HUC8`` are names, not quantities) or to ``^`` (an exponent).  ``_ * ~ : / - .``
+# before a number do NOT glue it: ``NSE:0.61``, ``KGE-0.61``, ``_0.61_``, ``~774km2``
+# are all quantities.  Identifier-shaped tokens are masked separately (see
+# ``_mixed_token_is_identifier``), never by a blanket "contains a separator" rule.
+# A sign is a sign only when not itself glued to a token (``5-10`` is a range).
+# A number may be followed directly by a short unit (``5mm``) but not other letters/digits.
+_SUP = "⁰¹²³⁴⁵⁶⁷⁸⁹"
 _NUMERIC_RE = re.compile(
     r"""
-    (?<![A-Za-z0-9_.:/#])
+    (?:(?<![A-Za-z0-9^])|(?<=\b[vV]))    # "v0.61" in prose is a number; "Q95", "m3" are names
     (?:(?<![\w.])[-\u2212])?
     (?:
-      \d{1,3}(?:,\d{3})+(?:\.\d+)?   # comma-formatted: 1,247  12,345,678  1,234.5
+      \d+(?:\.\d+)?\s?\^\s?[-\u2212]?\d+   # power form 10^3
+      | \d{1,3}(?:,\d{3})+(?:\.\d+)?   # comma-formatted: 1,247  12,345,678  1,234.5
       | \d+(?:\.\d+)?                 # plain integer or decimal
+      | \.\d+                         # .61
     )
     (?:[eE][-+]?\d+)?                 # 1.2e-3
-    (?:[×x]\s*10\s*[⁻\-]?\s*\d+)?     # 3×10-3
+    (?:\s?[×x*\u00b7]\s*10\s*(?:\^\s*)?[⁻\-\u2212]?\s*[\d⁰¹²³⁴⁵⁶⁷⁸⁹]+)?   # 3.2×10⁻³  3.2x10^-3
     \s*%?
     (?:
-      (?=(?:mm|cm|km|ha|yr|cms|cfs|m|d|h)(?![A-Za-z0-9]))   # attached unit: 5mm
+      (?=(?:mm|cm|km|ha|yr|cms|cfs|m|d|h)(?:[23\u00b2\u00b3]|/[A-Za-z]+)?(?![A-Za-z0-9]))   # attached unit: 5mm 412.5m3/s 774km2
       | (?![A-Za-z0-9])
     )
     """,
     re.VERBOSE,
 )
 
+_SUP_MAP = {c: str(i) for i, c in enumerate(_SUP)}
+
+
+def parse_numeric(raw: str) -> float | None:
+    """float value of a prose numeric literal (commas, %, unicode minus, ×10^n, e-notation)."""
+    t = raw.strip().replace("\u2212", "-").replace(",", "").replace(" ", "")
+    t = t.rstrip("%")
+    exp = 0
+    pw = re.fullmatch(r"(-?[\d.]+)\^(-?\d+)", t.replace("\u2212", "-"))
+    if pw:
+        try:
+            return float(pw.group(1)) ** int(pw.group(2))
+        except (ValueError, OverflowError, ZeroDivisionError):
+            return None
+    m = re.search(r"[×x*\u00b7]10\^?([-⁻\u2212]?)([\d⁰¹²³⁴⁵⁶⁷⁸⁹]+)$", t)
+    if m:
+        digits = "".join(_SUP_MAP.get(c, c) for c in m.group(2))
+        exp = int(digits) * (-1 if m.group(1) else 1)
+        t = t[:m.start()]
+    try:
+        return float(t) * (10.0 ** exp)
+    except ValueError:
+        return None
+
+
+def mantissa_ulp(raw: str) -> float:
+    """Unit in the last place of the printed number (0.61 -> 0.01, 3.2×10⁻³ -> 1e-4)."""
+    t = raw.strip().replace("\u2212", "-").replace(",", "").replace(" ", "").rstrip("%")
+    exp = 0
+    if re.fullmatch(r"-?[\d.]+\^-?\d+", t):
+        return 1.0                       # a power is exact to its own precision
+    m = re.search(r"[×x*\u00b7]10\^?([-⁻\u2212]?)([\d⁰¹²³⁴⁵⁶⁷⁸⁹]+)$", t)
+    if m:
+        digits = "".join(_SUP_MAP.get(c, c) for c in m.group(2))
+        exp = int(digits) * (-1 if m.group(1) else 1)
+        t = t[:m.start()]
+    me = re.fullmatch(r"(.*?)[eE]([-+]?\d+)", t)
+    if me:
+        t, exp = me.group(1), exp + int(me.group(2))
+    mant = t
+    dec = len(mant.split(".")[1]) if "." in mant else 0
+    return 10.0 ** (exp - dec)
+
+
 # --- tokenisation masks ----------------------------------------------------
 # Each mask is (regex, reason).  Numbers overlapping a mask are not quantities.
 
-# Any marker-shaped bracket, well-formed or not (digits in it are never prose quantities).
-_ANY_MARKER_RE_FULL = re.compile(r"\[(?:run|claim|lit):[^\]\n]*\]")
 _FENCE_RE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>\")\]]+")
 _PATH_RE = re.compile(
-    r"(?<![\w)\]])(?:~|\.{1,2})?/(?:[\w.@+\-]+/)*[\w.@+\-]+"      # /abs/or/~/rel/path
-    r"|\b[A-Za-z]:\\[^\s]+"                                        # C:\windows\path
-    r"|\b[\w.\-]+(?:/[\w.\-]+)+\.[A-Za-z0-9]{1,6}\b"               # dir/file.ext
+    r"(?<![\w)\]])(?:~|\.{1,2})?/(?=[\w.@+\-/]*[A-Za-z])(?:[\w.@+\-]+/)*[\w.@+\-]+"   # /abs/or/~/rel/path
+    r"|\b[A-Za-z]:\\[^\s]+"                                                          # C:\windows\path
+    r"|\b[\w.\-]+(?:/[\w.\-]+)+\.(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{1,6}\b"         # dir/file.ext
 )
-# Any identifier-shaped token: alnum runs joined by . _ : - / #
+# Candidate identifier tokens: alnum runs joined by . _ : - / #
 _MIXED_RE = re.compile(r"[A-Za-z0-9]+(?:[._:\-/#][A-Za-z0-9]+)+")
-_COMPOUND_MODIFIER_RE = re.compile(r"^\d+(?:\.\d+)?-[A-Za-z]+$")        # 19-day, 7-day
-_SCI_RE = re.compile(r"^\d+(?:\.\d+)?[eE][-+]?\d+$")                    # 1.2e-3
-_QTY_WITH_UNIT_RE = re.compile(
-    r"^[\d.,\-\u2013]+(?:mm|cm|km|m|ha|yr|d|h|s|cms|cfs|mg|kg|g|l)$", re.IGNORECASE)
+_HEX_TAIL_RE = re.compile(r"(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,}")
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 _DATE_RES = [
     re.compile(r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b"),
@@ -171,15 +219,19 @@ _DATE_RES = [
         r"(?:,?\s+\d{4})?\b"),
 ]
 _TIME_RE = re.compile(r"(?<![\d.])\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?[AaPp][Mm])?(?![\d.])")
-_VERSION_RE = re.compile(r"(?<![\w.])v?\d+(?:\.\d+){2,}(?![\w])")
+# Versions only in a version context: v1.2.3 (semver) or "version 1.2". Bare "0.61.5" is a number.
+_UNIT_EXP_RE = re.compile(r"(?<=[A-Za-z])-[123](?![\d.])")      # the -1 of "m3 s-1", "mm d-1"
+_VERSION_RE = re.compile(
+    r"(?<![\w.])v\d+(?:\.\d+){2,}(?![\w.])"
+    r"|\b(?:version|release)\s+v?\d+(?:\.\d+)+(?![\w.])", re.IGNORECASE)
 
 # Geographic / classification codes: the number is a label, not a measurement.
 _CODE_RES = [
-    re.compile(r"\bHUC[-\s]?(?:\d{1,2})?\s*[=:]?\s*\d+\b", re.IGNORECASE),
-    re.compile(r"\bEPSG\s*[:=]?\s*\d+\b", re.IGNORECASE),
-    re.compile(r"\bFIPS(?:\s+code)?\s*[:=]?\s*\d+\b", re.IGNORECASE),
-    re.compile(r"\bNLCD\s*(?:class|code)?\s*[:=]?\s*\d+\b", re.IGNORECASE),
-    re.compile(r"\b(?:COMID|HRU|NHDPlus(?:\s*ID)?)\s*[:=#]?\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\bHUC[-\s]?(?:\d{1,2})?\s*[=:]?\s*\d+(?![.\d%])", re.IGNORECASE),
+    re.compile(r"\bEPSG\s*[:=]?\s*\d+(?![.\d%])", re.IGNORECASE),
+    re.compile(r"\bFIPS(?:\s+code)?\s*[:=]?\s*\d+(?![.\d%])", re.IGNORECASE),
+    re.compile(r"\bNLCD\s*(?:class|code)?\s*[:=]?\s*\d+(?![.\d%])", re.IGNORECASE),
+    re.compile(r"\b(?:COMID|HRU|NHDPlus(?:\s*ID)?)\s*[:=#]?\s*\d+(?![.\d%])", re.IGNORECASE),
 ]
 
 _STRUCT_BEFORE_RE = re.compile(
@@ -190,10 +242,9 @@ _STRUCT_BEFORE_RE = re.compile(
 )
 _LIST_INDEX_RE = re.compile(r"^[ \t]*(?:[-*+•][ \t]+)?\d{1,3}[.)][ \t]")
 
-# Identifiers near a data-source word.
-_ID_CONTEXT_RE = re.compile(
-    r"\b(?:USGS|gauge|gage|station|site|COMID|HRU|NWIS|NHDPlus|catchment|basin\s+id)\b",
-    re.IGNORECASE)
+# A long integer is an identifier only when a data-source word sits right beside it
+# ("USGS 01031500", "gauge id 04085427", "COMID 22678241").
+_ID_KEYWORDS = {"usgs", "gauge", "gage", "station", "site", "comid", "hru", "nwis", "nhdplus", "catchment"}
 
 # Word classes for integers.
 _META_NOUNS = {
@@ -201,7 +252,7 @@ _META_NOUNS = {
     "claim", "run", "option", "panel",
 }
 _SAMPLE_NOUNS = {
-    "day", "observation", "year", "event", "sample", "basin", "gauge", "gage",
+    "yr", "yrs", "day", "observation", "year", "event", "sample", "basin", "gauge", "gage",
     "station", "month",
 }
 _METHOD_WORDS = {
@@ -214,7 +265,9 @@ _METRIC_RE = re.compile(
     r"\b(?:NSE|KGE|RMSE|MAE|PBIAS|bias|correlation|R2|runoff|baseflow|BFI|elasticity|discharge|"
     r"streamflow|flow|precipitation|precip|evapotranspiration|PET|temperature|area|slope|depth|"
     r"aridity|snow|mean|median|std|variance|percentile|quantile|skill|score|coefficient|"
-    r"probability|return\s+period|Q\d{1,3})\b",
+    r"probability|return\s+period|Q\d{1,3}|elevation|elev|altitude|peak|drainage|length|volume|"
+    r"yield|load|concentration|rainfall|storage|recharge|height|gradient|temp|width|stage|"
+    r"velocity|duration|frequency|recurrence|discharges)\b",
     re.IGNORECASE,
 )
 _WORD_RE = re.compile(r"[A-Za-zα][A-Za-z']*")
@@ -303,16 +356,62 @@ class _Mask:
 
 
 def _mixed_token_is_identifier(tok: str) -> bool:
-    """A mixed token masks its digits only if it is identifier-shaped."""
+    """
+    A mixed token (``a.b-c``) hides its digits only if it has a real id shape:
+
+      * 3+ segments with an 8+ digit segment (run/claim ids: ``sigs.20261020.01031500.dd4ed1e7``)
+      * a hex tail of 8+ chars mixing digits and letters (``watershed.ce56bc643d4c``)
+      * a UUID
+
+    Anything else (``NSE:0.61``, ``KGE-0.61``, ``site_0.61``, ``bias-12.5%``, ``Q95-8.2``)
+    is prose: its number is extracted and audited.
+    """
     if not re.search(r"[A-Za-z]", tok):
         return False                      # 1989-10-01, 0.35-0.50: handled elsewhere
-    if _COMPOUND_MODIFIER_RE.match(tok):
-        return False                      # "19-day": the 19 is still a quantity
-    if _SCI_RE.match(tok):
-        return False                      # 1.2e-3
-    if _QTY_WITH_UNIT_RE.match(tok):
-        return False                      # 5-10mm
-    return True
+    if _UUID_RE.fullmatch(tok):
+        return True
+    segs = [x for x in re.split(r"[._:\-/#]", tok) if x]
+    if len(segs) >= 3 and any(re.fullmatch(r"\d{8,}", x) for x in segs):
+        return True
+    if len(segs) >= 2 and _HEX_TAIL_RE.fullmatch(segs[-1].lower()):
+        return True
+    return False
+
+
+def _strict_marker_spans(text: str) -> list[tuple[int, int]]:
+    spans = []
+    for rx in (_RUN_MARKER_RE, _CLAIM_MARKER_RE, _LIT_MARKER_RE):
+        spans += [(m.start(), m.end()) for m in rx.finditer(text)]
+    return sorted(spans)
+
+
+def find_malformed_markers(text: str) -> list[tuple[int, int, str]]:
+    """
+    Marker-shaped brackets (``[run:``, ``[claim:``, ``[lit:``) that fail the strict
+    grammar: ``[run:r1#key_outputs.nse 0.61]``, ``[lit:fake 0.61]``, ``[run:foo 0.61``.
+    Returns (start, end, raw).
+    """
+    good = {a for a, _ in _strict_marker_spans(text)}
+    out = []
+    for m in _MARKER_OPEN_RE.finditer(text):
+        if m.start() in good:
+            continue
+        close = text.find("]", m.start())
+        nl = text.find("\n", m.start())
+        end = close + 1 if close != -1 and (nl == -1 or close < nl) else min(
+            len(text), m.start() + 40 if nl == -1 else min(nl, m.start() + 40))
+        out.append((m.start(), end, text[m.start():end]))
+    return out
+
+
+def _code_span_hides_quantity(chunk: str) -> bool:
+    """A code span with a decimal, a percent or a unit-bearing number is prose, not code."""
+    for m in _NUMERIC_RE.finditer(chunk):
+        raw = m.group(0).strip()
+        if "." in raw or raw.endswith("%") or unit_after(chunk, m.end()) or \
+                (m.end() > 0 and chunk[m.end() - 1:m.end()] == " " and unit_after(chunk, m.end() - 1)):
+            return True
+    return False
 
 
 def _build_masks(text: str) -> list[_Mask]:
@@ -323,9 +422,12 @@ def _build_masks(text: str) -> list[_Mask]:
             if m.end() > m.start():
                 masks.append(_Mask(m.start(), m.end(), reason))
 
-    add(_FENCE_RE, "code")
-    add(_INLINE_CODE_RE, "code")
-    add(_ANY_MARKER_RE_FULL, "marker")
+    for rx in (_FENCE_RE, _INLINE_CODE_RE):
+        for m in rx.finditer(text):
+            if not _code_span_hides_quantity(m.group(0)):
+                masks.append(_Mask(m.start(), m.end(), "code"))
+    for a, b in _strict_marker_spans(text):
+        masks.append(_Mask(a, b, "marker"))
     add(_URL_RE, "url")
     add(_PATH_RE, "path")
     for rx in _CODE_RES:
@@ -334,6 +436,9 @@ def _build_masks(text: str) -> list[_Mask]:
         add(rx, "date")
     add(_TIME_RE, "date")
     add(_VERSION_RE, "version")
+    for m in _UNIT_EXP_RE.finditer(text):
+        if re.search(r"(?:\b[smdhyL]|yr|ha|m[23]?)$", text[max(0, m.start() - 3):m.start()]):
+            masks.append(_Mask(m.start(), m.end(), "unit_exponent"))
     for m in _MIXED_RE.finditer(text):
         if _mixed_token_is_identifier(m.group(0)):
             masks.append(_Mask(m.start(), m.end(), "identifier_token"))
@@ -460,7 +565,20 @@ def _norm_id(s: str) -> str:
 
 
 def _is_integer_raw(raw: str) -> bool:
-    return re.fullmatch(r"\d{1,3}(?:,\d{3})+|\d+", raw.strip().lstrip("-\u2212")) is not None
+    return re.fullmatch(r"\d{1,3}(?:,\d{3})+|\d+", raw.strip().lstrip("-−")) is not None
+
+
+def _blank_markers(text: str) -> str:
+    """Text with every marker-shaped bracket replaced by spaces (same offsets).
+
+    Word windows must never read a marker's own text: ``[run:r1#q95]`` would otherwise
+    contribute the word "run" (a meta-count noun) next to the number it cites.
+    """
+    out = list(text)
+    for m in re.finditer(r"\[(?:run|claim|lit):[^\]\n]*\]?", text):
+        for i in range(m.start(), m.end()):
+            out[i] = " "
+    return "".join(out)
 
 
 def _words_after(text: str, end: int, seg_hi: int, n: int) -> list[str]:
@@ -490,6 +608,64 @@ def _singular(w: str) -> str:
     return w
 
 
+_PERIOD_PREPS = {"in", "of", "during", "since", "until", "from", "by", "on", "for", "to", "through",
+                 "before", "after", "between", "and", "year", "yr", "wy"}
+
+
+def _table_header_context(text: str) -> list[tuple[int, int, str]]:
+    """
+    For every body cell of a markdown table, the text of its column header:
+    returns (cell_lo, cell_hi, header_text).  ``| Area (km²) | 774 |`` -> the 774 cell
+    inherits "Area (km²)" (a metric word and a unit).
+    """
+    out: list[tuple[int, int, str]] = []
+    pos = 0
+    group: list[tuple[int, str]] = []          # (line_start, line) of consecutive table rows
+
+    def flush() -> None:
+        if not group:
+            return
+        def cells(ls: int, line: str) -> list[tuple[int, int, str]]:
+            res, cur = [], 0
+            idx = [i for i, c in enumerate(line) if c == "|"]
+            bounds = [-1] + idx + ([len(line)] if not line.rstrip().endswith("|") else [])
+            for a, b in zip(bounds, bounds[1:]):
+                if a + 1 <= b:
+                    res.append((ls + a + 1, ls + b, line[a + 1:b]))
+            if res and idx and not line[:idx[0]].strip():
+                res = res[1:]                      # text before the leading pipe: not a cell
+            return res
+        header = cells(*group[0]) if len(group) >= 2 else []
+        body = group[1:] if len(group) >= 2 else group
+        for ls, line in body:
+            if re.fullmatch(r"[\s|:\-]+", line):
+                continue
+            row = cells(ls, line)
+            for k, (lo, hi, _t) in enumerate(row):
+                head = header[k][2] if k < len(header) else ""
+                label = row[k - 1][2] if k >= 1 else ""
+                out.append((lo, hi, f"{head} {label}"))
+        group.clear()
+
+    for line in text.split("\n"):
+        if line.lstrip().startswith("|") and line.count("|") >= 2:
+            group.append((pos, line))
+        else:
+            flush()
+        pos += len(line) + 1
+    flush()
+    return out
+
+
+def _header_unit(header: str) -> str | None:
+    """Unit named in a table header's brackets: ``Area (km²)`` -> ``km²``."""
+    for m in re.finditer(r"[(\[]([^)\]]+)[)\]]", header):
+        inner = m.group(1).strip()
+        if unit_after("0 " + inner, 1):
+            return inner
+    return None
+
+
 def classify_numerics(
     text: str,
     known_ids: Iterable[str] = (),
@@ -497,14 +673,18 @@ def classify_numerics(
     """
     Classify every numeric token in ``text`` (see module docstring).
 
-    ``known_ids`` are identifiers of the session (site id, gauge ids, canonical ids,
-    claim basins): a bare number equal to one of them is a label, not a measurement.
+    ``known_ids`` must be the session's OWN identifiers only (session id, site /
+    canonical id): never ids a model can write into claims or run outputs.  Even those
+    exempt a bare integer (>= 5 digits, no unit) and nothing else.
     """
-    ids_exact = {str(i).strip() for i in known_ids if str(i).strip()}
-    ids_norm = {_norm_id(i) for i in ids_exact if str(i).isdigit() and len(str(i)) >= 5}
+    ids_exact = {str(i).strip() for i in known_ids if str(i).strip().isdigit() and len(str(i).strip()) >= 5}
+    ids_norm = {_norm_id(i) for i in ids_exact}
 
     masks = _build_masks(text)
     segs = segments(text)
+    wtext = _blank_markers(text)
+    tables = _table_header_context(text)
+    marker_starts = [m.start for m in extract_markers(text) if m.kind != MarkerKind.CLAIM]
     out: list[ClassifiedNumeric] = []
     seen_masks: set[int] = set()
 
@@ -520,12 +700,25 @@ def classify_numerics(
 
         seg_lo, seg_hi = segment_of(segs, num.start)
         line_lo = text.rfind("\n", 0, num.start) + 1
-        unit = "%" if raw.rstrip().endswith("%") else unit_after(text, num.end)
+        unit = "%" if raw.rstrip().endswith("%") else unit_after(wtext, num.end)
         # the regex may have swallowed one trailing space; a unit starts right after it
-        if unit is None and num.end > 0 and text[num.end - 1:num.end] == " ":
-            unit = unit_after(text, num.end - 1)
+        if unit is None and num.end > 0 and wtext[num.end - 1:num.end] == " ":
+            unit = unit_after(wtext, num.end - 1)
+        hdr_metric = False
+        for lo, hi, htxt in tables:
+            if lo <= num.start < hi:
+                if unit is None:
+                    unit = _header_unit(htxt)
+                hdr_metric = _METRIC_RE.search(htxt) is not None
+                break
         is_int = _is_integer_raw(raw)
         digits = _digits_only(raw)
+        before = _words_before(wtext, num.start, seg_lo, 3)
+        after = _words_after(wtext, num.end, seg_hi, 2)
+        after_sing = [_singular(w) for w in after]
+        seg_text = wtext[seg_lo:seg_hi]
+        seg_has_marker = any(seg_lo <= ms < seg_hi for ms in marker_starts)
+        seg_has_metric = hdr_metric or _METRIC_RE.search(seg_text) is not None
 
         def done(cat: str, reason: str = "") -> None:
             out.append(ClassifiedNumeric(num, cat, reason, unit))
@@ -536,34 +729,35 @@ def classify_numerics(
         # "Figure 3", "Table 2", "Step 4", "§2", "#7"
         if _STRUCT_BEFORE_RE.search(text[max(0, num.start - 16):num.start]):
             done("exempt", "structural_ref"); continue
-        # a year is exempt only as a whole token with no unit / sign / decimals
+        # a year is exempt only as a whole token: no unit/sign/decimals, and not the value of a
+        # metric ("flow 1990" is a quantity, "flow in 2019" is a period)
         if unit is None and _YEAR_RE.match(raw):
-            done("exempt", "year"); continue
+            prev = before[-1] if before else ""
+            metric_adjacent = (prev not in _PERIOD_PREPS) and any(
+                _METRIC_RE.search(w) for w in before[-3:]) or hdr_metric
+            if not metric_adjacent:
+                done("exempt", "year"); continue
 
-        # identifiers: the session's own ids, long ids near a data-source word,
-        # and zero-padded ids (a quantity does not start with 0 and have 5+ digits)
-        if digits is not None:
-            if digits in ids_exact or (len(digits) >= 5 and _norm_id(digits) in ids_norm):
+        # identifiers.  Never ids that the model can write; only (a) the session's own id and
+        # (b) 8-15 digit integers directly beside USGS/gauge/station/COMID/HRU.  Both require
+        # no unit and 5+ digits: "12345678 cfs at USGS" is a flow, not an id.
+        if digits is not None and unit is None and len(digits) >= 5:
+            if digits in ids_exact or _norm_id(digits) in ids_norm:
                 done("exempt", "identifier"); continue
-            if 8 <= len(digits) <= 15:
-                ctx = text[max(seg_lo, num.start - 40):min(seg_hi, num.end + 25)]
-                if _ID_CONTEXT_RE.search(ctx):
-                    done("exempt", "identifier"); continue
-            if len(digits) >= 5 and digits.startswith("0"):
+            if 8 <= len(digits) <= 15 and (
+                any(w in _ID_KEYWORDS for w in before[-2:]) or (after and after[0] in _ID_KEYWORDS)
+            ):
                 done("exempt", "identifier"); continue
 
-        before = _words_before(text, num.start, seg_lo, 2)
-        after = _words_after(text, num.end, seg_hi, 2)
-        after_sing = [_singular(w) for w in after]
-
-        # meta-counts: 17 signatures, 60 attributes (integer, no unit, closed noun list)
-        if is_int and unit is None and any(w in _META_NOUNS for w in after_sing):
+        # meta-counts: 17 signatures, 60 attributes (integer, no unit, closed noun list,
+        # and no metric word anywhere in the sentence: "peak 412 runs" is not a count)
+        if is_int and unit is None and not seg_has_metric and any(w in _META_NOUNS for w in after_sing):
             done("exempt", "meta_count"); continue
 
         # method parameters (bootstrap 90% CIs, alpha = 0.05, seed 42, block 19)
-        meth_hit = any(w in _METHOD_WORDS or _singular(w) in _METHOD_WORDS for w in before + after)
+        meth_hit = any(w in _METHOD_WORDS or _singular(w) in _METHOD_WORDS for w in before[-2:] + after)
         if meth_hit:
-            decimal_ok = is_int or raw.rstrip().endswith("%") or any(w in _METHOD_DECIMAL_LEAD for w in before)
+            decimal_ok = is_int or raw.rstrip().endswith("%") or any(w in _METHOD_DECIMAL_LEAD for w in before[-2:])
             if decimal_ok:
                 done("method_param", "method_parameter"); continue
 
@@ -571,12 +765,17 @@ def classify_numerics(
         if is_int and any(w in _SAMPLE_NOUNS for w in after_sing):
             done("sample_size"); continue
 
-        has_decimal = ("." in raw) or bool(re.search(r"[eE][-+]?\d", raw))
+        has_decimal = ("." in raw) or bool(re.search(r"[eE][-+]?\d", raw)) or bool(
+            re.search(r"[×x*·]\s*10", raw))
         near_metric = False
         if not has_decimal and unit is None:
-            ctx = text[max(seg_lo, num.start - 40):min(seg_hi, num.end + 40)]
-            near_metric = _METRIC_RE.search(ctx) is not None
+            ctx = wtext[max(seg_lo, num.start - 40):min(seg_hi, num.end + 40)]
+            near_metric = hdr_metric or _METRIC_RE.search(ctx) is not None
         if has_decimal or unit is not None or near_metric:
+            done("quantity"); continue
+
+        # a bare integer in a sentence that carries a citation marker is being cited as a value
+        if seg_has_marker:
             done("quantity"); continue
 
         done("exempt", "bare_integer")
