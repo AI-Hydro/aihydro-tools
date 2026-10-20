@@ -12,6 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
     SessionResolutionError,
@@ -489,7 +490,7 @@ def export_session(
             fname = f"session_{session_id}_{format}{ext}"
             saved = _workspace_write(session_id, fname, content)
             if not saved:
-                d = Path.home() / ".aihydro" / "exports"
+                d = aihydro_home() / "exports"
                 d.mkdir(parents=True, exist_ok=True)
                 p = d / fname
                 p.write_text(content)
@@ -507,7 +508,7 @@ def export_session(
             fname = f"defensibility_report_{session_id}_{today}.md"
             saved = _workspace_write(session_id, fname, md)
             if not saved:
-                d = Path.home() / ".aihydro" / "exports"
+                d = aihydro_home() / "exports"
                 d.mkdir(parents=True, exist_ok=True)
                 p = d / fname
                 p.write_text(md)
@@ -530,7 +531,7 @@ def export_session(
         if capsule_path:
             capsule_dir = Path(capsule_path)
         else:
-            base = Path(session.workspace_dir) if session.workspace_dir else Path.home() / ".aihydro" / "exports"
+            base = Path(session.workspace_dir) if session.workspace_dir else aihydro_home() / "exports"
             capsule_dir = base / f"capsule_{slug}_{today}"
         (capsule_dir / "data").mkdir(parents=True, exist_ok=True)
         (capsule_dir / "figures").mkdir(parents=True, exist_ok=True)

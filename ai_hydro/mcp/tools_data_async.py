@@ -26,6 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp import jobs
 from ai_hydro.mcp.helpers import _tool_error_to_dict
@@ -44,7 +45,7 @@ def _artifact_dir(job_id: str) -> Path:
             f"Invalid job_id {str(job_id)[:40]!r}: use the job_id returned by data_fetch_background "
             "(letters, digits, '-' and '_' only)."
         )
-    base = Path.home() / ".aihydro" / "data_jobs"
+    base = aihydro_home() / "data_jobs"
     base.mkdir(parents=True, exist_ok=True)
     return base / job_id
 

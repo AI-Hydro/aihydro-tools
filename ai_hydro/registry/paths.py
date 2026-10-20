@@ -21,6 +21,56 @@ def aihydro_home() -> Path:
     return Path.home() / ".aihydro"
 
 
+class HomePath(os.PathLike):
+    """A path under the AI-Hydro home that is resolved on every use, not at import.
+
+    Module-level constants such as ``store._SESSIONS_DIR`` are patched by tests and
+    imported by name elsewhere, so they must stay module attributes; this keeps them
+    attributes while still honouring a later ``AIHYDRO_HOME``. ``/`` extends lazily,
+    every other ``Path`` method and property is delegated to the path resolved now.
+    Assigning a plain ``Path`` over the attribute (a test override) still works.
+    """
+
+    __slots__ = ("_parts",)
+
+    def __init__(self, *parts: str) -> None:
+        self._parts = parts
+
+    def resolve_now(self) -> Path:
+        return aihydro_home().joinpath(*self._parts)
+
+    def __fspath__(self) -> str:
+        return os.fspath(self.resolve_now())
+
+    def __truediv__(self, other: "str | os.PathLike[str]") -> "HomePath":
+        return HomePath(*self._parts, os.fspath(other))
+
+    def __rtruediv__(self, other: "str | os.PathLike[str]") -> Path:
+        return Path(other) / self.resolve_now()
+
+    def __getattr__(self, name: str):
+        return getattr(self.resolve_now(), name)
+
+    def __str__(self) -> str:
+        return str(self.resolve_now())
+
+    def __repr__(self) -> str:
+        return f"HomePath({self.resolve_now()!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, HomePath):
+            other = other.resolve_now()
+        return self.resolve_now() == other
+
+    def __hash__(self) -> int:
+        return hash(self.resolve_now())
+
+
+def home_path(*parts: str) -> HomePath:
+    """``<aihydro_home>/<parts...>`` as a lazily resolved module-level constant."""
+    return HomePath(*parts)
+
+
 RULES_DIR_NAME = ".aihydrorules"
 
 

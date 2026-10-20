@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from typing import Literal
+from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.mcp.app import mcp
 from ai_hydro.session import HydroSession
 from ai_hydro.validators.models import ValidatorResult
@@ -611,7 +612,7 @@ def check_regulated_basin(session_id: str) -> dict:
                     ).model_dump()
 
         # --- Step 2: NID GeoPackage spatial check
-        nid_path = _Path.home() / ".aihydro" / "cache" / "full_nid_inventory.gpkg"
+        nid_path = aihydro_home() / "cache" / "full_nid_inventory.gpkg"
         if nid_path.exists():
             try:
                 import geopandas as _gpd  # optional dep
@@ -664,12 +665,12 @@ def check_regulated_basin(session_id: str) -> dict:
             message=(
                 "Regulation status could not be determined: no 'regulated' metadata "
                 "flag in session and NID GeoPackage not found at "
-                "~/.aihydro/cache/full_nid_inventory.gpkg."
+                "<AIHYDRO_HOME>/cache/full_nid_inventory.gpkg (default ~/.aihydro)."
             ),
             affected_slots=["delineation"],
             recommendation=(
                 "Add 'regulated: false/true' to the watershed metadata, or download "
-                "the NID GeoPackage to ~/.aihydro/cache/full_nid_inventory.gpkg. "
+                "the NID GeoPackage to <AIHYDRO_HOME>/cache/full_nid_inventory.gpkg. "
                 "As a precaution, list regulation status as a limitation in any claim."
             ),
             metadata={"quality_flag": "regulation_unknown"},

@@ -57,13 +57,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ai_hydro.registry.paths import home_path
 from ai_hydro.mcp.app import mcp
 
 log = logging.getLogger("ai_hydro.mcp.course")
 
 # ── Disk paths ──────────────────────────────────────────────────────────────
 
-_AIHYDRO_HOME = Path.home() / ".aihydro"
+_AIHYDRO_HOME = home_path()
 _ACTIVE_COURSE_FILE = _AIHYDRO_HOME / "active_course.json"
 _NAV_INTENT_FILE = _AIHYDRO_HOME / "course_nav_intent.json"
 _PROGRESS_DIR = _AIHYDRO_HOME / "course_progress"

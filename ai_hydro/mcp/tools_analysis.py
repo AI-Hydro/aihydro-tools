@@ -41,6 +41,7 @@ from pathlib import Path
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.mcp.app import mcp, Context
 from ai_hydro.mcp.enforcement import post_run as _post_run
 from ai_hydro.mcp.helpers import (
@@ -1809,7 +1810,7 @@ async def compute_twi(
             _maybe_set_workspace(session)
             workspace = session.workspace_dir
         if not workspace:
-            _fallback_ws = Path.home() / ".aihydro" / "sessions" / session_id / "outputs"
+            _fallback_ws = aihydro_home() / "sessions" / session_id / "outputs"
             _fallback_ws.mkdir(parents=True, exist_ok=True)
             workspace = str(_fallback_ws)
             _used_fallback_workspace = True
@@ -2054,7 +2055,7 @@ async def map_flood_inundation(
             _maybe_set_workspace(session)
             workspace = session.workspace_dir
         if not workspace:
-            workspace = str(Path.home() / ".aihydro" / "sessions" / session_id / "outputs")
+            workspace = str(aihydro_home() / "sessions" / session_id / "outputs")
             Path(workspace).mkdir(parents=True, exist_ok=True)
 
         prefix = _canonical_prefix(session_id, "inundation")
@@ -2422,7 +2423,7 @@ async def map_flood_inundation_hydrograph(
             _maybe_set_workspace(session)
             workspace = session.workspace_dir
         if not workspace:
-            workspace = str(Path.home() / ".aihydro" / "sessions" / session_id / "outputs")
+            workspace = str(aihydro_home() / "sessions" / session_id / "outputs")
             Path(workspace).mkdir(parents=True, exist_ok=True)
 
         prefix = _canonical_prefix(session_id, "inundation_hydro")
@@ -2718,7 +2719,7 @@ async def create_cn_grid(
                     "_workspace_dir": session.workspace_dir}
 
         watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
-        workspace = session.workspace_dir or str(Path.home() / ".aihydro" / "cache")
+        workspace = session.workspace_dir or str(aihydro_home() / "cache")
 
         if ctx:
             await ctx.report_progress(progress=0, total=7)

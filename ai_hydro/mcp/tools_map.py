@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ai_hydro.registry.paths import aihydro_home, home_path
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
     _ensure_session,
@@ -46,11 +47,9 @@ from ai_hydro.mcp.map_layer_catalog import (
 
 log = logging.getLogger("ai_hydro.mcp")
 
-_MAP_SESSION_FILE = Path.home() / ".aihydro" / "map_session.json"
-_MAP_LAYER_CATALOG_FILE = Path.home() / ".aihydro" / "map_layer_catalog.json"
-_MAP_EVENTS_OUTBOUND = Path.home() / ".aihydro" / "map_events" / "outbound"
-
-
+_MAP_SESSION_FILE = home_path("map_session.json")
+_MAP_LAYER_CATALOG_FILE = home_path("map_layer_catalog.json")
+_MAP_EVENTS_OUTBOUND = home_path("map_events", "outbound")
 def _read_map_session_file() -> dict[str, Any]:
     try:
         return json.loads(_MAP_SESSION_FILE.read_text(encoding="utf-8"))
@@ -426,7 +425,7 @@ def map_add_layer_from_run(
         if not session_id or not run_id:
             return {"ok": False, "message": "session_id and run_id are required"}
 
-        session_path = Path.home() / ".aihydro" / "sessions" / f"{session_id}.json"
+        session_path = aihydro_home() / "sessions" / f"{session_id}.json"
         if not session_path.exists():
             return {"ok": False, "message": f"Session '{session_id}' not found at {session_path}"}
 

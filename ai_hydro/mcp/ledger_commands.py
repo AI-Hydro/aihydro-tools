@@ -11,12 +11,11 @@ import logging
 import uuid
 from pathlib import Path
 from typing import Any
+from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger(__name__)
 
-_LEDGER_EVENTS_DIR = Path.home() / ".aihydro" / "ledger_events"
-
-
+_LEDGER_EVENTS_DIR = home_path("ledger_events")
 def write_ledger_event(payload: dict[str, Any]) -> bool:
     """Write a one-shot ledger event JSON file. Never raises."""
     try:

@@ -21,10 +21,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from ai_hydro.registry.paths import home_path
 
-_PROFILE_PATH = Path.home() / ".aihydro" / "researcher.json"
-
-
+_PROFILE_PATH = home_path("researcher.json")
 class ResearcherProfile:
     """
     Persistent researcher persona updated by the agent from interactions.

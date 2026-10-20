@@ -118,7 +118,9 @@ def register(ide: str) -> None:
     path = _MCP_SETTINGS_PATHS[ide]
     settings = _load_settings(path)
 
-    _cache_dir = Path.home() / ".aihydro" / "cache"
+    from ai_hydro.registry.paths import aihydro_home
+
+    _cache_dir = aihydro_home() / "cache"
     _cache_dir.mkdir(parents=True, exist_ok=True)
 
     command, args = _get_server_command()

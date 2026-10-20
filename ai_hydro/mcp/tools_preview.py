@@ -23,6 +23,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ai_hydro.registry.paths import home_path
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import _tool_error_to_dict
 from ai_hydro.mcp.preview_commands import (
@@ -33,11 +34,9 @@ from ai_hydro.mcp.preview_commands import (
 
 log = logging.getLogger("ai_hydro.mcp")
 
-_PREVIEW_SESSION_DIR = Path.home() / ".aihydro" / "preview_session"
-_PREVIEW_EVENTS_DIR = Path.home() / ".aihydro" / "preview_events"
-_COMMENTS_DIR = Path.home() / ".aihydro" / "comments"
-
-
+_PREVIEW_SESSION_DIR = home_path("preview_session")
+_PREVIEW_EVENTS_DIR = home_path("preview_events")
+_COMMENTS_DIR = home_path("comments")
 def _safe_module_id(module_id: str) -> str:
     """Match the host's filename sanitisation."""
     out = "".join(c if c.isalnum() or c in "._-" else "_" for c in module_id)

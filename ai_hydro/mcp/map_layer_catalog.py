@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from ai_hydro.registry.paths import home_path
 
-MAP_LAYER_CATALOG_FILE = Path.home() / ".aihydro" / "map_layer_catalog.json"
-
+MAP_LAYER_CATALOG_FILE = home_path("map_layer_catalog.json")
 COLOR_RAMPS: dict[str, list[str]] = {
     "viridis": ["#440154", "#31688e", "#35b779", "#fde725"],
     "plasma": ["#0d0887", "#cc4778", "#f89441", "#f0f921"],
