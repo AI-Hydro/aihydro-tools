@@ -453,7 +453,7 @@ def _claim_session(sid: str, monkeypatch, tmp_path: Path) -> str:
     from ai_hydro.approval.records import session_claim_revision
     from test_approval import _claim
 
-    monkeypatch.setattr(store, "_SESSIONS_DIR", tmp_path / ".aihydro" / "sessions")
+    monkeypatch.setattr(store, "_SESSIONS_DIR", tmp_path / "state" / "sessions")
     s = HydroSession(sid)
     s.claims["c1"] = _claim()
     s.save()
