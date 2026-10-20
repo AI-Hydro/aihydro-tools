@@ -72,7 +72,7 @@ def test_research_md_staleness_formatting(tmp_path):
         # Force updated_at to be fresh
         session.updated_at = datetime.now(timezone.utc).isoformat()
         
-        session.save()
+        session.save(sync_context=True)
         
         research_md = tmp_path / ".aihydrorules" / "research.md"
         content = research_md.read_text()

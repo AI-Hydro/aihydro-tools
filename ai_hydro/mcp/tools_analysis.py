@@ -422,7 +422,7 @@ def delineate_watershed(
                     )
                     if saved:
                         files_saved.append(saved)
-            return {
+            _resp = {
                 "data": compact,
                 "meta": session.watershed.get("meta", {}),
                 "_cached": True,
@@ -433,6 +433,17 @@ def delineate_watershed(
                     "downstream tools ready. Call clear_session to recompute."
                 ),
             }
+            if not compact.get("basin_ref"):
+                # A slot from before basin identity existed: it can never bind a claim to a
+                # basin, and calling this tool again returns the same slot. Say how to leave
+                # the loop (identity is never back-filled from a label).
+                _resp["basin_ref_missing"] = True
+                _resp["_note"] += (
+                    " This cached watershed predates basin identity and carries no basin_ref, so claims "
+                    "cannot be bound to it (BASIN_REF_REQUIRED). Call "
+                    f"clear_session('{session_id}', ['watershed']) and then delineate_watershed "
+                    "again to mint one; repeating this call returns the same slot.")
+            return _resp
 
         from ai_hydro.analysis.watershed import delineate_watershed as _fn
         result = _fn(gauge_id=resolved_gauge_id)
@@ -3072,8 +3083,9 @@ def fetch_camels_us(
     CAMELS-US static catchment attributes (671 minimally-disturbed CONUS
     gauges). Single gauge via ``gauge_id`` (cached in session) OR bulk via
     ``gauge_ids`` (list, [] = all 671; saved to workspace).
-    Returns ~60 attributes grouped by topography/climate/hydrology/soil/
-    vegetation/geology. Citation: Addor et al. (2017), HESS 21.
+    Returns ~60 attributes in the flat ``attributes`` dict, plus
+    ``attribute_group_index`` (topography/climate/hydrology/soil/vegetation/
+    geology -> attribute names). Citation: Addor et al. (2017), HESS 21.
     session_id : str | None (optional from Wave 3) — auto-resolved from chat context.
     """
     try:
@@ -3082,6 +3094,24 @@ def fetch_camels_us(
         session_id = _resolve_session(session_id, None)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
+
+        # ── Cached single-gauge answer: decided BEFORE the dataset is loaded ──
+        # (loading all 671 gauges took 29.6 s for a cache hit). A slot is this request's
+        # answer only for the same gauge; an explicit gauge_id for another basin recomputes.
+        if gauge_ids is None and session.camels is not None:
+            _slot = session.camels.get("data", {}) or {}
+            _asked = None
+            if gauge_id:
+                try:
+                    _asked = _validate_usgs_gauge_id(gauge_id).zfill(8)
+                except Exception:
+                    _asked = str(gauge_id).strip().zfill(8)
+            if _asked is None or str(_slot.get("gauge_id", "")).zfill(8) == _asked:
+                return {
+                    "data": _slot,
+                    "meta": session.camels.get("meta", {}),
+                    "_cached": True,
+                }
 
         try:
             import pygeohydro as gh
@@ -3130,8 +3160,10 @@ def fetch_camels_us(
             return out
 
         def _group(attrs: dict) -> dict:
+            # Names only: the values live once, in the flat ``attributes``. (They used to be
+            # returned twice, ~2x the payload, in a result that is also sealed into the run log.)
             return {
-                grp: {k: attrs[k] for k in keys if k in attrs}
+                grp: [k for k in keys if k in attrs]
                 for grp, keys in GROUPS.items()
             }
 
@@ -3150,7 +3182,7 @@ def fetch_camels_us(
             for gid in targets:
                 if gid not in idx_list:
                     not_found.append(gid)
-                    gauges_out[gid] = {"in_camels": False, "attributes": {}, "attribute_groups": {}}
+                    gauges_out[gid] = {"in_camels": False, "attributes": {}, "attribute_group_index": {}}
                 else:
                     row = attr_df.iloc[idx_list.index(gid)]
                     attrs = _row_to_attrs(row)
@@ -3158,7 +3190,7 @@ def fetch_camels_us(
                         "in_camels":        True,
                         "n_attributes":     len(attrs),
                         "attributes":       attrs,
-                        "attribute_groups": _group(attrs),
+                        "attribute_group_index": _group(attrs),
                     }
 
             data = {
@@ -3185,13 +3217,6 @@ def fetch_camels_us(
             return resp
 
         # ── SINGLE-GAUGE MODE ──────────────────────────────────────────
-        if session.camels is not None:
-            return {
-                "data": session.camels.get("data", {}),
-                "meta": session.camels.get("meta", {}),
-                "_cached": True,
-            }
-
         usgs_gauge_id = _resolve_usgs_gauge(session_id, gauge_id, session)
         gauge_norm = usgs_gauge_id.zfill(8)
 
@@ -3218,7 +3243,7 @@ def fetch_camels_us(
             "in_camels":        True,
             "n_attributes":     len(attrs),
             "attributes":       attrs,
-            "attribute_groups": _group(attrs),
+            "attribute_group_index": _group(attrs),
         }
         d = {"data": data, "meta": _META}
         _session_store(session_id, "camels", d, tool_name="fetch_camels_us")

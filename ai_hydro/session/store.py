@@ -1386,8 +1386,17 @@ class HydroSession:
 
         return session
 
-    def save(self) -> None:
-        """Persist atomically (write temp, rename over target)."""
+    def save(self, *, sync_context: bool = False) -> None:
+        """Persist atomically (write temp, rename over target).
+
+        ``sync_context`` additionally regenerates ``.aihydrorules/research.md``. It defaults to
+        False: that file is part of the agent's system prompt, so rewriting it on every save
+        during a task changes the agent's own instructions mid-task and busts the provider's
+        prompt cache for the rest of the conversation (session study 01031500, M3: one request
+        cost 26% of the task). It is written only at the boundaries of a task: ``start_session``,
+        ``archive``, ``write_research_interpretation``, shard merge and an explicit export
+        (``export_session`` / ``write_research_context()``).
+        """
         self.updated_at = _now()
         try:
             for w in self.validate_identity():
@@ -1410,7 +1419,7 @@ class HydroSession:
             except OSError:
                 pass
         os.replace(tmp, target)
-        if not self.shard_id:
+        if sync_context and not self.shard_id:
             try:
                 self.write_research_context()
             except Exception as exc:
@@ -1418,7 +1427,7 @@ class HydroSession:
 
     def archive(self) -> None:
         self.archived = True
-        self.save()
+        self.save(sync_context=True)
 
     def _to_raw(self) -> dict:
         raw: dict[str, Any] = {

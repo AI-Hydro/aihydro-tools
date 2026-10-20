@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
+from typing import Literal
 from fastmcp.exceptions import ToolError as McpToolError
 
 from ai_hydro.mcp.app import mcp
@@ -218,14 +220,79 @@ def _uncertainty_gate(claim_id: str, claim_dict: dict, status: str,
     }
 
 
+#: Words by which prose asserts that a number carries an uncertainty estimate.
+_UNCERTAINTY_CLAIM = re.compile(
+    r"\b(?:CIs?|confidence\s+(?:intervals?|bounds?|limits?)|credible\s+intervals?|"
+    r"bootstrap(?:ped)?|uncertaint(?:y|ies)|error\s+bars?|prediction\s+intervals?)\b|\u00b1|\+/-",
+    re.IGNORECASE,
+)
+
+
+def _metric_leaf(ref: str) -> str:
+    """``key_outputs.q_mean`` / ``data.q_mean`` / ``q_mean[0]`` -> ``q_mean``."""
+    parts = [p for p in re.split(r"[.#/]", str(ref)) if p]
+    leaf = parts[-1] if parts else str(ref)
+    return re.sub(r"\[[^\]]*\]$", "", leaf)
+
+
+def _uncertainty_assertion_warnings(session_id: str, claim_dict: dict) -> list[dict]:
+    """Teaching warnings when the claim's prose asserts uncertainty its cited metrics lack.
+
+    Rule: if the statement or confidence rationale talks about CIs / bootstrap / uncertainty,
+    every run-backed ``metric_ref`` must have an entry in that run's ``_uncertainty`` (kept in
+    the run row's ``evidence.uncertainty``). A cited metric without one is named. Never blocks:
+    the numbers are real, the sentence about them is not (session study 01031500, S3: "bootstrap
+    90% CIs for each statistic" with 2 of 3 cited metrics uncovered, confidence "high").
+    """
+    text = f"{claim_dict.get('claim', '')}\n{claim_dict.get('confidence_rationale', '')}"
+    if not _UNCERTAINTY_CLAIM.search(text):
+        return []
+    from ai_hydro.session.store import _run_log_read_one
+    with_ci: list[str] = []
+    without_ci: list[dict] = []
+    for span in claim_dict.get("evidence_spans") or []:
+        if not (isinstance(span, dict) and span.get("source_type") == "run" and span.get("metric_ref")):
+            continue
+        run_id, leaf = span.get("source_id"), _metric_leaf(span["metric_ref"])
+        row = _run_log_read_one(session_id, run_id) if run_id else None
+        unc = ((row or {}).get("evidence") or {}).get("uncertainty") if isinstance(row, dict) else None
+        has_ci = isinstance(unc, dict) and isinstance(unc.get(leaf), dict) and bool(unc.get(leaf))
+        if has_ci:
+            with_ci.append(leaf)
+        else:
+            without_ci.append({"metric_ref": span["metric_ref"], "run_id": run_id,
+                               "run_found": row is not None,
+                               "metrics_with_ci_in_that_run": sorted(unc) if isinstance(unc, dict) else []})
+    if not without_ci:
+        return []
+    names = ", ".join(sorted({w["metric_ref"] for w in without_ci}))
+    return [{
+        "code": "UNCERTAINTY_ASSERTED_NOT_EVIDENCED",
+        "severity": "warning",
+        "blocking": False,
+        "metrics_without_ci": without_ci,
+        "metrics_with_ci": sorted(set(with_ci)),
+        "message": (
+            "The statement or confidence_rationale mentions confidence intervals, bootstrap or uncertainty, "
+            f"but these cited metrics have no CI in their run's `_uncertainty`: {names}. "
+            + (f"Covered: {', '.join(sorted(set(with_ci)))}. " if with_ci else "None of the cited metrics is covered. ")
+            + "The claim was recorded as written."),
+        "how_to_fix": (
+            "Re-call add_claim for the same claim id with a rationale that names only the metrics that have a CI "
+            "(and says plainly that the others are point estimates), or drop `high` confidence; or cite a run "
+            "that computed an interval for them. Do not describe uncertainty coverage you have not checked."),
+    }]
+
+
 @mcp.tool()
 def add_claim(
     session_id: str,
     claim_id: str,
     statement: str,
-    claim_type: str,
-    status: str,
-    confidence: str,
+    claim_type: Literal["empirical_result", "methodological", "hypothesis", "negative_result"],
+    status: Literal["proposed", "tested", "supported", "weakly_supported", "contradicted",
+                    "inconclusive", "superseded", "retracted", "stale"],
+    confidence: Literal["high", "medium", "low", "speculative"],
     confidence_rationale: str,
     basins: list[str],
     period: str,
@@ -318,6 +385,14 @@ def add_claim(
             out["auto_bound"] = auto_bound
         # C2 advisory: what promotion would block on this claim as stored (same policy).
         out["promotion_check"] = promotion_check(session, claim_dict, claim_id=claim_id)
+        try:
+            warnings = _uncertainty_assertion_warnings(session_id, claim_dict)
+        except Exception as exc:            # advisory only: never costs the user the recorded claim
+            log.warning("uncertainty-assertion check skipped: %s", exc)
+            warnings = []
+        if warnings:
+            out["warnings"] = warnings
+            out["_note"] = warnings[0]["message"] + " " + warnings[0]["how_to_fix"]
         return out
     except LocalPathRefused as exc:
         return exc.refusal
@@ -329,8 +404,9 @@ def add_claim(
 def update_claim_status(
     session_id: str,
     claim_id: str,
-    status: str,
-    confidence: str,
+    status: Literal["proposed", "tested", "supported", "weakly_supported", "contradicted",
+                    "inconclusive", "superseded", "retracted", "stale"],
+    confidence: Literal["high", "medium", "low", "speculative"],
     rationale: str,
     uncertainty_verified: bool = False,
 ) -> dict:

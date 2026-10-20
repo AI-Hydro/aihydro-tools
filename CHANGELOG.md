@@ -8,6 +8,48 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (session study 01031500: provenance, units, schema hygiene)
+
+Requires `aihydro-watershed` with the signature `units` map (see its changelog).
+
+- **S1 units.** `extract_hydrological_signatures` passes through the `units` map that
+  `aihydro-watershed` now emits for every signature (`q_mean`, `q_std`, `q5`, `q95`, `q_median` are
+  **mm/day**, not m3/s; `high/low_q_freq` days/year; `hfd_mean` day of water year; ...). It rides in the
+  tool response and in the run log row's `key_outputs.units` and `evidence.data.units`.
+- **S2 reuse records.** A tool that answers from the session cache (`_cached` / `_cache_hit`, found
+  generically in the recording middleware, no per-tool code) now gets a first-class *reuse* run record
+  instead of an empty minimal row: it copies the original run's `key_outputs`/`evidence`, carries
+  `derived_from` (also a sealed `parents` edge), the ORIGINAL `computed_at` and `reused: true`. The response
+  gets `reused`, `reused_from`, `computed_at`, its `_run_id` becomes the reuse row, and `_note` starts with
+  "REUSED, NOT RECOMPUTED ... Disclose the reuse". The original is found by the id the result names, else by
+  `meta.computed_at`, else the latest row of the tool; an unresolvable origin is disclosed as such.
+  A cached `delineate_watershed` slot without a `basin_ref` returns `basin_ref_missing` and says to
+  `clear_session(['watershed'])` first; the `BASIN_REF_REQUIRED` / `BASIN_REF_UNKNOWN` recoveries say the same,
+  so the agent no longer loops on a slot that can never bind. (Identity is not back-filled from a legacy label.)
+- **One run id per execution.** A tool that stores its result in a slot and then calls `post_run` used to
+  record two rows (`signatures.<hash>` from the slot write and `sigs.<date>...` from `post_run`); the response
+  cited one and the slot named the other. `post_run` now adopts the slot row written during the same recorded
+  call and merges its fields into it, so `_run_id`, the slot's `meta.run_id` and the run log agree.
+  Outside a recorded call nothing changes.
+- **S3 ledger.** `add_claim` returns a non-blocking `warnings[]` (`UNCERTAINTY_ASSERTED_NOT_EVIDENCED`, plus a
+  `_note`) when the statement or confidence rationale mentions CIs / bootstrap / uncertainty but a cited
+  run-backed `metric_ref` has no entry in that run's `_uncertainty`. `claim_type`, `status` and `confidence`
+  of `add_claim`, and `status`/`confidence` of `update_claim_status`, are `Literal` enums, so the JSON schema
+  lists the allowed values (a guessed `claim_type` is refused by the schema, not by a traceback).
+- **Error hygiene.** `_traceback` is gone from `UNEXPECTED_ERROR` envelopes (the traceback is logged
+  server-side), and absolute local paths in error text are scrubbed. A new `ErrorHygieneMiddleware`
+  (inside `RunRecordMiddleware`) applies the same rule to error dicts a tool built itself, before sealing.
+- **M3 research.md.** `HydroSession.save()` no longer regenerates `.aihydrorules/research.md`. That file is
+  part of the agent's system prompt: rewriting it on every save changes the agent's instructions mid-task and
+  busts the provider's prompt cache. It is written by `save(sync_context=True)` at `start_session`, `archive`,
+  `write_research_interpretation`, shard merge, and by `export_session`. (The project-level digest in
+  `session/project.py` is unchanged.)
+- **M4 payloads.** `start_session` no longer returns `available_packages` (~12k characters, and a slow
+  `pip list`) unless `include_packages=True`. `fetch_camels_us` returns each attribute once (flat
+  `attributes`, plus `attribute_group_index` = group -> names; the duplicated `attribute_groups` is gone), and
+  a cached single-gauge answer is decided before the 671-gauge dataset is loaded (it took 29.6 s) and only for
+  the same gauge.
+
 ### Fixed
 
 - **Multi-basin experiments no longer return the session's basin for every row (WP-1a, S1).**

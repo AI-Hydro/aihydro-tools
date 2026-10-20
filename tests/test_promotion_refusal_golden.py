@@ -13,6 +13,10 @@ signature, claim not found) were pinned here as ``UNEXPECTED_ERROR``. That pin r
 defect, not a contract: they now carry their own stable codes, and every policy refusal
 adds the full ``violations`` list. See CHANGELOG.
 
+Deliberate change (session study 01031500): the `recovery` text of BASIN_REF_REQUIRED and
+BASIN_REF_UNKNOWN now says to `clear_session(['watershed'])` when delineate_watershed answers from a
+cache that carries no basin_ref (it returned the same slot forever). Nothing else moved.
+
 Regenerate only deliberately: ``GENERATE_PROMOTION_GOLDEN=1 pytest <this file>``.
 """
 from __future__ import annotations

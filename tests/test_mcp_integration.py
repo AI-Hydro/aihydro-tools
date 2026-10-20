@@ -349,7 +349,7 @@ class TestToolSmoke:
             assert result["error"] is True
 
     def test_start_session_exposes_python_interpreter(self, tmp_path):
-        """start_session should return python_interpreter, pip, available_packages."""
+        """start_session returns python_interpreter and pip; packages only on request."""
         from ai_hydro.mcp.tools_session import start_session
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
@@ -359,8 +359,9 @@ class TestToolSmoke:
                 "(renamed from 'mcp_python' in 1.6.0 fix)"
             )
             assert "python" in result["python_interpreter"]
-            assert "available_packages" in result
-            assert isinstance(result["available_packages"], dict)
+            assert "available_packages" not in result      # ~12k characters; opt-in
+            with_pkgs = start_session("piscataquis-2020", include_packages=True)
+            assert isinstance(with_pkgs["available_packages"], dict)
 
     def test_list_available_tools_returns_tool_list(self):
         """list_available_tools should return all registered tools.

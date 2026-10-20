@@ -427,6 +427,16 @@ def note_row_written(session_id: str, run_id: str, writer: str) -> None:
         capture.rows.append((session_id, run_id, writer or "unknown"))
 
 
+def row_written_this_call(session_id: str, run_id: str, writer: str) -> bool:
+    """True when ``writer`` stored ``run_id`` during the call being recorded.
+
+    False outside a recorded call (direct Python use, tests without a capture): nothing is
+    then known about which rows belong to "this" execution.
+    """
+    capture = _CAPTURE.get()
+    return capture is not None and (session_id, run_id, writer) in capture.rows
+
+
 def note_row_failed(session_id: str, run_id: str, writer: str, reason: str) -> None:
     """Called by the run-log writer when its row could not be stored. No-op outside a call."""
     capture = _CAPTURE.get()
@@ -533,6 +543,9 @@ class RecordOutcome:
     #: The run id the caller should cite for this call (the tool's own ``_run_id``
     #: when it declared one, else the call's primary row); None unless stored.
     call_run_id: Optional[str] = None
+    #: Set when the call re-served a cached result and a reuse record was written:
+    #: ``{reused_from, computed_at, origin_match}``. The middleware discloses it to the agent.
+    reuse: Optional[Dict[str, Any]] = None
 
 
 def _session_exists(session_id: str) -> bool:
@@ -685,6 +698,125 @@ def _minimal_entry(run_id: str, tool: str, session_id: str, result: Any, failure
     return entry
 
 
+# --------------------------------------------------------------------------- #
+# Reuse records (session study 01031500, S2)
+# --------------------------------------------------------------------------- #
+#
+# A tool that answers from the session cache (``_cached`` / ``_cache_hit``) computes
+# nothing and writes no run-log row. Without help the middleware stores a *minimal* row
+# with empty ``key_outputs``: a claim that cites it has nothing to resolve, and the answer
+# presents June's numbers as if they were this session's computation.
+#
+# One general mechanism, no per-tool code: a cache-served call gets a first-class *reuse*
+# row that copies the original run's ``key_outputs``/``evidence``, names it in
+# ``derived_from`` (also a sealed ``parents`` edge), keeps the ORIGINAL ``computed_at`` and
+# sets ``reused: true``. The middleware then tells the agent in the response itself.
+
+#: Result keys by which tools say "served from the session cache".
+REUSE_FLAGS = ("_cached", "_cache_hit")
+
+
+def is_reuse_result(result: Any) -> bool:
+    """True for a successful dict result that was served from the session cache."""
+    return (isinstance(result, dict) and not result.get("error")
+            and any(result.get(k) is True for k in REUSE_FLAGS))
+
+
+def _leaf(name: Any) -> str:
+    return str(name or "").rsplit(".", 1)[-1]
+
+
+def find_origin_row(session_id: str, tool: str, result: Dict[str, Any]) -> Tuple[Optional[str], Optional[Dict[str, Any]], str]:
+    """``(run_id, row, how)``: the run-log row that computed what a cached result serves.
+
+    Preference: an id the result itself names (``source_run_id``, ``meta.run_id``,
+    ``_run_id``); else the row of the same tool whose ``timestamp`` equals the slot's
+    ``meta.computed_at``; else the latest earlier row of that tool. Minimal rows and
+    earlier reuse rows are never origins (reuse chains point at the first computation).
+    ``how`` says which rule matched, or ``"unresolved"``.
+    """
+    from ai_hydro.session import store
+
+    def usable(row: Any) -> bool:
+        return (isinstance(row, dict) and not row.get("reused") and not row.get("minimal")
+                and bool(row.get("key_outputs") or row.get("evidence")))
+
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    for key, rid in (("source_run_id", result.get("source_run_id")),
+                     ("meta.run_id", meta.get("run_id")), ("_run_id", result.get("_run_id"))):
+        if isinstance(rid, str) and rid:
+            row = store._run_log_read_one(session_id, rid)
+            if usable(row):
+                return rid, row, "run_id"
+    leaves = {_leaf(tool), _leaf(meta.get("tool"))} - {""}
+    matches = [(rid, row) for rid, row in store._run_log_read_all(session_id).items()
+               if usable(row) and _leaf(row.get("tool_name")) in leaves]
+    computed_at = meta.get("computed_at")
+    if computed_at:
+        exact = [m for m in matches if m[1].get("timestamp") == computed_at]
+        if exact:
+            return exact[-1][0], exact[-1][1], "computed_at"
+    if matches:
+        return matches[-1][0], matches[-1][1], "latest_by_tool"
+    return None, None, "unresolved"
+
+
+def _reuse_context(session_id: str, tool: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    from copy import deepcopy
+
+    origin_id, origin_row, how = find_origin_row(session_id, tool, result)
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    computed_at = meta.get("computed_at") or (origin_row or {}).get("timestamp")
+    if origin_row is not None:
+        key_outputs = deepcopy(origin_row.get("key_outputs") or {})
+        evidence = deepcopy(origin_row.get("evidence")) if origin_row.get("evidence") is not None else None
+        inputs = deepcopy(origin_row.get("inputs")) if origin_row.get("inputs") else None
+    else:
+        from ai_hydro.mcp.helpers import _lean_key_outputs
+        from ai_hydro.session.evidence import capture_result_evidence
+        key_outputs = _lean_key_outputs(result)
+        evidence = capture_result_evidence(result)
+        inputs = None
+    return {"origin_id": origin_id, "computed_at": computed_at, "how": how,
+            "key_outputs": key_outputs, "evidence": evidence, "inputs": inputs}
+
+
+def _reuse_entry(run_id: str, tool: str, session_id: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    from datetime import datetime, timezone
+
+    entry: Dict[str, Any] = {
+        "run_id": run_id,
+        "tool_name": tool,
+        "session_id": session_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "key_outputs": ctx["key_outputs"],
+        "reused": True,
+        "derived_from": ctx["origin_id"],
+        "computed_at": ctx["computed_at"],
+        "origin_match": ctx["how"],
+    }
+    if ctx.get("evidence") is not None:
+        entry["evidence"] = ctx["evidence"]
+    if ctx.get("inputs"):
+        entry["inputs"] = ctx["inputs"]
+    return entry
+
+
+def reuse_disclosure(run_id: str, reuse: Dict[str, Any]) -> str:
+    """The sentence the agent must act on, prepended to the tool's own ``_note``."""
+    origin, when = reuse.get("reused_from"), reuse.get("computed_at")
+    if origin:
+        src = f"computed at {when or 'an unrecorded time'} (run {origin})"
+    else:
+        src = ("computed earlier (the original run could not be identified in the run log; "
+               f"time {when or 'unrecorded'})")
+    return (
+        f"REUSED, NOT RECOMPUTED: this result was served from the session cache; it was {src} and "
+        f"nothing was re-run. Disclose the reuse and its date in your answer. Cite run {run_id}, "
+        "whose key_outputs are copied from the original. To recompute, call clear_session for "
+        "this slot first.")
+
+
 def record_call(
     *,
     tool: str,
@@ -735,7 +867,15 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         if (sid, rid) not in seen:
             seen.add((sid, rid))
             rows.append((sid, rid, writer))
-    declared = result.get("_run_id") if isinstance(result, dict) else None
+    # A cache-served result computed nothing: it gets a reuse row, not the original's id.
+    reuse_ctx: Optional[Dict[str, Any]] = None
+    if (failure is None and not capture.rows and not capture.failed_rows
+            and not capture.refused_rows and is_reuse_result(result)):
+        try:
+            reuse_ctx = _reuse_context(session_id, tool, result)
+        except Exception as exc:
+            log.warning("reuse context failed for %s: %s", tool, exc)
+    declared = None if reuse_ctx else (result.get("_run_id") if isinstance(result, dict) else None)
     if isinstance(declared, str) and declared and (session_id, declared) not in seen:
         rows.append((session_id, declared, "post_run"))
     lost: Dict[Tuple[str, str], str] = {}
@@ -787,6 +927,9 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         if any(v != sid for v in requested):
             extra["context_mismatch"] = True
         extra.update(capture.notes)
+        if reuse_ctx and created:
+            extra.update(reused=True, derived_from=reuse_ctx["origin_id"],
+                         computed_at=reuse_ctx["computed_at"], origin_match=reuse_ctx["how"])
         if resolution:
             extra["session_resolution"] = resolution
         stored = False
@@ -810,8 +953,12 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
                                   reason=f"body not observed when the call finished ({reason})")
                 break
             if entry is None:
-                entry = _minimal_entry(rid, tool, sid, result, failure)
-                extra["entry"] = "minimal"
+                if reuse_ctx and created:
+                    entry = _reuse_entry(rid, tool, sid, reuse_ctx)
+                    extra["entry"] = "reuse"
+                else:
+                    entry = _minimal_entry(rid, tool, sid, result, failure)
+                    extra["entry"] = "minimal"
                 row_absent = True
             if _run_log_has_record(entry):
                 stored = True          # already sealed; never touch it
@@ -821,7 +968,9 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
             entry = store._scrub_row_body(sid, entry)
             record = build_run_record(
                 run_id=rid, tool=tool, session_id=sid, arguments=arguments,
-                result=result, status=status, parents=capture.parents,
+                result=result, status=status,
+                parents=([*capture.parents, reuse_ctx["origin_id"]]
+                         if reuse_ctx and created and reuse_ctx["origin_id"] else capture.parents),
                 input_refs=capture.input_refs, extra=extra, entry=entry,
                 output_skip_reason=skip_reason, known_errors=known,
             )
@@ -865,6 +1014,9 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         run_ids=run_ids,
         record_error="; ".join(problems) if problems else None,
         call_run_id=call_id if call_id in run_ids else None,
+        reuse=({"reused_from": reuse_ctx["origin_id"], "computed_at": reuse_ctx["computed_at"],
+                "origin_match": reuse_ctx["how"]}
+               if reuse_ctx and created and call_id in run_ids else None),
     )
 
 

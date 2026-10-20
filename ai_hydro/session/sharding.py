@@ -88,8 +88,8 @@ def merge_session_shards(session_id: str, shard_ids: list[str] | None = None) ->
             log.error(f"Failed to process shard {path}: {e}")
             continue
 
-    # 2. Save merged session (updates updated_at and writes research.md)
-    main_session.save()
+    # 2. Save merged session (updates updated_at); a merge ends the fork, so refresh research.md
+    main_session.save(sync_context=True)
     
     # 3. Cleanup shards
     for path in shard_paths:

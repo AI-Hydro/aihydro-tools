@@ -115,15 +115,16 @@ def test_fetch_to_signatures_edge_with_served_data_digest(world):
     assert rr.verify_run_log_entry(HydroSession.load(SID).get("_run_log")[sigs["_run_id"]])["record_ok"]
 
 
-def test_edge_resolves_through_the_two_rows_the_fetch_call_wrote(world):
-    """put_result and post_run both wrote a row for the fetch; both are recorded,
-    and the parent named is the one the slot carries."""
+def test_edge_resolves_through_the_one_row_the_fetch_call_wrote(world):
+    """put_result and post_run describe one execution: one row, one id. The slot names it,
+    the response cites it, and the parent edge resolves to it."""
     fetch_server, _ = world
     _, fetched = call(fetch_server, "fetch_streamflow_data", {"session_id": SID})
     rows = HydroSession.load(SID).get("_run_log")
     fetch_rows = {rid: r for rid, r in rows.items() if r.get("record", {}).get("tool") == "fetch_streamflow_data"}
-    assert len(fetch_rows) == 2 and fetched["_run_id"] in fetch_rows
-    assert HydroSession.load(SID).streamflow["meta"]["run_id"] in fetch_rows
+    assert list(fetch_rows) == [fetched["_run_id"]]
+    assert HydroSession.load(SID).streamflow["meta"]["run_id"] == fetched["_run_id"]
+    assert fetch_rows[fetched["_run_id"]]["slot"] == "streamflow"
 
 
 def test_slot_without_a_run_id_yields_no_edge_and_says_so(world):
