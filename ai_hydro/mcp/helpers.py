@@ -473,7 +473,7 @@ def _record_run_log_entry(session: Any, slot: str, result_dict: dict, tool_name:
 def _session_store(
     session_id: str, slot: str, result_dict: dict, *, tool_name: str | None = None
 ) -> None:
-    """Cache a tool result in HydroSession and refresh research.md.
+    """Cache a tool result in HydroSession (does NOT rewrite research.md; see DECISIONS 2026-10-20).
 
     If ``tool_name`` is provided, Tier 1 data-source citations for that tool
     are added to the session in the same save() call (zero extra file writes).
@@ -819,15 +819,18 @@ def _tool_error_to_dict(e: Exception) -> dict:
 
     For raw / unexpected exceptions: emits a generic envelope that still
     includes recovery hints and next_tools so the agent is never stranded.
-    The ``_traceback`` key is included for diagnostics but kept short.
+    The traceback is written to the server log and is NOT part of the envelope,
+    and absolute local paths in the text are scrubbed (see ``error_hygiene``).
     """
+    from ai_hydro.mcp.error_hygiene import sanitize_error
+
     if hasattr(e, "to_dict"):
-        return e.to_dict()
+        return sanitize_error(e.to_dict())
 
     import traceback as _tb
-    tb_short = _tb.format_exc(limit=5)
+    log.error("unexpected tool error: %s\n%s", e, _tb.format_exc(limit=8))
 
-    return {
+    return sanitize_error({
         "error":      True,
         "code":       "UNEXPECTED_ERROR",
         "message":    str(e) or repr(e),
@@ -838,8 +841,7 @@ def _tool_error_to_dict(e: Exception) -> dict:
         ),
         "next_tools": ["aihydro_describe_capability", "data_doctor"],
         "docs_anchor": "",
-        "_traceback":  tb_short[-800:] if tb_short else "",
-    }
+    })
 
 
 def _cached_response(slot: str, session, *, extra: dict | None = None) -> dict:

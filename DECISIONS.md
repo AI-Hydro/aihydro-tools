@@ -1,5 +1,22 @@
 # Decisions
 
+## 2026-10-20 — `research.md` is written at task boundaries only (session study 01031500, M3)
+
+`.aihydrorules/research.md` is part of the agent's system prompt. Until now every `HydroSession.save()`
+regenerated it, so any tool that stored a result changed the agent's own instructions mid-task and
+invalidated the provider's prompt cache for the rest of the conversation (one request cost 26% of the task).
+
+Rule: `save()` does not write it. `save(sync_context=True)` does, and is called only at
+`start_session`, `archive_session`, `write_research_interpretation`, shard merge, and (via
+`write_research_context()`) `export_session`. The project-level digest (`ProjectSession.save`) is a separate,
+rarely triggered writer and is unchanged.
+
+Consequences: (1) a session auto-created by a tool call (no `start_session`) has no `research.md` until its
+interpretation is written or it is exported or archived; the file would only have held an empty skeleton, and
+`get_session_summary` / `get_session_raw_state` remain the live view. (2) `research.md` can lag the session by
+design; it is the state at the last boundary, not the current state. (3) The `_sync_reminder` still asks the
+agent to write the interpretation, which is the call that publishes mid-to-late task findings into it.
+
 ## 2026-10-19 — Features are basins: experiments fail closed, and retained series are content-addressed (science correctness, WP-1a + H0)
 
 Two silent-wrong-number defects from the 2026-10-19 reviews (experiments/modelling/sessions E1-E5, E13;

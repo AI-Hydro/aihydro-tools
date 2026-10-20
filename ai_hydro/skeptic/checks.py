@@ -145,7 +145,8 @@ def check_assumption_violations(session: "HydroSession") -> list[SkepticIssue]:
             recommendation=(
                 "Validate or explicitly acknowledge this assumption in the "
                 "interpretation's limitations paragraph before publication. "
-                "Consider calling add_claim(claim_type='assumption') to surface it."
+                "Consider surfacing it with add_claim(claim_type='methodological', status='proposed', ...) "
+                "stating what the claims rely on."
             ),
         ))
     return issues

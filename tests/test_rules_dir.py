@@ -68,7 +68,9 @@ def test_server_start_and_session_save_write_nothing_beside_the_checkout(scratch
 
     s = HydroSession("noworkspace")                                   # no workspace_dir
     s.interpretation = "synthetic"
-    s.save()
+    s.save()                                                          # mid-task save: nothing in the rules dir
+    assert not (scratch / "aihydro_home" / RULES_DIR_NAME / "research.md").exists()
+    s.save(sync_context=True)                                         # a task boundary writes it
 
     ah_rules = scratch / "aihydro_home" / RULES_DIR_NAME
     assert (ah_rules / "tools.md").is_file()
@@ -82,7 +84,7 @@ def test_workspace_session_writes_research_md_in_its_workspace_only(scratch):
     before = _snapshot(CHECKOUT_PARENT)
     s = HydroSession("withws")
     s.workspace_dir = str(ws)
-    s.save()
+    s.save(sync_context=True)
     assert "withws" in (ws / RULES_DIR_NAME / "research.md").read_text()
     assert not (scratch / "aihydro_home" / RULES_DIR_NAME / "research.md").exists()
     assert _snapshot(CHECKOUT_PARENT) == before

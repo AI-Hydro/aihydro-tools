@@ -30,12 +30,15 @@ def start_session(
     session_id: str | None = None,
     shard_id: str | None = None,
     workspace_dir: str | None = None,
+    include_packages: bool = False,
 ) -> dict:
     """
     Start or resume a research session (persistent memory for a study).
     session_id: any string (slug, USGS gauge id, UUID); auto-generated if
     omitted. workspace_dir: pass once, remembered for all future calls —
     enables auto-save of tool outputs there. shard_id: for sub-agent forks.
+    include_packages: also return `available_packages` ({name: version} of the
+    MCP interpreter; ~12k characters and a slow `pip list`, so off by default).
     """
     try:
         from ai_hydro.session import HydroSession
@@ -43,25 +46,26 @@ def start_session(
         session = HydroSession.load(session_id, shard_id=shard_id)
         if workspace_dir:
             session.workspace_dir = workspace_dir
-        session.save()
+        session.save(sync_context=True)      # session start: refresh the agent's context file
         summary = session.summary()
         summary["shard_id"] = session.shard_id
         summary["workspace_dir"] = session.workspace_dir
         summary["python_interpreter"] = sys.executable
         pip_path = Path(sys.executable).parent / "pip"
         summary["mcp_pip"] = str(pip_path) if pip_path.exists() else f"{sys.executable} -m pip"
-        try:
-            # 30s (not 10s): `pip list` walks site-packages, which can be slow on
-            # cloud-synced / network-mounted environments. Too tight a timeout
-            # silently yields an empty available_packages map.
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "list", "--format=json"],
-                capture_output=True, text=True, timeout=30,
-            )
-            pkgs = json.loads(result.stdout) if result.returncode == 0 else []
-            summary["available_packages"] = {p["name"]: p["version"] for p in pkgs}
-        except Exception:
-            summary["available_packages"] = {}
+        if include_packages:
+            try:
+                # 30s (not 10s): `pip list` walks site-packages, which can be slow on
+                # cloud-synced / network-mounted environments. Too tight a timeout
+                # silently yields an empty available_packages map.
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "list", "--format=json"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                pkgs = json.loads(result.stdout) if result.returncode == 0 else []
+                summary["available_packages"] = {p["name"]: p["version"] for p in pkgs}
+            except Exception:
+                summary["available_packages"] = {}
         return summary
     except Exception as e:
         log.error("start_session failed: %s", e)
@@ -148,7 +152,8 @@ def clear_session(session_id: str | None = None, slots: list[str] | None = None)
         from ai_hydro.session.store import _COMMON_SLOTS as _RESULT_SLOTS
         session = HydroSession.load(session_id)
         to_clear = slots if slots else list(_RESULT_SLOTS)
-        invalid = [s for s in to_clear if s not in _RESULT_SLOTS]
+        # compute_spectral_index caches under index_<name>; those slots are clearable too.
+        invalid = [s for s in to_clear if s not in _RESULT_SLOTS and not s.startswith('index_')]
         if invalid:
             hint = (
                 " (notes are always preserved)"
@@ -161,7 +166,10 @@ def clear_session(session_id: str | None = None, slots: list[str] | None = None)
             }
         cleared = []
         for slot in to_clear:
-            if getattr(session, slot) is not None:
+            if slot.startswith('index_') and slot not in _RESULT_SLOTS:
+                if session._slots.pop(slot, None):
+                    cleared.append(slot)
+            elif getattr(session, slot) is not None:
                 setattr(session, slot, None)
                 cleared.append(slot)
         session.save()
@@ -347,7 +355,7 @@ def write_research_interpretation(
         # site_name during interpretation and drifted from the canonical
         # gauge_name" failure mode.
         session.set_site_name(site_name, reason="set via write_research_interpretation")
-        session.save()
+        session.save(sync_context=True)      # end-of-task write-up: the interpretation belongs in research.md
 
         tools_path = _write_tools_md()
         research_md_path = rules_dir(session.workspace_dir) / "research.md"
@@ -480,6 +488,10 @@ def export_session(
         from datetime import datetime
 
         session = HydroSession.load(session_id)
+        try:
+            session.write_research_context()      # an explicit export refreshes research.md
+        except Exception as exc:
+            log.warning("research.md refresh at export failed: %s", exc)
         today = datetime.now().strftime("%Y-%m-%d")
         slug = session.site_name or session.site_id or session_id
         files_written: list[str] = []

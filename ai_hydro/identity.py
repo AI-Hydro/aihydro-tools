@@ -185,7 +185,9 @@ class BasinRefUnknownError(ValueError):
     def to_dict(self) -> dict:
         return {"error": True, "code": BASIN_REF_UNKNOWN, "session_id": self.session_id,
                 "claim_id": self.claim_id, "message": str(self),
-                "recovery": "Delineate the basin in this session, then call add_claim again.",
+                "recovery": "Delineate the basin in this session, then call add_claim again. If "
+                            "delineate_watershed answers `_cached` without a basin_ref, call "
+                            "clear_session(session_id, ['watershed']) first.",
                 "next_tools": ["delineate_watershed", "delineate_watershed_from_point", "add_claim"]}
 
 
@@ -207,6 +209,9 @@ class BasinRefRequiredError(ValueError):
             "claim_id": self.claim_id,
             "message": str(self),
             "recovery": "Delineate the basin in this session, then call add_claim again for the "
-                        "same claim id; labels are never back-filled with identities.",
+                        "same claim id; labels are never back-filled with identities. If "
+                        "delineate_watershed answers `_cached` with `basin_ref_missing` (a watershed "
+                        "stored before basin identity existed), repeating it returns the same slot: "
+                        "call clear_session(session_id, ['watershed']) first, then delineate_watershed.",
             "next_tools": ["delineate_watershed", "delineate_watershed_from_point", "add_claim"],
         }

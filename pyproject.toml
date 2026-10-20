@@ -46,7 +46,7 @@ dependencies = [
     "aihydro-data>=0.2.4,<0.3",
     # Wave A3: delineation + characterization carve-out (shims in analysis/ and data/).
     # Install locally with: pip install -e /path/to/aihydro-watershed
-    "aihydro-watershed>=0.1.4,<0.2",
+    "aihydro-watershed>=0.1.5,<0.2",
     # Wave M0 modelling carve-out is optional until aihydro-modelling is published
     # on PyPI. The tools-side modelling modules are thin adapters and should keep
     # base `pip install aihydro-tools` resolvable without unpublished packages.

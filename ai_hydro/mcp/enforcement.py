@@ -148,6 +148,7 @@ def _write_run_log(
     tool_name: str,
     result: dict,
     inputs: dict | None = None,
+    merge_row: dict | None = None,
 ) -> None:
     """
     Write a run-log row for the session.
@@ -184,6 +185,14 @@ def _write_run_log(
         scrubbed_inputs = _scrub_tool_inputs(inputs)
         if scrubbed_inputs:
             entry["inputs"] = scrubbed_inputs
+        if merge_row:
+            # One execution, one row: the slot row this call already stored under ``run_id`` keeps
+            # its fields (``slot``) and its timestamp (= the result's ``computed_at``); post_run's
+            # view (quality flags, inputs, the tool's MCP name) is added on top of it.
+            body = {k: v for k, v in merge_row.items() if k != "record"}
+            body_ko = dict(body.get("key_outputs") or {})
+            body_ko.update(entry["key_outputs"])
+            entry = {**body, **entry, "key_outputs": body_ko, "timestamp": body.get("timestamp") or entry["timestamp"]}
         # One row, written directly. The old load -> mutate whole log -> save
         # cycle re-sent every existing row on each call; insert-only rows make
         # that both wasteful and a place for a stale snapshot to do harm.
@@ -249,6 +258,30 @@ def register_post_validator(
     _REGISTRY.setdefault(tool_name, []).append((validator_fn, kwargs_builder))
 
 
+def _adopt_slot_row(tool_name: str, session_id: str, result: dict) -> tuple[str | None, dict | None]:
+    """``(run_id, row)`` of the slot row stored for ``result`` during this call, else ``(None, None)``.
+
+    Conservative: only a row that ``put_result`` wrote during the call being recorded counts
+    (a stale ``meta.run_id`` left in a reused result never does), and it must still be
+    unsealed. Outside a recorded call nothing is adopted.
+    """
+    try:
+        meta = result.get("meta")
+        rid = meta.get("run_id") if isinstance(meta, dict) else None
+        if not (isinstance(rid, str) and rid):
+            return None, None
+        from ai_hydro.session import run_records, store
+        if not run_records.row_written_this_call(session_id, rid, "put_result"):
+            return None, None
+        row = store._run_log_read_one(session_id, rid)
+        if not isinstance(row, dict) or store._run_log_sealed(row):
+            return None, None
+        return rid, row
+    except Exception as exc:
+        log.debug("slot-row adoption skipped: %s", exc)
+        return None, None
+
+
 def post_run(tool_name: str, session_id: str, result: dict, inputs: dict | None = None) -> dict:
     """
     Inject quality_flags and _run_id into result; fire registered validators.
@@ -301,10 +334,17 @@ def post_run(tool_name: str, session_id: str, result: dict, inputs: dict | None 
                 "severity": None,
             })
 
-    # Generate run_id and persist to session run log for evidence binding
-    run_id = _generate_unique_run_id(tool_name, session_id)
+    # Generate run_id and persist to session run log for evidence binding.
+    # A tool that stored its result in a session slot during this same call already has a
+    # run-log row for it (put_result; its id is in ``meta.run_id``). That row IS this
+    # execution: adopt its id instead of minting a second one, so the id the agent cites,
+    # the slot's ``meta.run_id`` and the run log agree (session study M5: one computation
+    # was recorded under two ids).
+    run_id, merge_row = _adopt_slot_row(tool_name, session_id, result)
+    if run_id is None:
+        run_id = _generate_unique_run_id(tool_name, session_id)
     result["_run_id"] = run_id
-    _write_run_log(session_id, run_id, tool_name, result, inputs)
+    _write_run_log(session_id, run_id, tool_name, result, inputs, merge_row=merge_row)
 
     return result
 

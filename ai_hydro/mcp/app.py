@@ -731,6 +731,46 @@ def _inject_run_id(tool_result, run_id: str) -> None:
         _record_log.debug("could not inject _run_id: %s", exc)
 
 
+def _inject_reuse(tool_result, run_id: str, reuse: dict) -> None:
+    """Make a cache-served result say so: ``reused``, ``reused_from``, ``computed_at``, ``_note``.
+
+    ``_run_id`` is REPLACED by the reuse row's id (the tool's own, if any, named the original
+    run). Added after the record is sealed, like ``_run_id``: these are transport keys outside
+    ``result["data"]``, so the sealed output digest is unaffected. Best effort.
+    """
+    from ai_hydro.session.run_records import reuse_disclosure
+
+    def apply(d: dict) -> None:
+        prior_note = d.get("_note")
+        d["_run_id"] = run_id
+        d["reused"] = True
+        d["reused_from"] = reuse.get("reused_from")
+        d["computed_at"] = reuse.get("computed_at")
+        d["origin_match"] = reuse.get("origin_match")
+        note = reuse_disclosure(run_id, reuse)
+        d["_note"] = f"{note} {prior_note}" if prior_note else note
+
+    try:
+        structured = getattr(tool_result, "structured_content", None)
+        if isinstance(structured, dict) and set(structured) != {"result"} and not structured.get("error"):
+            apply(structured)
+        for block in getattr(tool_result, "content", None) or []:
+            text = getattr(block, "text", None)
+            if not isinstance(text, str):
+                continue
+            try:
+                parsed = _json.loads(text)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                if not parsed.get("error"):
+                    apply(parsed)
+                    block.text = _json.dumps(parsed, default=str)
+                return
+    except Exception as exc:
+        _record_log.debug("could not inject reuse disclosure: %s", exc)
+
+
 RECENT_FALLBACK_WARNING = (
     "No study was named or bound; {verb} most-recent study {sid} \u2014 name a session to be sure"
 )
@@ -846,9 +886,11 @@ class RunRecordMiddleware(Middleware):
             )
             record_error = outcome.record_error
             if (failure is None and tool_result is not None and outcome.call_run_id
-                    and isinstance(result_dict, dict) and not result_dict.get("error")
-                    and "_run_id" not in result_dict):
-                _inject_run_id(tool_result, outcome.call_run_id)
+                    and isinstance(result_dict, dict) and not result_dict.get("error")):
+                if outcome.reuse:
+                    _inject_reuse(tool_result, outcome.call_run_id, outcome.reuse)
+                elif "_run_id" not in result_dict:
+                    _inject_run_id(tool_result, outcome.call_run_id)
 
         except Exception as exc:
             _record_log.warning("run recording failed for %s: %s", tool, exc)
@@ -864,3 +906,20 @@ class RunRecordMiddleware(Middleware):
 
 
 mcp.add_middleware(RunRecordMiddleware())
+
+
+class ErrorHygieneMiddleware(Middleware):
+    """Strip tracebacks and local paths from error dicts a tool built itself.
+
+    Registered AFTER RunRecordMiddleware, so it runs inside it: the record seals the
+    sanitized error, and no stack trace or absolute path reaches the model or the run log.
+    """
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
+        tool_result = await call_next(context)
+        from ai_hydro.mcp.error_hygiene import sanitize_tool_result
+        sanitize_tool_result(tool_result)
+        return tool_result
+
+
+mcp.add_middleware(ErrorHygieneMiddleware())

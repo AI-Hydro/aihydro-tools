@@ -229,7 +229,8 @@ def test_manifest_states_the_strongest_level_it_supports_and_counts_records(worl
     assert manifest["replay_status"] == "archive_integrity"
     assert manifest["recomputation"] == "not_performed"
     records = manifest["run_records"]
-    assert records["v2_records"] == records["run_log_rows"] - records["legacy_unrecorded"] >= 2
+    # one execution is one row since the slot row and post_run's row were unified (was >= 2)
+    assert records["v2_records"] == records["run_log_rows"] - records["legacy_unrecorded"] >= 1
     assert records["records_with_record_error"] == 0
     assert records["environment"]["env_digest"].startswith("sha256:")
     assert records["matches_exporting_environment"] == records["v2_records"]
