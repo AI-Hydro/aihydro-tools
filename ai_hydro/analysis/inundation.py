@@ -209,7 +209,7 @@ def _prepare_hand_stack(
     from pysheds.grid import Grid
     from aihydro_watershed import ensure_numpy_compat
 
-    # pysheds calls np.in1d (accumulation), removed in NumPy 2.5.
+    # pysheds calls np.in1d (accumulation), missing from NumPy 2.4+.
     ensure_numpy_compat()
 
     if resolution not in (10, 30, 60):

@@ -88,7 +88,7 @@ def run_synthetic_hand_spike(*, stream_acc_threshold: int = 5) -> dict[str, Any]
     from pysheds.grid import Grid
     from aihydro_watershed import ensure_numpy_compat
 
-    # pysheds 0.5 calls np.in1d (removed in NumPy 2.5); restore it with the
+    # pysheds 0.5 calls np.in1d (missing from NumPy 2.4+); restore it with the
     # shared, flat-output shim instead of a local np.isin alias.
     ensure_numpy_compat()
     import rasterio
