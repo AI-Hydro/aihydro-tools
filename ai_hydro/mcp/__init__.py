@@ -4,7 +4,7 @@ AI-Hydro MCP Server Infrastructure.
 Importing this package triggers tool registration via ``@mcp.tool()``
 decorators in the tool modules.
 """
-from ai_hydro.registry.paths import aihydro_home
+from ai_hydro.registry.paths import pin_aihydro_home
 from ai_hydro.mcp.app import mcp  # noqa: F401 — the FastMCP singleton
 
 # Import tool modules so their @mcp.tool() decorators execute and
@@ -402,10 +402,9 @@ def main() -> None:
 
     import logging
     import os
-    from pathlib import Path
 
     # Redirect cache/temp writes away from read-only filesystems (e.g. Box Drive)
-    cache_dir = aihydro_home() / "cache"
+    cache_dir = pin_aihydro_home() / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     os.chdir(cache_dir)
     os.environ.setdefault("TMPDIR", str(cache_dir))

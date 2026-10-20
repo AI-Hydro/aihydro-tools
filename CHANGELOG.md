@@ -90,7 +90,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   paths and `home_path(...)` for module-level constants (`store.SESSIONS_DIR`/`_SESSIONS_DIR`,
   `ledger_commands._LEDGER_EVENTS_DIR`, ...), both evaluated at call time; an unset variable still means
   `~/.aihydro`. A test that assigns a plain `Path` to such a constant still overrides it.
-- `mcp_server.py` and `setup_mcp.py` take the cache/working directory from the same resolver.
+- `mcp_server.py` and `setup_mcp.py` take the cache/working directory from the same resolver. `aihydro_home()` returns an absolute path, and `pin_aihydro_home()` rewrites a relative `AIHYDRO_HOME` in the environment before the server `chdir`s into the cache directory, so the home cannot move after startup.
 - Not covered here: `aihydro-core` (`jobs`: `~/.aihydro/jobs`, `subagents`), `aihydro-data` (disk cache,
   `cds_glofas`/`geoglows_retro` fallbacks) and `aihydro-watershed` (`delineation` cache, `merit`
   manager and `config.json`) keep their own defaults; only `identity.py` there reads `AIHYDRO_HOME`.

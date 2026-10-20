@@ -17,8 +17,22 @@ def aihydro_home() -> Path:
     """Return the AI-Hydro state directory (``$AIHYDRO_HOME`` or ``~/.aihydro``)."""
     override = os.environ.get(ENV_VAR)
     if override:
-        return Path(override).expanduser()
+        # Absolute, so a later os.chdir (mcp_server chdirs into the cache dir) cannot move the home.
+        return Path(override).expanduser().absolute()
     return Path.home() / ".aihydro"
+
+
+def pin_aihydro_home() -> Path:
+    """Rewrite a set ``AIHYDRO_HOME`` to its absolute form in ``os.environ``.
+
+    A relative value is re-read on every call, so a later ``os.chdir`` would move the
+    home (and child processes would see yet another one). Server entry points that
+    change directory call this first. Returns the resolved home.
+    """
+    home = aihydro_home()
+    if os.environ.get(ENV_VAR):
+        os.environ[ENV_VAR] = str(home)
+    return home
 
 
 class HomePath(os.PathLike):
@@ -49,6 +63,8 @@ class HomePath(os.PathLike):
         return Path(other) / self.resolve_now()
 
     def __getattr__(self, name: str):
+        if name.startswith("_"):        # private/dunder lookups (pickle, copy) must not recurse via _parts
+            raise AttributeError(name)
         return getattr(self.resolve_now(), name)
 
     def __str__(self) -> str:

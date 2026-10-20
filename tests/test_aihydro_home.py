@@ -7,7 +7,11 @@ and fail here. Nothing touches the real ``~/.aihydro``.
 from __future__ import annotations
 
 import ast
+import copy
 import json
+import os
+import pickle
+import re
 from pathlib import Path
 
 import pytest
@@ -43,15 +47,38 @@ def _docstring_nodes(tree):
     return out
 
 
+_DOT_AIHYDRO = re.compile(r"(?<![\w-])\.aihydro(?![\w-])")
+
+
+def _fold(node):
+    """Constant string value of a ``"a" + "b" + ...`` chain, else None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _fold(node.left), _fold(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
 def _hardcoded_home_literals(path):
+    """(line, text) of every non-docstring string that spells the ``.aihydro`` directory.
+
+    Best effort: plain and prefix constants (``".aihydro/sessions"``), constant parts of
+    f-strings, and ``"."+"aihydro"`` style concatenation. ``.aihydrorules`` is a different
+    directory and is allowed, as are ``vnd.aihydro.module`` and ``.aihydro-cell``.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     docs = _docstring_nodes(tree)
-    hits = []
+    hits = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs:
-            v = node.value
-            if v == ".aihydro" or v.startswith("~/.aihydro") or "/.aihydro/" in v or v.endswith("/.aihydro"):
-                hits.append((node.lineno, v))
+            if _DOT_AIHYDRO.search(node.value):
+                hits.add((node.lineno, node.value))
+        elif isinstance(node, ast.BinOp):
+            folded = _fold(node)
+            if folded is not None and _DOT_AIHYDRO.search(folded):
+                hits.add((node.lineno, folded))
     return sorted(hits)
 
 
@@ -72,8 +99,11 @@ def test_no_hardcoded_aihydro_path_outside_the_resolver():
 def test_guard_detects_a_hardcoded_path(tmp_path):
     bad = tmp_path / "bad.py"
     bad.write_text('"""doc ~/.aihydro"""\nfrom pathlib import Path\nX = Path.home() / ".aihydro" / "x"\n'
-                   'Y = "~/.aihydro/cache"\n')
-    assert [v for _, v in _hardcoded_home_literals(bad)] == [".aihydro", "~/.aihydro/cache"]
+                   'Y = "~/.aihydro/cache"\nZ = ".aihydro/sessions"\nW = f"{X}/.aihydro/{Y}"\n'
+                   'V = "." + "aihydro"\nU = ".aih" + "ydro"\nT = Path.home() / ("." + "aihydro" + "/x")\n'
+                   'OK = ".aihydrorules"\nOK2 = "x" + ".aihydrorules"\n')
+    found = {line for line, _ in _hardcoded_home_literals(bad)}
+    assert found == {3, 4, 5, 6, 7, 8, 9}, found          # every evasion, and neither .aihydrorules line
 
 
 def test_resolver_is_call_time_and_defaults(monkeypatch, tmp_path):
@@ -138,7 +168,14 @@ def test_approval_store_read_resolves_under_home(homes):
 def test_other_state_dirs_resolve_under_home(homes):
     """Map, comments, citations, data_jobs, chat studies, skills, knowledge, persona, projects."""
     from ai_hydro.knowledge import embeddings
-    from ai_hydro.mcp import map_commands, map_events, map_layer_catalog, tools_citations, tools_map, tools_preview
+    from ai_hydro.mcp import (
+        map_commands,
+        map_events,
+        map_layer_catalog,
+        tools_citations,
+        tools_map,
+        tools_preview,
+    )
     from ai_hydro.mcp.tools_data_async import _artifact_dir
     from ai_hydro.session import chat_binding, persona, project
     from ai_hydro.skills import registry as skills
@@ -151,3 +188,38 @@ def test_other_state_dirs_resolve_under_home(homes):
               _artifact_dir("job-1")):
         _assert_under(p, ah)
     assert not (fake_home / ".aihydro").exists()
+
+
+# ── absolute home, pickle/copy ──────────────────────────────────────────────
+
+def test_relative_aihydro_home_is_absolute_and_survives_chdir(tmp_path, monkeypatch):
+    from ai_hydro.registry.paths import aihydro_home, home_path, pin_aihydro_home
+
+    start = tmp_path / "start"
+    elsewhere = tmp_path / "elsewhere"
+    start.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.chdir(start)
+    monkeypatch.setenv("AIHYDRO_HOME", "rel-home")
+    assert aihydro_home().is_absolute()
+    pin_aihydro_home()                        # what the server entry points do before chdir
+    assert os.environ["AIHYDRO_HOME"] == str(start / "rel-home")
+    before, lazy_before = aihydro_home(), Path(home_path("cache"))
+    assert before.is_absolute() and before == start / "rel-home"
+    os.chdir(elsewhere)                       # mcp_server chdirs into the cache dir after startup
+    assert aihydro_home() == before
+    assert Path(home_path("cache")) == lazy_before
+
+
+def test_home_path_copies_and_pickles(tmp_path, monkeypatch):
+    from ai_hydro.registry.paths import HomePath, home_path
+
+    monkeypatch.setenv("AIHYDRO_HOME", str(tmp_path / "a"))
+    lazy = home_path("sessions") / "x"
+    for clone in (copy.copy(lazy), copy.deepcopy(lazy), pickle.loads(pickle.dumps(lazy))):
+        assert isinstance(clone, HomePath)
+        assert Path(clone) == tmp_path / "a" / "sessions" / "x"
+    monkeypatch.setenv("AIHYDRO_HOME", str(tmp_path / "b"))
+    assert Path(pickle.loads(pickle.dumps(lazy))) == tmp_path / "b" / "sessions" / "x"   # still lazy
+    with pytest.raises(AttributeError):
+        lazy._nope

@@ -24,9 +24,10 @@ _SERVER_DIR = Path(__file__).parent
 if str(_SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVER_DIR))
 
-from ai_hydro.registry.paths import home_path  # noqa: E402
+from ai_hydro.registry.paths import home_path, pin_aihydro_home  # noqa: E402
 
 # ── Redirect cache/temp writes away from Box Drive (avoids read-only errors) ──
+pin_aihydro_home()  # a relative AIHYDRO_HOME must not move when we chdir below
 _CACHE_DIR = home_path("cache")
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 os.chdir(_CACHE_DIR)

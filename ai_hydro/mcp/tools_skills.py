@@ -39,7 +39,7 @@ def list_skills(
             "domain_filter": domain,
             "_note": (
                 "Use load_skill(name) to get the full workflow instructions. "
-                "Skills are stored under $AIHYDRO_HOME/skills/ (default ~/.aihydro). "
+                "Skills are stored under $AIHYDRO_HOME/skills/. "
                 "Use save_skill() to create new skills from completed workflows."
             ),
         }
