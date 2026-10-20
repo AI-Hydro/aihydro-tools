@@ -57,6 +57,8 @@ exemptions could be used to hide fabricated numbers. Final rules:
    half-ULP of the printed digits (0.7 != 0.61, 9 != 8.0, 7306 != 7305), exponent-aware (`3.2x10^-3`).
    (g) `suggested_marker` needs an exact round-half match and a compatible declared unit; it is a pointer,
    never accepted on the agent's behalf. (h) Markers bind inside their own sentence/bullet/cell only.
+   (i) `[lit:<tag>]` tags are single tokens without spaces, at least 3 characters (e.g. `[lit:smith2020]`);
+   `[lit:Smith et al. 2020]` is a hard `malformed_marker`.
 4. **Severity.** hard = uncited quantity or sample size, value/unit mismatch, path/run not found,
    `hollow_evidence`, malformed marker. advisory = method parameters, unresolvable literature hash.
    `passed` means no hard violation.

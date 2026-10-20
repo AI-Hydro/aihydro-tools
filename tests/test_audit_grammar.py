@@ -519,6 +519,12 @@ class TestMaskingDoesNotHideNumbers:
         assert "malformed_marker" in [k for k, _ in _hard(rep)], txt
         assert rep.passed is False
 
+    def test_lit_tag_is_a_single_token(self, monkeypatch):
+        ok = _a("The benchmark NSE was 0.61 [lit:smith2020].", monkeypatch)
+        assert ok.passed and ok.lit_span_count == 1
+        bad = _a("The benchmark NSE was 0.61 [lit:Smith et al. 2020].", monkeypatch)
+        assert "malformed_marker" in [k for k, _ in _hard(bad)] and bad.passed is False
+
     def test_well_formed_markers_are_not_malformed(self, monkeypatch):
         rep = _a("NSE 0.61 [run:r1#key_outputs.nse] and [lit:Smith2020] and [claim:C-001].", monkeypatch)
         assert "malformed_marker" not in [v.kind for v in rep.violations]
