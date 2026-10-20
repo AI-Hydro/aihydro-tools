@@ -211,6 +211,19 @@ lineage, period/population/units alignment and recomputation remain open.
 | `experiment_*` | define / run / aggregate | Per experiment DB |
 | `aihydro-bench` CLI | HRB scorecard + certification JSON | Shared bench |
 
+### One state home
+
+All per-user state (sessions and their run-log / claim-revision SQLite files, ledger events, approvals, trust,
+the claim registry, caches, data jobs, map and preview bridges, comments, chat studies, citations, skills,
+knowledge index, projects, persona, exports, course state) lives under one directory: `$AIHYDRO_HOME`,
+default `~/.aihydro`. `ai_hydro/registry/paths.py` is the only module that spells that default:
+`aihydro_home()` resolves it at call time, and `home_path("sessions")` gives a module-level constant
+(`store.SESSIONS_DIR`, `ledger_commands._LEDGER_EVENTS_DIR`, ...) that re-resolves on every use, so
+setting `AIHYDRO_HOME` after import isolates a test, bench run or CI job. A test may still overwrite such a
+constant with a plain `Path`. `tests/test_aihydro_home.py` fails if any other module hard-codes the path.
+`aihydro-core`, `aihydro-data` and `aihydro-watershed` have their own `~/.aihydro` defaults that this
+resolver does not reach (see the Unreleased changelog entry).
+
 ---
 
 ## Packaging boundaries
