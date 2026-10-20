@@ -12,6 +12,7 @@ daily values at the USGS transport seam).
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 from unittest.mock import patch
 
@@ -20,6 +21,12 @@ import pytest
 from ai_hydro.session.store import HydroSession
 from test_experiments_real_tools import (  # noqa: F401  (fixture + helpers)
     AREA, GAUGE_AREA, SID, SQUARE, START, END, _register, _run, world,
+)
+
+
+needs_modelling = pytest.mark.skipif(
+    importlib.util.find_spec("aihydro_modelling") is None,
+    reason="needs the optional aihydro-modelling package (private; not installable in public CI)",
 )
 
 
@@ -125,6 +132,7 @@ def test_active_feature_geomorphic_uses_its_own_outlet(world, monkeypatch):
 
 # ── C2 ────────────────────────────────────────────────────────────────────────
 
+@needs_modelling
 def test_get_leaderboard_on_old_modelling_gives_a_version_note_not_facts(tmp_path, monkeypatch):
     import aihydro_modelling.leaderboard as lb
     from ai_hydro.mcp import tools_modelling as tm

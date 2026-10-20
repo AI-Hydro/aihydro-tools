@@ -13,8 +13,12 @@ ships an entry point can never be exempted.
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10; pytest itself depends on tomli there
+    import tomli as tomllib
 
 _PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
