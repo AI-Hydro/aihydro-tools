@@ -207,6 +207,10 @@ def _prepare_hand_stack(
     import tempfile
     import os
     from pysheds.grid import Grid
+    from aihydro_watershed import ensure_numpy_compat
+
+    # pysheds calls np.in1d (accumulation), removed in NumPy 2.5.
+    ensure_numpy_compat()
 
     if resolution not in (10, 30, 60):
         raise ValueError(f"resolution must be 10, 30, or 60; got {resolution}")

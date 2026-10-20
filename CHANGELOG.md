@@ -8,6 +8,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (NumPy 2.5 / pysheds `np.in1d`)
+
+- `ai_hydro/analysis/inundation.py` and `inundation_spike.py` import pysheds directly and call `accumulation`
+  (an `np.in1d` site, removed in NumPy 2.5). Both now call `aihydro_watershed.ensure_numpy_compat()` after the
+  import; the spike's local `np.in1d = np.isin` alias (non-flat) is replaced by it. Requires
+  `aihydro-watershed>=0.1.6` (pin raised).
+
 ### Fixed (session study 01031500: provenance, units, schema hygiene)
 
 Requires `aihydro-watershed` with the signature `units` map (see its changelog).

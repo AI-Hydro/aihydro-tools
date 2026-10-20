@@ -85,14 +85,12 @@ def run_synthetic_hand_spike(*, stream_acc_threshold: int = 5) -> dict[str, Any]
 
     Returns HAND stats, sample depths, and stage lookup for bench/smoke tests.
     """
-    # pysheds 0.5 still calls np.in1d, which was removed in NumPy 2.4+.
-    # Alias locally before importing pysheds so this offline benchmark remains
-    # installable on current Python/NumPy without pinning the whole ecosystem to
-    # older NumPy wheels.
-    if not hasattr(np, "in1d"):
-        np.in1d = np.isin  # type: ignore[attr-defined]
-
     from pysheds.grid import Grid
+    from aihydro_watershed import ensure_numpy_compat
+
+    # pysheds 0.5 calls np.in1d (removed in NumPy 2.5); restore it with the
+    # shared, flat-output shim instead of a local np.isin alias.
+    ensure_numpy_compat()
     import rasterio
     from rasterio.transform import from_origin
     import tempfile
