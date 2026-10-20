@@ -65,6 +65,10 @@ def session_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+# Owned tools (this repo + declared deps) allowed to skip a run record; see the ratchet test.
+EXEMPT_RATCHET = 74
+
+
 def test_exempt_list_has_no_stale_entries_and_every_entry_has_a_reason():
     registered = set(_registered_tool_names())
     stale = sorted(set(rr.RECORD_EXEMPT) - registered)
@@ -108,10 +112,13 @@ def test_every_registered_tool_is_recorded_or_explicitly_exempt(session_dir):
     optional = optional_plugin_tool_names(asyncio.run(mcp.list_tools()), TOOL_TIERS)
     owned_exempt = [n for n in exempt if n not in optional]
     owned = [n for n in names if n not in optional]
-    # Ratchet on the exemption count, which is independent of how many tools exist: it was 74
-    # when this ratchet was set (0.55 of 173 allowed 77). Lower it as exemptions are removed;
-    # never raise it without review. New tools must be recorded, not exempted.
-    assert len(owned_exempt) <= 74, f"{len(owned_exempt)} exempt tools (ratchet 74): {sorted(owned_exempt)}"
+    # Exact, self-tightening ratchet on the exemption count (independent of how many tools exist).
+    # Removing an exemption must lower EXEMPT_RATCHET in the same change; new tools must be
+    # recorded, not exempted.
+    n_exempt = len(owned_exempt)
+    assert n_exempt <= EXEMPT_RATCHET, (
+        f"{n_exempt} exempt tools exceeds EXEMPT_RATCHET={EXEMPT_RATCHET}: {sorted(owned_exempt)}")
+    assert n_exempt >= EXEMPT_RATCHET, f"lower EXEMPT_RATCHET to {n_exempt}"
     print(f"\nrun-record coverage: {len(owned) - len(owned_exempt)}/{len(owned)} owned tools = "
           f"{(len(owned) - len(owned_exempt)) / len(owned):.4f} ({len(owned_exempt)} exempt with reasons)")
 

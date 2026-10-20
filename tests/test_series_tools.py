@@ -633,3 +633,35 @@ def test_local_kge_matches_modelling_package_when_available():
     sim[5] = np.nan
     assert _kge(obs, sim) == comparison._kge(obs, sim)
     assert math.isnan(_kge(obs[:1], sim[:1])) and math.isnan(comparison._kge(obs[:1], sim[:1]))
+
+
+def test_local_kge_defined_value_perfect_fit():
+    from ai_hydro.analysis.series_ops import _kge
+
+    obs = np.array([1.0, 2.0, 4.0, 3.0])
+    assert _kge(obs, obs.copy()) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("obs,pred", [
+    (np.array([2.0, 2.0, 2.0]), np.array([1.0, 2.0, 3.0])),    # zero observed variance
+    (np.array([1.0, 2.0, 3.0]), np.array([2.0, 2.0, 2.0])),    # zero simulated variance
+    (np.array([-3.0, -1.0, -2.0]), np.array([1.0, 2.0, 3.0])),  # mean obs <= 0
+    (np.array([-1.0, 0.0, 1.0]), np.array([1.0, 2.0, 3.0])),    # mean obs == 0
+    (np.array([1.0]), np.array([1.0])),                         # n < 2
+    (np.array([]), np.array([])),                               # empty
+    (np.array([1.0, np.nan, 3.0]), np.array([1.0, 2.0, np.nan])),  # NaNs leave n < 2
+    (np.array([np.nan, np.nan]), np.array([np.nan, np.nan])),   # all NaN
+])
+def test_local_kge_undefined_cases_are_nan(obs, pred):
+    from ai_hydro.analysis.series_ops import _kge
+
+    assert math.isnan(_kge(obs, pred))
+
+
+def test_local_kge_ignores_pairs_with_nan():
+    from ai_hydro.analysis.series_ops import _kge
+
+    obs = np.array([1.0, 2.0, 4.0, 3.0, 5.0])
+    pred = np.array([1.1, np.nan, 3.8, 3.2, 5.1])
+    keep = np.isfinite(pred)
+    assert _kge(obs, pred) == pytest.approx(_kge(obs[keep], pred[keep]))

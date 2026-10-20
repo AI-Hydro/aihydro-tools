@@ -1,5 +1,19 @@
 # Decisions
 
+## 2026-10-20 — Public CI does not exercise the modelling-backed and aihydro-lsh tools (private repos)
+
+`aihydro-modelling` and `aihydro-lsh` are private repositories, so the public CI install
+(`.github/ci/install-siblings.sh`: core, data, watershed, pygeoglim from pinned SHAs) cannot include them.
+Consequences: (1) tests needing the modelling package are skipped via the `needs_modelling` marker, so the
+modelling-backed science tools (autoresearch, model-space, episode scoring) and the aihydro-lsh tools are not
+run in public CI; without the package a modelling tool returns a structured `MODELLING_NOT_INSTALLED` error.
+(2) `compare_series` is a base-kernel tool and carries its own `_kge` (parity with the package's version is
+tested only where the package is installed). (3) The run-record coverage ratchet is an exact exempt-count
+(`EXEMPT_RATCHET` in `tests/test_run_record_coverage.py`) over tools owned by this repo and declared deps, so
+it does not depend on which optional plugins are installed (the old 0.55 fraction gave 99/173 with lsh vs
+88/162 without). Follow-up: add a CI job with a read-only token for both private repos so these paths run on
+every PR; then drop the skips. The sibling SHA pins are temporary until the next PyPI batch.
+
 ## 2026-10-20 — `research.md` is written at task boundaries only (session study 01031500, M3)
 
 `.aihydrorules/research.md` is part of the agent's system prompt. Until now every `HydroSession.save()`
