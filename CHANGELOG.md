@@ -26,6 +26,20 @@ Requires `aihydro-watershed` with the signature `units` map (see its changelog).
   A cached `delineate_watershed` slot without a `basin_ref` returns `basin_ref_missing` and says to
   `clear_session(['watershed'])` first; the `BASIN_REF_REQUIRED` / `BASIN_REF_UNKNOWN` recoveries say the same,
   so the agent no longer loops on a slot that can never bind. (Identity is not back-filled from a legacy label.)
+- **Reuse origin must agree with the response (review B1).** A `computed_at` / latest-row candidate is linked only
+  when its identity agrees with the cached response (shared `basin_ref` / `gauge_id` / `feature_id` / index equal;
+  with no shared identity, every shared scalar equal and at least one), so an NDVI cache hit can no longer inherit the
+  NDWI row. Otherwise the origin is `unresolved` and disclosed as such (the note no longer says "copied from the
+  original"). The response exposes `origin_match` (`run_id` | `computed_at` | `latest_by_tool` | `unresolved`);
+  an inferred (`latest_by_tool`) origin says so in `_note`.
+- **Cache vs request.** `delineate_watershed` (different gauge) and `compute_spectral_index` (different
+  sensor/dates; the request is now stored with the result) return `cache_mismatch` and a note saying the cached
+  slot is not the answer to this request.
+- `UNCERTAINTY_ASSERTED_NOT_EVIDENCED` is a heuristic (word match, not meaning): it ignores negated clauses
+  ("no confidence interval was computed", "not quantified") and also recognises standard error, sigma and
+  "95% interval". Warning only.
+- `skeptic` hint no longer suggests the unaccepted `claim_type='assumption'`. `ErrorHygieneMiddleware` logs the
+  dropped traceback at debug level. Pin: `aihydro-watershed>=0.1.5,<0.2` (merge the watershed PR first).
 - **One run id per execution.** A tool that stores its result in a slot and then calls `post_run` used to
   record two rows (`signatures.<hash>` from the slot write and `sigs.<date>...` from `post_run`); the response
   cited one and the slot named the other. `post_run` now adopts the slot row written during the same recorded

@@ -46,6 +46,9 @@ def sanitize_error(envelope: dict, workspace_dir: Any = None) -> dict:
     """
     if not is_error_dict(envelope):
         return envelope
+    for key in TRACEBACK_KEYS:
+        if envelope.get(key):
+            log.debug("dropped %s from error %s:\n%s", key, envelope.get("code"), envelope[key])
     out = {k: v for k, v in envelope.items() if k not in TRACEBACK_KEYS}
     try:
         return _scrub(out, workspace_dir)

@@ -96,6 +96,11 @@ def server(env):
         return {"data": {"area_km2": 774.15}, "meta": {"tool": "x"}, "_cached": True}
 
     @srv.tool()
+    def gauge_hit_tool(session_id: str) -> dict:
+        return {"data": {"area_km2": 774.15, "gauge_id": "01031500"}, "meta": {"tool": "delineate_watershed"},
+                "_cached": True}
+
+    @srv.tool()
     def feature_hit_tool(session_id: str) -> dict:
         return {"data": {"area_km2": 774.15}, "meta": {"tool": "t"}, "_cache_hit": True,
                 "_run_id": "watershed.ce56bc643d4c", "source_run_id": "watershed.ce56bc643d4c"}
@@ -131,6 +136,7 @@ def test_cached_result_gets_a_first_class_reuse_record(server):
     err, body = call(server, "cached_tool", {"session_id": SID})
     assert not err and body["_cached"] is True
     assert body["reused"] is True and body["reused_from"] == orig and body["computed_at"] == ORIGINAL_AT
+    assert body["origin_match"] == "computed_at" and "copied from the original" in body["_note"]
     assert body["_note"].startswith("REUSED, NOT RECOMPUTED")
     assert "Watershed already in session." in body["_note"]          # the tool's own note is kept
     assert body["_run_id"] != orig
@@ -145,18 +151,52 @@ def test_cached_result_gets_a_first_class_reuse_record(server):
     assert rr.verify_run_log_entry(row)["record_ok"]
 
 
-def test_legacy_slot_without_computed_at_resolves_the_latest_row_of_the_tool(server):
+def test_inferred_origin_is_accepted_only_when_identity_agrees_and_says_inferred(server):
     seed_original(rid="watershed.old", timestamp="2026-06-01T00:00:00+00:00")
     newest = seed_original(rid="watershed.new", timestamp="2026-06-27T00:00:00+00:00")
     _, body = call(server, "delineate_watershed", {"session_id": SID})
-    assert body["reused_from"] == newest
+    assert body["reused_from"] == newest and body["origin_match"] == "latest_by_tool"
+    assert "INFERRED" in body["_note"]
     assert rows()[body["_run_id"]]["origin_match"] == "latest_by_tool"
+
+
+def test_wrong_feature_candidate_is_not_linked(server):
+    # A cached answer for another gauge must not inherit the latest row of the tool.
+    seed_original(rid="watershed.other", key_outputs={"area_km2": 55.0, "gauge_id": "99999999"})
+    _, body = call(server, "gauge_hit_tool", {"session_id": SID})
+    assert body["reused_from"] is None and body["origin_match"] == "unresolved"
+    assert "could not be identified" in body["_note"] and "copied from the original" not in body["_note"]
+    row = rows()[body["_run_id"]]
+    assert row["derived_from"] is None and row["key_outputs"].get("area_km2") == 774.15
+    assert "watershed.other" not in row["record"]["parents"]
+
+
+def test_ndvi_cache_hit_never_inherits_the_ndwi_row(env):
+    def idx_row(rid, ts, ko):
+        store._run_log_record(SID, rid, {"run_id": rid, "tool_name": "compute_spectral_index", "session_id": SID,
+                                         "timestamp": ts, "key_outputs": ko, "evidence": {"data": ko}})
+    idx_row("ndvi.1", "2026-01-01T00:00:00+00:00", {"index": "NDVI", "mean": 0.61})
+    idx_row("ndwi.2", "2026-01-02T00:00:00+00:00", {"index": "NDWI", "mean": -0.20})
+    hit = {"index_name": "NDVI", "data": {"mean": 0.61}, "_cached": True}
+    assert rr.find_origin_row(SID, "compute_spectral_index", hit)[0] == "ndvi.1"
+    other = {"index_name": "NDMI", "data": {"mean": 0.3}, "_cached": True}
+    assert rr.find_origin_row(SID, "compute_spectral_index", other)[0] is None
+
+
+def test_no_shared_identity_needs_equal_shared_values(env):
+    seed_original(rid="w.1", key_outputs={"area_km2": 10.0})
+    same = {"data": {"area_km2": 10.0}, "meta": {"tool": "delineate_watershed"}, "_cached": True}
+    diff = {"data": {"area_km2": 11.0}, "meta": {"tool": "delineate_watershed"}, "_cached": True}
+    none = {"data": {"unrelated": 1}, "meta": {"tool": "delineate_watershed"}, "_cached": True}
+    assert rr.find_origin_row(SID, "delineate_watershed", same)[0] == "w.1"
+    assert rr.find_origin_row(SID, "delineate_watershed", diff)[0] is None
+    assert rr.find_origin_row(SID, "delineate_watershed", none)[0] is None
 
 
 def test_unresolvable_origin_is_disclosed_and_keeps_response_values(server):
     _, body = call(server, "cached_tool", {"session_id": SID, "computed_at": ""})
     assert body["reused"] is True and body["reused_from"] is None
-    assert "could not be identified" in body["_note"]
+    assert "could not be identified" in body["_note"] and "copied from the original" not in body["_note"]
     row = rows()[body["_run_id"]]
     assert row["derived_from"] is None and row["key_outputs"]["area_km2"] == 774.15
 
@@ -489,3 +529,39 @@ def test_real_signatures_tool_carries_units_and_streamflow_digest(env, monkeypat
     slot_ids = [r["meta"].get("run_id") for by_key in HydroSession.load(SID)._slots["signatures"].values()
                 for r in by_key.values()]
     assert slot_ids == [body["_run_id"]]                                                 # one id
+
+
+# --------------------------------------------- UNCERTAINTY heuristic refinements
+@pytest.mark.parametrize("text,expected", [
+    ("Bootstrap 90% CIs reported for each statistic.", True),
+    ("Mean 2.0 mm/day with standard error 0.1.", True),
+    ("Estimate 2.0 \u00b1 0.2 (1\u03c3).", True),
+    ("The 95% interval is narrow.", True),
+    ("No confidence interval was computed for these point estimates.", False),
+    ("Uncertainty was not quantified.", False),
+    ("Reported without CIs.", False),
+    ("Point estimates only.", False),
+])
+def test_uncertainty_assertion_heuristic(text, expected):
+    from ai_hydro.mcp.tools_ledger import _asserts_uncertainty
+    assert _asserts_uncertainty(text) is expected
+
+
+def test_error_hygiene_logs_the_dropped_traceback_at_debug(caplog):
+    from ai_hydro.mcp.error_hygiene import sanitize_error
+    with caplog.at_level("DEBUG", logger="ai_hydro.mcp.error_hygiene"):
+        out = sanitize_error({"error": True, "code": "X", "message": "m", "_traceback": "Traceback TB-MARK"})
+    assert "_traceback" not in out and "TB-MARK" in caplog.text
+
+
+# ------------------------------------------------------ cache vs request (#9)
+def test_cached_watershed_for_another_gauge_says_so(env):
+    from ai_hydro.mcp.tools_analysis import delineate_watershed
+
+    s = HydroSession.load(SID)
+    s.site_id = "01031500"
+    s.watershed = {"data": {"area_km2": 774.15, "gauge_id": "01031500"}, "meta": {"tool": "t"}}
+    s.save()
+    out = delineate_watershed(gauge_id="01013500", session_id=SID)
+    assert out["_cached"] is True and out["cache_mismatch"]["cached_gauge_id"] == "01031500"
+    assert "NOT the requested" in out["_note"]

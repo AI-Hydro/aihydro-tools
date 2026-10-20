@@ -473,7 +473,7 @@ def _record_run_log_entry(session: Any, slot: str, result_dict: dict, tool_name:
 def _session_store(
     session_id: str, slot: str, result_dict: dict, *, tool_name: str | None = None
 ) -> None:
-    """Cache a tool result in HydroSession and refresh research.md.
+    """Cache a tool result in HydroSession (does NOT rewrite research.md; see DECISIONS 2026-10-20).
 
     If ``tool_name`` is provided, Tier 1 data-source citations for that tool
     are added to the session in the same save() call (zero extra file writes).

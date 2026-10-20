@@ -746,6 +746,7 @@ def _inject_reuse(tool_result, run_id: str, reuse: dict) -> None:
         d["reused"] = True
         d["reused_from"] = reuse.get("reused_from")
         d["computed_at"] = reuse.get("computed_at")
+        d["origin_match"] = reuse.get("origin_match")
         note = reuse_disclosure(run_id, reuse)
         d["_note"] = f"{note} {prior_note}" if prior_note else note
 

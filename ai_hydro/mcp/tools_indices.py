@@ -126,6 +126,16 @@ async def compute_spectral_index(
             log.debug("compute_spectral_index: returning cached %s for session %s",
                       idx_key, session_id)
             cached["_cached"] = True
+            _req = cached.get("requested")
+            _now = {"sensor": sensor, "start": start, "end": end}
+            _diff = {k: {"cached": _req.get(k), "requested": v} for k, v in _now.items()
+                     if isinstance(_req, dict) and v is not None and _req.get(k) is not None and _req.get(k) != v}
+            if _diff:
+                cached["cache_mismatch"] = _diff
+                cached["_note"] = (
+                    "This cached index was computed with different parameters than requested "
+                    f"({_diff}); it is NOT the answer to this request. clear_session the slot "
+                    f"'index_{idx_key.lower()}' and call again to compute it.")
             return cached
 
         # ── Date range ───────────────────────────────────────────────────
@@ -295,6 +305,7 @@ async def compute_spectral_index(
                 "Use export_session to save results.",
             ],
         }
+        d["requested"] = {"sensor": sensor, "start": start, "end": end, "frequency": frequency}
         if time_axis:
             d["time_axis"] = time_axis
             d["period_means"] = [s.get("mean") for s in period_stats]

@@ -433,6 +433,13 @@ def delineate_watershed(
                     "downstream tools ready. Call clear_session to recompute."
                 ),
             }
+            _cached_gauge = str(compact.get("gauge_id") or "").strip()
+            if _cached_gauge and _cached_gauge != str(resolved_gauge_id).strip():
+                _resp["cache_mismatch"] = {"cached_gauge_id": _cached_gauge, "requested_gauge_id": resolved_gauge_id}
+                _resp["_note"] = (
+                    f"The session's cached watershed is for gauge {_cached_gauge}, NOT the requested "
+                    f"{resolved_gauge_id}; it is returned unchanged. Use a separate session for another "
+                    f"gauge, or clear_session('{session_id}', ['watershed']) to replace it. " + _resp["_note"])
             if not compact.get("basin_ref"):
                 # A slot from before basin identity existed: it can never bind a claim to a
                 # basin, and calling this tool again returns the same slot. Say how to leave

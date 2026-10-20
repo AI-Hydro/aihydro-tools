@@ -726,14 +726,68 @@ def _leaf(name: Any) -> str:
     return str(name or "").rsplit(".", 1)[-1]
 
 
+#: Fields that say WHICH thing a result describes. Aliases are folded onto the first name.
+_IDENTITY_KEYS = {"gauge_id": "gauge_id", "basin_gauge_id": "gauge_id", "feature_id": "feature_id",
+                  "index": "index", "index_name": "index", "basin_ref": "basin_ref", "site_id": "gauge_id"}
+
+
+def _identity(*sources: Any) -> Dict[str, Any]:
+    """Identity fields found in the given dicts (first source wins per field)."""
+    out: Dict[str, Any] = {}
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key, val in src.items():
+            name = _IDENTITY_KEYS.get(key)
+            if name is None or name in out:
+                continue
+            if isinstance(val, dict):
+                val = val.get("id")
+            if isinstance(val, (str, int)) and str(val) != "":
+                out[name] = str(val).strip().upper() if name == "index" else str(val).strip()
+    return out
+
+
+def _scalar_equal(a: Any, b: Any) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a is b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) <= 1e-9 * max(1.0, abs(float(a)), abs(float(b)))
+    return a == b
+
+
+def origin_agrees(result: Dict[str, Any], row: Dict[str, Any]) -> bool:
+    """Does ``row`` describe what the cached ``result`` serves?
+
+    A candidate found by time or by tool name only is accepted when its identity agrees with
+    the response: every identity field present on both sides (basin_ref, gauge_id, feature_id,
+    index, ...) is equal and at least one is shared; with no shared identity field, every
+    scalar the two share (at least one) must be equal. Anything else is not the same
+    computation, however recent (an NDVI cache hit must never inherit the NDWI row).
+    """
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    ev = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    mine = _identity(result, data, meta.get("params"), meta)
+    theirs = _identity(row.get("key_outputs"), row.get("inputs"), ev.get("data"))
+    shared = set(mine) & set(theirs)
+    if shared:
+        return all(mine[k] == theirs[k] for k in shared)
+    ko = row.get("key_outputs") if isinstance(row.get("key_outputs"), dict) else {}
+    common = [k for k, v in data.items() if k in ko and isinstance(v, (str, int, float, bool))
+              and isinstance(ko[k], (str, int, float, bool))]
+    return bool(common) and all(_scalar_equal(data[k], ko[k]) for k in common)
+
+
 def find_origin_row(session_id: str, tool: str, result: Dict[str, Any]) -> Tuple[Optional[str], Optional[Dict[str, Any]], str]:
     """``(run_id, row, how)``: the run-log row that computed what a cached result serves.
 
     Preference: an id the result itself names (``source_run_id``, ``meta.run_id``,
-    ``_run_id``); else the row of the same tool whose ``timestamp`` equals the slot's
-    ``meta.computed_at``; else the latest earlier row of that tool. Minimal rows and
-    earlier reuse rows are never origins (reuse chains point at the first computation).
-    ``how`` says which rule matched, or ``"unresolved"``.
+    ``_run_id``), ``how="run_id"``; else the row of the same tool whose ``timestamp`` equals
+    the slot's ``meta.computed_at`` (``"computed_at"``); else the latest earlier row of that
+    tool (``"latest_by_tool"``, an inference). The last two are accepted only when
+    :func:`origin_agrees`. Minimal rows and earlier reuse rows are never origins. ``how`` is
+    ``"unresolved"`` when nothing qualifies.
     """
     from ai_hydro.session import store
 
@@ -742,15 +796,14 @@ def find_origin_row(session_id: str, tool: str, result: Dict[str, Any]) -> Tuple
                 and bool(row.get("key_outputs") or row.get("evidence")))
 
     meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
-    for key, rid in (("source_run_id", result.get("source_run_id")),
-                     ("meta.run_id", meta.get("run_id")), ("_run_id", result.get("_run_id"))):
+    for rid in (result.get("source_run_id"), meta.get("run_id"), result.get("_run_id")):
         if isinstance(rid, str) and rid:
             row = store._run_log_read_one(session_id, rid)
             if usable(row):
                 return rid, row, "run_id"
     leaves = {_leaf(tool), _leaf(meta.get("tool"))} - {""}
     matches = [(rid, row) for rid, row in store._run_log_read_all(session_id).items()
-               if usable(row) and _leaf(row.get("tool_name")) in leaves]
+               if usable(row) and _leaf(row.get("tool_name")) in leaves and origin_agrees(result, row)]
     computed_at = meta.get("computed_at")
     if computed_at:
         exact = [m for m in matches if m[1].get("timestamp") == computed_at]
@@ -804,17 +857,22 @@ def _reuse_entry(run_id: str, tool: str, session_id: str, ctx: Dict[str, Any]) -
 
 def reuse_disclosure(run_id: str, reuse: Dict[str, Any]) -> str:
     """The sentence the agent must act on, prepended to the tool's own ``_note``."""
-    origin, when = reuse.get("reused_from"), reuse.get("computed_at")
-    if origin:
-        src = f"computed at {when or 'an unrecorded time'} (run {origin})"
-    else:
-        src = ("computed earlier (the original run could not be identified in the run log; "
-               f"time {when or 'unrecorded'})")
-    return (
-        f"REUSED, NOT RECOMPUTED: this result was served from the session cache; it was {src} and "
-        f"nothing was re-run. Disclose the reuse and its date in your answer. Cite run {run_id}, "
-        "whose key_outputs are copied from the original. To recompute, call clear_session for "
-        "this slot first.")
+    origin, when, how = reuse.get("reused_from"), reuse.get("computed_at"), reuse.get("origin_match")
+    head = "REUSED, NOT RECOMPUTED: this result was served from the session cache and nothing was re-run. "
+    if not origin:
+        return (head + f"The original run could not be identified in the run log (time {when or 'unrecorded'}); "
+                f"run {run_id} records only the values served in this response, not a verified original. "
+                "Disclose the reuse and that its origin is unverified. To recompute, call clear_session "
+                "for this slot first.")
+    src = f"computed at {when or 'an unrecorded time'} (run {origin})"
+    if how in ("run_id", "computed_at"):
+        return (head + f"It was {src}. Disclose the reuse and its date in your answer. Cite run {run_id}, "
+                "whose key_outputs are copied from the original. To recompute, call clear_session for this "
+                "slot first.")
+    return (head + f"The original run was INFERRED, not recorded: the latest {how} candidate whose identity "
+            f"agrees with this response is {origin} ({src}). Disclose the reuse and that its origin is inferred. "
+            f"Run {run_id} copies that candidate's key_outputs. To recompute, call clear_session for this "
+            "slot first.")
 
 
 def record_call(

@@ -223,9 +223,36 @@ def _uncertainty_gate(claim_id: str, claim_dict: dict, status: str,
 #: Words by which prose asserts that a number carries an uncertainty estimate.
 _UNCERTAINTY_CLAIM = re.compile(
     r"\b(?:CIs?|confidence\s+(?:intervals?|bounds?|limits?)|credible\s+intervals?|"
-    r"bootstrap(?:ped)?|uncertaint(?:y|ies)|error\s+bars?|prediction\s+intervals?)\b|\u00b1|\+/-",
+    r"bootstrap(?:ped)?|uncertaint(?:y|ies)|error\s+bars?|prediction\s+intervals?|"
+    r"standard\s+errors?|\d{2}\s*%\s*(?:interval|band))\b|\u00b1|\+/-|\u03c3",
     re.IGNORECASE,
 )
+#: A negation in the same clause just before the term ("no confidence interval was computed",
+#: "not quantified", "without CIs") is an honest disclosure, not an assertion.
+_NEGATED = re.compile(
+    r"\b(?:no|not|without|never|neither|nor|lacks?|lacking|missing|unavailable|unquantified|"
+    r"un-?assessed)\b[^.;\n]{0,60}$",
+    re.IGNORECASE,
+)
+
+
+def _asserts_uncertainty(text: str) -> bool:
+    """Heuristic, deliberately cheap: does the prose claim an uncertainty estimate?
+
+    True when some uncertainty term (CI, bootstrap, standard error, sigma, "95% interval", ...)
+    is not preceded by a negation in its clause, and the clause does not say "not quantified".
+    It reads words, not meaning: it can miss paraphrases and can fire on odd phrasings. It only
+    ever produces a non-blocking warning, so a wrong answer costs a sentence of advice.
+    """
+    for m in _UNCERTAINTY_CLAIM.finditer(text):
+        clause_start = max(text.rfind(c, 0, m.start()) for c in ".;\n") + 1
+        before = text[clause_start:m.start()]
+        after = text[m.end():m.end() + 40]
+        if _NEGATED.search(before) or re.match(r"\W*(?:\w+\W+){0,3}?(?:not|never)\b", after, re.IGNORECASE) \
+                or re.search(r"\bnot\s+(?:quantified|computed|estimated|reported|assessed)\b", after, re.IGNORECASE):
+            continue
+        return True
+    return False
 
 
 def _metric_leaf(ref: str) -> str:
@@ -245,7 +272,7 @@ def _uncertainty_assertion_warnings(session_id: str, claim_dict: dict) -> list[d
     90% CIs for each statistic" with 2 of 3 cited metrics uncovered, confidence "high").
     """
     text = f"{claim_dict.get('claim', '')}\n{claim_dict.get('confidence_rationale', '')}"
-    if not _UNCERTAINTY_CLAIM.search(text):
+    if not _asserts_uncertainty(text):
         return []
     from ai_hydro.session.store import _run_log_read_one
     with_ci: list[str] = []
