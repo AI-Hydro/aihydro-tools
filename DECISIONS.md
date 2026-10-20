@@ -31,6 +31,41 @@ interpretation is written or it is exported or archived; the file would only hav
 design; it is the state at the last boundary, not the current state. (3) The `_sync_reminder` still asks the
 agent to write the interpretation, which is the call that publishes mid-to-late task findings into it.
 
+## 2026-10-20 — Answer auditor: tokenised number grammar with anti-gaming constraints (session study S4 + PR 4 review)
+
+The 01031500 session answer exposed an auditor that was noisy in both directions (29 "numbers", 21
+violations, 0 of 5 markers resolved, 8 "cited" only through a +/-60-char year whitelist, one real sample size
+waved through). The first rewrite (PR 4) fixed the noise but an adversarial review showed the new
+exemptions could be used to hide fabricated numbers. Final rules:
+
+1. **Tokenise before matching.** Not numbers: digits in URLs, file paths, strict-grammar markers, and
+   code spans *that contain no decimal, percent or unit-bearing number*. Mixed tokens (`a.b-c`) are masked
+   only when they have a real id shape: 3+ segments with an 8+ digit segment, a hex/UUID tail, or the
+   `v1.2.3`/`version 1.2` version forms. Everything else (`NSE:0.61`, `KGE-0.61`, `site_0.61`, `bias-12.5%`,
+   `412.5m3/s`, `~774km2`, `.61`, `v0.61`) has its number extracted. Considered and rejected: "any
+   letters+separator+digits token is an identifier" (it hid every glued value).
+2. **Classification.** exempt (year/date token, list index, `Figure N`, HUC/EPSG/FIPS/NLCD/COMID integer
+   labels, meta-counts, own ids, bare integers) / `sample_size` (hard) / `method_param` (advisory) /
+   `quantity` (hard: decimal, unit, metric word nearby or inherited from a table header/label cell).
+3. **Anti-gaming constraints.** (a) Word windows never read marker text (`[run:...]` is not the noun "run").
+   (b) A meta-count needs no metric word in its sentence; a bare integer in a sentence that carries a marker
+   is a quantity. (c) Identifier exemptions never override a unit, need 5+ digits, and come only from the
+   study's own session/site id or a 8-15 digit integer directly beside USGS/gauge/station/COMID/HRU;
+   never from claim `scope.basins`, run `*_id` outputs or anything else a model can write. (d) A year is exempt
+   only as a period reference (`in 2019`), not as the value of a metric (`flow 1990`). (e) Malformed
+   marker-shaped brackets are a hard `malformed_marker`, never silently ignored. (f) Value match is a true
+   half-ULP of the printed digits (0.7 != 0.61, 9 != 8.0, 7306 != 7305), exponent-aware (`3.2x10^-3`).
+   (g) `suggested_marker` needs an exact round-half match and a compatible declared unit; it is a pointer,
+   never accepted on the agent's behalf. (h) Markers bind inside their own sentence/bullet/cell only.
+   (i) `[lit:<tag>]` tags are single tokens without spaces, at least 3 characters (e.g. `[lit:smith2020]`);
+   `[lit:Smith et al. 2020]` is a hard `malformed_marker`.
+4. **Severity.** hard = uncited quantity or sample size, value/unit mismatch, path/run not found,
+   `hollow_evidence`, malformed marker. advisory = method parameters, unresolvable literature hash.
+   `passed` means no hard violation.
+5. **Known limit (by design).** A bare integer with no unit, decimal or metric word nearby and no marker in
+   its sentence (`3 events had 412`) is not auditable by grammar alone and is exempt; the cost of auditing
+   every integer is rejecting honest prose, and the counted/ordinal integers carry no scientific claim.
+
 ## 2026-10-19 — Features are basins: experiments fail closed, and retained series are content-addressed (science correctness, WP-1a + H0)
 
 Two silent-wrong-number defects from the 2026-10-19 reviews (experiments/modelling/sessions E1-E5, E13;
