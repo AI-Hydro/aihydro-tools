@@ -21,6 +21,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TypedDict
+
 from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger("ai_hydro.knowledge.embeddings")

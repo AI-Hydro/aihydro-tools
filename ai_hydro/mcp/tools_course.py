@@ -57,8 +57,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ai_hydro.registry.paths import home_path
 from ai_hydro.mcp.app import mcp
+from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger("ai_hydro.mcp.course")
 

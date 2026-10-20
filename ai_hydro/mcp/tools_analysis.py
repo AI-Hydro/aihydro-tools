@@ -37,11 +37,12 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ai_hydro.registry.paths import aihydro_home
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.mcp.app import mcp, Context
 from ai_hydro.mcp.enforcement import post_run as _post_run
 from ai_hydro.mcp.helpers import (

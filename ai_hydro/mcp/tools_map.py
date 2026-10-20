@@ -7,13 +7,12 @@ and persist ROI to the workspace without holding a gRPC connection.
 from __future__ import annotations
 
 import json
-import re
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ai_hydro.registry.paths import aihydro_home, home_path
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
     _ensure_session,
@@ -30,8 +29,8 @@ from ai_hydro.mcp.map_commands import (
     push_fly_to,
     push_remove_layer,
     push_set_basemap,
-    push_set_roi,
     push_set_layer_visibility,
+    push_set_roi,
     push_set_time_range,
     push_show_map,
     push_update_layer,
@@ -44,12 +43,15 @@ from ai_hydro.mcp.map_layer_catalog import (
     load_geojson_for_layer,
     read_layer_catalog,
 )
+from ai_hydro.registry.paths import aihydro_home, home_path
 
 log = logging.getLogger("ai_hydro.mcp")
 
 _MAP_SESSION_FILE = home_path("map_session.json")
 _MAP_LAYER_CATALOG_FILE = home_path("map_layer_catalog.json")
 _MAP_EVENTS_OUTBOUND = home_path("map_events", "outbound")
+
+
 def _read_map_session_file() -> dict[str, Any]:
     try:
         return json.loads(_MAP_SESSION_FILE.read_text(encoding="utf-8"))
@@ -418,7 +420,6 @@ def map_add_layer_from_run(
     """
     try:
         import os
-        from pathlib import Path
 
         session_id = session_id.strip()
         run_id = run_id.strip()

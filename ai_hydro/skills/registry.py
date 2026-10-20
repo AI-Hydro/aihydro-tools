@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+
 from ai_hydro.registry.paths import home_path
 
 log = logging.getLogger("ai_hydro.skills")

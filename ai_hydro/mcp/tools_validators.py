@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 from typing import Literal
-from ai_hydro.registry.paths import aihydro_home
+
 from ai_hydro.mcp.app import mcp
+from ai_hydro.mcp.helpers import _tool_error_to_dict
+from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.session import HydroSession
 from ai_hydro.validators.models import ValidatorResult
-from ai_hydro.mcp.helpers import _tool_error_to_dict
 
 log = logging.getLogger("ai_hydro.mcp")
 
@@ -573,7 +574,6 @@ def check_regulated_basin(session_id: str) -> dict:
     should be listed as a limitation.
     """
     try:
-        from pathlib import Path as _Path
         session = HydroSession.load(session_id)
 
         # --- Step 1: check explicit metadata flag in delineation or signatures slot
@@ -665,7 +665,7 @@ def check_regulated_basin(session_id: str) -> dict:
             message=(
                 "Regulation status could not be determined: no 'regulated' metadata "
                 "flag in session and NID GeoPackage not found at "
-                "<AIHYDRO_HOME>/cache/full_nid_inventory.gpkg (default ~/.aihydro)."
+                "<AIHYDRO_HOME>/cache/full_nid_inventory.gpkg."
             ),
             affected_slots=["delineation"],
             recommendation=(

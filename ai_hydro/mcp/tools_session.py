@@ -12,7 +12,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
     SessionResolutionError,
@@ -21,6 +20,7 @@ from ai_hydro.mcp.helpers import (
     _tool_error_to_dict,
     _workspace_write,
 )
+from ai_hydro.registry.paths import aihydro_home
 
 log = logging.getLogger("ai_hydro.mcp")
 

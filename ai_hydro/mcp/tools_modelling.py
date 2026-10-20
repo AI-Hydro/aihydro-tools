@@ -18,7 +18,6 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.mcp import jobs
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.helpers import (
@@ -26,6 +25,7 @@ from ai_hydro.mcp.helpers import (
     _resolve_session,
     _tool_error_to_dict,
 )
+from ai_hydro.registry.paths import aihydro_home
 
 log = logging.getLogger("ai_hydro.mcp")
 
