@@ -8,6 +8,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [2.6.0] - 2026-10-21 (Wave V: one AIHYDRO_HOME, provenance/units, token-typed auditor, NumPy 2.5)
+
+Requires `aihydro-core>=0.2.10`, `aihydro-data>=0.2.4`, `aihydro-watershed>=0.1.6`; the `modelling` extra requires
+`aihydro-modelling>=0.6.1,<0.7`. Minor bump: new behaviour (AIHYDRO_HOME everywhere, reuse run records, auditor
+violation kinds) with additive response fields.
+
 ### Fixed (NumPy 2.5 / pysheds `np.in1d`)
 
 - `ai_hydro/analysis/inundation.py` and `inundation_spike.py` import pysheds directly and call `accumulation`
