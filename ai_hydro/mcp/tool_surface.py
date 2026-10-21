@@ -106,8 +106,20 @@ def _components(mcp: Any) -> dict[Any, Any]:
     return components
 
 
+# A tool with no row (a third-party plugin tool, or one added without its row) still gets explicit
+# hints, so a host never sees it as unannotated/unknown: the conservative reading of "side effects
+# unknown", filling only hints the tool does not already declare itself. Never read-only.
+UNROWED_DEFAULTS = {
+    "readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True,
+}
+
+
 def apply_tool_annotations(mcp: Any, rows: dict[str, dict[str, Any]] | None = None) -> int:
-    """Stamp ToolAnnotations on every registered tool that has a row. Returns the count stamped."""
+    """Stamp ToolAnnotations on every registered tool. Returns the count stamped.
+
+    A tool with a row gets the row's four hints. A tool without one gets ``UNROWED_DEFAULTS`` for
+    each hint it does not declare itself (and a warning is logged).
+    """
     from mcp.types import ToolAnnotations
 
     rows = load_annotation_rows() if rows is None else rows
@@ -118,7 +130,12 @@ def apply_tool_annotations(mcp: Any, rows: dict[str, dict[str, Any]] | None = No
             continue
         row = rows.get(name)
         if row is None:
-            log.warning("tool %s has no row in tool_annotations.toml", name)
+            log.warning("tool %s has no row in tool_annotations.toml; conservative hints applied", name)
+            existing = comp.annotations.model_dump(exclude_none=True) if comp.annotations else {}
+            for k in _HINT_KEYS:
+                existing.setdefault(k, UNROWED_DEFAULTS[k])
+            comp.annotations = ToolAnnotations(**existing)
+            stamped += 1
             continue
         existing = comp.annotations.model_dump(exclude_none=True) if comp.annotations else {}
         existing.update({k: bool(row[k]) for k in _HINT_KEYS})
