@@ -352,3 +352,57 @@ def test_a_tool_left_out_of_the_hot_listing_is_still_callable(monkeypatch):
     hidden, described = _run(go())
     assert not hidden.is_error
     assert not described.is_error and "list_known_metrics" in json.dumps(described.data, default=str)
+
+
+# ── explicit hints on every tool, rowed or not ───────────────────────────────
+
+def test_every_served_tool_has_explicit_read_only_and_destructive_hints():
+    """Fails when a tool reaches tools/list with readOnlyHint or destructiveHint unset."""
+    for tool in _run(_client_list()):
+        ann = tool.annotations
+        assert ann is not None, tool.name
+        assert isinstance(ann.readOnlyHint, bool), (tool.name, "readOnlyHint")
+        assert isinstance(ann.destructiveHint, bool), (tool.name, "destructiveHint")
+
+
+def test_a_tool_without_a_row_gets_conservative_hints_not_none():
+    from fastmcp import FastMCP
+
+    from ai_hydro.mcp.tool_surface import UNROWED_DEFAULTS, apply_tool_annotations
+
+    m = FastMCP("t")
+
+    @m.tool
+    def plugin_tool() -> str:
+        return "x"
+
+    @m.tool(annotations={"readOnlyHint": True})
+    def declares_own() -> str:
+        return "x"
+
+    assert apply_tool_annotations(m, rows={}) == 2
+    got = {t.name: t.annotations for t in _run(_client_list(m))}
+    for hint, val in UNROWED_DEFAULTS.items():
+        assert getattr(got["plugin_tool"], hint) is val, hint
+    assert got["plugin_tool"].readOnlyHint is False and got["plugin_tool"].destructiveHint is True
+    assert got["declares_own"].readOnlyHint is True  # a hint the tool declares itself is kept
+    assert got["declares_own"].destructiveHint is True  # the rest are filled conservatively
+
+
+def test_representative_tools_of_each_class():
+    expect = {  # tool -> (readOnly, destructive, openWorld)
+        "list_claims": (True, False, False),            # pure read of session state
+        "get_session_summary": (True, False, False),
+        "data_list_products": (True, False, False),     # aihydro-data, catalogue read
+        "clear_session": (False, True, False),          # deletes session state
+        "update_claim_status": (False, True, False),    # overwrites researcher-authored state
+        "run_python": (False, True, True),              # arbitrary code, unknown side effects
+        "fetch_streamflow_data": (False, False, True),  # network + derived slot write
+        "map_set_basemap": (False, False, False),       # local map command file
+    }
+    reg = _registered()
+    for name, (ro, de, ow) in expect.items():
+        if name not in reg:
+            continue
+        a = reg[name].annotations
+        assert (a.readOnlyHint, a.destructiveHint, a.openWorldHint) == (ro, de, ow), name

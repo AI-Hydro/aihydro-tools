@@ -11,6 +11,11 @@ registered by `aihydro-data` and `aihydro-lsh` entry points. Each row carries th
 `apply_tool_annotations` stamps them on the tools once everything is registered, and they are
 served in `tools/list`.
 
+A registered tool with no row (for example a third-party plugin tool) is served with conservative
+explicit hints: `readOnlyHint=false`, `destructiveHint=true`, `idempotentHint=false`,
+`openWorldHint=true` (hints the tool declares itself are kept). It is never read-only until it gets a
+row. The test suite still requires a row for every tool this repo and its first-party plugins register.
+
 | Hint | `true` when |
 | --- | --- |
 | `readOnlyHint` | the tool writes nothing (no session slot or field, workspace file, map or preview command, claim, ledger, registry, job, cache entry, profile or skill) and calls no network, Earth Engine initialisation included |

@@ -8,6 +8,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A tool with no `tool_annotations.toml` row is no longer served unannotated.** `apply_tool_annotations`
+  now stamps explicit conservative hints (`readOnlyHint=false`, `destructiveHint=true`,
+  `idempotentHint=false`, `openWorldHint=true`) on any registered tool without a row (a third-party
+  plugin tool, or a tool added without its row), keeping any hint the tool declares itself. Hosts that
+  fold read-only tool activity therefore never see such a tool as "unknown", and it is never treated as
+  read-only. First-party tools are unchanged: all 173 (154 builtin, 11 `aihydro-lsh`, 8 `aihydro-data`)
+  already have rows; 76 are `readOnlyHint=true`. New tests: every served tool has explicit
+  `readOnlyHint`/`destructiveHint`, the unrowed fallback, and representative tools of each class.
+
 ---
 
 ## [2.6.0] - 2026-10-21 (Wave V: one AIHYDRO_HOME, provenance/units, token-typed auditor, NumPy 2.5)
