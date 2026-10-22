@@ -23,8 +23,10 @@ Rules, beside the uncertainty rule in ``ai_hydro.mcp.tools_ledger``:
   When the ``reference_comparison`` entry for the cited metric says ``can_claim_difference: false`` and the
   claim is a comparison claim (``comparison_ref`` set), that is honoured directly (``comparison_gate``);
   a plain claim citing the same metric ("mean flow was 2.0 m3/s") is not affected. Nothing here is keyed on a tool or metric name.
-  **The gate is inert until the producers (aihydro-watershed 0.2.0 / Wave 3 PR-4b) emit the scope and
-  ``reference_comparison`` outputs**; absent or free-text scope metadata never triggers it.
+  The producers emit both since aihydro-watershed 0.2.0 / aihydro-tools 2.8.0: every ``_uncertainty`` entry carries
+  ``scope`` and every signatures run carries ``reference_comparison``, recorded at ONE place in the run row,
+  ``key_outputs.reference_comparison`` (``{"table": {metric: {..., "can_claim_difference"}}, "context",
+  "climate_context"}``), which is the only place ``reference_comparison()`` reads.
 
 * **Prose hint (advisory only).** A claim whose wording asserts a difference from a reference while its
   cited CI excludes the forcing product gets a non-blocking warning (``forcing_prose_warnings``). The
@@ -81,15 +83,11 @@ def _metric_leaf(ref: str) -> str:
     return re.sub(r"\[[^\]]*\]$", "", leaf)
 
 
-def _norm(token: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(token).lower()).strip("_")
-
-
-def scope_excludes(ci: Any) -> set[str]:
-    """Normalised ``scope.excludes`` of one CI entry; empty when the scope is absent or not the dict shape."""
-    scope = ci.get("scope") if isinstance(ci, dict) else None
-    excl = scope.get("excludes") if isinstance(scope, dict) else None
-    return {_norm(e) for e in excl} if isinstance(excl, (list, tuple, set)) else set()
+def scope_excludes(ci: Any, term: str = FORCING_EXCLUSION) -> bool:
+    """aihydro-core's conservative rule for one CI entry: ``term`` is excluded unless the entry's ``scope`` lists
+    it under ``varies``; an absent or malformed scope excludes everything (``aihydro_core.science.scope_excludes``)."""
+    from aihydro_core.science import scope_excludes as _core_scope_excludes
+    return _core_scope_excludes(ci.get("scope") if isinstance(ci, dict) else None, term)
 
 
 def _default_run_reader(session_id: str, run_id: str) -> dict | None:
@@ -141,27 +139,13 @@ def span_problems(session_id: str, span: Any,
     return []
 
 
-def _find_key(obj: Any, key: str, depth: int = 0) -> Any:
-    if isinstance(obj, dict) and depth < 4:
-        if key in obj:
-            return obj[key]
-        for v in obj.values():
-            hit = _find_key(v, key, depth + 1)
-            if hit is not None:
-                return hit
-    return None
-
-
 def reference_comparison(row: dict | None) -> Any:
-    """The run's ``reference_comparison`` output, wherever the producer recorded it, else ``None``."""
-    if not isinstance(row, dict):
-        return None
-    for holder in (row.get("key_outputs"), (row.get("evidence") or {}).get("data")
-                   if isinstance(row.get("evidence"), dict) else None, row.get("evidence")):
-        hit = _find_key(holder, "reference_comparison")
-        if hit is not None:
-            return hit
-    return None
+    """The run's ``reference_comparison`` output: ``key_outputs.reference_comparison``, else ``None``.
+
+    That is the one documented location (signatures runs put the key in their result data; the run row's
+    ``key_outputs`` keeps every non-list, non-underscore data key). It is not searched for anywhere else."""
+    ko = row.get("key_outputs") if isinstance(row, dict) else None
+    return ko.get("reference_comparison") if isinstance(ko, dict) else None
 
 
 def comparison_entry(rc: Any, leaf: str) -> dict | None:
@@ -207,7 +191,8 @@ def forcing_scoped_metrics(session_id: str, claim_dict: dict,
             continue
         row = _read(run_reader, session_id, span["source_id"])
         leaf = _metric_leaf(span["metric_ref"])
-        if FORCING_EXCLUSION not in scope_excludes(_ci(row, leaf)):
+        ci = _ci(row, leaf)
+        if not isinstance(ci, dict) or not scope_excludes(ci, FORCING_EXCLUSION):
             continue
         comparison = claim_cmp
         if comparison or not structural_only:
@@ -289,7 +274,8 @@ def forcing_scope_gate(session_id: str, claim_id: str, claim_dict: dict, status:
     return _refusal(
         "forcing_scope_gate", claim_id, claim_dict, status, "difference_from_reference_needs_forcing_in_scope",
         f"This claim compares against a reference and rests on the confidence interval for {names}, which "
-        "declares scope.excludes 'forcing_product': it covers sampling variability only, not the "
+        "does not vary the forcing product (scope.excludes 'forcing_product', or no scope at all): it covers "
+        "sampling variability only, not the "
         "precipitation/forcing product or its error. A difference from a reference cannot be "
         f"'{status}' on that interval alone; the gap may be forcing, period or definition rather than a "
         "property of the basin.",

@@ -46,12 +46,14 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-# Lyne-Hollick parameters used by aihydro-watershed's baseflow_index
-# (BASEFLOW_SEPARATION_PARAMS). Duplicated here, not imported: the check below
-# must agree with the recorded value for the right reason, and the capsule
-# module stays free of the watershed package.
+# Lyne-Hollick parameters of aihydro-watershed's baseflow_index (BASEFLOW_SEPARATION_PARAMS; the Ladson et al.
+# 2013 recipe CAMELS used, aihydro-watershed >= 0.2.0). Duplicated here, not imported: the check below must
+# agree with the recorded value for the right reason, and the capsule module stays free of the watershed
+# package (stdlib only). `tests/test_capsule_data_artifacts.py` cross-checks this port against the watershed
+# kernel (`aihydro_watershed.signatures.baseflow.lyne_hollick_ladson2013`) so the two cannot drift.
 LH_ALPHA = 0.925
 LH_PASSES = 3
+LH_N_REFLECT = 30
 BFI_TOLERANCE = 1e-6
 
 SERIES_COLUMNS = ["date", "q_cms"]
@@ -90,30 +92,88 @@ def file_digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def lyne_hollick_bfi(q: list[float], alpha: float = LH_ALPHA, passes: int = LH_PASSES) -> float:
-    """Baseflow index sum(baseflow)/sum(q), alternating forward/backward sweeps."""
+def _ladson_segment(q: list[float], alpha: float, passes: int, nr: int) -> list[float]:
+    """Baseflow of one gap-free segment of more than ``nr`` days, as BFI.R ``BFI.calc`` (Ladson et al. 2013)."""
+    c = 0.5 * (1.0 + alpha)
+    # reflect nr days at both ends (the end points themselves excluded)
+    x = q[nr:0:-1] + list(q) + q[-2:-nr - 2:-1]
+    n = len(x)
 
-    def sweep(y: list[float], forward: bool) -> list[float]:
-        n = len(y)
+    def fwd(y: list[float], f0: float) -> list[float]:
         f = [0.0] * n
-        b = list(y)
-        order = range(1, n) if forward else range(n - 2, -1, -1)
-        prev = 0 if forward else n - 1
-        for t in order:
-            f[t] = alpha * f[prev] + (1.0 + alpha) / 2.0 * (y[t] - y[prev])
-            b[t] = y[t] - f[t] if f[t] > 0.0 else y[t]
-            b[t] = min(max(b[t], 0.0), y[t])
-            prev = t
-        return b
+        f[0] = f0
+        for i in range(1, n):
+            f[i] = alpha * f[i - 1] + c * (y[i] - y[i - 1])
+        return f
 
-    bf = list(q)
-    for i in range(passes):
-        bf = sweep(bf, forward=(i % 2 == 0))
-    total = sum(q)
-    if total <= 0:
+    def bwd(y: list[float]) -> list[float]:
+        f = [0.0] * n
+        f[-1] = y[-1]
+        for i in range(n - 2, -1, -1):
+            f[i] = alpha * f[i + 1] + c * (y[i] - y[i + 1])
+        return f
+
+    # first pass: the initial quick flow equals the flow itself (BFI.R: Qf1[1] <- Q[1])
+    f = fwd(x, x[0])
+    b = [xi - fi if fi > 0.0 else xi for xi, fi in zip(x, f)]
+    # further passes alternate backward / forward; the state is never clamped, quick flow is subtracted only
+    # where positive (this is what separates the Ladson recipe from a per-step clamp-and-feed-back)
+    for k in range(1, passes):
+        f = bwd(b) if k % 2 == 1 else fwd(b, b[0])
+        b = [bi - fi if fi > 0.0 else bi for bi, fi in zip(b, f)]
+    b = b[nr:n - nr]
+    return [0.0 if v < 0.0 else v for v in b]
+
+
+def _daily_axis(q: list[float | None], dates: list[str] | None) -> list[float | None]:
+    """``q`` on the full daily axis (``None`` for a calendar day with no value) when ``dates`` are given."""
+    if not dates:
+        return list(q)
+    from datetime import date, timedelta
+
+    by_day: dict = {}
+    for d, v in zip(dates, q):
+        try:
+            by_day.setdefault(date.fromisoformat(str(d)[:10]), v)
+        except ValueError:
+            continue
+    if not by_day:
+        return list(q)
+    first, last = min(by_day), max(by_day)
+    return [by_day.get(first + timedelta(days=i)) for i in range((last - first).days + 1)]
+
+
+def lyne_hollick_bfi(q: list[float | None], alpha: float = LH_ALPHA, passes: int = LH_PASSES,
+                     n_reflect: int = LH_N_REFLECT, dates: list[str] | None = None) -> float:
+    """Baseflow index sum(baseflow)/sum(q) by the Ladson et al. (2013) Lyne-Hollick recipe (stdlib port).
+
+    The filter runs on each run of more than ``n_reflect`` consecutive daily values; a day with no value
+    (``None``/NaN, or a calendar day absent from ``dates``) is a segment boundary, not spliced. Days outside such
+    runs have no baseflow and take no part in either sum, exactly as in aihydro-watershed. NaN when no day has
+    one. ``dates`` (ISO strings, same length as ``q``) puts a series with missing rows on its daily axis.
+    """
+    x = _daily_axis(q, dates)
+    n = len(x)
+    num = den = 0.0
+    have = False
+    i = 0
+    while i < n:
+        if not _isnum(x[i]):
+            i += 1
+            continue
+        j = i
+        while j < n and _isnum(x[j]):
+            j += 1
+        if j - i > n_reflect:
+            seg = [float(v) for v in x[i:j]]
+            for b, v in zip(_ladson_segment(seg, alpha, passes, n_reflect), seg):
+                num += min(max(b, 0.0), v)
+                den += v
+                have = True
+        i = j
+    if not have or den <= 0:
         return float("nan")
-    bfi = sum(min(max(b, 0.0), x) for b, x in zip(bf, q)) / total
-    return max(0.0, min(1.0, bfi))
+    return max(0.0, min(1.0, num / den))
 
 
 def _isnum(v: Any) -> bool:
@@ -239,7 +299,7 @@ def _served_digest_check(session: Any, run_id: str | None, q: list[float | None]
         return None
 
 
-def _consistency(session: Any, slot_data: dict, q_valid: list[float]) -> dict:
+def _consistency(session: Any, slot_data: dict, q: list[float | None], dates: list[str]) -> dict:
     checks: dict[str, Any] = {}
     n_recorded = slot_data.get("n_days")
     if isinstance(n_recorded, int):
@@ -247,15 +307,32 @@ def _consistency(session: Any, slot_data: dict, q_valid: list[float]) -> dict:
             "recorded": n_recorded, "exported": None,  # filled by caller (rows incl. missing)
         }
     sig = _slot(session, "signatures")
-    recorded = ((sig or {}).get("data") or {}).get("baseflow_index")
-    if _isnum(recorded) and q_valid:
-        got = lyne_hollick_bfi(q_valid)
-        diff = abs(got - float(recorded))
+    sig_data = (sig or {}).get("data") or {}
+    recorded = sig_data.get("baseflow_index")
+    if _isnum(recorded) and any(_isnum(v) for v in q):
+        method = (f"lyne_hollick_ladson2013 alpha={LH_ALPHA} passes={LH_PASSES} reflect={LH_N_REFLECT} "
+                  "(stdlib, export time)")
+        used = sig_data.get("streamflow_digest")
+        from ai_hydro.validators.series_binding import series_digest
+
+        have = series_digest(dates, q)
+        if isinstance(used, str) and used and used != have:
+            # The signatures consumed another series than the streamflow slot exported here (another window or
+            # gauge): recomputing on this one would "differ" for the wrong reason.
+            checks["baseflow_index"] = {
+                "method": method, "recorded": float(recorded), "status": "not_comparable",
+                "reason": "the signatures were computed from a different series than the exported streamflow "
+                          "slot (streamflow_digest differs); the retained signatures series is the one to recompute from",
+                "signatures_streamflow_digest": used, "exported_series_digest": have,
+            }
+            return checks
+        got = lyne_hollick_bfi(q, dates=dates)
+        diff = abs(got - float(recorded)) if math.isfinite(got) else float("inf")
         checks["baseflow_index"] = {
-            "method": f"lyne_hollick alpha={LH_ALPHA} passes={LH_PASSES} (stdlib, export time)",
+            "method": method,
             "recorded": float(recorded),
-            "from_exported_series": got,
-            "abs_diff": diff,
+            "from_exported_series": got if math.isfinite(got) else None,
+            "abs_diff": diff if math.isfinite(diff) else None,
             "status": "agrees" if diff <= BFI_TOLERANCE else "differs",
             "tolerance": BFI_TOLERANCE,
         }
@@ -333,7 +410,7 @@ def collect_data_artifacts(session: Any, capsule_dir: Path) -> list[dict]:
                 "sha256": hashlib.sha256(dest.read_bytes()).hexdigest(),
                 "note": "verbatim copy of the file the fetch tool retained when it served the series",
             }
-    checks = _consistency(session, data, q_valid)
+    checks = _consistency(session, data, q, dates)
     if retained is not None:
         # Bind to the producer's SEALED digest of the retained file, when it has one.
         row = (session.get("_run_log") or {}).get(run_id) or {}

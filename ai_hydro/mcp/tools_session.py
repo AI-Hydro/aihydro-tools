@@ -262,12 +262,14 @@ def get_session_raw_state(session_id: str | None = None) -> dict:
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         slots = {}
-        for slot in session.computed():
+        for slot in session.computed_healthy():           # a degraded slot is not evidence to interpret
             slots[slot] = session.get(slot)
+        degraded = session.degraded()
         return {
             "session_id": session_id,
             "site_name": session.site_name or None,
-            "computed": session.computed(),
+            "computed": list(slots),
+            **({"degraded": degraded} if degraded else {}),
             "pending": session.pending(),
             "slots": slots,
             "notes": session.notes,
@@ -537,7 +539,8 @@ def export_session(
                 p.write_text(content)
                 saved = str(p)
             return {"session_id": session_id, "format": format, "file_saved": saved,
-                    "computed": session.computed()}
+                    "computed": session.computed_healthy(),
+                    **({"degraded": session.degraded()} if session.degraded() else {})}
 
         if format == "defensibility_report":
             from ai_hydro.session.store import _run_log_read_all
@@ -558,7 +561,8 @@ def export_session(
                 "session_id": session_id,
                 "format": "defensibility_report",
                 "file_saved": saved,
-                "computed": session.computed(),
+                "computed": session.computed_healthy(),
+                **({"degraded": session.degraded()} if session.degraded() else {}),
                 **summary,
             }
 
@@ -602,11 +606,15 @@ def export_session(
                           (f" ({session.site_type})" if session.site_type else ""))
         readme += [f"**Exported**: {today}", f"**Platform**: AI-Hydro", "",
                    "## Computed Analyses"]
+        _health = session.slot_health()
         for slot in session.computed():
             result = session.get(slot)
             computed_at = (result.get("meta", {}).get("computed_at", "")[:10]
                            if result else "") or "—"
-            readme.append(f"- **{slot}** (computed {computed_at})")
+            _h = _health.get(slot, {})
+            readme.append(f"- **{slot}** (computed {computed_at})"
+                          + ("" if _h.get("health", "ok") == "ok"
+                             else f" — DEGRADED ({_h['health']}): {_h.get('reason')}; do not cite"))
         if data_artifacts:
             readme += ["", "## Data"]
             for a in data_artifacts:
@@ -653,7 +661,8 @@ def export_session(
                 if s.get("name") or s.get("url")
             ) or "—"
             date = meta.get("computed_at", "")[:10] or "—"
-            methods.append(f"| {slot} | `{tool}` | {params} | {sources} | {date} |")
+            _hh = _health.get(slot, {}).get("health", "ok")
+            methods.append(f"| {slot}{'' if _hh == 'ok' else f' (DEGRADED: {_hh})'} | `{tool}` | {params} | {sources} | {date} |")
         methods += ["", "## Methods Prose", "",
                     "_Provenance table above contains all computational metadata. "
                     "Call `get_session_raw_state` then `write_research_interpretation` to generate "
@@ -812,7 +821,8 @@ def export_session(
             "capsule_dir": str(capsule_dir),
             "files": files_written,
             "n_files": len(files_written),
-            "computed": session.computed(),
+            "computed": session.computed_healthy(),
+            **({"degraded": session.degraded()} if session.degraded() else {}),
             "manifest_file": str(capsule_dir / _MF),
             "n_manifest_entries": manifest["n_files"],
             "replay_status": manifest["replay_status"],
@@ -978,7 +988,7 @@ def aihydro_rebind_chat(
         # Validate study exists (loads or creates)
         sid = _normalize_session_id(study_id)
         session = HydroSession.load(sid)  # raises if truly invalid path
-        slots_done = session.computed()
+        slots_done = session.computed_healthy()
 
         store = get_binding_store()
         if chat_id:
@@ -1021,7 +1031,7 @@ def aihydro_chat_status(chat_id: str | None = None) -> dict:
             from ai_hydro.session import HydroSession
             try:
                 session = HydroSession.load(bound)
-                slots = session.computed()
+                slots = session.computed_healthy()
                 notes_count = len(session.notes or [])
                 return {
                     "bound": True,

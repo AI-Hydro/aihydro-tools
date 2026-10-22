@@ -194,7 +194,7 @@ def check_registry_conflicts(session: "HydroSession") -> list[SkepticIssue]:
 _SIGNATURE_METRICS = frozenset({
     "q_mean", "q_std", "q5", "q95", "q_median", "baseflow_index", "runoff_ratio", "stream_elas",
     "high_q_freq", "high_q_dur", "low_q_freq", "low_q_dur", "zero_q_freq", "flow_variability",
-    "hfd_mean", "half_flow_date_std", "slope_fdc",
+    "hfd_mean", "half_flow_date_std", "slope_fdc", "slope_fdc_sawicz2011",
 })
 
 #: Names that denote one quantity. Anything not listed stands for itself (normalised).

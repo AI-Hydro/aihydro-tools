@@ -414,16 +414,41 @@ def test_can_claim_difference_false_does_not_block_a_plain_claim_citing_the_metr
     assert _support()["status"] == "updated"
 
 
-@pytest.mark.parametrize("scope", [
-    SAMPLING_AND_FORCING,                                   # forcing is varied, not excluded
-    None,                                                   # no scope metadata: gate inert
-    "inter-annual sampling only; excludes forcing-product and rating error",   # older free text
-    {"excludes": "forcing_product"},                        # malformed
-])
-def test_gate_needs_the_documented_scope_shape_to_fire(scope):
-    _seed(_rr_run(scope))
+def test_a_ci_that_varies_the_forcing_product_does_not_trigger_the_gate():
+    _seed(_rr_run(SAMPLING_AND_FORCING))                        # forcing is varied, not excluded
     _propose(DIFF_CLAIM, comparison_ref="CAMELS-US v1.2")
     assert _support()["status"] == "updated"
+
+
+@pytest.mark.parametrize("scope", [
+    None,                                                   # a cited CI with no scope: core says "excluded"
+    "inter-annual sampling only; excludes forcing-product and rating error",   # older free text
+    {"excludes": "forcing_product"},                        # malformed
+    {"varies": ["water_year_sample"], "assumes": [], "excludes": "forcing_product"},
+    {"varies": "forcing_product", "excludes": []},          # varies is not a list: malformed, so excluded
+])
+def test_gate_uses_cores_conservative_scope_excludes_absent_or_malformed_scope_excludes_forcing(scope):
+    """Reconciled with aihydro-core ``scope_excludes`` (PR-4b): producers now emit scope, so a CI without a
+    well-formed scope that VARIES the forcing product no longer lets a comparison claim through."""
+    _seed(_rr_run(scope))
+    _propose(DIFF_CLAIM, comparison_ref="CAMELS-US v1.2")
+    res = _support()
+    assert res["error"] == "forcing_scope_gate"
+
+
+def test_scope_excludes_is_cores_function_not_a_second_implementation():
+    from aihydro_core.science import scope_excludes as core
+    from ai_hydro.claims.status_gate import scope_excludes as tools
+    for scope in (EXCLUDES_FORCING, SAMPLING_AND_FORCING, None, "text", {"excludes": "forcing_product"},
+                  {"varies": [], "excludes": []}, {"varies": ["forcing_product"], "excludes": ["forcing_product"]}):
+        assert tools({"scope": scope}) == core(scope, "forcing_product"), scope
+    assert tools(None) is True                                   # not a CI entry at all: conservative
+
+
+def test_a_cited_metric_with_no_ci_entry_is_not_the_forcing_gates_business():
+    _seed(_run("r_noci", {"runoff_ratio": 0.605}))             # no uncertainty block at all
+    _propose(DIFF_CLAIM, run_id="r_noci", comparison_ref="CAMELS-US v1.2")
+    assert _support()["status"] == "updated"                    # (the uncertainty gate asks for a CI separately)
 
 
 def test_gate_is_keyed_on_scope_not_on_metric_or_tool_names():

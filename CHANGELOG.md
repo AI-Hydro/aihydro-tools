@@ -6,6 +6,92 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.8.0] - 2026-10-22 (Science Wave 3, PR-4b: series-bound validators, CAMELS reference, gates on real producer output)
+
+Requires **aihydro-core >= 0.2.11, aihydro-data >= 0.2.5, aihydro-watershed >= 0.2.0** (pins `>=...,<0.3`). None of the three is
+on PyPI yet: `.github/ci/install-siblings.sh` installs core and data from their merged `main` commits (`8331d19`, `4a25b12`)
+and watershed from the head of its open PR branch (AI-Hydro/aihydro-watershed#4, `6ba6615`, not merged: re-pin to the merge commit
+when it lands). Only github.com is contacted. A plain `pip install aihydro-tools` fails until the owner publishes the three.
+
+### BREAKING-VALUE (inherited from aihydro-watershed 0.2.0; sessions that hold older results should be re-run)
+
+- `slope_fdc` is the CAMELS-US v1.2 file definition `(Q66 - Q33) / (mean(Q) * 0.33)` (01013500: 1.528, was 2.697); the old log-space
+  Sawicz et al. (2011) value is `slope_fdc_sawicz2011`. `separate_baseflow` and `baseflow_index` use the Ladson et al. (2013) kernel
+  (01031500: BFI 0.36 -> 0.445). Intervals are water-year grouped (`method: bootstrap_group`, no `block_size`; no interval below 10
+  complete water years). `runoff_ratio` / `stream_elas` use complete water years only. Sealed records gain `slope_fdc_sawicz2011`,
+  `signature_definitions`, `qualifier_exposure` (when watershed fetches the series itself) and `camels_reference` /
+  `reference_comparison` (below). `knowledge/camels_metadata.json` (both copies) and `knowledge/tools/camels_tools.json` are updated
+  to the file definition; the `todo` is gone.
+- `separate_baseflow` on a series of 30 days or fewer is refused with a typed teaching error (`SERIES_TOO_SHORT_FOR_BASEFLOW`);
+  31-364 days is computed and the result and the `baseflow` slot meta carry `warmup_bias` (watershed's `warmup_bias_disclosure`).
+- The 4 validators below, and `extract_hydrological_signatures`, now return more `quality_flags`; `check_stationarity` labels water
+  years by their ending year (aihydro-core `water_year`; it labelled by start year).
+
+### Added
+
+- **The series signatures consumed is retained and digest-bound.** `_served_series` (dates, m3/s, qualifier/approval codes) is written to
+  a content-named session data file (`write_session_data_file`), recorded as `meta.retained_series = {path, digest}` with
+  `data._data_file`, declared in the sealed record's `retained_files`, and removed from the result before caching, workspace write or
+  sealing. The 2.7.0 slot-health check reads such a slot as `ok`. When the series came from the streamflow slot, the slot's per-value
+  USGS codes are put on it (served dates must equal the slot's dates).
+- **Validators resolve their series by digest.** `check_record_length`, `check_usgs_qualification_codes`, `check_stationarity` and
+  `check_regulated_basin` gain `source="signatures"|"streamflow"` (default `"streamflow"`: unchanged) and `series_digest`. A retained
+  file that changed, a series that is not the one the signatures recorded (`streamflow_digest`) or that the caller named returns
+  `insufficient_data` with `series_mismatch`; a series that was never retained returns `series_not_retained`. They never validate a
+  different series. They run automatically inside `extract_hydrological_signatures` (on the in-memory series) and are appended to
+  `quality_flags`; the old post-run `check_stationarity` registration on the slot is removed.
+- **`camels_reference` + `reference_comparison` in the signatures output.** aihydro-watershed's `reference_comparison` against the
+  packaged CAMELS-US v1.2 tables (hydro, `area_gages2`, `frac_snow`, `aridity`, `p_seasonality`; CC-BY 4.0, attribution, md5 and
+  sha256 provenance JSON, md5 re-checked before use), overridden by the session `camels` slot (`fetch_camels_us`) when it holds the
+  gauge. The block carries the source and its hash (S6), `period` used/ref/differs (the CAMELS signatures are WY1990-2009), area and
+  rescaling, the "GridMET vs Daymet" forcing disclosure, climate context and `can_claim_difference` with blockers per signature. The
+  table is at one place in the run row: `key_outputs.reference_comparison`. Not packaged (not available locally, not fetched): the
+  soil, vegetation and geology tables.
+- `tests/test_signatures_wave3_integration.py`: the recorded USGS body for 01013500 WY1990-2009 through the real fetch -> signatures
+  path with aihydro-watershed 0.2.0 (precipitation synthetic). Plain claim accepted; `comparison_ref` claim on a forcing-excluded CI
+  refused; `can_claim_difference=false` refused; a comparable metric without an interval passes the structural gates.
+
+### Changed
+
+- **Status gate.** `reference_comparison()` reads exactly `key_outputs.reference_comparison` (the depth-4 search is removed). The
+  forcing test is aihydro-core's conservative `scope_excludes`: a cited interval whose scope does not vary `forcing_product`, absent
+  or malformed scopes included, counts as excluding it (2.7.0 treated those as inert). A metric with no interval entry is left to the
+  uncertainty gate.
+- **Run-row evidence keeps interval scope.** Short lists of strings inside `evidence.uncertainty` survive compaction. Before, the
+  scope lists were dropped from every real run row, so the 2.7.0 forcing gate could not fire on real output.
+- **Precipitation consumers key on reason codes.** `check_water_balance_consistency` accepts `used_with_gaps` when its only gap
+  reason is `client_calendar_assumption` and no water year was excluded (`precipitation_usable`).
+- **Readers of `computed()` use slot health** (the follow-up named in 2.7.0): `get_session_raw_state` (healthy slots + `degraded`),
+  `research.md`, the sync reminder, `export_session` (`computed` healthy, `degraded` added; capsule README and methods table mark a
+  degraded slot), project search and overview, `bind_study` and `get_current_study`. Not changed: shard merge, `synopsis_for_llm`.
+- **Capsule BFI** (`ai_hydro/capsule/data_artifacts.py`) is re-ported to the Ladson 2013 kernel (stdlib: 30-day reflection, 3 passes,
+  runs of more than 30 days, dropped rows read as gaps via dates). Cross-checked against the watershed kernel to 1e-12 in
+  `tests/test_camels_reference_pr4b.py`. When the signatures used another series than the exported slot (`streamflow_digest` differs)
+  the check reports `not_comparable` instead of `differs`.
+- `ai_hydro/analysis/signatures.py` no longer imports the private `_lyne_hollick_baseflow`; the kernel is the public
+  `aihydro_watershed.signatures.baseflow.lyne_hollick_ladson2013`.
+- `slope_fdc_sawicz2011` is a valid experiment metric and a metric-conflict signature.
+- Bench: B-013 gains `slope_fdc_sawicz2011` in range and a rewritten rationale (slope_fdc 1.46, Sawicz 3.53 on the synthetic series);
+  B-009's rationale is updated for the Ladson kernel (BFI 0.2915, same bounds). No assertion weakened.
+- Tests updated for values that changed: `TestBaseflowFilter` (constant flow 0.986 not 1.0 because of the start-up transient, storm
+  series 0.867 -> 0.8476, flashy 0.203 -> 0.2064, each cross-checked against the independent stdlib port), the capsule BFI oracle,
+  precipitation `used` -> `used_with_gaps` where the window starts inside a water year, the experiment table window (12 water years so
+  intervals exist), and the 2.7.0 scope-shape cases (absent or malformed scope now refuses a comparison claim).
+
+### Fixed
+
+- A streamflow slot with dropped days is passed to the signatures function with its dates (it was passed as a bare list, which the
+  function reads as consecutive days from `start_date`, shifting every value after a gap onto an earlier date).
+- Package version 2.8.0 (`pyproject.toml`, `ai_hydro/__version__`, `CITATION.cff`).
+
+### Follow-ups
+
+- `qualifier_exposure` is only produced when watershed fetches the series itself (it needs the flags frame); a series taken from the
+  slot has none. Accepting flags with `q_cms_series` in watershed would close it.
+- Standalone `source="signatures"` validators find the session's active/legacy signatures result, not one stored under `__override__`
+  or another feature; `series_digest` guards against a wrong resolution.
+- `fetch_camels_us` caches no hash of its own table; the slot source hash is of the attribute row used.
+
 ## [2.7.0] - 2026-10-22 (Science Wave 3, PR-4a: session artifact health, one status gate, metric conflicts)
 
 No new package pins. Minor bump: additive response fields (`slot_health`, `degraded`, `claim_flags`,

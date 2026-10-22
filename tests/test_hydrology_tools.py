@@ -24,8 +24,18 @@ from ai_hydro.analysis.signatures import (
     compute_event_stats_camels,
     compute_timing_stats_camels,
     compute_slope_fdc_camels,
-    _lyne_hollick_baseflow,
 )
+from ai_hydro.analysis.baseflow import lyne_hollick_ladson2013
+from ai_hydro.capsule.data_artifacts import lyne_hollick_bfi as _stdlib_bfi
+
+
+def _lyne_hollick_baseflow(q, alpha=0.925, passes=3):
+    """The PUBLIC aihydro-watershed 0.2.0 kernel (Ladson et al. 2013 recipe, 30-day reflection), clipped to
+    [0, q] exactly as the signatures' baseflow index does. Not the private pre-0.2.0 wrapper."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")      # WarmupBiasWarning on the sub-year series below is expected
+        return np.clip(lyne_hollick_ladson2013(q, alpha=alpha, passes=passes), 0, q)
 
 
 class TestStreamflowConversion:
@@ -90,16 +100,22 @@ class TestBaseflowFilter:
 
     Regression guard for the directionality bug where the filter returned the
     quick-flow component instead of the baseflow, which inverted the baseflow
-    index (it reported the quick-flow fraction). Reference values computed from
-    the corrected Nathan-McMahon multi-pass implementation.
+    index (it reported the quick-flow fraction). Since aihydro-watershed 0.2.0 the filter is
+    the Ladson et al. (2013) recipe CAMELS used (30-day reflection, quick flow subtracted only
+    where positive); the reference values below were recomputed with it, and each is cross-checked
+    against the independent stdlib port in ``ai_hydro.capsule.data_artifacts``.
     """
 
     def test_constant_flow_is_all_baseflow(self):
-        # A perfectly steady stream has no quick flow, so BFI must be 1.0.
+        # A perfectly steady stream has no quick flow: away from the record ends the baseflow IS the flow.
+        # The ends carry the filter start-up (initial quick flow = first flow; the 30-day reflection only
+        # partly absorbs it), so the whole-record BFI is 0.986, not exactly 1 (the pre-0.2.0 clamped
+        # filter returned exactly 1.0 here).
         q = np.full(500, 5.0)
         bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=3)
-        assert np.allclose(bf, q)
-        assert abs(bf.sum() / q.sum() - 1.0) < 1e-9
+        assert np.allclose(bf[100:400], q[100:400], atol=5e-3)
+        assert bf.sum() / q.sum() == pytest.approx(0.9864, abs=1e-3)
+        assert _stdlib_bfi(list(q)) == pytest.approx(bf.sum() / q.sum(), abs=1e-12)
 
     def test_baseflow_never_exceeds_total_flow(self):
         rng = np.random.default_rng(0)
@@ -117,14 +133,16 @@ class TestBaseflowFilter:
             q[day] = 25.0
         bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=3)
         bfi = bf.sum() / q.sum()
-        assert bfi == pytest.approx(0.867, abs=0.01), f"got BFI={bfi:.3f}"
+        assert bfi == pytest.approx(0.8476, abs=1e-3), f"got BFI={bfi:.4f}"   # was 0.867 before 0.2.0
+        assert _stdlib_bfi(list(q)) == pytest.approx(bfi, abs=1e-12)
 
     def test_flashy_series_has_low_bfi(self):
         # Alternating high/low flow is quick-flow dominated: BFI must be low.
         q = np.tile([1.0, 20.0], 150)
         bf = _lyne_hollick_baseflow(q, alpha=0.925, passes=3)
         bfi = bf.sum() / q.sum()
-        assert bfi == pytest.approx(0.203, abs=0.01), f"got BFI={bfi:.3f}"
+        assert bfi == pytest.approx(0.2064, abs=1e-3), f"got BFI={bfi:.4f}"   # was 0.203 before 0.2.0
+        assert _stdlib_bfi(list(q)) == pytest.approx(bfi, abs=1e-12)
 
 
 class TestWaterBalance:

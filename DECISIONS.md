@@ -1,5 +1,45 @@
 # Decisions
 
+## 2026-10-22 — Validators judge the series a computation used, bound by digest; the CAMELS reference is packaged (Science Wave 3, PR-4b, 2.8.0)
+
+**Context.** Before 2.8.0 every streamflow validator read the session `streamflow` slot, which need not be the series
+`extract_hydrological_signatures` consumed (a 2000-2020 slot beside signatures over 1989-2009 validated the wrong
+years), and nothing ran the validators after signatures. The PR-4a claim gate that refuses "differs from CAMELS" claims
+for forcing-dependent metrics was written against a shape no producer emitted yet.
+
+**Decisions.**
+1. The signatures wrapper retains the served series (`_served_series` from aihydro-watershed 0.2.0) as a
+   content-named session data file, records `meta.retained_series = {path, digest}`, sets `data._data_file`, declares the
+   file in the sealed record's `retained_files`, and pops the key before the result is cached, written or sealed.
+   Slot health then reads the slot as `ok` by the rule PR-4a already had.
+2. `record_length`, `usgs_qualification_codes`, `stationarity` and `regulated_basin` take `source="signatures"|"streamflow"`
+   and an optional `series_digest`. A series that fails any digest check is `insufficient_data` / `series_mismatch`; they never
+   fall back to another series. The four run inside the signatures call on the in-memory series (not through
+   `register_post_validator`, whose builder only sees the session id) and are appended to `quality_flags`.
+   Standalone `source="signatures"` calls resolve `session.get("signatures")` (active feature or legacy); a result stored
+   under `__override__` (an explicit `geometry_geojson=`) is not found there, and `series_digest` is the guard against
+   a wrong resolution.
+3. The CAMELS-US v1.2 hydro, topo (`area_gages2`) and clim (`frac_snow`, `aridity`, `p_seasonality`) tables are packaged as
+   verbatim files with provenance JSON and attribution (CC-BY 4.0, OQ8). The session `camels` slot overrides them when it holds
+   the same gauge. The source used is recorded with its hash (S6). The soil, vegetation and geology tables are not packaged.
+4. `reference_comparison` lives at one place, `key_outputs.reference_comparison` of the run row; the gate reads exactly there
+   and the depth-4 search is gone. `camels_reference` is the summary block (source + hash, period, area, forcing, climate
+   context, per-signature `can_claim_difference`).
+5. The forcing gate uses aihydro-core `scope_excludes`: a cited interval whose scope does not VARY the forcing product
+   (absent and malformed scopes included) excludes it. A cited metric with no interval entry at all is left to the uncertainty gate.
+6. Run-row evidence compaction keeps short lists of strings inside the `uncertainty` block. Without this the interval
+   `scope` (lists) was dropped from every real run row, and the PR-4a forcing gate could never fire on real output.
+7. The signatures wrapper passes the slot's series WITH its dates. The slot drops days without a value, so its list is not
+   consecutive from `start_date`; a bare list was read as consecutive days and shifted later values onto earlier dates.
+8. Precipitation consumers key on `_precipitation.status` plus reason codes: `used_with_gaps` is usable when its only gap
+   reason is `client_calendar_assumption` and no water year was excluded.
+9. The capsule keeps a stdlib port of the Ladson 2013 kernel (the capsule stays free of the watershed package); a test
+   cross-checks it against the watershed kernel to 1e-12, with gaps, short runs and dropped rows.
+
+**Not done / follow-ups.** `qualifier_exposure` is only produced when watershed fetches the series itself; a series taken
+from the slot has no flags frame there. `synopsis_for_llm` still lists degraded slots. The 671-basin table is
+read once per process and cached.
+
 ## 2026-10-20 — Public CI does not exercise the modelling-backed and aihydro-lsh tools (private repos)
 
 `aihydro-modelling` and `aihydro-lsh` are private repositories, so the public CI install

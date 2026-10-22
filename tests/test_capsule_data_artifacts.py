@@ -71,24 +71,47 @@ def _series():
     return df
 
 
-def stdlib_lyne_hollick_bfi(q, a=0.925, passes=3):
-    """Independent stdlib implementation (same published algorithm)."""
-    def sweep(y, fwd):
-        n = len(y)
-        f = [0.0] * n
-        b = list(y)
-        idx = range(1, n) if fwd else range(n - 2, -1, -1)
-        prev = 0 if fwd else n - 1
-        for t in idx:
-            f[t] = a * f[prev] + (1 + a) / 2 * (y[t] - y[prev])
-            b[t] = y[t] - f[t] if f[t] > 0 else y[t]
-            b[t] = min(max(b[t], 0.0), y[t])
-            prev = t
-        return b
-    bf = list(q)
-    for i in range(passes):
-        bf = sweep(bf, i % 2 == 0)
-    return sum(min(max(x, 0.0), v) for x, v in zip(bf, q)) / sum(q)
+def stdlib_lyne_hollick_bfi(dates, q, a=0.925, passes=3, nr=30):
+    """Independent stdlib implementation of the Ladson et al. (2013) recipe (TonyLadson BFI.R, as used by CAMELS
+    ``comp_i_bf_landson`` and aihydro-watershed >= 0.2.0), written from the R source's steps and not from
+    ``ai_hydro.capsule.data_artifacts``: alpha 0.925, ``passes`` alternating sweeps (forward first), the series
+    reflected ``nr`` days at both ends, quick flow subtracted only where positive (the state is never clamped),
+    baseflow clipped at zero. Days with no value split the series; only runs longer than ``nr`` days are filtered."""
+    import datetime as dt
+
+    by_day = {dt.date.fromisoformat(str(d)[:10]): v for d, v in zip(dates, q)}
+    d0, d1 = min(by_day), max(by_day)
+    axis = [by_day.get(d0 + dt.timedelta(i)) for i in range((d1 - d0).days + 1)] + [None]
+    runs, cur = [], []
+    for v in axis:
+        if v is None:
+            if len(cur) > nr:
+                runs.append(cur)
+            cur = []
+        else:
+            cur.append(v)
+    c = (1 + a) / 2
+    num = den = 0.0
+    for run in runs:
+        n = len(run)
+        ext = [run[i] for i in range(nr, 0, -1)] + run + [run[n - 1 - i] for i in range(1, nr + 1)]
+        m = len(ext)
+        y = ext
+        for p in range(passes):
+            f = [0.0] * m
+            if p % 2 == 0:                      # forward sweep
+                f[0] = y[0]
+                for i in range(1, m):
+                    f[i] = a * f[i - 1] + c * (y[i] - y[i - 1])
+            else:                               # backward sweep
+                f[m - 1] = y[m - 1]
+                for i in range(m - 2, -1, -1):
+                    f[i] = a * f[i + 1] + c * (y[i] - y[i + 1])
+            y = [yi - fi if fi > 0 else yi for yi, fi in zip(y, f)]
+        base = [max(b, 0.0) for b in y[nr:m - nr]]
+        num += sum(min(b, v) for b, v in zip(base, run))
+        den += sum(run)
+    return num / den
 
 
 @pytest.fixture(params=["refetch", "retained"])
@@ -257,9 +280,13 @@ def test_series_csv_in_capsule_with_manifest_digest(exported):
 def test_independent_stdlib_bfi_matches_tool_bfi(exported):
     cap, result, _ = exported
     rows = _read_series(cap / "data" / f"served_streamflow_{GAUGE}.csv")
-    q = [float(r["q_cms"]) for r in rows if r["q_cms"] != ""]
+    ok = [r for r in rows if r["q_cms"] != ""]
+    dates, q = [r["date"] for r in ok], [float(r["q_cms"]) for r in ok]
     reported = HydroSession.load(SID).get("signatures")["data"]["baseflow_index"]
-    assert abs(stdlib_lyne_hollick_bfi(q) - reported) < 1e-9
+    assert abs(stdlib_lyne_hollick_bfi(dates, q) - reported) < 1e-9
+    # and the capsule's own port agrees with the independent one to float noise
+    from ai_hydro.capsule.data_artifacts import lyne_hollick_bfi
+    assert abs(lyne_hollick_bfi(q, dates=dates) - stdlib_lyne_hollick_bfi(dates, q)) < 1e-12
     chk = json.loads((cap / "capsule_manifest.json").read_text())["data_artifacts"][0]["consistency_checks"]
     assert chk["baseflow_index"]["status"] == "agrees"
 

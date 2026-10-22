@@ -796,7 +796,7 @@ def _sync_reminder(session_id: str) -> str | None:
     try:
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
-        n = len(session.computed())
+        n = len(session.computed_healthy())     # a degraded slot is not a completed analysis
         if n >= 2 and not session.interpretation:
             return (
                 f"[{n} analyses complete, no interpretation yet] "

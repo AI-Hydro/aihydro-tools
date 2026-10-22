@@ -1630,6 +1630,14 @@ class HydroSession:
         health = self.slot_health()
         return [s for s in self.computed() if health.get(s, {}).get("health", "ok") == "ok"]
 
+    def degraded(self) -> list[dict]:
+        """``[{"slot", "health", "reason", "fix"}]`` for every slot whose artifact or conventions are unhealthy
+        (the ``degraded`` list of ``summary``); empty when all are ok."""
+        return [
+            {"slot": slot, "health": h["health"], "reason": h["reason"], "fix": _SLOT_HEALTH_FIX[h["health"]]}
+            for slot, h in self.slot_health().items() if h["health"] != "ok"
+        ]
+
     def slot_health(self) -> dict[str, dict]:
         """``{slot: {"health": ..., "reason": ..., "feature_id": ...}}`` for every computed slot.
 
@@ -1796,7 +1804,8 @@ class HydroSession:
     def write_research_context(self) -> None:
         display = self.site_name or self.site_id or self.session_id
         name_str = self._display_name_str()
-        computed = self.computed()
+        computed = self.computed_healthy()      # a degraded slot is not offered to the next session as computed
+        degraded = self.degraded()
         pending = self.pending()
 
         lines: list[str] = [
@@ -1836,6 +1845,9 @@ class HydroSession:
         stale_computed = [s for s in computed if self.is_stale(s)]
         if active_computed:
             lines.append("**Computed (Active)**: " + ", ".join(active_computed))
+        if degraded:
+            lines.append("**Degraded (do not cite; re-run)**: "
+                         + "; ".join(f"{d['slot']} ({d['health']})" for d in degraded))
         if pending:
             lines.append("**Pending**: " + ", ".join(pending))
         lines.append("")

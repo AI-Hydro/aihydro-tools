@@ -1411,13 +1411,20 @@ def extract_hydrological_signatures(
             (not _is_usgs and _scoped is None)
             or (_slot_mismatch is None and _digest_problem is None)
         )
+        _q_dates = None
+        _q_codes = None
         if _consume_slot:
             _q_cms = _sf_data.get("q_cms")
+            _q_dates = _sf_data.get("dates")
+            _q_codes = _sf_data.get("qualification_codes") or _sf_meta.get("qualification_codes")
             if _digest_problem != "retained_series_digest_mismatch" and _data_file \
                     and Path(_data_file).exists():
                 try:
                     with open(_data_file) as _df:
-                        _q_cms = json.load(_df).get("q_cms") or _q_cms
+                        _body = json.load(_df)
+                    _q_cms = _body.get("q_cms") or _q_cms
+                    _q_dates = _body.get("dates") or _q_dates
+                    _q_codes = _body.get("qualification_codes") or _q_codes
                 except Exception:
                     pass
             if _digest_problem == "retained_series_digest_mismatch":
@@ -1474,6 +1481,19 @@ def extract_hydrological_signatures(
                 "next_tools": ["data_fetch", "fetch_streamflow_data"],
             }
 
+        # The slot drops days with no value, so its q_cms list is NOT consecutive from start_date. A bare list is
+        # read by the signatures function as consecutive daily values, which would shift every value after a
+        # gap onto the wrong date. When the slot carries its dates, pass the series WITH them.
+        _q_arg = _q_cms
+        if _q_cms and _q_dates and len(_q_dates) == len(_q_cms):
+            try:
+                import pandas as _pd
+                _q_arg = _pd.Series([float("nan") if v is None else float(v) for v in _q_cms],
+                                    index=_pd.to_datetime(_q_dates), dtype=float)
+            except Exception as _qe:                        # noqa: BLE001
+                log.warning("could not index the streamflow slot by its dates (%s); passing the bare list", _qe)
+                _q_arg = _q_cms
+
         from ai_hydro.analysis.signatures import extract_hydrological_signatures as _fn
         result = _fn(
             gauge_id=usgs_gauge_id,
@@ -1481,7 +1501,7 @@ def extract_hydrological_signatures(
             area_km2=area_km2,
             start_date=start_date,
             end_date=end_date,
-            q_cms_series=_q_cms,
+            q_cms_series=_q_arg,
             **({"precipitation": precipitation} if precipitation != "auto" else {}),
         )
         d = _result_to_dict(result)
@@ -1491,6 +1511,42 @@ def extract_hydrological_signatures(
         # is declared verbatim. A watershed that predates the field is
         # recorded as "not reported" -- never as a product that was used.
         _dd = d.get("data") if isinstance(d.get("data"), dict) else {}
+        # The daily series the signatures consumed (dates, m3/s, qualifier / approval codes; ~7,300 entries
+        # x 4 lists) is retained as a digest-bound session data file and removed from the result before it is
+        # cached, written to the workspace or sealed. meta.retained_series = {path, digest} and data._data_file
+        # name it, so the slot-health check reads it as ok and validators can resolve the series by digest.
+        _served = _dd.pop("_served_series", None)
+        from ai_hydro.validators import series_binding as _sb
+        _bound_series = _sb.bound_series_problem(
+            _sb.SERIES_NOT_RETAINED, "the signatures served no daily series to retain")
+        _retained_files: list[dict] = []
+        if isinstance(_served, dict):
+            # A series taken from the streamflow slot reaches the signatures function without its USGS codes
+            # (only an internal NWIS fetch carries them). The slot has them per value, aligned with its dates:
+            # when the served dates ARE the slot's dates, put the codes on the retained series so validators
+            # can judge review status on the series the signatures consumed.
+            if (_served.get("qualifier_codes") is None and _served.get("approval_codes") is None
+                    and _q_codes and _q_dates and _consume_slot and not _unresolved
+                    and list(_served.get("dates") or []) == [str(x)[:10] for x in _q_dates]
+                    and len(_q_codes) == len(_q_dates)):
+                _sb.add_slot_codes(_served, _q_codes)
+            _ret = _sb.retain_served_series(session_id, _served)
+            if _ret:
+                _dd["_data_file"] = _ret["path"]
+                d.setdefault("meta", {})["retained_series"] = {"path": _ret["path"], "digest": _ret["digest"]}
+                _bound_series = _sb.bound_series_from_served(
+                    _served, file_digest=_ret["digest"],
+                    gauge_id=(_eff_gauge if _scoped is not None else session.site_id) or None,
+                    recorded_streamflow_digest=_dd.get("streamflow_digest"))
+                try:
+                    from ai_hydro.session.refs import to_ref as _to_ref
+                    _retained_files.append({"path": _to_ref(_ret["path"], getattr(session, "workspace_dir", None)),
+                                            "digest": _ret["digest"], "role": "artifact"})
+                except Exception as _re:                       # noqa: BLE001
+                    log.warning("could not reference the retained signatures series: %s", _re)
+            else:
+                _bound_series = _sb.bound_series_problem(
+                    _sb.SERIES_NOT_RETAINED, "the served series could not be written to the session data dir")
         _src = _dd.get("_streamflow_source")
         from ai_hydro.mcp.streamflow_slot import mirror_streamflow_source as _mirror_src
         _mirror_src(_dd, _src)
@@ -1526,7 +1582,17 @@ def extract_hydrological_signatures(
                           "it received; request period and cited sources only",
             })
         _internal.append(_prec_entry)
-        _rr.declare_lineage(internal_acquisitions=_internal)
+        _rr.declare_lineage(internal_acquisitions=_internal,
+                            **({"retained_files": _retained_files} if _retained_files else {}))
+        # CAMELS-US reference: packaged v1.2 tables, overridden by the session `camels` slot (fetch_camels_us).
+        # `reference_comparison` is the table the claim gate reads (run row: key_outputs.reference_comparison);
+        # `camels_reference` is the summary (source + hash, period, area, forcing, climate context).
+        if isinstance(_dd, dict) and _dd:
+            from ai_hydro.science.camels_reference import build_camels_reference as _bcr
+            _cref, _rcmp = _bcr(_dd, usgs_gauge_id, area_km2, start_date, end_date, session)
+            _dd["camels_reference"] = _cref
+            if _rcmp is not None:
+                _dd["reference_comparison"] = _rcmp
         if _scoped is not None and isinstance(d.get("data"), dict):
             # Sealed with the result: which gauge and area these numbers describe.
             d["data"]["basin_gauge_id"] = _eff_gauge
@@ -1572,6 +1638,11 @@ def extract_hydrological_signatures(
         reminder = _sync_reminder(session_id)
         if reminder:
             d["_sync_required"] = reminder
+        # Validators of the series THIS call consumed (bound by digest, not the streamflow slot's), appended to
+        # quality_flags: record_length, usgs_qualification_codes, stationarity, regulated_basin.
+        from ai_hydro.mcp.tools_validators import run_signature_validators as _rsv
+        d.setdefault("quality_flags", []).extend(
+            _rsv(session_id, _bound_series, _eff_gauge if _scoped is not None else session.site_id))
         d = _post_run(
             "extract_hydrological_signatures",
             session_id,
@@ -3296,6 +3367,12 @@ def separate_baseflow(
     Separate baseflow from streamflow via digital filter. Writes daily series
     + BFI to session.baseflow. Requires fetch_streamflow_data first.
 
+    'lyne_hollick' is the Ladson et al. (2013) recipe CAMELS used (aihydro-watershed 0.2.0):
+    alpha 0.925, forward-backward-forward passes, 30-day reflection, quick flow subtracted only
+    where positive. Its BFI differs from earlier versions (01031500: 0.36 before, 0.445 now). A
+    series of 30 days or fewer is refused (SERIES_TOO_SHORT_FOR_BASEFLOW); one of 31-364 days is
+    computed but biased low by the filter start-up, and the result carries ``warmup_bias``.
+
     Parameters
     ----------
     session_id : str | None (optional from Wave 3)
@@ -3389,8 +3466,40 @@ def separate_baseflow(
             }
 
         method = method.lower()
+        warmup_bias = None
         if method == "lyne_hollick":
-            bf = lyne_hollick(q, alpha=alpha, n_passes=n_passes)
+            from aihydro_watershed.signatures.baseflow import LH_N_REFLECT, warmup_bias_disclosure
+            if len(q) <= LH_N_REFLECT:
+                return {
+                    "error": True,
+                    "code": "SERIES_TOO_SHORT_FOR_BASEFLOW",
+                    "message": (
+                        f"The streamflow series has {len(q)} days; the Lyne-Hollick filter (Ladson et al. 2013 "
+                        f"recipe) needs more than {LH_N_REFLECT} days (its reflection length) and refuses "
+                        "anything shorter."
+                    ),
+                    "recovery": "Fetch a longer record, or use method='ukih'. A record under 365 days still "
+                                "gives a BFI biased low by the filter start-up; use at least one full year.",
+                    "n_days": int(len(q)),
+                    "teaching_error": {
+                        "rule": "baseflow_filter_needs_a_warmup_record",
+                        "explanation": (
+                            "The filter starts from an assumed quick flow and reflects the first and last "
+                            f"{LH_N_REFLECT} days to absorb that start-up. With {LH_N_REFLECT} days or fewer "
+                            "there is nothing left to separate, so no BFI is returned rather than a meaningless one."
+                        ),
+                        "how_to_fix": (
+                            "1. fetch_streamflow_data(...) over a longer period (a full year or more);\n"
+                            "2. then call separate_baseflow again."
+                        ),
+                    },
+                }
+            warmup_bias = warmup_bias_disclosure(len(q))      # 31-364 days: biased low, say so
+            import warnings as _w
+            from aihydro_watershed.signatures.baseflow import WarmupBiasWarning
+            with _w.catch_warnings():
+                _w.simplefilter("ignore", WarmupBiasWarning)  # disclosed in the result instead
+                bf = lyne_hollick(q, alpha=alpha, n_passes=n_passes)
         elif method == "ukih":
             bf = ukih(q)
         else:
@@ -3412,6 +3521,10 @@ def separate_baseflow(
             "baseflow_series_length": len(bf),
             "_note": "Full baseflow series stored in session.baseflow.baseflow_series (not returned inline — context-window protection).",
         }
+        if method == "lyne_hollick":
+            result["kernel"] = "lyne_hollick_ladson2013"
+        if warmup_bias:
+            result["warmup_bias"] = warmup_bias
         session.set("baseflow", {
             "data": {
                 "bfi": bfi,
@@ -3425,6 +3538,8 @@ def separate_baseflow(
                 "method": method,
                 "alpha": alpha,
                 "n_passes": n_passes,
+                **({"kernel": "lyne_hollick_ladson2013"} if method == "lyne_hollick" else {}),
+                **({"warmup_bias": warmup_bias} if warmup_bias else {}),
             },
         })
         session.save()
@@ -3444,7 +3559,8 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
 
     Returns percentile flows under the hydrologic convention (Qxx = discharge
     equalled or exceeded xx% of the time, so Q95 is a low flow and Q5 a high
-    flow), the log-FDC mid-section slope (flashiness), and 7Q10 when ≥10 years
+    flow), the FDC mid-section slope (flashiness; the CAMELS-US v1.2 slope_fdc definition
+    since aihydro-watershed 0.2.0), and 7Q10 when ≥10 years
     of daily data are present.
 
     Parameters

@@ -225,7 +225,10 @@ def test_precipitation_acquisition_is_declared_not_silent(world):
     assert (p["start_date"], p["end_date"]) == (START, END)
     # D4: the precipitation the signatures received is declared with a digest
     # (the fixture serves a constant 3.0 mm/day series; product not reported).
-    assert p["status"] == "used" and p["reason"] is None
+    # The window 2000-01-01..2001-12-31 starts and ends inside water years, so since aihydro-watershed 0.2.0
+    # the precipitation counts as used_with_gaps (the incomplete edge water years take no part in runoff_ratio);
+    # the precipitation series itself is complete (no missing days), and the reason says which years were left out.
+    assert p["status"] == "used_with_gaps" and p["reason"] and "water years excluded" in p["reason"]
     assert p["data_digest"] and p["data_digest"].startswith("sha256:")
     assert p["n_days"] == 731
 
