@@ -734,6 +734,64 @@ def _latest_result_in_feature(by_key: dict) -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
+# Slot artifact health (Science Wave 3, PR-4a)
+# --------------------------------------------------------------------------- #
+
+#: Worst first: a slot reports the worst health among its features' latest results.
+SLOT_HEALTH_ORDER = ("missing_artifact", "digest_mismatch", "legacy_convention", "ok")
+
+_SLOT_HEALTH_FIX = {
+    "missing_artifact": "the retained data file is gone; re-run the tool that produced this slot "
+                        "(clear_session([slot]) first if it answers from cache).",
+    "digest_mismatch": "the retained data file changed after the result was recorded; do not cite "
+                       "this slot, re-run the tool that produced it.",
+    "legacy_convention": "computed before the current signature conventions (flow-quantile convention "
+                         "and precipitation completeness); re-run extract_hydrological_signatures "
+                         "before comparing it with anything.",
+}
+
+
+def _result_health(slot: str, val: Any) -> tuple[str, str | None]:
+    """``(health, reason)`` for one stored result; ``health`` is in ``SLOT_HEALTH_ORDER``.
+
+    * ``missing_artifact``: the result points at a ``_data_file`` that does not exist.
+    * ``digest_mismatch``: the file exists but its digest differs from the one the slot recorded
+      (``meta.retained_series.digest``). A file with no recorded digest cannot be checked: ok.
+    * ``legacy_convention``: a signatures result without ``flow_quantile_convention``, or without
+      ``_precipitation.completeness`` (computed before precipitation completeness existed).
+    """
+    if not isinstance(val, dict):
+        return "ok", None
+    data = val.get("data") if isinstance(val.get("data"), dict) else {}
+    meta = val.get("meta") if isinstance(val.get("meta"), dict) else {}
+    data_file = data.get("_data_file")
+    if data_file:
+        path = Path(str(data_file))
+        if not path.is_file():
+            return "missing_artifact", f"_data_file {path.name} does not exist"
+        retained = meta.get("retained_series") if isinstance(meta.get("retained_series"), dict) else {}
+        want = retained.get("digest")
+        if want:
+            try:
+                from aihydro_core.records import digest_bytes
+                have = digest_bytes(path.read_bytes())
+            except Exception as exc:
+                return "missing_artifact", f"_data_file {path.name} is unreadable ({type(exc).__name__})"
+            if have != want:
+                return "digest_mismatch", f"_data_file {path.name} digest differs from the recorded one"
+    if slot == "signatures":
+        prec = data.get("_precipitation")
+        missing = []
+        if "flow_quantile_convention" not in data:
+            missing.append("flow_quantile_convention")
+        if not (isinstance(prec, dict) and prec.get("completeness") is not None):
+            missing.append("_precipitation.completeness")
+        if missing:
+            return "legacy_convention", "no " + " / no ".join(missing)
+    return "ok", None
+
+
+# --------------------------------------------------------------------------- #
 # HydroSession
 # --------------------------------------------------------------------------- #
 
@@ -1491,6 +1549,25 @@ class HydroSession:
                 result.append(product)
         return result
 
+    def slot_health(self) -> dict[str, dict]:
+        """``{slot: {"health": ..., "reason": ..., "feature_id": ...}}`` for every computed slot.
+
+        Health is the worst across the slot's features (latest result each); see ``_result_health``.
+        """
+        out: dict[str, dict] = {}
+        for slot, by_feature in self._slots.items():
+            worst: tuple[str, str | None, str] | None = None
+            for fid, by_key in by_feature.items():
+                result = _latest_result_in_feature(by_key)
+                if result is None:
+                    continue
+                health, reason = _result_health(slot, result)
+                if worst is None or SLOT_HEALTH_ORDER.index(health) < SLOT_HEALTH_ORDER.index(worst[0]):
+                    worst = (health, reason, fid)
+            if worst is not None:
+                out[slot] = {"health": worst[0], "reason": worst[1], "feature_id": worst[2]}
+        return out
+
     def pending(self) -> list[str]:
         """Common slots not yet computed for the active/legacy feature."""
         return [s for s in _COMMON_SLOTS if self.get(s) is None]
@@ -1529,6 +1606,12 @@ class HydroSession:
 
     def summary(self) -> dict:
         warnings = self.validate_identity()
+        health = self.slot_health()
+        degraded = [
+            {"slot": slot, "health": h["health"], "reason": h["reason"],
+             "fix": _SLOT_HEALTH_FIX[h["health"]]}
+            for slot, h in health.items() if h["health"] != "ok"
+        ]
         out: dict[str, Any] = {
             "session_id": self.session_id,
             "site_name": self.site_name,
@@ -1536,7 +1619,8 @@ class HydroSession:
             "site_type": self.site_type,
             "canonical_id": self.canonical_id,
             "archived": self.archived,
-            "computed": self.computed(),
+            "computed": [s for s in self.computed() if health.get(s, {}).get("health", "ok") == "ok"],
+            "slot_health": {slot: h["health"] for slot, h in health.items()},
             "pending": self.pending(),
             "notes": self.notes,
             "has_interpretation": bool(self.interpretation),
@@ -1552,6 +1636,8 @@ class HydroSession:
                 for k, v in real_features.items()
             ]
             out["active_feature_id"] = self.active_feature_id
+        if degraded:
+            out["degraded"] = degraded
         if warnings:
             out["identity_warnings"] = warnings
         return out

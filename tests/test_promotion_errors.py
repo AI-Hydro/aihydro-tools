@@ -57,7 +57,7 @@ def test_claim_not_found_is_structured():
 def _new(status, **kw):
     args = dict(session_id=SID, claim_id="m1", statement="NSE is 0.8", claim_type="empirical_result",
                 status=status, confidence="medium", confidence_rationale="Synthetic rationale long enough to pass.", basins=[], period="2000",
-                metric="nse")
+                metric="nse", evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}])
     args.update(kw)
     return add_claim(**args)
 
@@ -92,7 +92,8 @@ def test_redefining_an_existing_id_as_supported_is_gated_and_leaves_it_unchanged
 
 def test_non_metric_or_non_supported_claims_are_unaffected():
     HydroSession(SID).save()
-    assert _new("supported", claim_id="plain", metric=None)["status"] == "recorded"
+    assert _new("supported", claim_id="plain", metric=None,
+                evidence_spans=[{"source_type": "run", "source_id": "r1"}])["status"] == "recorded"
     assert _new("weakly_supported", claim_id="weak")["status"] == "recorded"
     assert _new("proposed", claim_id="prop")["status"] == "recorded"
 

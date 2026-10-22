@@ -1869,7 +1869,8 @@ tasks:
     rationale: >
       A hypothesis claim must be able to progress from proposed to
       supported via update_claim_status without triggering the
-      uncertainty gate (hypothesis claims are exempt). This end-to-end
+      uncertainty gate (hypothesis claims are exempt) once it carries an
+      evidence span (the evidence gate refuses supported claims without one). This end-to-end
       lifecycle test verifies the claims ledger write path.
     setup:
       session_id: bench-hrb-059
@@ -1887,6 +1888,8 @@ tasks:
           confidence_rationale: "Initial expert judgement."
           basins: ["01013500"]
           period: "1990-2010"
+          evidence_spans:
+            - {source_type: run, source_id: bench-run-059, metric_ref: baseflow_index}
     call:
       tool: update_claim_status
       kwargs:

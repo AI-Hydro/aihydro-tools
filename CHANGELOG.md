@@ -6,10 +6,47 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [2.7.0] - 2026-10-22 (Science Wave 3, PR-4a: session artifact health, one status gate, metric conflicts)
+
+No new package pins. Minor bump: additive response fields (`slot_health`, `degraded`, `claim_flags`,
+`metric_conflicts`), a new skeptic check, and **new refusals** on claim status (below).
+
+### Added
+
+- **Session artifact health.** `HydroSession.summary()` (so `start_session` and `get_session_summary`) adds
+  `slot_health` (`{slot: ok | missing_artifact | digest_mismatch | legacy_convention}`). A slot is
+  `missing_artifact` when its `_data_file` is gone, `digest_mismatch` when the file's digest differs from
+  `meta.retained_series.digest` (a file with no recorded digest cannot be checked and counts as `ok`), and, for
+  `signatures`, `legacy_convention` when the result lacks `flow_quantile_convention` or `_precipitation.completeness`
+  (computed before the q5/q95 fix or before precipitation completeness existed). Unhealthy slots are listed under
+  `degraded` (`slot`, `health`, `reason`, `fix`) and **no longer under `computed`**; `pending` is unchanged.
+  Stored results are never rewritten. New: `HydroSession.slot_health()`.
+- **One status gate** (`ai_hydro/claims/status_gate.py`, applied by `_status_gate` in `tools_ledger.py` to every path that
+  sets a status: `add_claim`, `update_claim_status`). After the existing `uncertainty_gate`:
+  - `evidence_gate`: `supported` and `weakly_supported` require at least one evidence span. The refusal is a typed,
+    traceback-free error whose `teaching_error` says how to fix it.
+  - `forcing_scope_gate` (general mechanism, keyed on scope metadata only): when the CI behind a cited run metric declares
+    `scope.excludes` containing `forcing_product` (documented shape `{"varies":[...],"assumes":[...],"excludes":[...]}`),
+    a claim asserting a difference from a reference cannot be `supported`/`weakly_supported`. Absent, free-text or
+    malformed scopes never trigger it. "Asserts a difference from a reference" is a cheap prose heuristic (a difference
+    word and a reference word, not negated), so it can miss paraphrases; it errs towards not blocking.
+  - Stored claims that break either rule are **flagged, never rewritten**: `start_session` returns them as `claim_flags`.
+- **Skeptic check 5, `metric_conflicts`.** Same metric (aliases resolved, e.g. `bfi` = `baseflow_index`), same feature,
+  same period, different values (relative difference above 1%, an engineering threshold), taking the latest run per
+  (tool, method). Reported by `run_skeptic` (`metric_conflict`, warning) and by `start_session` as `metric_conflicts`.
+  It stays for legacy sessions after the BFI kernel is fixed upstream.
+
+### Fixed
+
+- `knowledge/concepts/camels_metadata.json`, `ai_hydro/knowledge/camels_metadata.json` and `knowledge/tools/camels_tools.json`:
+  `high_q_freq` and `low_q_freq` are days per year, not events per year; `zero_q_freq` is the fraction of days with Q <= 0.
+  The `slope_fdc` entry is untouched apart from a `todo` pointing at PR-4b / the Wave 3 plan.
 
 ### Changed
 
+- **Behaviour change:** `add_claim` / `update_claim_status` now refuse `supported` and `weakly_supported` with no evidence
+  span (previously accepted). Bench task B-059 and five test modules that built such claims now cite a span.
+- Package version 2.7.0 (`pyproject.toml`, `ai_hydro/__version__`, `CITATION.cff`).
 - **A tool with no `tool_annotations.toml` row is no longer served unannotated.** `apply_tool_annotations`
   now stamps explicit conservative hints (`readOnlyHint=false`, `destructiveHint=true`,
   `idempotentHint=false`, `openWorldHint=true`) on any registered tool without a row (a third-party

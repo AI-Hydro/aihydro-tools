@@ -41,7 +41,8 @@ def _add(sid, **over):
     kw = dict(session_id=sid, claim_id="c1", statement="s", claim_type="empirical_result",
               status="supported", confidence="medium",
               confidence_rationale="Run-backed result with bootstrap interval reported.",
-              basins=["01013500"], period="2000-2010", limitations=["one gauge"])
+              basins=["01013500"], period="2000-2010", limitations=["one gauge"],
+              evidence_spans=[{"source_type": "run", "source_id": "r1"}])
     kw.update(over)
     return add_claim(**kw)
 
@@ -142,8 +143,8 @@ def test_promotion_passes_basin_gate_when_bound():
     _session_with_slot("pb", _ref())
     _add("pb")
     res = promote_claim_to_registry("pb", "c1", researcher_approved=True)
-    assert res.get("code") != "BASIN_REF_REQUIRED"   # next gate (evidence) now speaks
-    assert "evidence" in res["message"]
+    assert res.get("code") != "BASIN_REF_REQUIRED"   # next gate (the cited run is not retained) now speaks
+    assert "not retained" in res["message"]
 
 
 # --- (5) one USGS rule and alias equivalence -------------------------------

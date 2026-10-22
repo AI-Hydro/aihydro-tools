@@ -6,8 +6,9 @@ and returns a list[SkepticIssue].
 """
 from __future__ import annotations
 
+import math
 import re
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from ai_hydro import identity
 from ai_hydro.skeptic.models import SkepticIssue, SkepticReport
@@ -184,6 +185,126 @@ def check_registry_conflicts(session: "HydroSession") -> list[SkepticIssue]:
 
 
 # ---------------------------------------------------------------------------
+# Check 5 — Metric conflicts: one metric, one feature, one period, two values
+# ---------------------------------------------------------------------------
+
+#: Names that denote one quantity. Anything not listed stands for itself (normalised).
+_METRIC_ALIASES: dict[str, str] = {
+    "bfi": "baseflow_index",
+    "baseflow_index": "baseflow_index",
+    "base_flow_index": "baseflow_index",
+    "bfi_mean": "baseflow_index",
+    "rr": "runoff_ratio",
+    "runoff_ratio": "runoff_ratio",
+    "runoff_coefficient": "runoff_ratio",
+}
+
+#: Relative difference above which two values of one metric are a conflict. An engineering
+#: threshold (rounding and float noise stay below it), not a statistical one.
+METRIC_CONFLICT_REL_TOL = 0.01
+
+_FEATURE_KEYS = ("feature_id", "gauge_id", "site_id", "basin_id")
+_METHOD_KEYS = ("method", "baseflow_method", "filter", "algorithm")
+
+
+def canonical_metric(name: Any) -> str:
+    """``BFI`` / ``baseflow-index`` -> ``baseflow_index``; unknown names are normalised only."""
+    key = re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
+    return _METRIC_ALIASES.get(key, key)
+
+
+def _first(keys: tuple[str, ...], *sources: Any) -> Any:
+    for src in sources:
+        if isinstance(src, dict):
+            for k in keys:
+                if src.get(k) not in (None, ""):
+                    return src[k]
+    return None
+
+
+def _numeric_items(outputs: Any) -> list[tuple[str, float]]:
+    """Finite numeric ``(name, value)`` pairs of a ``key_outputs`` dict, one nesting level deep."""
+    found: list[tuple[str, float]] = []
+    if not isinstance(outputs, dict):
+        return found
+    for k, v in outputs.items():
+        if isinstance(v, dict):
+            found.extend(_numeric_items({kk: vv for kk, vv in v.items() if not isinstance(vv, dict)}))
+        elif isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+            found.append((str(k), float(v)))
+    return found
+
+
+def find_metric_conflicts(session: "HydroSession", rel_tol: float = METRIC_CONFLICT_REL_TOL) -> list[dict]:
+    """Same metric (aliases resolved), same feature, same period, different values.
+
+    Reads the run log. Per (tool, method) only the latest run counts, so recomputing one tool does
+    not conflict with itself. Values from different tools or methods that agree within ``rel_tol``
+    are concordant, not a conflict. Each conflict lists every observation with its method and run id.
+    """
+    try:
+        rows = session.get("_run_log") or {}
+    except Exception:
+        return []
+    latest: dict[tuple, dict[tuple, dict]] = {}
+    for run_id, row in rows.items():
+        if not isinstance(row, dict) or row.get("error") or row.get("minimal"):
+            continue
+        outputs, inputs = row.get("key_outputs") or {}, row.get("inputs") or {}
+        tool = str(row.get("tool_name") or row.get("slot") or "")
+        method = str(_first(_METHOD_KEYS, inputs, outputs) or tool)
+        feature = str(_first(_FEATURE_KEYS, inputs, outputs) or getattr(session, "site_id", "") or "")
+        period = (str(_first(("start_date",), inputs, outputs) or ""), str(_first(("end_date",), inputs, outputs) or ""))
+        for name, value in _numeric_items(outputs):
+            metric = canonical_metric(name)
+            if metric in {canonical_metric(k) for k in _FEATURE_KEYS + _METHOD_KEYS + ("start_date", "end_date")}:
+                continue
+            obs = {"value": value, "method": method, "tool": tool, "run_id": str(run_id),
+                   "metric_name": name, "_ts": str(row.get("timestamp") or "")}
+            slot = latest.setdefault((metric, feature, period), {})
+            key = (tool, method)
+            if key not in slot or obs["_ts"] >= slot[key]["_ts"]:
+                slot[key] = obs
+    conflicts: list[dict] = []
+    for (metric, feature, period), by_src in sorted(latest.items()):
+        vals = [o["value"] for o in by_src.values()]
+        if len(vals) < 2:
+            continue
+        hi, lo = max(vals), min(vals)
+        if hi - lo <= rel_tol * max(abs(hi), abs(lo), 1e-12):
+            continue
+        conflicts.append({
+            "metric": metric, "feature": feature,
+            "period": {"start": period[0] or None, "end": period[1] or None},
+            "observations": [{k: v for k, v in o.items() if k != "_ts"}
+                             for o in sorted(by_src.values(), key=lambda o: (o["value"], o["run_id"]))],
+            "spread": hi - lo,
+            "methods_differ": len({o["method"] for o in by_src.values()}) > 1,
+        })
+    return conflicts
+
+
+def check_metric_conflicts(session: "HydroSession") -> list[SkepticIssue]:
+    issues: list[SkepticIssue] = []
+    for c in find_metric_conflicts(session):
+        shown = "; ".join(f"{o['value']:.4g} ({o['method']}, run {o['run_id']})" for o in c["observations"])
+        issues.append(SkepticIssue(
+            issue_type="metric_conflict",
+            severity="warning",
+            description=(
+                f"Metric '{c['metric']}' has {len(c['observations'])} different values for "
+                f"feature '{c['feature'] or '?'}' over the same period: {shown}."
+            ),
+            recommendation=(
+                "State which method/run each reported value comes from, or re-run the older one with "
+                "the current implementation (clear_session the slot first). Cite only one value per "
+                "claim, with its method."
+            ),
+        ))
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Aggregate runner
 # ---------------------------------------------------------------------------
 
@@ -196,6 +317,7 @@ def run_all_checks(
     issues.extend(check_scope_overreach(session, text))
     issues.extend(check_assumption_violations(session))
     issues.extend(check_registry_conflicts(session))
+    issues.extend(check_metric_conflicts(session))
 
     has_error = any(i.severity == "error" for i in issues)
     has_warning = any(i.severity == "warning" for i in issues)

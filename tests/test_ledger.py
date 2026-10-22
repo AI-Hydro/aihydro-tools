@@ -190,6 +190,7 @@ def test_non_empirical_claim_is_not_misclassified_as_quantitative():
         basins=["01031500"],
         period="2000-2010",
         metric="kge",
+        evidence_spans=[{"source_type": "run", "source_id": "spec-1"}],
     )
 
     result = update_claim_status(
@@ -308,7 +309,8 @@ def test_claim_events_carry_the_new_sealed_revision(monkeypatch):
     HydroSession(sid)
     r1 = add_claim(session_id=sid, claim_id="claim.c1", statement="KGE is high for this basin.", claim_type="empirical_result",
               status="tested", confidence="medium", confidence_rationale="Tested with 10 years of data.",
-              basins=["01031500"], period="2000-2010")
+              basins=["01031500"], period="2000-2010",
+              evidence_spans=[{"source_type": "run", "source_id": "r1"}])
     update_claim_status(session_id=sid, claim_id="claim.c1", status="supported",
                         confidence="medium", rationale="Re-reviewed against the longer record.")
     assert r1.get("status") == "recorded", r1

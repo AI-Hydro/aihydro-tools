@@ -50,7 +50,8 @@
 		"description": "Slope of flow duration curve (log Q33 - log Q66)",
 		"units": "dimensionless",
 		"group": "hydrology",
-		"reference": "Sawicz et al. (2011)"
+		"reference": "Sawicz et al. (2011)",
+		"todo": "PR-4b: definition and units of slope_fdc are being aligned with the CAMELS file; see docs/vision-2040/plans/science-wave3.md (PR-3a, M2)."
 	},
 	"hfd_mean": {
 		"description": "Mean half-flow date (day of water year)",
@@ -71,18 +72,18 @@
 		"interpretation": "Non-exceedance quantile: 95% of days are at or below this flow (exceeded 5% of time)"
 	},
 	"high_q_freq": {
-		"description": "Frequency of high flow events (> 9x median)",
-		"units": "events/year",
+		"description": "Frequency of high flow days (daily Q > 9x median Q); days per year, not a count of events",
+		"units": "days/year",
 		"group": "hydrology"
 	},
 	"low_q_freq": {
-		"description": "Frequency of low flow events (< 0.2x mean)",
-		"units": "events/year",
+		"description": "Frequency of low flow days (daily Q < 0.2x mean Q); days per year, not a count of events",
+		"units": "days/year",
 		"group": "hydrology"
 	},
 	"zero_q_freq": {
-		"description": "Frequency of zero flow days",
-		"units": "fraction",
+		"description": "Fraction of days with zero flow (Q <= 0, the CAMELS rule)",
+		"units": "fraction of days",
 		"group": "hydrology"
 	},
 	"elev_mean": {

@@ -101,7 +101,7 @@ def _drop_basin_records(claim_id="c1"):
 CASES = [
     ("basin_identity", "BASIN_REF_REQUIRED", dict(basins=["elsewhere"], basin_refs=None), verify),
     ("basin_identity", "BASIN_REF_UNKNOWN", {}, "drop_basin_records"),
-    ("evidence", "EVIDENCE_REQUIRED", dict(evidence_spans=[]), verify),
+    ("evidence", "EVIDENCE_REQUIRED", dict(evidence_spans=[]), "legacy_supported"),
     ("limitations", "LIMITATIONS_REQUIRED", dict(limitations=[]), verify),
     ("status", "STATUS_NOT_ELIGIBLE", dict(status="proposed"), None),
     ("uncertainty", "UNCERTAINTY_NOT_VERIFIED", {}, "legacy_supported"),
@@ -129,7 +129,8 @@ def test_family_is_advisory_in_add_claim_and_blocks_promotion(session, family, c
                                     uncertainty_verified=True)["promotion_check"]
     elif step == "legacy_supported":
         # add_claim/update_claim_status can no longer produce 'supported' without verified
-        # uncertainty; a session stored before the shared gate can still hold one.
+        # uncertainty or without an evidence span; a session stored before the shared gate can
+        # still hold one.
         s = HydroSession.load(SID)
         s.claims["c1"]["status"] = "supported"
         s.save()

@@ -220,6 +220,21 @@ def _uncertainty_gate(claim_id: str, claim_dict: dict, status: str,
     }
 
 
+def _status_gate(session_id: str, claim_id: str, claim_dict: dict, status: str,
+                 uncertainty_verified: bool) -> dict | None:
+    """The ONE gate on a claim's status: the first teaching refusal that applies, else ``None``.
+
+    Rules, in order: verified uncertainty for metric-scoped claims (``_uncertainty_gate``);
+    at least one evidence span for ``supported``/``weakly_supported``; no ``supported`` claim of
+    a difference from a reference when the cited CI excludes the forcing product
+    (``ai_hydro.claims.status_gate``). Every path that sets a status calls this, so the rules do
+    not depend on which tool was used. Stored claims are not rewritten: ``start_session`` flags them.
+    """
+    from ai_hydro.claims.status_gate import status_gate
+    return (_uncertainty_gate(claim_id, claim_dict, status, uncertainty_verified)
+            or status_gate(session_id, claim_id, claim_dict, status))
+
+
 #: Words by which prose asserts that a number carries an uncertainty estimate.
 _UNCERTAINTY_CLAIM = re.compile(
     r"\b(?:CIs?|confidence\s+(?:intervals?|bounds?|limits?)|credible\s+intervals?|"
@@ -334,14 +349,15 @@ def add_claim(
 
     basin_refs: BasinRef dicts from delineate_watershed* (data.basin_ref) or {"id":
         "aihydro:basin:sha256:<hex>", "label": ...}. If omitted and the session watershed's
-        basin_ref matches `basins`, it is bound (`auto_bound`); promotion with basins but no
-        basin_refs is refused (BASIN_REF_REQUIRED).
+        basin_ref matches `basins`, it is bound (`auto_bound`); no basin_refs at
+        promotion: BASIN_REF_REQUIRED.
     evidence_spans: [{"source_type": "run", "source_id": "<run_id>", "metric_ref": "kge"}]; legacy
         `evidence` (untyped dicts) is auto-migrated. Pass one of the two.
-    prereg_id: from register_research_plan; marks the claim confirmatory, not exploratory.
+    prereg_id: from register_research_plan; marks the claim confirmatory.
 
-    status="supported" on a metric-scoped claim (scope.metric or evidence metric_ref) is refused
-    (`uncertainty_gate`): record another status, then update_claim_status(uncertainty_verified=True).
+    Metric-scoped status="supported" is refused (`uncertainty_gate`): record another status, then
+    update_claim_status(uncertainty_verified=True). `evidence_gate` (supported with no evidence
+    span) and `forcing_scope_gate` refuse too.
 
     Local paths: this machine's prefixes (workspace, AIHYDRO_HOME, home, temp) in statement,
     rationale and limitations become <workspace>, <aihydro-home>, <home>, <tmp> (`paths_scrubbed`).
@@ -377,7 +393,7 @@ def add_claim(
         _bad = prose_problems(claim_dict, getattr(session, "workspace_dir", None))
         if _bad:
             return refusal(_bad)            # nothing is stored or sealed
-        gate = _uncertainty_gate(claim_id, claim_dict, status, False)   # add_claim cannot assert it
+        gate = _status_gate(session_id, claim_id, claim_dict, status, False)   # add_claim cannot assert it
         if gate is not None:
             return gate
         if prereg_id:
@@ -455,7 +471,7 @@ def update_claim_status(
         claim_dict = session.claims[claim_id]
         claim_type = claim_dict.get("claim_type", "")
 
-        gate = _uncertainty_gate(claim_id, claim_dict, status, uncertainty_verified)
+        gate = _status_gate(session_id, claim_id, claim_dict, status, uncertainty_verified)
         if gate is not None:
             return gate
 
