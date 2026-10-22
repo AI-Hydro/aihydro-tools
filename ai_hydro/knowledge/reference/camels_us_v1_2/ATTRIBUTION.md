@@ -29,11 +29,16 @@ attribution. Please cite:
 - Addor, N., Newman, A. J., Mizukami, N., & Clark, M. P. (2017). The CAMELS data set: catchment attributes and
   meteorology for large-sample studies. Hydrology and Earth System Sciences, 21, 5293-5313.
   https://doi.org/10.5194/hess-21-5293-2017
-- Newman, A. J., et al. (2015). Hydrology and Earth System Sciences (HESS), 19, 209. Companion paper to the CAMELS
-  data set. Title and DOI to be completed from the reviewer's citation: they are not in any local file and were not
-  invented here.
-- Newman, A. et al. (2014). The NCAR CAMELS data set (title not recorded locally); the DOI the provenance JSON of
-  these files gives for the record is 10.5065/D6MW2F4D.
+- Data citation: "A. Newman; K. Sampson; M. P. Clark; A. Bock; R. J. Viger; D. Blodgett, 2014. A large-sample
+  watershed-scale hydrometeorological dataset for the contiguous USA. Boulder, CO: UCAR/NCAR.
+  https://dx.doi.org/10.5065/D6MW2F4D"
+- Associated paper: "A. J. Newman, M. P. Clark, K. Sampson, A. Wood, L. E. Hay, A. Bock, R. J. Viger, D. Blodgett,
+  L. Brekke, J. R. Arnold, T. Hopson, and Q. Duan: Development of a large-sample watershed-scale hydrometeorological
+  dataset for the contiguous USA: dataset characteristics and assessment of regional variability in hydrologic model
+  performance. Hydrol. Earth Syst. Sci., 19, 209-223, doi:10.5194/hess-19-209-2015, 2015."
+
+  (The two Newman texts above are copied verbatim from the `metadata.description` ("TIME SERIES" section) of the
+  Zenodo record 15529996.)
 - CAMELS data set v1.2, Zenodo record 15529996 (DOI 10.5065/D6MW2F4D), NCAR/UCAR.
 
 ## What the values are (read before comparing)

@@ -103,7 +103,7 @@ when it lands). Only github.com is contacted. A plain `pip install aihydro-tools
 - The workspace `signatures_<gauge>.json` carries `_data_file` as a `session-data:` ref, not an absolute path.
 - Standalone `source="signatures"` validators take `run_id` / `feature`; `series_digest` also selects. With several stored signatures results and no selector the call returns `ambiguous_signatures_result` with a teaching error and the candidates.
 - `evidence._compact`: the list branch uses the keepable-string-list guard (a long list uncertainty is dropped).
-- Packaged reference: `.gitattributes` `ai_hydro/knowledge/reference/** -text`; sha256 of the three files pinned in a test; Newman et al. (2015, HESS 19:209) added to `ATTRIBUTION.md` with the details available locally only (title and DOI still to be filled from the reviewer's citation).
+- Packaged reference: `.gitattributes` `ai_hydro/knowledge/reference/** -text`; sha256 of the three files pinned in a test; the Newman et al. data citation (2014) and paper (2015, HESS 19:209) are in `ATTRIBUTION.md`, copied verbatim from the Zenodo record's description.
 - Output honesty: `qualifier_exposure_unavailable` (with reason) on the slot path; the "no codes" validator message states the real reason (`codes_reason` on the retained series); `session_slot_ignored` for a multi-gauge or empty `camels` slot.
 
 ### Follow-ups
