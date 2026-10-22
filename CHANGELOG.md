@@ -84,8 +84,33 @@ when it lands). Only github.com is contacted. A plain `pip install aihydro-tools
   function reads as consecutive days from `start_date`, shifting every value after a gap onto an earlier date).
 - Package version 2.8.0 (`pyproject.toml`, `ai_hydro/__version__`, `CITATION.cff`).
 
+### Advisory: earlier versions mis-dated a streamflow slot with missing days (tools 2.3.7-2.7.0; earlier versions not checked)
+
+- **Trigger.** `extract_hydrological_signatures` consuming the session `streamflow` slot (same gauge and window) when the
+  window contains null or missing days. The slot drops days without a value, so its `q_cms` list is not consecutive from
+  `start_date`; the list was read as consecutive daily values, which moved every value after a gap onto an earlier date.
+- **Wrong in such runs:** `runoff_ratio`, `stream_elas`, `hfd_mean`, `half_flow_date_std`, the water-year grouping (and so the
+  interval counts), `streamflow_end` and `streamflow_digest`.
+- **Unaffected:** `q_mean`, `q5`, `q95`, `q_median`, `q_std`, `slope_fdc` and the flow-frequency counts (they do not use dates).
+- **Detecting an old sealed run.** The slot's `missing_dates` / `n_missing_dates` is greater than 0 and the run's
+  `streamflow_n_days` is less than the number of days in its window. Re-run those signatures on 2.8.0.
+- **2.8.0.** The slot's series is passed with its dates. If the slot has no dates, or its dates and values differ in length,
+  the call still runs on the bare list but now says so: a `streamflow_dates_unavailable` warning in `quality_flags` (never silent).
+
+### Review fixes (on the same branch)
+
+- Comparison gate no longer over-refuses. The forcing-scope refusal is skipped when the metric's comparison entry reports `forcing_differs: false`; with no entry it applies only to metrics whose definition uses precipitation (watershed's `FORCING_DEPENDENT`: `runoff_ratio`, `stream_elas`; fallback list kept in `status_gate`). A comparison on an interval with no readable scope where forcing does not apply (a model-vs-model NSE) is refused as `interval_scope_gate` (scope unknown), without talking about forcing. The "forcing-spread CI" advice now says no tool produces one yet.
+- The workspace `signatures_<gauge>.json` carries `_data_file` as a `session-data:` ref, not an absolute path.
+- Standalone `source="signatures"` validators take `run_id` / `feature`; `series_digest` also selects. With several stored signatures results and no selector the call returns `ambiguous_signatures_result` with a teaching error and the candidates.
+- `evidence._compact`: the list branch uses the keepable-string-list guard (a long list uncertainty is dropped).
+- Packaged reference: `.gitattributes` `ai_hydro/knowledge/reference/** -text`; sha256 of the three files pinned in a test; Newman et al. (2015, HESS 19:209) added to `ATTRIBUTION.md` with the details available locally only (title and DOI still to be filled from the reviewer's citation).
+- Output honesty: `qualifier_exposure_unavailable` (with reason) on the slot path; the "no codes" validator message states the real reason (`codes_reason` on the retained series); `session_slot_ignored` for a multi-gauge or empty `camels` slot.
+
 ### Follow-ups
 
+- `separate_baseflow` and the FDC `seven_q10` splice across gaps (BFI effect about 0.002 on the test series).
+- Slot consumption does not check the slot's `interval`.
+- `ProjectSession.search` re-digests slot files on every call.
 - `qualifier_exposure` is only produced when watershed fetches the series itself (it needs the flags frame); a series taken from the
   slot has none. Accepting flags with `q_cms_series` in watershed would close it.
 - Standalone `source="signatures"` validators find the session's active/legacy signatures result, not one stored under `__override__`

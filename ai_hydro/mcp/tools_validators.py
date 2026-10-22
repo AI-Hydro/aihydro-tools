@@ -14,7 +14,7 @@ from ai_hydro.mcp.helpers import _tool_error_to_dict
 from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.session import HydroSession
 from ai_hydro.validators.models import ValidatorResult
-from ai_hydro.validators.series_binding import SERIES_MISMATCH
+from ai_hydro.validators.series_binding import AMBIGUOUS, SERIES_MISMATCH
 
 log = logging.getLogger("ai_hydro.mcp")
 
@@ -289,6 +289,13 @@ def precipitation_usable(prec: object) -> tuple[bool, str | None]:
 def _series_problem_result(validator: str, b, affected: list[str]) -> dict:
     """The one shape every series-bound validator returns when its series cannot be resolved or verified."""
     mismatch = b.problem == SERIES_MISMATCH
+    md = {"quality_flag": b.problem, "series_mismatch": mismatch, "source": b.source}
+    if b.problem == AMBIGUOUS:
+        md["teaching_error"] = {
+            "rule": "validator_needs_to_know_which_signatures_result",
+            "explanation": "More than one signatures result is stored, and a validator never guesses which series to judge.",
+            "how_to_fix": "Call again with run_id=<the signatures run id> (or feature=<feature id>, or "
+                          "series_digest=<the result's streamflow_digest>)."}
     return ValidatorResult(
         validator=validator,
         status="insufficient_data",
@@ -297,13 +304,14 @@ def _series_problem_result(validator: str, b, affected: list[str]) -> dict:
                         "you mean (source='signatures' for the series the signatures consumed, "
                         "source='streamflow' for the session slot)."),
         affected_slots=affected,
-        metadata={"quality_flag": b.problem, "series_mismatch": mismatch, "source": b.source},
+        metadata=md,
     ).model_dump()
 
 
-def _bound(session, source: str, series_digest: str | None):
+def _bound(session, source: str, series_digest: str | None, run_id: str | None = None,
+           feature: str | None = None):
     from ai_hydro.validators.series_binding import bind_series
-    return bind_series(session, source, series_digest)
+    return bind_series(session, source, series_digest, run_id, feature)
 
 
 def _record_length_verdict(n_days, affected: list[str], series_md: dict | None = None,
@@ -383,6 +391,8 @@ def check_record_length(
     session_id: str,
     source: Literal["signatures", "streamflow"] = "streamflow",
     series_digest: str | None = None,
+    run_id: str | None = None,
+    feature: str | None = None,
 ) -> dict:
     """
     Guard against analyses on too-short records.
@@ -396,15 +406,17 @@ def check_record_length(
     source : "streamflow" (default) judges the session streamflow slot; "signatures" judges the
         series extract_hydrological_signatures consumed (retained and digest-bound), which need not be
         the slot's. series_digest, when given, is the digest the series must have; a different series is
-        never validated: the result is insufficient_data with series_mismatch.
+        never validated: the result is insufficient_data with series_mismatch. With several stored signatures
+        results, run_id (the result's run id) or feature chooses one; without either, or series_digest, the call
+        is ambiguous and says so instead of guessing.
 
     Fires automatically after fetch_streamflow_data (source "streamflow") and after
     extract_hydrological_signatures (source "signatures").
     """
     try:
         session = HydroSession.load(session_id)
-        if source != "streamflow" or series_digest:
-            b = _bound(session, source, series_digest)
+        if source != "streamflow" or series_digest or run_id or feature:
+            b = _bound(session, source, series_digest, run_id, feature)
             if not b.resolved:
                 return _series_problem_result("record_length", b, [b.slot])
             return _record_length_for_series(b)
@@ -587,8 +599,9 @@ def _qualification_for_series(b) -> dict:
         return ValidatorResult(
             validator="usgs_qualification_codes",
             status="insufficient_data",
-            message=(f"The {b.source} series carries no USGS approval or qualifier codes (caller-supplied or "
-                     "modelled streamflow, or a source that does not serve them); review status unknown."),
+            message=(f"The {b.source} series has no USGS approval or qualifier codes attached: "
+                     + (b.codes_reason or "the retained series records none")
+                     + ". Review status unknown."),
             affected_slots=affected,
             recommendation="Verify the data review status directly from the USGS Water Data portal "
                            "(waterdata.usgs.gov) for the gauge, and list it as a limitation.",
@@ -630,6 +643,8 @@ def check_usgs_qualification_codes(
     session_id: str,
     source: Literal["signatures", "streamflow"] = "streamflow",
     series_digest: str | None = None,
+    run_id: str | None = None,
+    feature: str | None = None,
 ) -> dict:
     """
     Flag provisional or estimated USGS streamflow data.
@@ -651,8 +666,8 @@ def check_usgs_qualification_codes(
     """
     try:
         session = HydroSession.load(session_id)
-        if source != "streamflow" or series_digest:
-            b = _bound(session, source, series_digest)
+        if source != "streamflow" or series_digest or run_id or feature:
+            b = _bound(session, source, series_digest, run_id, feature)
             if not b.resolved:
                 return _series_problem_result("usgs_qualification_codes", b, [b.slot])
             if source == "signatures" or b.qualifier_codes is not None or b.approval_codes is not None:
@@ -864,6 +879,8 @@ def check_regulated_basin(
     session_id: str,
     source: Literal["signatures", "streamflow"] = "streamflow",
     series_digest: str | None = None,
+    run_id: str | None = None,
+    feature: str | None = None,
 ) -> dict:
     """
     Flag basins with known upstream regulation (dams, diversions).
@@ -884,13 +901,11 @@ def check_regulated_basin(
     """
     try:
         session = HydroSession.load(session_id)
-        if source != "streamflow" or series_digest:
-            b = _bound(session, source, series_digest)
+        if source != "streamflow" or series_digest or run_id or feature:
+            b = _bound(session, source, series_digest, run_id, feature)
             if not b.resolved:
                 return _series_problem_result("regulated_basin", b, [b.slot])
-            sig = session.get("signatures") if source == "signatures" else None
-            gauge = (((sig or {}).get("data") or {}).get("basin_gauge_id") or b.gauge_id)
-            return _regulated_verdict(session, gauge, b.describe())
+            return _regulated_verdict(session, b.gauge_id, b.describe())
         return _regulated_verdict(session)
     except Exception as exc:
         return _tool_error_to_dict(exc)
@@ -1042,6 +1057,8 @@ def check_stationarity(
     session_id: str,
     source: Literal["signatures", "streamflow"] = "streamflow",
     series_digest: str | None = None,
+    run_id: str | None = None,
+    feature: str | None = None,
 ) -> dict:
     """
     Test for a statistically significant trend in annual streamflow totals.
@@ -1063,8 +1080,8 @@ def check_stationarity(
     """
     try:
         session = HydroSession.load(session_id)
-        if source != "streamflow" or series_digest:
-            b = _bound(session, source, series_digest)
+        if source != "streamflow" or series_digest or run_id or feature:
+            b = _bound(session, source, series_digest, run_id, feature)
             if not b.resolved:
                 return _series_problem_result("stationarity", b, [b.slot])
             return _stationarity_verdict(b.dates, b.q, [b.slot], b.describe())

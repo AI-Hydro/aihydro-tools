@@ -358,3 +358,98 @@ def test_signatures_consume_a_gappy_slot_on_its_real_dates_not_as_consecutive_da
     flags = {f["validator"]: f for f in out["quality_flags"]}
     assert flags["record_length"]["metadata"]["series"]["n_days"] == len(q)
     assert flags["usgs_qualification_codes"]["status"] == "insufficient_data"
+
+
+# ------------------------------------------------------------------ review fixes
+
+def test_compact_drops_long_lists_even_in_the_uncertainty_block():
+    from ai_hydro.session.evidence import _compact, capture_result_evidence
+    assert _compact(["a"] * 5000, keep_string_lists=True) is None
+    assert _compact({"m": {"samples": ["a"] * 5000, "scope": {"excludes": ["x"]}}}, keep_string_lists=True) == {
+        "m": {"scope": {"excludes": ["x"]}}}
+    ev = capture_result_evidence({"data": {"_uncertainty": ["a"] * 5000}})
+    assert ev["uncertainty"] is None
+    assert _compact(["a", "b"], keep_string_lists=False) is None
+
+
+def _two_results(tmp=None):
+    s = HydroSession(SID)
+    s.site_id = "01013500"
+    out = {}
+    for i, (seed, fid) in enumerate(((1, "basin_a"), (2, "basin_b"))):
+        served = _served(seed=seed)
+        ret = sb.retain_served_series(SID, served)
+        digest = sb.series_digest(served["dates"], served["q_cms"])
+        s.put_result("signatures", fid, f"k{i}", {
+            "data": {"streamflow_digest": digest, "_data_file": ret["path"], "basin_gauge_id": "01013500",
+                     "streamflow_start": served["dates"][0], "streamflow_end": served["dates"][-1]},
+            "meta": {"computed_at": f"2026-10-0{i + 1}T00:00:00+00:00", "run_id": f"run_{fid}",
+                     "retained_series": {"path": ret["path"], "digest": ret["digest"]}}})
+        out[fid] = digest
+    s.save()
+    s = HydroSession.load(SID)
+    # put_result stamps its own run id on the stored result; read the real ones back
+    out["run_ids"] = {fid: s._slots["signatures"][fid][f"k{i}"]["meta"]["run_id"]
+                      for i, fid in enumerate(("basin_a", "basin_b"))}
+    return out
+
+
+def test_two_signatures_results_without_a_selector_is_a_teaching_error_not_a_guess():
+    ids = _two_results()["run_ids"]
+    for fn in (check_record_length, check_usgs_qualification_codes, check_stationarity, check_regulated_basin):
+        r = fn(SID, source="signatures")
+        assert r["status"] == "insufficient_data" and r["metadata"]["quality_flag"] == "ambiguous_signatures_result", fn
+        t = r["metadata"]["teaching_error"]
+        assert t["rule"] and "run_id=" in t["how_to_fix"] and ids["basin_a"] in r["message"] and ids["basin_b"] in r["message"]
+
+
+def test_run_id_feature_and_digest_choose_the_result():
+    digests = _two_results()
+    ids = digests["run_ids"]
+    for kw, want in (({"run_id": ids["basin_a"]}, "basin_a"), ({"run_id": ids["basin_b"]}, "basin_b"),
+                     ({"feature": "basin_a"}, "basin_a"), ({"series_digest": digests["basin_b"]}, "basin_b")):
+        r = check_record_length(SID, source="signatures", **kw)
+        assert r["status"] == "pass" and r["metadata"]["series"]["series_digest"] == digests[want], kw
+    assert check_record_length(SID, source="signatures", run_id="nope")["metadata"]["quality_flag"] == "run_not_found"
+    assert check_record_length(SID, source="signatures", feature="nope")["metadata"]["quality_flag"] == "feature_not_found"
+    r = check_record_length(SID, source="signatures", series_digest="sha256:" + "1" * 64)
+    assert r["metadata"]["quality_flag"] == "series_mismatch"
+
+
+def test_missing_codes_message_states_the_real_reason():
+    served = _served()
+    served["codes_reason"] = "the streamflow slot holds no per-value qualification_codes (fetched before they were retained)"
+    _signatures_session(served)
+    r = check_usgs_qualification_codes(SID, source="signatures")
+    assert r["status"] == "insufficient_data" and "no per-value qualification_codes" in r["message"]
+    assert "caller-supplied or modelled" not in r["message"]
+
+
+def test_slot_without_dates_is_flagged_never_silent(monkeypatch):
+    import aihydro_watershed.signatures.signatures as impl
+    from aihydro_core.records import digest_bytes
+    from ai_hydro.mcp.tools_analysis import extract_hydrological_signatures
+    monkeypatch.setattr(impl, "_gauge_area_check", lambda *a, **k: {"area_check": "unavailable", "warnings": []})
+    idx = pd.date_range("1999-10-01", "2001-09-30", freq="D")
+    q = [float(v) for v in 4.0 + np.random.default_rng(2).uniform(0, 2, len(idx))]
+    path = store.write_session_data_file(SID, "streamflow_nodates.json", {"q_cms": q})     # no dates
+    s = HydroSession(SID)
+    s.site_id, s.site_type = "01013500", "usgs_gauge"
+    s.set("watershed", {"data": {"area_km2": 250.0, "gauge_id": "01013500", "geometry_geojson": {
+        "type": "Polygon", "coordinates": [[[-77.5, 39.2], [-77.4, 39.2], [-77.4, 39.3], [-77.5, 39.3], [-77.5, 39.2]]]}},
+        "meta": {}})
+    s.set("streamflow", {"data": {"n_days": len(q), "_data_file": path},
+                         "meta": {"params": {"gauge_id": "01013500", "start_date": "1999-10-01", "end_date": "2001-09-30"},
+                                  "retained_series": {"path": path, "digest": digest_bytes(Path(path).read_bytes())}}})
+    s.save()
+    out = extract_hydrological_signatures(session_id=SID, start_date="1999-10-01", end_date="2001-09-30",
+                                          precipitation="skip")
+    assert not out.get("error"), out
+    f = [x for x in out["quality_flags"] if x.get("validator") == "streamflow_dates_unavailable"]
+    assert len(f) == 1 and f[0]["status"] == "warning" and "carries no dates" in f[0]["message"]
+    d = out["data"]
+    assert d["qualifier_exposure_unavailable"]["reason"] and "streamflow slot" in d["qualifier_exposure_unavailable"]["reason"]
+    served = json.loads(Path(out["meta"]["retained_series"]["path"]).read_text())
+    assert "no per-value qualification_codes" in served["codes_reason"]
+    r = check_usgs_qualification_codes(SID, source="signatures")
+    assert "no per-value qualification_codes" in r["message"]

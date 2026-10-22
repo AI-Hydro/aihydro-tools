@@ -201,3 +201,36 @@ def test_sync_reminder_counts_only_healthy_analyses():
     s.set("streamflow", {"data": {"n_days": 5}, "meta": {"computed_at": "2026-10-01T00:00:00+00:00"}})
     s.save()
     assert "[2 analyses complete" in _sync_reminder("w3-readers")     # the degraded one is not counted
+
+
+# ------------------------------------------------------------------ review fixes: pinned hashes, attribution, slot notes
+
+PINNED_SHA256 = {
+    "camels_hydro.txt": "7dcae3ea8c28e6485fc9e39b3c5e8bb509d6354ebe9b0b98873ec47fa36e3c41",
+    "camels_clim.txt": "6a3a80256afbaea13f59f279c174d3c010156b826ffb53a4cfb5508814404f5f",
+    "camels_topo.txt": "b64ca9923bcaccf21dde33137903797919e8d6732edd7849f8534e0ddcbec8e8",
+}
+
+
+def test_packaged_files_are_pinned_by_sha256_in_the_test_not_only_in_the_adjacent_json():
+    for name, want in PINNED_SHA256.items():
+        assert hashlib.sha256((PKG / name).read_bytes()).hexdigest() == want, name
+
+
+def test_gitattributes_keeps_the_reference_bytes_untouched():
+    text = (Path(cr.__file__).resolve().parents[2] / ".gitattributes").read_text()
+    assert "ai_hydro/knowledge/reference/** -text" in text.splitlines()
+
+
+def test_attribution_names_newman_and_addor():
+    text = (PKG / "ATTRIBUTION.md").read_text()
+    assert "Newman" in text and "19, 209" in text and "Addor" in text
+
+
+def test_multi_gauge_or_empty_slot_is_reported_as_ignored_not_silently_skipped():
+    s = HydroSession("w3-slot")
+    s.set("camels", {"data": {"mode": "multi", "gauges": {}}, "meta": {}})
+    blk, _ = cr.build_camels_reference({"q_mean": 1.7, "streamflow_start": "1989-10-01", "streamflow_end": "2009-09-30"},
+                                       "01013500", 2253.0, "1989-10-01", "2009-09-30", s)
+    assert blk["available"] and blk["source"]["kind"] == "packaged"
+    assert "multi-gauge" in blk["session_slot_ignored"]

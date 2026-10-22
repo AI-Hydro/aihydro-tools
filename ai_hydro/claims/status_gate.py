@@ -165,6 +165,37 @@ def comparison_entry(rc: Any, leaf: str) -> dict | None:
     return None
 
 
+#: Metrics whose definition uses precipitation, so a different forcing product changes them. Kept with the
+#: comparison logic; aihydro-watershed's comparison module owns the same list (``FORCING_DEPENDENT``) and wins
+#: when present. Not keyed on tool names: it is a property of the metric's definition.
+_FORCING_DEPENDENT_FALLBACK = ("runoff_ratio", "stream_elas")
+
+
+def forcing_dependent_metrics() -> tuple:
+    try:
+        from aihydro_watershed.signatures.comparison import FORCING_DEPENDENT
+        return tuple(FORCING_DEPENDENT)
+    except Exception:                                                       # noqa: BLE001
+        return _FORCING_DEPENDENT_FALLBACK
+
+
+def _forcing_applies(row: dict | None, leaf: str) -> bool:
+    """Does the forcing product matter for ``leaf`` in this run?
+
+    The run's own ``reference_comparison`` entry decides when it has one: ``forcing_differs: false`` means the
+    forcing is not what a difference would be about (skip); true or unstated applies. With no entry, only the
+    forcing-dependent metrics (definition uses precipitation) are subject to it."""
+    entry = comparison_entry(reference_comparison(row), leaf)
+    if isinstance(entry, dict):
+        return entry.get("forcing_differs") is not False
+    return leaf in forcing_dependent_metrics()
+
+
+def _scope_wellformed(ci: Any) -> bool:
+    sc = ci.get("scope") if isinstance(ci, dict) else None
+    return (isinstance(sc, dict) and all(isinstance(sc.get(k), (list, tuple)) for k in ("varies", "excludes")))
+
+
 def _is_comparison_claim(claim_dict: dict) -> bool:
     """A comparison claim names the reference it compares against (``comparison_ref``)."""
     return bool(str(claim_dict.get("comparison_ref") or "").strip())
@@ -194,9 +225,30 @@ def forcing_scoped_metrics(session_id: str, claim_dict: dict,
         ci = _ci(row, leaf)
         if not isinstance(ci, dict) or not scope_excludes(ci, FORCING_EXCLUSION):
             continue
+        if not _forcing_applies(row, leaf):
+            continue
         comparison = claim_cmp
         if comparison or not structural_only:
             found.append({"metric_ref": span["metric_ref"], "run_id": span["source_id"], "comparison": comparison})
+    return found
+
+
+def scope_unknown_metrics(session_id: str, claim_dict: dict,
+                          run_reader: Callable[[str, str], dict | None] | None = None) -> list[dict]:
+    """Cited metrics of a comparison claim whose interval has no readable scope and for which forcing does not apply
+    (e.g. a model-vs-model NSE): the interval's coverage is unknown, which is a different problem from forcing."""
+    found: list[dict] = []
+    if not _is_comparison_claim(claim_dict):
+        return found
+    for span in claim_dict.get("evidence_spans") or []:
+        if not (isinstance(span, dict) and span.get("source_type", "run") == "run"
+                and span.get("metric_ref") and span.get("source_id")):
+            continue
+        row = _read(run_reader, session_id, span["source_id"])
+        leaf = _metric_leaf(span["metric_ref"])
+        ci = _ci(row, leaf)
+        if isinstance(ci, dict) and not _scope_wellformed(ci) and not _forcing_applies(row, leaf):
+            found.append({"metric_ref": span["metric_ref"], "run_id": span["source_id"]})
     return found
 
 
@@ -269,7 +321,19 @@ def forcing_scope_gate(session_id: str, claim_id: str, claim_dict: dict, status:
                 metrics=[{"metric_ref": span["metric_ref"], "run_id": span["source_id"]}])
     metrics = forcing_scoped_metrics(session_id, claim_dict, run_reader)
     if not metrics:
-        return None
+        unknown = scope_unknown_metrics(session_id, claim_dict, run_reader)
+        if not unknown:
+            return None
+        names = ", ".join(sorted({m["metric_ref"] for m in unknown}))
+        return _refusal(
+            "interval_scope_gate", claim_id, claim_dict, status, "comparison_needs_a_known_interval_scope",
+            f"This claim compares against a reference and rests on the confidence interval for {names}, which "
+            "declares no readable scope (no `scope` with `varies` and `excludes`). What the interval covers is "
+            f"unknown, so a difference cannot be '{status}' on it.",
+            "1. Record the claim as 'tested' or 'inconclusive' and state that the interval's coverage is unknown; or\n"
+            "2. Cite an interval that declares its scope (`scope: {varies, assumes, excludes}`), then set the status "
+            "again.",
+            metrics=unknown)
     names = ", ".join(sorted({m["metric_ref"] for m in metrics}))
     return _refusal(
         "forcing_scope_gate", claim_id, claim_dict, status, "difference_from_reference_needs_forcing_in_scope",
@@ -281,9 +345,9 @@ def forcing_scope_gate(session_id: str, claim_id: str, claim_dict: dict, status:
         "property of the basin.",
         "1. Record the claim as 'tested' or 'inconclusive' and state that the interval excludes the "
         "forcing product; or\n"
-        "2. Reword it as a statement about the sampled period only (no difference from the reference); or\n"
-        "3. Add evidence whose uncertainty scope includes the forcing product (e.g. a forcing-product "
-        "spread), cite it in evidence_spans, then set the status again.",
+        "2. Reword it as a statement about the sampled period only (no difference from the reference). "
+        "(An interval whose scope varies the forcing product, such as a forcing-spread interval, would lift "
+        "this; no tool produces one yet.)",
         metrics=metrics,
     )
 

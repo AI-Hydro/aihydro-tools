@@ -135,3 +135,22 @@ table, see above):
   `forcing` (product, reference, the "GridMET vs Daymet" disclosure), `climate_context`, `can_claim_difference` per signature and
   the `blockers` behind each `false`. An unavailable reference says why (`available: false`) and never raises.
 - A cached result keeps the reference it was computed with; `clear_session(["signatures"])` recomputes it after `fetch_camels_us`.
+
+## Advisory: streamflow slot with missing days (tools 2.3.7-2.7.0)
+
+Earlier versions read the streamflow slot's value list as consecutive days from `start_date`, but the slot drops days with no
+value. In a run that consumed such a slot (same gauge and window, window containing null or missing days) every value after a gap
+sat on an earlier date. Wrong: `runoff_ratio`, `stream_elas`, `hfd_mean`, `half_flow_date_std`, the water-year grouping,
+`streamflow_end`, `streamflow_digest`. Unaffected: `q_mean`, `q5`, `q95`, `q_median`, `q_std`, `slope_fdc`, flow-frequency counts.
+Detect an old sealed run by the slot's `missing_dates` / `n_missing_dates` > 0 together with `streamflow_n_days` below the days in the
+window. From 2.8.0 the slot is passed with its dates, and a slot without usable dates raises the `streamflow_dates_unavailable`
+quality flag instead of falling back silently.
+
+## Gate scope (2.8.0 review)
+
+The forcing-scope refusal applies where the forcing product matters: the run's `reference_comparison` entry for the metric has
+`forcing_differs` other than false, or, with no entry, the metric's definition uses precipitation (`runoff_ratio`, `stream_elas`).
+A comparison claim whose cited interval has no readable `scope` and for which forcing does not apply (for example a model-vs-model
+NSE) is refused as `interval_scope_gate`: the interval's coverage is unknown. Standalone `source="signatures"` validators accept
+`run_id` / `feature` / `series_digest`; with several stored signatures results and none of them the call is
+`ambiguous_signatures_result` (teaching error, candidates listed).

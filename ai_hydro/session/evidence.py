@@ -21,8 +21,8 @@ def _compact(value: Any, depth: int = 0, keep_string_lists: bool = False) -> Any
     if isinstance(value, dict):
         return {str(k): _compact(v, depth + 1, keep_string_lists) for k, v in value.items()
                 if not isinstance(v, (list, tuple)) or _is_keepable_string_list(v, keep_string_lists)}
-    if isinstance(value, (list, tuple)):          # reached only for a keepable string list
-        return [str(x) for x in value]
+    if isinstance(value, (list, tuple)):          # only a short string list inside the uncertainty block
+        return [str(x) for x in value] if _is_keepable_string_list(value, keep_string_lists) else None
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if value is None or isinstance(value, (str, int, float, bool)):

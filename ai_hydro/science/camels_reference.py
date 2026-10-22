@@ -130,8 +130,11 @@ def _slot_row(session: Any, gauge_id: Optional[str]) -> tuple:
         return None, None, None
     data = slot.get("data") if isinstance(slot.get("data"), dict) else {}
     attrs = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
-    if data.get("mode") == "multi" or not attrs:
-        return None, None, None
+    if data.get("mode") == "multi":
+        return None, None, ("the session camels slot holds a multi-gauge request (mode 'multi'), whose rows are "
+                            "not read here; call fetch_camels_us(gauge_id=...) for this gauge")
+    if not attrs:
+        return None, None, "the session camels slot has no attributes (the gauge is not in CAMELS-US)"
     if normalize_gauge_id(data.get("gauge_id")) != gauge_id:
         return None, None, f"the session camels slot holds gauge {data.get('gauge_id')!r}, not {gauge_id}"
     if _num(attrs.get(AREA_COLUMN)) is None:

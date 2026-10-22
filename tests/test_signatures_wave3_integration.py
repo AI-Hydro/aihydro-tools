@@ -299,13 +299,31 @@ def test_plain_claim_citing_a_run_with_a_comparison_block_is_accepted(real):
     assert _support("plain")["status"] == "updated"
 
 
-def test_comparison_claim_with_a_forcing_excluded_ci_is_refused(real):
+def test_comparison_on_a_non_forcing_metric_with_a_forcing_excluded_ci_is_accepted_when_forcing_does_not_differ(real):
+    """BFI does not use precipitation: its comparison entry says forcing_differs false, so the forcing-scope refusal
+    (a sampling-only CI cannot carry a forcing-dependent difference) does not apply to it."""
+    t = real["sigs"]["data"]["reference_comparison"]["table"]["baseflow_index"]
+    assert t["forcing_differs"] is False and t["can_claim_difference"] is True
+    ci = _row(real)["evidence"]["uncertainty"]["baseflow_index"]
+    assert "forcing_product" in ci["scope"]["excludes"]                 # the CI itself still excludes forcing
     _claim(real, "cmp_ci", "baseflow_index", "The baseflow index agrees with the CAMELS value.",
            comparison_ref="CAMELS-US v1.2")
-    res = _support("cmp_ci")
-    assert res["error"] == "forcing_scope_gate", res
-    assert res["metrics"][0]["metric_ref"] == "baseflow_index" and "_traceback" not in res
-    assert HydroSession.load(SID).claims["cmp_ci"]["status"] == "proposed"
+    assert _support("cmp_ci")["status"] == "updated"
+
+
+def test_runoff_ratio_comparison_is_refused_on_the_real_scope_when_the_comparison_says_nothing_else(real):
+    """The forcing-scope gate on the real CI scope: remove the producer's comparison verdict so only the scope speaks."""
+    s = HydroSession.load(SID)
+    row = s.get("_run_log")[real["sigs"]["_run_id"]]
+    rows = {k: dict(v) for k, v in s.get("_run_log").items()}
+    ko = dict(row["key_outputs"]); ko.pop("reference_comparison")
+    rows[real["sigs"]["_run_id"]] = {**row, "key_outputs": ko}
+    from ai_hydro.claims.status_gate import forcing_scope_gate
+    claim = {"claim": "RR differs from CAMELS.", "claim_type": "empirical_result", "comparison_ref": "CAMELS-US v1.2",
+             "evidence_spans": [{"source_type": "run", "source_id": real["sigs"]["_run_id"],
+                                 "metric_ref": "runoff_ratio"}]}
+    res = forcing_scope_gate(SID, "x", claim, "supported", lambda sid, rid: rows.get(rid))
+    assert res["error"] == "forcing_scope_gate" and "no tool produces one yet" in res["teaching_error"]["how_to_fix"]
 
 
 def test_can_claim_difference_false_refuses_a_comparison_claim(real):

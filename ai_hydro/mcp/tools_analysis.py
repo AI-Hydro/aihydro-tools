@@ -1493,6 +1493,14 @@ def extract_hydrological_signatures(
             except Exception as _qe:                        # noqa: BLE001
                 log.warning("could not index the streamflow slot by its dates (%s); passing the bare list", _qe)
                 _q_arg = _q_cms
+        # Never silent: a slot consumed as a bare list is read as consecutive days from start_date, which is only
+        # right when the slot has no gaps. The result says so (quality flag streamflow_dates_unavailable).
+        _dates_unavailable = None
+        if _consume_slot and _q_cms and _q_arg is _q_cms:
+            _dates_unavailable = (
+                "the streamflow slot carries no dates" if not _q_dates else
+                f"the slot's dates ({len(_q_dates)}) and values ({len(_q_cms)}) differ in length"
+                if len(_q_dates) != len(_q_cms) else "the slot's dates could not be parsed")
 
         from ai_hydro.analysis.signatures import extract_hydrological_signatures as _fn
         result = _fn(
@@ -1530,6 +1538,13 @@ def extract_hydrological_signatures(
                     and list(_served.get("dates") or []) == [str(x)[:10] for x in _q_dates]
                     and len(_q_codes) == len(_q_dates)):
                 _sb.add_slot_codes(_served, _q_codes)
+            if _served.get("qualifier_codes") is None and _served.get("approval_codes") is None:
+                _served["codes_reason"] = (
+                    "the source served no USGS approval or qualifier codes (modelled or caller-supplied streamflow, "
+                    "or the fetch returned none)" if not _consume_slot else
+                    "the streamflow slot holds no per-value qualification_codes (fetched before they were retained, "
+                    "or a source that serves none)" if not _q_codes else
+                    "the slot's dates are not the dates of the series served, so its codes were not attached")
             _ret = _sb.retain_served_series(session_id, _served)
             if _ret:
                 _dd["_data_file"] = _ret["path"]
@@ -1547,6 +1562,16 @@ def extract_hydrological_signatures(
             else:
                 _bound_series = _sb.bound_series_problem(
                     _sb.SERIES_NOT_RETAINED, "the served series could not be written to the session data dir")
+        if "qualifier_exposure" not in _dd:
+            _dd["qualifier_exposure_unavailable"] = {
+                "reason": ("the series was taken from the streamflow slot; aihydro-watershed computes "
+                           "qualifier_exposure only when it fetches the series itself (it needs the flags frame)"
+                           if _consume_slot else
+                           "the series carries no USGS approval/qualifier codes (modelled or caller-supplied "
+                           "streamflow, or none served)"),
+                "affects": "low-flow signatures (q5, low_q_*) and baseflow_index cannot be qualified by the share "
+                           "of estimated or ice-affected days that determine them",
+            }
         _src = _dd.get("_streamflow_source")
         from ai_hydro.mcp.streamflow_slot import mirror_streamflow_source as _mirror_src
         _mirror_src(_dd, _src)
@@ -1605,7 +1630,13 @@ def extract_hydrological_signatures(
         if _scoped is not None:
             # One file per feature: a shared name would let the last feature overwrite the rest.
             _sig_fname = _sig_fname[: -len(".json")] + "_" + re.sub(r"[^A-Za-z0-9_.-]+", "_", str(_feature_id)) + ".json"
-        saved = _workspace_write(session_id, _sig_fname, d["data"])
+        # The workspace copy travels with the project (capsules, git): its `_data_file` is a location-independent
+        # ref (`session-data:<name>`), never the absolute path of this machine's session dir.
+        _ws_data = dict(d["data"])
+        if _ws_data.get("_data_file"):
+            from ai_hydro.session.refs import to_ref as _ws_to_ref
+            _ws_data["_data_file"] = _ws_to_ref(_ws_data["_data_file"], getattr(session, "workspace_dir", None))
+        saved = _workspace_write(session_id, _sig_fname, _ws_data)
         if saved:
             files_saved.append(saved)
         # FDC + signature summary PNG
@@ -1638,6 +1669,19 @@ def extract_hydrological_signatures(
         reminder = _sync_reminder(session_id)
         if reminder:
             d["_sync_required"] = reminder
+        if _dates_unavailable:
+            d.setdefault("quality_flags", []).append({
+                "validator": "streamflow_dates_unavailable", "status": "warning", "severity": "high",
+                "message": ("The signatures consumed the streamflow slot as a bare list of values, read as "
+                            f"consecutive days from {start_date}: {_dates_unavailable}. If the slot has missing days, "
+                            "every value after a gap sits on the wrong date, so runoff_ratio, stream_elas, hfd_mean, "
+                            "half_flow_date_std, the water-year grouping, streamflow_end and streamflow_digest are "
+                            "not trustworthy."),
+                "recommendation": "Re-fetch the streamflow (fetch_streamflow_data) so the slot carries its dates, "
+                                  "then clear_session(['signatures']) and re-run.",
+                "affected_slots": ["signatures"],
+                "metadata": {"quality_flag": "streamflow_dates_unavailable", "reason": _dates_unavailable},
+            })
         # Validators of the series THIS call consumed (bound by digest, not the streamflow slot's), appended to
         # quality_flags: record_length, usgs_qualification_codes, stationarity, regulated_basin.
         from ai_hydro.mcp.tools_validators import run_signature_validators as _rsv

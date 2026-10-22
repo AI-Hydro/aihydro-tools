@@ -33,6 +33,7 @@ SERIES_MISMATCH = "series_mismatch"
 SERIES_NOT_RETAINED = "series_not_retained"
 
 SOURCES = ("signatures", "streamflow")
+AMBIGUOUS = "ambiguous_signatures_result"
 
 #: aihydro-watershed's digest scheme for the daily m3/s series ("sha256 over 'YYYY-MM-DD<TAB>repr(float)<LF>'
 #: lines"; ``STREAMFLOW_DIGEST_SCHEME``). Reproduced here so the retained file can be re-verified against the
@@ -67,6 +68,7 @@ class BoundSeries:
     q: list = field(default_factory=list)
     qualifier_codes: Optional[list] = None
     approval_codes: Optional[list] = None
+    codes_reason: Optional[str] = None
     file_digest: Optional[str] = None
     series_digest: Optional[str] = None
     checked_against: list = field(default_factory=list)       # which digests were verified
@@ -144,7 +146,7 @@ def retain_served_series(session_id: str, served: dict, *, tag: str = "signature
     """
     from ai_hydro.session import store
 
-    payload = {k: served.get(k) for k in ("dates", "q_cms", "units", "qualifier_codes", "approval_codes")}
+    payload = {k: served.get(k) for k in ("dates", "q_cms", "units", "qualifier_codes", "approval_codes", "codes_reason")}
     if not payload["dates"] or payload["q_cms"] is None or len(payload["dates"]) != len(payload["q_cms"]):
         return None
     name = f"{tag}_series_{hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]}.json"
@@ -158,12 +160,69 @@ def retain_served_series(session_id: str, served: dict, *, tag: str = "signature
         return None
 
 
-def bind_signatures_series(session: Any, expected_digest: Optional[str] = None) -> BoundSeries:
-    """The series the session's ``signatures`` result was computed from (see the module docstring)."""
-    slot = session.get("signatures")
-    if not isinstance(slot, dict) or not slot:
-        return _bad("signatures", "signatures", "no_signatures_slot",
-                    "no signatures result in this session; run extract_hydrological_signatures first")
+def _signature_candidates(session: Any) -> list:
+    """Every stored signatures result: ``[(feature_id, params_key, result)]`` (None entries skipped)."""
+    out = []
+    for fid, by_key in (getattr(session, "_slots", {}).get("signatures") or {}).items():
+        for key, res in (by_key or {}).items():
+            if isinstance(res, dict) and res:
+                out.append((fid, key, res))
+    return out
+
+
+def _describe_candidate(c: tuple) -> dict:
+    fid, key, res = c
+    data, meta = res.get("data") or {}, res.get("meta") or {}
+    return {"feature_id": fid, "run_id": meta.get("run_id"), "start": data.get("streamflow_start"),
+            "end": data.get("streamflow_end"), "streamflow_digest": data.get("streamflow_digest")}
+
+
+def select_signatures_result(session: Any, expected_digest: Optional[str] = None,
+                             run_id: Optional[str] = None, feature: Optional[str] = None) -> tuple:
+    """``(result, problem_BoundSeries | None)``: which signatures result a standalone validator judges.
+
+    ``run_id`` (the result's ``meta.run_id``) or ``feature`` (a feature id: its latest result) select one;
+    ``series_digest`` selects the result whose ``streamflow_digest`` it is. With none of them and more than one
+    stored result the choice is ambiguous and nothing is guessed (a teaching problem lists the candidates).
+    """
+    cands = _signature_candidates(session)
+    if not cands:
+        return None, _bad("signatures", "signatures", "no_signatures_slot",
+                          "no signatures result in this session; run extract_hydrological_signatures first")
+    if run_id:
+        hit = [c for c in cands if (c[2].get("meta") or {}).get("run_id") == run_id]
+        if not hit:
+            return None, _bad("signatures", "signatures", "run_not_found",
+                              f"no signatures result with run_id {run_id!r} in this session")
+        return hit[0][2], None
+    if feature:
+        hit = [c for c in cands if c[0] == feature]
+        if not hit:
+            return None, _bad("signatures", "signatures", "feature_not_found",
+                              f"no signatures result for feature {feature!r} in this session")
+        return max(hit, key=lambda c: (c[2].get("meta") or {}).get("computed_at", ""))[2], None
+    if expected_digest:
+        hit = [c for c in cands if (c[2].get("data") or {}).get("streamflow_digest") == expected_digest]
+        if hit:
+            return hit[0][2], None
+        return None, _bad("signatures", "signatures", SERIES_MISMATCH,
+                          f"no stored signatures result was computed from the series with digest {expected_digest}; "
+                          "not validating a different series")
+    if len(cands) > 1:
+        b = _bad("signatures", "signatures", AMBIGUOUS,
+                 f"{len(cands)} signatures results exist in this session; pass run_id= (the result's run id), "
+                 "feature= or series_digest= to say which one is meant. Candidates: "
+                 + json.dumps([_describe_candidate(c) for c in cands], default=str))
+        return None, b
+    return cands[0][2], None
+
+
+def bind_signatures_series(session: Any, expected_digest: Optional[str] = None,
+                           run_id: Optional[str] = None, feature: Optional[str] = None) -> BoundSeries:
+    """The series a stored ``signatures`` result was computed from (see the module docstring)."""
+    slot, problem = select_signatures_result(session, expected_digest, run_id, feature)
+    if problem is not None:
+        return problem
     data = slot.get("data") if isinstance(slot.get("data"), dict) else {}
     meta = slot.get("meta") if isinstance(slot.get("meta"), dict) else {}
     retained = meta.get("retained_series") if isinstance(meta.get("retained_series"), dict) else {}
@@ -203,8 +262,9 @@ def bind_signatures_series(session: Any, expected_digest: Optional[str] = None) 
     b = BoundSeries(
         source="signatures", slot="signatures", dates=list(dates), q=list(q),
         qualifier_codes=body.get("qualifier_codes"), approval_codes=body.get("approval_codes"),
+        codes_reason=body.get("codes_reason"),
         file_digest=have, series_digest=got, checked_against=checked,
-        gauge_id=str(meta.get("params", {}).get("gauge_id") or "") or None,
+        gauge_id=str(data.get("basin_gauge_id") or meta.get("params", {}).get("gauge_id") or "") or None,
     )
     return _check_expected(b, expected_digest)
 
@@ -253,10 +313,13 @@ def bind_streamflow_series(session: Any, expected_digest: Optional[str] = None) 
     return _check_expected(b, expected_digest)
 
 
-def bind_series(session: Any, source: str = "streamflow", series_digest_expected: Optional[str] = None) -> BoundSeries:
-    """Resolve ``source`` ("signatures" | "streamflow"); an unknown source is a problem, not a fallback."""
+def bind_series(session: Any, source: str = "streamflow", series_digest_expected: Optional[str] = None,
+                run_id: Optional[str] = None, feature: Optional[str] = None) -> BoundSeries:
+    """Resolve ``source`` ("signatures" | "streamflow"); an unknown source is a problem, not a fallback.
+
+    ``run_id`` / ``feature`` choose among several stored signatures results (``source="signatures"`` only)."""
     if source == "signatures":
-        return bind_signatures_series(session, series_digest_expected)
+        return bind_signatures_series(session, series_digest_expected, run_id, feature)
     if source == "streamflow":
         return bind_streamflow_series(session, series_digest_expected)
     return _bad(str(source), str(source), "unknown_source",
@@ -288,4 +351,5 @@ def bound_series_from_served(served: dict, *, file_digest: str, gauge_id: Option
     return BoundSeries(
         source="signatures", slot="signatures", dates=list(dates), q=list(q),
         qualifier_codes=served.get("qualifier_codes"), approval_codes=served.get("approval_codes"),
+        codes_reason=served.get("codes_reason"),
         file_digest=file_digest, series_digest=got, checked_against=checked, gauge_id=gauge_id)
