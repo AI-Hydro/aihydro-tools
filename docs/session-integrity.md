@@ -34,9 +34,11 @@ Every path that sets a status runs one gate, in this order:
    - `paper` / `dataset`: non-empty `source_id` only. There is no local registry to resolve them against at status
      time; promotion checks further.
 3. `forcing_scope_gate` / `comparison_gate` (structural). A `supported` / `weakly_supported` claim is refused when
-   - it cites a run whose output carries a `reference_comparison`, or it is a comparison claim (`add_claim(comparison_ref=
-     "CAMELS-US v1.2")`: the reference the claim compares against), **and** that metric's CI declares `scope.excludes`
-     containing `forcing_product` (`{"varies": [...], "assumes": [...], "excludes": [...]}`): `forcing_scope_gate`; or
+   - it is a comparison claim (`add_claim(comparison_ref="CAMELS-US v1.2")`: the reference the claim compares
+     against) **and** a cited metric's CI declares `scope.excludes` containing `forcing_product`
+     (`{"varies": [...], "assumes": [...], "excludes": [...]}`): `forcing_scope_gate`. A claim is a comparison only
+     through its own `comparison_ref`; a run that merely carries a `reference_comparison` block (every signatures run
+     will, from PR-4b) does not make a plain claim citing it one; or
    - it is a comparison claim (`comparison_ref` set) and the `reference_comparison` entry for the cited metric says
      `can_claim_difference: false`: `comparison_gate`. A plain claim citing that metric ("mean flow was 2.0 m3/s") is not
      affected: the flag says a difference from the reference cannot be claimed, not that the value cannot be stated.

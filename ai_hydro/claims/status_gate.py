@@ -15,8 +15,8 @@ Rules, beside the uncertainty rule in ``ai_hydro.mcp.tools_ledger``:
   ``supported``/``weakly_supported`` claim is blocked when it is a *comparison against a reference*
   and the interval it rests on excludes the forcing product:
 
-  - the claim cites a span whose run output carries a ``reference_comparison``, or the claim is a
-    comparison claim (it names the reference it compares against in ``comparison_ref``), and
+  - the claim is a comparison claim: it names the reference it compares against in ``comparison_ref``
+    (a run that merely carries a ``reference_comparison`` block does not make a plain claim one), and
   - that metric's CI declares ``scope.excludes`` containing ``forcing_product``
     (documented shape ``{"varies": [...], "assumes": [...], "excludes": [...]}``).
 
@@ -196,8 +196,9 @@ def forcing_scoped_metrics(session_id: str, claim_dict: dict,
                            *, structural_only: bool = True) -> list[dict]:
     """Cited run metrics whose CI excludes the forcing product: ``[{metric_ref, run_id, comparison}]``.
 
-    ``comparison`` is True when the claim is a comparison claim or the run carries a ``reference_comparison``.
-    With ``structural_only`` only comparison cases are returned; without it every forcing-scoped metric is."""
+    ``comparison`` is True only when the claim itself is a comparison claim (``comparison_ref``): a run that
+    carries a ``reference_comparison`` block does not make a plain claim citing it a comparison.
+    With ``structural_only`` only comparison claims' metrics are returned; without it every forcing-scoped metric."""
     found: list[dict] = []
     claim_cmp = _is_comparison_claim(claim_dict)
     for span in claim_dict.get("evidence_spans") or []:
@@ -208,7 +209,7 @@ def forcing_scoped_metrics(session_id: str, claim_dict: dict,
         leaf = _metric_leaf(span["metric_ref"])
         if FORCING_EXCLUSION not in scope_excludes(_ci(row, leaf)):
             continue
-        comparison = claim_cmp or reference_comparison(row) is not None
+        comparison = claim_cmp
         if comparison or not structural_only:
             found.append({"metric_ref": span["metric_ref"], "run_id": span["source_id"], "comparison": comparison})
     return found

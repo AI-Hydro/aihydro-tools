@@ -357,9 +357,15 @@ def _support(claim_id="c1"):
     return update_claim_status(SID, claim_id, "supported", "medium", RAT, uncertainty_verified=True)
 
 
-def test_comparison_run_on_a_forcing_excluded_ci_is_refused_whatever_the_wording():
+def test_plain_claim_citing_a_run_with_a_comparison_block_and_forcing_excluded_ci_is_accepted():
+    _seed(_rr_run(EXCLUDES_FORCING))            # run carries reference_comparison AND a forcing-excluded CI
+    _propose(PLAIN_CLAIM)
+    assert _support()["status"] == "updated"
+
+
+def test_the_same_claim_with_comparison_ref_is_refused_whatever_the_wording():
     _seed(_rr_run(EXCLUDES_FORCING))
-    _propose(PLAIN_CLAIM)                       # no "differs" in the prose: the gate is structural
+    _propose(PLAIN_CLAIM, comparison_ref="CAMELS-US v1.2")      # no "differs" in the prose: the gate is structural
     res = _support()
     assert res["error"] == "forcing_scope_gate"
     assert res["metrics"][0]["metric_ref"] == "runoff_ratio" and res["metrics"][0]["run_id"] == "r_rr"
@@ -416,14 +422,15 @@ def test_can_claim_difference_false_does_not_block_a_plain_claim_citing_the_metr
 ])
 def test_gate_needs_the_documented_scope_shape_to_fire(scope):
     _seed(_rr_run(scope))
-    _propose(DIFF_CLAIM)
+    _propose(DIFF_CLAIM, comparison_ref="CAMELS-US v1.2")
     assert _support()["status"] == "updated"
 
 
 def test_gate_is_keyed_on_scope_not_on_metric_or_tool_names():
     _seed(_rr_run(EXCLUDES_FORCING, run_id="r_x", metric="some_new_metric",
                   comparison={"some_new_metric": {"can_claim_difference": True}}))
-    _propose("some_new_metric is larger than the published benchmark.", run_id="r_x", metric="some_new_metric")
+    _propose("some_new_metric is larger than the published benchmark.", run_id="r_x", metric="some_new_metric",
+             comparison_ref="benchmark-1")
     assert _support()["error"] == "forcing_scope_gate"
 
 
@@ -451,7 +458,8 @@ def test_stored_comparison_claim_is_flagged_at_start():
     s = HydroSession.load(SID)
     s.claims["old"] = {"id": "old", "claim": DIFF_CLAIM, "claim_type": "empirical_result", "status": "supported",
                        "confidence": "medium", "confidence_rationale": RAT, "scope": {"basins": []},
-                       "evidence_spans": _span("r_rr", "runoff_ratio"), "limitations": []}
+                       "evidence_spans": _span("r_rr", "runoff_ratio"), "limitations": [],
+                       "comparison_ref": "CAMELS-US v1.2"}
     s.save()
     flags = stored_claim_flags(HydroSession.load(SID))
     assert [(f["claim_id"], f["code"]) for f in flags] == [("old", "forcing_scope_gate")]

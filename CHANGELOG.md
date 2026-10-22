@@ -36,11 +36,11 @@ No new package pins. Minor bump: additive response fields (`slot_health`, `degra
     spans: non-empty `source_id` only (nothing local to resolve them against at status time). Typed, traceback-free
     refusal with a `teaching_error` and `span_problems`.
   - `forcing_scope_gate` / `comparison_gate` (structural, keyed on scope metadata only, no tool or metric names): a
-    `supported`/`weakly_supported` claim is refused when it cites a run whose output carries a `reference_comparison`
-    (or the claim is a comparison claim) and that metric's CI declares `scope.excludes` containing `forcing_product`
+    `supported`/`weakly_supported` claim is refused when it is a comparison claim and a cited metric's CI declares `scope.excludes` containing `forcing_product`
     (documented shape `{"varies":[...],"assumes":[...],"excludes":[...]}`). A comparison claim is one that sets the new
     optional `add_claim(comparison_ref=...)` / `ScientificClaim.comparison_ref` (the reference compared against, e.g.
-    "CAMELS-US v1.2"; sealed in the revision digest only when set). A `reference_comparison` entry with
+    "CAMELS-US v1.2"; sealed in the revision digest only when set). A run that merely carries a `reference_comparison`
+    block does not make a plain claim citing it a comparison. A `reference_comparison` entry with
     `can_claim_difference: false` is honoured directly, **for comparison claims only** (a plain claim citing the same
     metric is unaffected). **The gate is inert until
     aihydro-watershed 0.2.0 / PR-4b supply the scope and `reference_comparison` outputs**; absent, free-text or malformed
