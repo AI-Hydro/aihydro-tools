@@ -1,0 +1,11 @@
+{
+  "file": "camels_topo.txt",
+  "source": "https://zenodo.org/api/records/15529996/files/camels_topo.txt/content",
+  "record": "Zenodo 15529996 — CAMELS: Catchment Attributes and MEteorology for Large-sample Studies, version 1.2, DOI 10.5065/D6MW2F4D",
+  "downloaded_utc": "2026-10-17T13:34:53Z",
+  "md5_published": "0f6267838c40b1507b64582433bc0b8e",
+  "md5_observed": "0f6267838c40b1507b64582433bc0b8e",
+  "sha256": "b64ca9923bcaccf21dde33137903797919e8d6732edd7849f8534e0ddcbec8e8",
+  "size_bytes": 38677,
+  "permission": "owner approved download 2026-10-17"
+}

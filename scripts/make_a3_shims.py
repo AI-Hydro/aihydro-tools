@@ -45,7 +45,7 @@ SHIMS: list[tuple[str, str, list[str]]] = [
      ["_DEFAULT_C_FACTORS"]),         # used by test_erosion.py
     ("ai_hydro/analysis/signatures.py",
      "aihydro_watershed.signatures.signatures",
-     ["_fetch_precipitation_data_bygeom", "_lyne_hollick_baseflow"]),  # used by test_hydrology_tools.py
+     ["_fetch_precipitation_data_bygeom"]),  # patched by tests; the baseflow kernel is the public lyne_hollick_ladson2013
     ("ai_hydro/analysis/baseflow.py",
      "aihydro_watershed.signatures.baseflow", []),
     ("ai_hydro/analysis/flow_duration.py",

@@ -272,13 +272,15 @@ tasks:
     rationale: >
       Humid temperate basin (synthetic, seed=42) with mean=1.2 mm/day should
       produce q_mean ∈ [0.8, 1.8] mm/day. BFI ∈ [0.20, 0.40] is the
-      re-adjudicated range for the corrected Lyne-Hollick recursive filter
-      (Nathan & McMahon 1990, alpha=0.925, 3-pass), which gives systematically
-      lower BFI than the Eckhardt filter used in CAMELS (~0.50-0.70 for the
+      re-adjudicated range for the Lyne-Hollick recursive filter in the
+      Ladson et al. (2013) recipe CAMELS used (alpha=0.925, 3 passes,
+      30-day reflection; aihydro-watershed >= 0.2.0), which gives
+      systematically lower BFI than the Eckhardt filter (~0.50-0.70 for the
       same basin type). The old bounds [0.40, 0.75] were calibrated against a
       buggy filter version that returned the quickflow fraction rather than the
-      baseflow fraction. Re-adjudicated 2026-06-13 after confirming the
-      corrected filter yields BFI ≈ 0.29 for this synthetic series.
+      baseflow fraction. Re-adjudicated 2026-06-13 (corrected filter, BFI ≈ 0.29);
+      re-checked 2026-10-22 against the 0.2.0 kernel: BFI = 0.2915 on this
+      series, inside the same range, so the bounds are unchanged.
     call:
       fn: compute_flow_stats_camels
       data: humid
@@ -356,18 +358,23 @@ tasks:
     category: signatures
     call_style: compute_fn
     rationale: >
-      Sawicz et al. (2011) define slope_fdc = (log Q33 - log Q66) / 0.33
-      where Q33 is flow at 33% exceedance probability (high flow, 67th pct)
-      and Q66 is flow at 66% exceedance probability (lower flow, 34th pct).
-      Since Q33 > Q66, the slope is positive. CAMELS humid basin range is
-      roughly [0.5, 3.5] (Addor 2017 Table S1). A value < 0 would indicate
-      a quantile-ordering bug; > 6 would indicate extreme flashiness
-      inconsistent with a humid temperate synthetic series.
+      Since aihydro-watershed 0.2.0 slope_fdc is the CAMELS-US v1.2 file
+      definition, (Q66 - Q33) / (mean(Q) * 0.33) with Q33 and Q66 the 33rd and
+      66th NON-EXCEEDANCE percentiles (type 7), no logarithm; Q66 > Q33 so the
+      slope is positive (1.46 on this series). The previous aihydro value, the
+      log-space Sawicz et al. (2011) slope (ln Q33exc - ln Q66exc) / 0.33, is
+      kept as slope_fdc_sawicz2011 (3.53 here). CAMELS humid basin range is
+      roughly [0.5, 3.5] (Addor 2017 Table S1). A value < 0 would indicate a
+      quantile-ordering bug; > 6 would indicate extreme flashiness
+      inconsistent with a humid temperate synthetic series. slope_fdc_sawicz2011
+      is asserted in the same range so that dropping the preserved old value
+      is caught.
     call:
       fn: compute_slope_fdc_camels
       data: humid
     assertions:
       - {path: slope_fdc, op: between, bounds: [0.3, 6.0]}
+      - {path: slope_fdc_sawicz2011, op: between, bounds: [0.3, 6.0]}
 
   # ─────────────────────────────────────────────────────────────────────────
   # GROUP E: Claim ledger gate (session-based, no network)

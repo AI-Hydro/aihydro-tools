@@ -113,7 +113,7 @@
   name: Baseflow Index
   domain: hydrology
   category: hydrologic_signature
-  formula: "mean(baseflow) / mean(streamflow)"
+  formula: "sum(baseflow) / sum(streamflow)"
   inputs:
     streamflow:
       units: m3/s
@@ -127,6 +127,10 @@
         Typical range 0.2–0.8 for natural basins.
   validation:
     - "Baseflow must be separated prior to computation (e.g. Lyne-Hollick)"
+    - >
+      aihydro uses the Ladson et al. (2013) Lyne-Hollick recipe CAMELS used (alpha 0.925, 3 passes, 30-day
+      reflection; aihydro-watershed >= 0.2.0). Values from earlier versions differ (01031500: 0.36 -> 0.445).
+      Records of 30 days or fewer are refused; 31-364 days are biased low by the filter start-up.
     - "At least 5 years of daily data recommended for stable estimate"
     - "Regulated rivers: BFI may be artificially inflated by dam releases"
   citations: [eckhardt2005baseflow, lyne1979baseflow]

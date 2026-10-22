@@ -316,3 +316,30 @@ def test_declare_lineage_notes_and_refs_are_scrubbed():
         rr.end_capture(tok)
     blob = json.dumps({"n": cap.notes, "r": cap.input_refs})
     assert "/Users/bob" not in blob and "/home/a" not in blob and "m3/s" in blob
+
+
+def test_workspace_files_carry_refs_not_absolute_paths(world, tmp_path):
+    """The workspace signatures_<gauge>.json travels with the project: its `_data_file` is a ref (PR-4b review M3)."""
+    server, _ = world
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    s = HydroSession.load(SID)
+    s.workspace_dir = str(ws)
+    s.save()
+    is_err, fetched = _call(server, "fetch_streamflow_data",
+                            {"session_id": SID, "gauge_id": GAUGE, "start_date": START, "end_date": END})
+    assert not is_err and not fetched.get("error"), fetched
+    is_err, sigs = _call(server, "extract_hydrological_signatures",
+                         {"session_id": SID, "start_date": START, "end_date": END, "geometry_geojson": SQUARE})
+    assert not is_err and not sigs.get("error"), sigs
+    files = [p for p in ws.rglob("*.json")]
+    sig_files = [p for p in files if p.name.startswith("signatures_")]
+    assert sig_files, [p.name for p in files]
+    for p in sig_files:
+        body = json.loads(p.read_text())
+        assert str(body["_data_file"]).startswith("session-data:"), body["_data_file"]
+        assert "_served_series" not in body
+    for p in files:
+        assert not _leaks(p.read_text(), str(tmp_path)), p.name
+    # the in-session result still names the real file (validators resolve it)
+    assert sigs["data"]["_data_file"].startswith("/")

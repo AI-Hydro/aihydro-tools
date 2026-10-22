@@ -26,13 +26,16 @@ def sealed(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "SESSIONS_DIR", tmp_path / "sessions")
     monkeypatch.setattr(chat_binding, "_store", ChatBindingStore(tmp_path / "chat_studies.json"))
     HydroSession("d4-seal").save()
-    days = pd.date_range("2000-01-01", periods=800, freq="D")
-    q_cms = pd.Series(np.random.default_rng(3).lognormal(1.0, 0.8, size=800), index=days)
+    # Two COMPLETE water years (WY2001-2002): since aihydro-watershed 0.2.0 a window with partial edge years
+    # is "used_with_gaps", not "used".
+    days = pd.date_range("2000-10-01", periods=730, freq="D")
+    q_cms = pd.Series(np.random.default_rng(3).lognormal(1.0, 0.8, size=730), index=days)
 
     def run(p_series):
         monkeypatch.setattr(impl, "_fetch_precipitation_data_bygeom", lambda *a, **k: p_series)
         res = impl.extract_hydrological_signatures(
-            gauge_id=None, watershed_geojson=SQUARE, area_km2=250.0, q_cms_series=q_cms)
+            gauge_id=None, watershed_geojson=SQUARE, area_km2=250.0, q_cms_series=q_cms,
+            start_date="2000-10-01", end_date="2002-09-29")
         out = post_run("extract_hydrological_signatures", "d4-seal",
                        {"data": dict(res.data), "meta": {"version": "x"}})
         return (HydroSession.load("d4-seal").get("_run_log") or {})[out["_run_id"]], days
@@ -40,8 +43,8 @@ def sealed(tmp_path, monkeypatch):
 
 
 def test_used_precipitation_provenance_is_in_sealed_evidence(sealed):
-    days = pd.date_range("2000-01-01", periods=800, freq="D")
-    p = pd.Series(np.random.default_rng(1).gamma(0.5, 8.0, 800), index=days)
+    days = pd.date_range("2000-10-01", periods=730, freq="D")
+    p = pd.Series(np.random.default_rng(1).gamma(0.5, 8.0, 730), index=days)
     p.attrs["product"] = "GRIDMET_PRECIP"
     row, _ = sealed(p)
     ev = row["evidence"]["data"]
@@ -53,7 +56,7 @@ def test_used_precipitation_provenance_is_in_sealed_evidence(sealed):
 
 
 def test_rejected_precipitation_is_visible_in_sealed_evidence(sealed):
-    days = pd.date_range("2000-01-01", periods=800, freq="D")
+    days = pd.date_range("2000-10-01", periods=730, freq="D")
     row, _ = sealed(pd.Series(4.3e32, index=days))
     ev = row["evidence"]["data"]
     assert ev["runoff_ratio"] is None

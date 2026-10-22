@@ -23,8 +23,10 @@ Rules, beside the uncertainty rule in ``ai_hydro.mcp.tools_ledger``:
   When the ``reference_comparison`` entry for the cited metric says ``can_claim_difference: false`` and the
   claim is a comparison claim (``comparison_ref`` set), that is honoured directly (``comparison_gate``);
   a plain claim citing the same metric ("mean flow was 2.0 m3/s") is not affected. Nothing here is keyed on a tool or metric name.
-  **The gate is inert until the producers (aihydro-watershed 0.2.0 / Wave 3 PR-4b) emit the scope and
-  ``reference_comparison`` outputs**; absent or free-text scope metadata never triggers it.
+  The producers emit both since aihydro-watershed 0.2.0 / aihydro-tools 2.8.0: every ``_uncertainty`` entry carries
+  ``scope`` and every signatures run carries ``reference_comparison``, recorded at ONE place in the run row,
+  ``key_outputs.reference_comparison`` (``{"table": {metric: {..., "can_claim_difference"}}, "context",
+  "climate_context"}``), which is the only place ``reference_comparison()`` reads.
 
 * **Prose hint (advisory only).** A claim whose wording asserts a difference from a reference while its
   cited CI excludes the forcing product gets a non-blocking warning (``forcing_prose_warnings``). The
@@ -81,15 +83,11 @@ def _metric_leaf(ref: str) -> str:
     return re.sub(r"\[[^\]]*\]$", "", leaf)
 
 
-def _norm(token: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(token).lower()).strip("_")
-
-
-def scope_excludes(ci: Any) -> set[str]:
-    """Normalised ``scope.excludes`` of one CI entry; empty when the scope is absent or not the dict shape."""
-    scope = ci.get("scope") if isinstance(ci, dict) else None
-    excl = scope.get("excludes") if isinstance(scope, dict) else None
-    return {_norm(e) for e in excl} if isinstance(excl, (list, tuple, set)) else set()
+def scope_excludes(ci: Any, term: str = FORCING_EXCLUSION) -> bool:
+    """aihydro-core's conservative rule for one CI entry: ``term`` is excluded unless the entry's ``scope`` lists
+    it under ``varies``; an absent or malformed scope excludes everything (``aihydro_core.science.scope_excludes``)."""
+    from aihydro_core.science import scope_excludes as _core_scope_excludes
+    return _core_scope_excludes(ci.get("scope") if isinstance(ci, dict) else None, term)
 
 
 def _default_run_reader(session_id: str, run_id: str) -> dict | None:
@@ -141,27 +139,13 @@ def span_problems(session_id: str, span: Any,
     return []
 
 
-def _find_key(obj: Any, key: str, depth: int = 0) -> Any:
-    if isinstance(obj, dict) and depth < 4:
-        if key in obj:
-            return obj[key]
-        for v in obj.values():
-            hit = _find_key(v, key, depth + 1)
-            if hit is not None:
-                return hit
-    return None
-
-
 def reference_comparison(row: dict | None) -> Any:
-    """The run's ``reference_comparison`` output, wherever the producer recorded it, else ``None``."""
-    if not isinstance(row, dict):
-        return None
-    for holder in (row.get("key_outputs"), (row.get("evidence") or {}).get("data")
-                   if isinstance(row.get("evidence"), dict) else None, row.get("evidence")):
-        hit = _find_key(holder, "reference_comparison")
-        if hit is not None:
-            return hit
-    return None
+    """The run's ``reference_comparison`` output: ``key_outputs.reference_comparison``, else ``None``.
+
+    That is the one documented location (signatures runs put the key in their result data; the run row's
+    ``key_outputs`` keeps every non-list, non-underscore data key). It is not searched for anywhere else."""
+    ko = row.get("key_outputs") if isinstance(row, dict) else None
+    return ko.get("reference_comparison") if isinstance(ko, dict) else None
 
 
 def comparison_entry(rc: Any, leaf: str) -> dict | None:
@@ -179,6 +163,37 @@ def comparison_entry(rc: Any, leaf: str) -> dict | None:
             if isinstance(item, dict) and leaf in (item.get("metric"), item.get("signature"), item.get("name")):
                 return item
     return None
+
+
+#: Metrics whose definition uses precipitation, so a different forcing product changes them. Kept with the
+#: comparison logic; aihydro-watershed's comparison module owns the same list (``FORCING_DEPENDENT``) and wins
+#: when present. Not keyed on tool names: it is a property of the metric's definition.
+_FORCING_DEPENDENT_FALLBACK = ("runoff_ratio", "stream_elas")
+
+
+def forcing_dependent_metrics() -> tuple:
+    try:
+        from aihydro_watershed.signatures.comparison import FORCING_DEPENDENT
+        return tuple(FORCING_DEPENDENT)
+    except Exception:                                                       # noqa: BLE001
+        return _FORCING_DEPENDENT_FALLBACK
+
+
+def _forcing_applies(row: dict | None, leaf: str) -> bool:
+    """Does the forcing product matter for ``leaf`` in this run?
+
+    The run's own ``reference_comparison`` entry decides when it has one: ``forcing_differs: false`` means the
+    forcing is not what a difference would be about (skip); true or unstated applies. With no entry, only the
+    forcing-dependent metrics (definition uses precipitation) are subject to it."""
+    entry = comparison_entry(reference_comparison(row), leaf)
+    if isinstance(entry, dict):
+        return entry.get("forcing_differs") is not False
+    return leaf in forcing_dependent_metrics()
+
+
+def _scope_wellformed(ci: Any) -> bool:
+    sc = ci.get("scope") if isinstance(ci, dict) else None
+    return (isinstance(sc, dict) and all(isinstance(sc.get(k), (list, tuple)) for k in ("varies", "excludes")))
 
 
 def _is_comparison_claim(claim_dict: dict) -> bool:
@@ -207,11 +222,33 @@ def forcing_scoped_metrics(session_id: str, claim_dict: dict,
             continue
         row = _read(run_reader, session_id, span["source_id"])
         leaf = _metric_leaf(span["metric_ref"])
-        if FORCING_EXCLUSION not in scope_excludes(_ci(row, leaf)):
+        ci = _ci(row, leaf)
+        if not isinstance(ci, dict) or not scope_excludes(ci, FORCING_EXCLUSION):
+            continue
+        if not _forcing_applies(row, leaf):
             continue
         comparison = claim_cmp
         if comparison or not structural_only:
             found.append({"metric_ref": span["metric_ref"], "run_id": span["source_id"], "comparison": comparison})
+    return found
+
+
+def scope_unknown_metrics(session_id: str, claim_dict: dict,
+                          run_reader: Callable[[str, str], dict | None] | None = None) -> list[dict]:
+    """Cited metrics of a comparison claim whose interval has no readable scope and for which forcing does not apply
+    (e.g. a model-vs-model NSE): the interval's coverage is unknown, which is a different problem from forcing."""
+    found: list[dict] = []
+    if not _is_comparison_claim(claim_dict):
+        return found
+    for span in claim_dict.get("evidence_spans") or []:
+        if not (isinstance(span, dict) and span.get("source_type", "run") == "run"
+                and span.get("metric_ref") and span.get("source_id")):
+            continue
+        row = _read(run_reader, session_id, span["source_id"])
+        leaf = _metric_leaf(span["metric_ref"])
+        ci = _ci(row, leaf)
+        if isinstance(ci, dict) and not _scope_wellformed(ci) and not _forcing_applies(row, leaf):
+            found.append({"metric_ref": span["metric_ref"], "run_id": span["source_id"]})
     return found
 
 
@@ -284,20 +321,33 @@ def forcing_scope_gate(session_id: str, claim_id: str, claim_dict: dict, status:
                 metrics=[{"metric_ref": span["metric_ref"], "run_id": span["source_id"]}])
     metrics = forcing_scoped_metrics(session_id, claim_dict, run_reader)
     if not metrics:
-        return None
+        unknown = scope_unknown_metrics(session_id, claim_dict, run_reader)
+        if not unknown:
+            return None
+        names = ", ".join(sorted({m["metric_ref"] for m in unknown}))
+        return _refusal(
+            "interval_scope_gate", claim_id, claim_dict, status, "comparison_needs_a_known_interval_scope",
+            f"This claim compares against a reference and rests on the confidence interval for {names}, which "
+            "declares no readable scope (no `scope` with `varies` and `excludes`). What the interval covers is "
+            f"unknown, so a difference cannot be '{status}' on it.",
+            "1. Record the claim as 'tested' or 'inconclusive' and state that the interval's coverage is unknown; or\n"
+            "2. Cite an interval that declares its scope (`scope: {varies, assumes, excludes}`), then set the status "
+            "again.",
+            metrics=unknown)
     names = ", ".join(sorted({m["metric_ref"] for m in metrics}))
     return _refusal(
         "forcing_scope_gate", claim_id, claim_dict, status, "difference_from_reference_needs_forcing_in_scope",
         f"This claim compares against a reference and rests on the confidence interval for {names}, which "
-        "declares scope.excludes 'forcing_product': it covers sampling variability only, not the "
+        "does not vary the forcing product (scope.excludes 'forcing_product', or no scope at all): it covers "
+        "sampling variability only, not the "
         "precipitation/forcing product or its error. A difference from a reference cannot be "
         f"'{status}' on that interval alone; the gap may be forcing, period or definition rather than a "
         "property of the basin.",
         "1. Record the claim as 'tested' or 'inconclusive' and state that the interval excludes the "
         "forcing product; or\n"
-        "2. Reword it as a statement about the sampled period only (no difference from the reference); or\n"
-        "3. Add evidence whose uncertainty scope includes the forcing product (e.g. a forcing-product "
-        "spread), cite it in evidence_spans, then set the status again.",
+        "2. Reword it as a statement about the sampled period only (no difference from the reference). "
+        "(An interval whose scope varies the forcing product, such as a forcing-spread interval, would lift "
+        "this; no tool produces one yet.)",
         metrics=metrics,
     )
 
