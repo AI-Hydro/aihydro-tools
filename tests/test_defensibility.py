@@ -82,6 +82,7 @@ _RUN_LOG = {
 _SIGS_SLOT = {
     "data": {
         "q_mean": 1.25,
+        "flow_quantile_convention": "camels_nonexceedance_v1",   # a current result; legacy slots are not evidence
         "_uncertainty": {
             "q_mean": {"value": 1.25, "ci_low": 1.10, "ci_high": 1.40,
                        "method": "bootstrap_block", "n": 500, "ci_level": 0.90},
@@ -142,7 +143,7 @@ class TestUncertaintySection:
 
     def test_slot_without_uncertainty_shows_cross(self, tmp_path, monkeypatch):
         slot_no_ci = {
-            "data": {"q_mean": 1.25},
+            "data": {"q_mean": 1.25, "flow_quantile_convention": "camels_nonexceedance_v1"},
             "meta": {"tool": "extract_hydrological_signatures", "params": {},
                      "computed_at": "2026-06-10"},
         }

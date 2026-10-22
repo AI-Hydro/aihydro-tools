@@ -13,6 +13,7 @@ class SkepticIssue(BaseModel):
         "scope_overreach",
         "unvalidated_high_risk_assumption",
         "registry_conflict",
+        "metric_conflict",
     ]
     severity: Literal["advisory", "warning", "error"]
     description: str

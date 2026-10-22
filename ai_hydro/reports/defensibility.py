@@ -203,7 +203,7 @@ def build_defensibility_report(
     # ─────────────────────────────────────────────────────────────────────────
     lines += ["---", "", "## 3. Uncertainty Coverage", ""]
 
-    computed = session.computed()
+    computed = session.computed_healthy()   # degraded slots (missing/changed artifact, legacy) are not evidence
     quant_computed = [s for s in computed if s in _QUANT_SLOTS]
     n_quant_slots = len(quant_computed)
     n_with_uncertainty = 0
@@ -446,7 +446,7 @@ def build_defensibility_report(
             entry.get("tool_name", "") for entry in run_log.values()
             if entry.get("tool_name")
         }
-        computed_slots: set[str] = set(session.computed())
+        computed_slots: set[str] = set(session.computed_healthy())
 
         lines += [
             "| # | Planned Analysis | Executed |",

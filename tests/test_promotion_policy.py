@@ -43,7 +43,7 @@ def _result(flag_status="pass", metric="nse"):
 def _run(run_id, **kw):
     ev = capture_result_evidence(_result(**kw))
     return {"run_id": run_id, "session_id": SID, "tool_name": "fixture",
-            "key_outputs": {}, "evidence": ev}
+            "key_outputs": {kw.get("metric", "nse"): 0.8}, "evidence": ev}
 
 
 @pytest.fixture
@@ -101,7 +101,7 @@ def _drop_basin_records(claim_id="c1"):
 CASES = [
     ("basin_identity", "BASIN_REF_REQUIRED", dict(basins=["elsewhere"], basin_refs=None), verify),
     ("basin_identity", "BASIN_REF_UNKNOWN", {}, "drop_basin_records"),
-    ("evidence", "EVIDENCE_REQUIRED", dict(evidence_spans=[]), verify),
+    ("evidence", "EVIDENCE_REQUIRED", dict(evidence_spans=[]), "legacy_supported"),
     ("limitations", "LIMITATIONS_REQUIRED", dict(limitations=[]), verify),
     ("status", "STATUS_NOT_ELIGIBLE", dict(status="proposed"), None),
     ("uncertainty", "UNCERTAINTY_NOT_VERIFIED", {}, "legacy_supported"),
@@ -112,7 +112,7 @@ CASES = [
      dict(evidence_spans=[{"source_type": "run", "source_id": "r1"}]), verify),
     ("metric_binding", "EVIDENCE_METRIC_MISMATCH", dict(metric="kge"), verify),
     ("evidence", "EVIDENCE_UNRESOLVED",
-     dict(evidence_spans=[{"source_type": "run", "source_id": "ghost", "metric_ref": "nse"}]), verify),
+     dict(evidence_spans=[{"source_type": "run", "source_id": "ghost", "metric_ref": "nse"}]), "legacy_verified_supported"),
     ("evidence", "EVIDENCE_CHECK_FAILED",
      dict(evidence_spans=[{"source_type": "run", "source_id": "r_fail", "metric_ref": "nse"}]), verify),
 ]
@@ -127,11 +127,14 @@ def test_family_is_advisory_in_add_claim_and_blocks_promotion(session, family, c
         _drop_basin_records()
         check = update_claim_status(SID, "c1", "supported", "medium", RAT,
                                     uncertainty_verified=True)["promotion_check"]
-    elif step == "legacy_supported":
+    elif step in ("legacy_supported", "legacy_verified_supported"):
         # add_claim/update_claim_status can no longer produce 'supported' without verified
-        # uncertainty; a session stored before the shared gate can still hold one.
+        # uncertainty or without an evidence span; a session stored before the shared gate can
+        # still hold one.
         s = HydroSession.load(SID)
         s.claims["c1"]["status"] = "supported"
+        if step == "legacy_verified_supported":
+            s.claims["c1"]["uncertainty_verified"] = True
         s.save()
         s = HydroSession.load(SID)
         check = [v.to_dict() for v in promotion_violations(s, s.claims["c1"])]

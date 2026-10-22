@@ -6,6 +6,7 @@ Checks:
   2. Scope overreach — gauge IDs mentioned outside any claim's registered scope
   3. High-risk unvalidated assumptions that conflict with supported claims
   4. Registry conflicts — session claim status has degraded below its promoted entry
+  5. Metric conflicts — one metric (aliases resolved), feature and period with different values
 
 All findings are advisory; only the auditor is a hard gate.
 """

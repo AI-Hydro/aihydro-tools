@@ -6,10 +6,71 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [2.7.0] - 2026-10-22 (Science Wave 3, PR-4a: session artifact health, one status gate, metric conflicts)
+
+No new package pins. Minor bump: additive response fields (`slot_health`, `degraded`, `claim_flags`,
+`metric_conflicts`), a new skeptic check, and **new refusals** on claim status (below).
+
+### Added
+
+- **Session artifact health.** `HydroSession.summary()` (so `start_session` and `get_session_summary`) adds
+  `slot_health` (`{slot: ok | missing_artifact | digest_mismatch | digest_missing | legacy_convention}`):
+  - `missing_artifact`: the slot's `_data_file` is gone, unreadable, or outside the session/workspace data dirs
+    (reason `outside_session_dir`; relative paths resolve against those dirs, symlinks are followed and must stay inside).
+  - `digest_mismatch`: the file's digest differs from `meta.retained_series.digest`.
+  - `digest_missing`: the slot declares `meta.retained_series` (or is the streamflow slot) with no digest, or a different
+    path than `_data_file` (same rule as the consumer in `extract_hydrological_signatures`).
+  - `legacy_convention` (signatures only): no `flow_quantile_convention`; or, from a producer new enough to emit
+    `signature_definitions` (aihydro-watershed >= 0.2.0), no `_precipitation` report. A `completeness` of `None`
+    (precipitation unavailable / not attempted / skipped) is legitimate. A fresh slot from watershed 0.1.x that has the
+    convention key reads `ok`.
+  Unhealthy slots are listed under `degraded` (`slot`, `health`, `reason`, `fix`), leave `computed`, **appear in `pending`**
+  and are not counted by `n_computed_slots` or the defensibility report (`HydroSession.computed_healthy()`). Digests are
+  hashed in chunks and cached by (path, size, mtime). Stored results are never rewritten. Other `computed()` readers
+  (research.md, exports, tool listings) still see the raw list: follow-up.
+- **One status gate** (`ai_hydro/claims/status_gate.py`, applied by `_status_gate` in `tools_ledger.py` to `add_claim` and
+  `update_claim_status`). After the existing `uncertainty_gate`:
+  - `evidence_gate`: `supported` and `weakly_supported` need at least one evidence span, and every span must be real. For
+    `run` spans: non-empty `source_id`; the run exists in the session run log; it is not hollow (no `error`, not a
+    `minimal` middleware row, non-empty `key_outputs`); a given `metric_ref` is among its outputs. `paper` and `dataset`
+    spans: non-empty `source_id` only (nothing local to resolve them against at status time). Typed, traceback-free
+    refusal with a `teaching_error` and `span_problems`.
+  - `forcing_scope_gate` / `comparison_gate` (structural, keyed on scope metadata only, no tool or metric names): a
+    `supported`/`weakly_supported` claim is refused when it is a comparison claim and a cited metric's CI declares `scope.excludes` containing `forcing_product`
+    (documented shape `{"varies":[...],"assumes":[...],"excludes":[...]}`). A comparison claim is one that sets the new
+    optional `add_claim(comparison_ref=...)` / `ScientificClaim.comparison_ref` (the reference compared against, e.g.
+    "CAMELS-US v1.2"; sealed in the revision digest only when set). A run that merely carries a `reference_comparison`
+    block does not make a plain claim citing it a comparison. A `reference_comparison` entry with
+    `can_claim_difference: false` is honoured directly, **for comparison claims only** (a plain claim citing the same
+    metric is unaffected). **The gate is inert until
+    aihydro-watershed 0.2.0 / PR-4b supply the scope and `reference_comparison` outputs**; absent, free-text or malformed
+    scopes never trigger it. A wording heuristic ("differs from the reference ...", negation-aware) only adds a
+    non-blocking `FORCING_SCOPE_PROSE` warning.
+  - Stored claims that break either rule are **flagged, never rewritten**: `start_session` returns them as `claim_flags`.
+    A stored `supported` claim must gain real evidence (re-record it with `add_claim`) or move to another status before
+    `update_claim_status` can save it again as `supported`, even to change only its confidence.
+- **Skeptic check 5, `metric_conflicts`.** Same signature metric (allowlist: the hydrologic signature set; aliases resolved,
+  e.g. `bfi` = `baseflow_index`), same feature, same *known* period (`start_date`/`end_date`/`years`/`water_year`), different
+  values (relative difference above 1%, an engineering threshold), latest run per (tool, method/model, container). Model
+  skill (`nse`, `kge`, ...) and generic keys are never compared; runs with an unknown period are not flagged; only top-level
+  outputs and direct children of container dicts (`signatures`, `data`, ...) count, so `obs`/`sim` outputs of one run never
+  collide. Reported by `run_skeptic` (`metric_conflict`, warning) and by `start_session` as `metric_conflicts`. It stays for
+  legacy sessions after the BFI kernel is fixed upstream.
+
+### Fixed
+
+- `knowledge/concepts/camels_metadata.json`, `ai_hydro/knowledge/camels_metadata.json` and `knowledge/tools/camels_tools.json`:
+  `high_q_freq` and `low_q_freq` are days per year, not events per year; `zero_q_freq` is the fraction of days with Q <= 0.
+  The `slope_fdc` entry is untouched apart from a `todo` pointing at PR-4b / the Wave 3 plan.
 
 ### Changed
 
+- **Behaviour change:** `add_claim` / `update_claim_status` now refuse `supported` and `weakly_supported` without real
+  evidence (previously accepted anything). Bench tasks B-034 and B-059 and the test modules that built such claims now
+  create and cite real runs; defensibility fixtures use current-convention signature slots.
+- Follow-up (PR-4b): an integration test of the gates against real aihydro-watershed 0.2.0 `reference_comparison` and CI
+  `scope` output; until then they are tested with fixtures of the documented shape only.
+- Package version 2.7.0 (`pyproject.toml`, `ai_hydro/__version__`, `CITATION.cff`).
 - **A tool with no `tool_annotations.toml` row is no longer served unannotated.** `apply_tool_annotations`
   now stamps explicit conservative hints (`readOnlyHint=false`, `destructiveHint=true`,
   `idempotentHint=false`, `openWorldHint=true`) on any registered tool without a row (a third-party

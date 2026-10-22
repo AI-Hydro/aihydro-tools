@@ -1,7 +1,7 @@
 import pytest
 from ai_hydro.session.store import HydroSession
 from ai_hydro.session.models import EvidenceSpan, ScientificClaim
-from approval_helpers import approve, basin_ref, basin_ref_full, retained
+from approval_helpers import approve, basin_ref, basin_ref_full, retained, seed_run
 from ai_hydro.mcp.tools_ledger import (
     add_claim,
     add_assumption,
@@ -108,6 +108,7 @@ def test_promotion_gate():
 def test_metric_scoped_empirical_claim_requires_uncertainty():
     session_id = "test-metric-uncertainty-gate"
     HydroSession(session_id).save()
+    seed_run(session_id, "run-1")
     add_claim(
         session_id=session_id,
         claim_id="c-metric",
@@ -146,6 +147,7 @@ def test_metric_scoped_empirical_claim_requires_uncertainty():
 def test_metric_scoped_empirical_claim_cannot_be_promoted_without_uncertainty():
     session_id = "test-metric-promotion-uncertainty"
     HydroSession(session_id).save()
+    seed_run(session_id, "run-2")
     add_claim(
         session_id=session_id,
         claim_id="c-promote-metric",
@@ -179,6 +181,7 @@ def test_metric_scoped_empirical_claim_cannot_be_promoted_without_uncertainty():
 def test_non_empirical_claim_is_not_misclassified_as_quantitative():
     session_id = "test-methodological-claim-uncertainty"
     HydroSession(session_id).save()
+    seed_run(session_id, "spec-1", {"criterion": "kge"})
     add_claim(
         session_id=session_id,
         claim_id="c-method",
@@ -190,6 +193,7 @@ def test_non_empirical_claim_is_not_misclassified_as_quantitative():
         basins=["01031500"],
         period="2000-2010",
         metric="kge",
+        evidence_spans=[{"source_type": "run", "source_id": "spec-1"}],
     )
 
     result = update_claim_status(
@@ -305,10 +309,12 @@ def test_claim_events_carry_the_new_sealed_revision(monkeypatch):
     monkeypatch.setattr("ai_hydro.mcp.tools_ledger.push_claim_event",
                         lambda **kw: events.append(kw) or True)
     sid = "test-ledger-event-revision"
-    HydroSession(sid)
+    HydroSession(sid).save()
+    seed_run(sid, "r1")
     r1 = add_claim(session_id=sid, claim_id="claim.c1", statement="KGE is high for this basin.", claim_type="empirical_result",
               status="tested", confidence="medium", confidence_rationale="Tested with 10 years of data.",
-              basins=["01031500"], period="2000-2010")
+              basins=["01031500"], period="2000-2010",
+              evidence_spans=[{"source_type": "run", "source_id": "r1"}])
     update_claim_status(session_id=sid, claim_id="claim.c1", status="supported",
                         confidence="medium", rationale="Re-reviewed against the longer record.")
     assert r1.get("status") == "recorded", r1

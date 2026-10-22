@@ -25,6 +25,30 @@ from ai_hydro.registry.paths import aihydro_home
 log = logging.getLogger("ai_hydro.mcp")
 
 
+def _surface_integrity_findings(session, summary: dict) -> None:
+    """Add what a returning researcher must not miss to the start-of-session summary.
+
+    ``degraded`` (already in the summary) lists slots whose artifact is missing/changed or that
+    predate the current conventions. Here: stored claims that break a status rule
+    (``claim_flags``; flagged, never rewritten) and metrics reported with conflicting values
+    (``metric_conflicts``). Advisory: a failing check costs a missing field, never the session.
+    """
+    try:
+        from ai_hydro.claims.status_gate import stored_claim_flags
+        flags = stored_claim_flags(session)
+        if flags:
+            summary["claim_flags"] = flags
+    except Exception as exc:
+        log.warning("claim flags skipped: %s", exc)
+    try:
+        from ai_hydro.skeptic.checks import find_metric_conflicts
+        conflicts = find_metric_conflicts(session)
+        if conflicts:
+            summary["metric_conflicts"] = conflicts
+    except Exception as exc:
+        log.warning("metric conflicts skipped: %s", exc)
+
+
 @mcp.tool()
 def start_session(
     session_id: str | None = None,
@@ -50,6 +74,7 @@ def start_session(
         summary = session.summary()
         summary["shard_id"] = session.shard_id
         summary["workspace_dir"] = session.workspace_dir
+        _surface_integrity_findings(session, summary)
         summary["python_interpreter"] = sys.executable
         pip_path = Path(sys.executable).parent / "pip"
         summary["mcp_pip"] = str(pip_path) if pip_path.exists() else f"{sys.executable} -m pip"
@@ -124,7 +149,7 @@ def get_session_health(session_id: str | None = None) -> dict:
             "n_warnings": len(warnings),
             "site_name_history": session._site_name_history,
             "n_notes": len(session.notes),
-            "n_computed_slots": len(session.computed()),
+            "n_computed_slots": len(session.computed_healthy()),
             "has_interpretation": bool(session.interpretation),
             "_remediation": (
                 "If a warning is real, fix the underlying field via the "

@@ -10,7 +10,9 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Field
 from fastmcp.exceptions import ToolError as McpToolError
 
 from ai_hydro.mcp.app import mcp
@@ -220,6 +222,21 @@ def _uncertainty_gate(claim_id: str, claim_dict: dict, status: str,
     }
 
 
+def _status_gate(session_id: str, claim_id: str, claim_dict: dict, status: str,
+                 uncertainty_verified: bool) -> dict | None:
+    """The ONE gate on a claim's status: the first teaching refusal that applies, else ``None``.
+
+    Rules, in order: verified uncertainty for metric-scoped claims (``_uncertainty_gate``);
+    at least one evidence span for ``supported``/``weakly_supported``; no ``supported`` claim of
+    a difference from a reference when the cited CI excludes the forcing product
+    (``ai_hydro.claims.status_gate``). Every path that sets a status calls this, so the rules do
+    not depend on which tool was used. Stored claims are not rewritten: ``start_session`` flags them.
+    """
+    from ai_hydro.claims.status_gate import status_gate
+    return (_uncertainty_gate(claim_id, claim_dict, status, uncertainty_verified)
+            or status_gate(session_id, claim_id, claim_dict, status))
+
+
 #: Words by which prose asserts that a number carries an uncertainty estimate.
 _UNCERTAINTY_CLAIM = re.compile(
     r"\b(?:CIs?|confidence\s+(?:intervals?|bounds?|limits?)|credible\s+intervals?|"
@@ -329,19 +346,25 @@ def add_claim(
     evidence_spans: list[dict] | None = None,
     prereg_id: str | None = None,
     basin_refs: list[dict] | None = None,
+    comparison_ref: Annotated[str | None, Field(description=(
+        "Name of the reference this claim compares against, e.g. 'CAMELS-US v1.2'. Set it whenever the claim "
+        "says the result differs from, agrees with or is biased against a reference: it makes the claim a "
+        "comparison claim, so supported/weakly_supported is refused when the producer's reference_comparison "
+        "says can_claim_difference=false, or when the cited CI scope excludes forcing_product."))] = None,
 ) -> dict:
     """Add a scoped scientific claim to the session ledger.
 
     basin_refs: BasinRef dicts from delineate_watershed* (data.basin_ref) or {"id":
         "aihydro:basin:sha256:<hex>", "label": ...}. If omitted and the session watershed's
-        basin_ref matches `basins`, it is bound (`auto_bound`); promotion with basins but no
-        basin_refs is refused (BASIN_REF_REQUIRED).
+        basin_ref matches `basins`, it is bound (`auto_bound`); no basin_refs at
+        promotion: BASIN_REF_REQUIRED.
     evidence_spans: [{"source_type": "run", "source_id": "<run_id>", "metric_ref": "kge"}]; legacy
         `evidence` (untyped dicts) is auto-migrated. Pass one of the two.
-    prereg_id: from register_research_plan; marks the claim confirmatory, not exploratory.
+    prereg_id: from register_research_plan; marks the claim confirmatory.
 
-    status="supported" on a metric-scoped claim (scope.metric or evidence metric_ref) is refused
-    (`uncertainty_gate`): record another status, then update_claim_status(uncertainty_verified=True).
+    Metric-scoped status="supported" is refused (`uncertainty_gate`): record another status, then
+    update_claim_status(uncertainty_verified=True). `evidence_gate` (supported with no evidence
+    span) and `forcing_scope_gate` refuse too.
 
     Local paths: this machine's prefixes (workspace, AIHYDRO_HOME, home, temp) in statement,
     rationale and limitations become <workspace>, <aihydro-home>, <home>, <tmp> (`paths_scrubbed`).
@@ -377,9 +400,10 @@ def add_claim(
         _bad = prose_problems(claim_dict, getattr(session, "workspace_dir", None))
         if _bad:
             return refusal(_bad)            # nothing is stored or sealed
-        gate = _uncertainty_gate(claim_id, claim_dict, status, False)   # add_claim cannot assert it
+        gate = _status_gate(session_id, claim_id, claim_dict, status, False)   # add_claim cannot assert it
         if gate is not None:
             return gate
+        claim_dict["comparison_ref"] = (comparison_ref or "").strip() or None
         if prereg_id:
             claim_dict["prereg_id"] = prereg_id
         if records:
@@ -417,6 +441,11 @@ def add_claim(
         except Exception as exc:            # advisory only: never costs the user the recorded claim
             log.warning("uncertainty-assertion check skipped: %s", exc)
             warnings = []
+        try:
+            from ai_hydro.claims.status_gate import forcing_prose_warnings
+            warnings = warnings + forcing_prose_warnings(session_id, claim_dict)
+        except Exception as exc:            # advisory only
+            log.warning("forcing prose hint skipped: %s", exc)
         if warnings:
             out["warnings"] = warnings
             out["_note"] = warnings[0]["message"] + " " + warnings[0]["how_to_fix"]
@@ -455,7 +484,7 @@ def update_claim_status(
         claim_dict = session.claims[claim_id]
         claim_type = claim_dict.get("claim_type", "")
 
-        gate = _uncertainty_gate(claim_id, claim_dict, status, uncertainty_verified)
+        gate = _status_gate(session_id, claim_id, claim_dict, status, uncertainty_verified)
         if gate is not None:
             return gate
 
@@ -491,8 +520,17 @@ def update_claim_status(
             revision_digest=rev.revision_digest,
         )
         # C2 advisory: what promotion would block on this claim as stored (same policy).
-        return {"id": claim_id, "status": "updated", **path_report,
-                "promotion_check": promotion_check(session, claim_dict, claim_id=claim_id)}
+        out = {"id": claim_id, "status": "updated", **path_report,
+               "promotion_check": promotion_check(session, claim_dict, claim_id=claim_id)}
+        try:
+            from ai_hydro.claims.status_gate import forcing_prose_warnings
+            hint = forcing_prose_warnings(session_id, claim_dict)
+        except Exception as exc:            # advisory only
+            log.warning("forcing prose hint skipped: %s", exc)
+            hint = []
+        if hint:
+            out["warnings"] = hint
+        return out
     except LocalPathRefused as exc:
         return exc.refusal
     except Exception as exc:

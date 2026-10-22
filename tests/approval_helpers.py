@@ -8,6 +8,18 @@ the per-test isolated ``AIHYDRO_HOME`` (see ``conftest.py``).
 from __future__ import annotations
 
 
+def seed_run(session_id: str, run_id: str = "r1", outputs: dict | None = None, **row) -> None:
+    """Store a real (non-hollow) run-log row, as a finished tool run leaves: what evidence spans must cite.
+    ``SESSIONS_DIR`` must already point at the test's temp dir."""
+    from ai_hydro.session.store import HydroSession
+
+    s = HydroSession.load(session_id)
+    s.set("_run_log", {run_id: {"run_id": run_id, "session_id": session_id, "tool_name": "fixture",
+                                "timestamp": "2026-10-01T00:00:00+00:00",
+                                "key_outputs": outputs or {"kge": 0.8, "nse": 0.8}, **row}})
+    s.save()
+
+
 def basin_ref_full(label: str = "synthetic") -> dict:
     """The full BasinRef dict behind ``basin_ref(label)``: what a delineation retains."""
     from aihydro_core.records.place import BasinAnchor, BasinRef

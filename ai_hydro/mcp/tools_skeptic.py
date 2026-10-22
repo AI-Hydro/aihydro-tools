@@ -1,8 +1,8 @@
 """
 Skeptic tool — adversarial second pass over research interpretations.
 
-Runs four deterministic checks (stale citations, scope overreach,
-unvalidated high-risk assumptions, registry conflicts) and returns a
+Runs five deterministic checks (stale citations, scope overreach,
+unvalidated high-risk assumptions, registry conflicts, metric conflicts) and returns a
 SkepticReport.  All findings are advisory; the audit gate in
 write_research_interpretation is the only hard gate.
 """
@@ -20,11 +20,12 @@ def run_skeptic(
     """
     Adversarial second pass over a research interpretation.
 
-    Runs four deterministic checks:
+    Runs five deterministic checks:
       1. Stale/retracted claim markers cited in the text
       2. Gauge IDs mentioned outside any registered claim scope
       3. High-risk unvalidated assumptions alongside supported claims
       4. Registry conflicts (session status degraded below promoted entry)
+      5. Metric conflicts (one metric, aliases resolved, with different values for one feature and period)
 
     Returns a SkepticReport with verdict in {clean, advisory, flagged}.
     All findings are advisory — the audit gate is the only hard refusal.
