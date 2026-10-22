@@ -370,26 +370,42 @@ def test_comparison_run_on_a_forcing_excluded_ci_is_refused_whatever_the_wording
     assert update_claim_status(SID, "c1", "inconclusive", "low", RAT)["status"] == "updated"
 
 
-def test_a_claim_carrying_a_comparison_ref_is_a_comparison_even_if_the_run_is_not():
+def test_a_claim_with_a_comparison_ref_is_a_comparison_even_if_the_run_is_not():
     _seed(_rr_run(EXCLUDES_FORCING, comparison=None))
     _propose(PLAIN_CLAIM)
     assert _support()["status"] == "updated"                    # not a comparison: sampling interval is fine
-    s = HydroSession.load(SID)
-    s.claims["c1"]["status"] = "proposed"
-    s.claims["c1"]["comparison_ref"] = "cmp-1"
-    s.save()
-    assert _support()["error"] == "forcing_scope_gate"
+    _propose(DIFF_CLAIM, claim_id="c2", comparison_ref="CAMELS-US v1.2")
+    res = _support("c2")
+    assert res["error"] == "forcing_scope_gate"
+    stored = HydroSession.load(SID).claims["c2"]
+    assert stored["comparison_ref"] == "CAMELS-US v1.2" and HydroSession.load(SID).claims["c1"]["comparison_ref"] is None
 
 
-def test_can_claim_difference_false_is_honoured_directly():
-    _seed(_rr_run(None, comparison={"runoff_ratio": {"can_claim_difference": False,
-                                                      "reason": "period differs"}}))
-    _propose(PLAIN_CLAIM)
+def test_comparison_ref_is_sealed_into_the_revision_only_when_set():
+    from ai_hydro.approval.records import claim_revision_fields
+    base = {"id": "x", "claim": "s", "claim_type": "empirical_result", "status": "tested", "confidence": "low",
+            "confidence_rationale": RAT, "scope": {"basins": [], "period": "2000"}, "limitations": []}
+    assert "comparison_ref" not in claim_revision_fields(base, {})
+    assert claim_revision_fields({**base, "comparison_ref": "CAMELS-US v1.2"}, {})["comparison_ref"] == "CAMELS-US v1.2"
+
+
+NOT_CLAIMABLE = {"runoff_ratio": {"can_claim_difference": False, "reason": "period differs"}}
+
+
+def test_can_claim_difference_false_refuses_a_comparison_claim():
+    _seed(_rr_run(None, comparison=NOT_CLAIMABLE))
+    _propose(DIFF_CLAIM, comparison_ref="CAMELS-US v1.2")
     res = _support()
     assert res["error"] == "comparison_gate" and "can_claim_difference=false" in res["teaching_error"]["explanation"]
     # other table shapes
     _seed(_rr_run(None, comparison={"table": [{"metric": "runoff_ratio", "can_claim_difference": False}]}))
     assert _support()["error"] == "comparison_gate"
+
+
+def test_can_claim_difference_false_does_not_block_a_plain_claim_citing_the_metric():
+    _seed(_rr_run(None, comparison=NOT_CLAIMABLE))
+    _propose(PLAIN_CLAIM)                                       # "the value is 0.605": no comparison_ref
+    assert _support()["status"] == "updated"
 
 
 @pytest.mark.parametrize("scope", [

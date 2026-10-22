@@ -80,6 +80,9 @@ class ScientificClaim(BaseModel):
     confidence_rationale: str
     scope: ClaimScope
     evidence_spans: list[EvidenceSpan] = []
+    #: The reference this claim compares against (e.g. "CAMELS-US v1.2"). Set, the claim is a comparison
+    #: claim: the comparison/forcing gates in ``ai_hydro.claims.status_gate`` apply to it.
+    comparison_ref: str | None = None
     contradictions: list[str] = []
     limitations: list[str] = []       # at least one required for promotion
     citations: list[str] = []

@@ -15,13 +15,14 @@ Rules, beside the uncertainty rule in ``ai_hydro.mcp.tools_ledger``:
   ``supported``/``weakly_supported`` claim is blocked when it is a *comparison against a reference*
   and the interval it rests on excludes the forcing product:
 
-  - the claim cites a span whose run output carries a ``reference_comparison`` (or the claim carries a
-    ``comparison_ref``, or ``claim_type`` is ``comparison``/``comparative``), and
+  - the claim cites a span whose run output carries a ``reference_comparison``, or the claim is a
+    comparison claim (it names the reference it compares against in ``comparison_ref``), and
   - that metric's CI declares ``scope.excludes`` containing ``forcing_product``
     (documented shape ``{"varies": [...], "assumes": [...], "excludes": [...]}``).
 
-  When the ``reference_comparison`` entry for the cited metric says ``can_claim_difference: false``, that
-  is honoured directly (``comparison_gate``). Nothing here is keyed on a tool or metric name.
+  When the ``reference_comparison`` entry for the cited metric says ``can_claim_difference: false`` and the
+  claim is a comparison claim (``comparison_ref`` set), that is honoured directly (``comparison_gate``);
+  a plain claim citing the same metric ("mean flow was 2.0 m3/s") is not affected. Nothing here is keyed on a tool or metric name.
   **The gate is inert until the producers (aihydro-watershed 0.2.0 / Wave 3 PR-4b) emit the scope and
   ``reference_comparison`` outputs**; absent or free-text scope metadata never triggers it.
 
@@ -181,9 +182,8 @@ def comparison_entry(rc: Any, leaf: str) -> dict | None:
 
 
 def _is_comparison_claim(claim_dict: dict) -> bool:
-    scope = claim_dict.get("scope") if isinstance(claim_dict.get("scope"), dict) else {}
-    return bool(claim_dict.get("comparison_ref") or scope.get("comparison_ref")
-                or claim_dict.get("claim_type") in ("comparison", "comparative"))
+    """A comparison claim names the reference it compares against (``comparison_ref``)."""
+    return bool(str(claim_dict.get("comparison_ref") or "").strip())
 
 
 def _ci(row: dict | None, leaf: str) -> Any:
@@ -263,8 +263,9 @@ def forcing_scope_gate(session_id: str, claim_id: str, claim_dict: dict, status:
     """Structural refusal of reference-comparison claims that the cited evidence cannot carry."""
     if status not in EVIDENCE_STATUSES:
         return None
-    # A producer that says the difference cannot be claimed is believed, whatever the CI scope.
-    for span in claim_dict.get("evidence_spans") or []:
+    # A producer that says the difference cannot be claimed is believed, whatever the CI scope, but only
+    # for a claim that makes a comparison: a plain statement of the value is not what the flag is about.
+    for span in (claim_dict.get("evidence_spans") or []) if _is_comparison_claim(claim_dict) else []:
         if not (isinstance(span, dict) and span.get("source_type", "run") == "run"
                 and span.get("metric_ref") and span.get("source_id")):
             continue

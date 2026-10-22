@@ -37,9 +37,12 @@ No new package pins. Minor bump: additive response fields (`slot_health`, `degra
     refusal with a `teaching_error` and `span_problems`.
   - `forcing_scope_gate` / `comparison_gate` (structural, keyed on scope metadata only, no tool or metric names): a
     `supported`/`weakly_supported` claim is refused when it cites a run whose output carries a `reference_comparison`
-    (or the claim has a `comparison_ref`, or `claim_type` is `comparison`/`comparative`) and that metric's CI declares
-    `scope.excludes` containing `forcing_product` (documented shape `{"varies":[...],"assumes":[...],"excludes":[...]}`).
-    A `reference_comparison` entry with `can_claim_difference: false` is honoured directly. **The gate is inert until
+    (or the claim is a comparison claim) and that metric's CI declares `scope.excludes` containing `forcing_product`
+    (documented shape `{"varies":[...],"assumes":[...],"excludes":[...]}`). A comparison claim is one that sets the new
+    optional `add_claim(comparison_ref=...)` / `ScientificClaim.comparison_ref` (the reference compared against, e.g.
+    "CAMELS-US v1.2"; sealed in the revision digest only when set). A `reference_comparison` entry with
+    `can_claim_difference: false` is honoured directly, **for comparison claims only** (a plain claim citing the same
+    metric is unaffected). **The gate is inert until
     aihydro-watershed 0.2.0 / PR-4b supply the scope and `reference_comparison` outputs**; absent, free-text or malformed
     scopes never trigger it. A wording heuristic ("differs from the reference ...", negation-aware) only adds a
     non-blocking `FORCING_SCOPE_PROSE` warning.
@@ -65,6 +68,8 @@ No new package pins. Minor bump: additive response fields (`slot_health`, `degra
 - **Behaviour change:** `add_claim` / `update_claim_status` now refuse `supported` and `weakly_supported` without real
   evidence (previously accepted anything). Bench tasks B-034 and B-059 and the test modules that built such claims now
   create and cite real runs; defensibility fixtures use current-convention signature slots.
+- Follow-up (PR-4b): an integration test of the gates against real aihydro-watershed 0.2.0 `reference_comparison` and CI
+  `scope` output; until then they are tested with fixtures of the documented shape only.
 - Package version 2.7.0 (`pyproject.toml`, `ai_hydro/__version__`, `CITATION.cff`).
 - **A tool with no `tool_annotations.toml` row is no longer served unannotated.** `apply_tool_annotations`
   now stamps explicit conservative hints (`readOnlyHint=false`, `destructiveHint=true`,

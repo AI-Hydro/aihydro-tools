@@ -10,7 +10,9 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Field
 from fastmcp.exceptions import ToolError as McpToolError
 
 from ai_hydro.mcp.app import mcp
@@ -344,6 +346,11 @@ def add_claim(
     evidence_spans: list[dict] | None = None,
     prereg_id: str | None = None,
     basin_refs: list[dict] | None = None,
+    comparison_ref: Annotated[str | None, Field(description=(
+        "Name of the reference this claim compares against, e.g. 'CAMELS-US v1.2'. Set it whenever the claim "
+        "says the result differs from, agrees with or is biased against a reference: it makes the claim a "
+        "comparison claim, so supported/weakly_supported is refused when the producer's reference_comparison "
+        "says can_claim_difference=false, or when the cited CI scope excludes forcing_product."))] = None,
 ) -> dict:
     """Add a scoped scientific claim to the session ledger.
 
@@ -396,6 +403,7 @@ def add_claim(
         gate = _status_gate(session_id, claim_id, claim_dict, status, False)   # add_claim cannot assert it
         if gate is not None:
             return gate
+        claim_dict["comparison_ref"] = (comparison_ref or "").strip() or None
         if prereg_id:
             claim_dict["prereg_id"] = prereg_id
         if records:

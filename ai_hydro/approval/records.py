@@ -63,6 +63,7 @@ defaults do not matter):
                     computed at promotion time; ``unresolved:<code>`` if a span
                     cannot be resolved
     limitations, prereg_id, uncertainty_verified
+    comparison_ref  only when set
 
 Editing any claim field, or mutating a retained run/dataset/passage the claim
 cites, changes the digest and so invalidates a prior approval. Outside the
@@ -188,6 +189,8 @@ def claim_revision_fields(claim: Any, evidence_versions: dict, evidence_seals: d
         "prereg_id": raw.get("prereg_id"),
         "uncertainty_verified": bool(raw.get("uncertainty_verified")),
     }
+    if model.comparison_ref:     # omitted when unset, so claims made before it keep their digest
+        fields["comparison_ref"] = model.comparison_ref
     if evidence_seals:       # omitted when empty, so revisions made before it keep their digest
         fields["evidence_seals"] = dict(evidence_seals)
     return fields

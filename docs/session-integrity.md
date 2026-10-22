@@ -34,10 +34,15 @@ Every path that sets a status runs one gate, in this order:
    - `paper` / `dataset`: non-empty `source_id` only. There is no local registry to resolve them against at status
      time; promotion checks further.
 3. `forcing_scope_gate` / `comparison_gate` (structural). A `supported` / `weakly_supported` claim is refused when
-   - it cites a run whose output carries a `reference_comparison` (or the claim carries a `comparison_ref`, or its
-     `claim_type` is `comparison`/`comparative`) **and** that metric's CI declares `scope.excludes` containing
-     `forcing_product` (`{"varies": [...], "assumes": [...], "excludes": [...]}`): `forcing_scope_gate`; or
-   - the `reference_comparison` entry for the cited metric says `can_claim_difference: false`: `comparison_gate`.
+   - it cites a run whose output carries a `reference_comparison`, or it is a comparison claim (`add_claim(comparison_ref=
+     "CAMELS-US v1.2")`: the reference the claim compares against), **and** that metric's CI declares `scope.excludes`
+     containing `forcing_product` (`{"varies": [...], "assumes": [...], "excludes": [...]}`): `forcing_scope_gate`; or
+   - it is a comparison claim (`comparison_ref` set) and the `reference_comparison` entry for the cited metric says
+     `can_claim_difference: false`: `comparison_gate`. A plain claim citing that metric ("mean flow was 2.0 m3/s") is not
+     affected: the flag says a difference from the reference cannot be claimed, not that the value cannot be stated.
+
+   `comparison_ref` is part of the sealed claim revision only when set. Follow-up (PR-4b): integration test against real
+   watershed 0.2.0 output.
 
    The rule reads scope and comparison metadata only: no tool or metric names, and no wording. **It is inert until the
    producers (aihydro-watershed 0.2.0 / Wave 3 PR-4b) emit the scope and `reference_comparison` outputs**; a missing,
