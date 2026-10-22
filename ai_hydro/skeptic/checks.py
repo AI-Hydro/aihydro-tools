@@ -188,6 +188,15 @@ def check_registry_conflicts(session: "HydroSession") -> list[SkepticIssue]:
 # Check 5 — Metric conflicts: one metric, one feature, one period, two values
 # ---------------------------------------------------------------------------
 
+#: Definitional, comparable metrics: the hydrologic signature set (what ``extract_hydrological_signatures``
+#: and ``separate_baseflow`` report). Model-skill keys (nse, kge, ...) and generic keys (mean, value) are
+#: deliberately absent: two models legitimately score differently on the same gauge and period.
+_SIGNATURE_METRICS = frozenset({
+    "q_mean", "q_std", "q5", "q95", "q_median", "baseflow_index", "runoff_ratio", "stream_elas",
+    "high_q_freq", "high_q_dur", "low_q_freq", "low_q_dur", "zero_q_freq", "flow_variability",
+    "hfd_mean", "half_flow_date_std", "slope_fdc",
+})
+
 #: Names that denote one quantity. Anything not listed stands for itself (normalised).
 _METRIC_ALIASES: dict[str, str] = {
     "bfi": "baseflow_index",
@@ -205,6 +214,11 @@ METRIC_CONFLICT_REL_TOL = 0.01
 
 _FEATURE_KEYS = ("feature_id", "gauge_id", "site_id", "basin_id")
 _METHOD_KEYS = ("method", "baseflow_method", "filter", "algorithm")
+_MODEL_KEYS = ("model", "model_name", "backend", "architecture", "model_type")
+_PERIOD_KEYS = ("start_date", "end_date", "years", "water_year", "water_years", "period")
+#: Output sub-dicts that merely wrap a tool's metrics. Any other nesting (obs/sim, per-lead, per-basin ...)
+#: means the leaf is not "the metric for this feature and period", so it is not compared.
+_CONTAINERS = frozenset({"signatures", "data", "metrics", "key_outputs", "result", "results"})
 
 
 def canonical_metric(name: Any) -> str:
@@ -222,25 +236,33 @@ def _first(keys: tuple[str, ...], *sources: Any) -> Any:
     return None
 
 
-def _numeric_items(outputs: Any) -> list[tuple[str, float]]:
-    """Finite numeric ``(name, value)`` pairs of a ``key_outputs`` dict, one nesting level deep."""
-    found: list[tuple[str, float]] = []
+def _numeric_items(outputs: Any) -> list[tuple[str, float, str]]:
+    """Finite numeric ``(name, value, parent_path)``: top level, plus the direct children of container
+    sub-dicts (``signatures``, ``data``, ...). Other nesting is skipped, so ``obs.bfi`` and ``sim.bfi``
+    of one run never meet."""
+    found: list[tuple[str, float, str]] = []
     if not isinstance(outputs, dict):
         return found
+
+    def num(v: Any) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
     for k, v in outputs.items():
-        if isinstance(v, dict):
-            found.extend(_numeric_items({kk: vv for kk, vv in v.items() if not isinstance(vv, dict)}))
-        elif isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
-            found.append((str(k), float(v)))
+        if num(v):
+            found.append((str(k), float(v), ""))
+        elif isinstance(v, dict) and str(k).lower() in _CONTAINERS:
+            found.extend((str(kk), float(vv), str(k)) for kk, vv in v.items() if num(vv))
     return found
 
 
 def find_metric_conflicts(session: "HydroSession", rel_tol: float = METRIC_CONFLICT_REL_TOL) -> list[dict]:
-    """Same metric (aliases resolved), same feature, same period, different values.
+    """Same signature metric (aliases resolved), same feature, same *known* period, different values.
 
-    Reads the run log. Per (tool, method) only the latest run counts, so recomputing one tool does
-    not conflict with itself. Values from different tools or methods that agree within ``rel_tol``
-    are concordant, not a conflict. Each conflict lists every observation with its method and run id.
+    Reads the run log. Per (tool, method/model, container) only the latest run counts, so recomputing
+    one tool does not conflict with itself, and one run never conflicts with itself. Runs whose period is
+    unknown are not compared (the "period unspecified" bucket stays unflagged). Values from different
+    tools or methods that agree within ``rel_tol`` are concordant. Each conflict lists every observation
+    with its method and run id.
     """
     try:
         rows = session.get("_run_log") or {}
@@ -251,18 +273,23 @@ def find_metric_conflicts(session: "HydroSession", rel_tol: float = METRIC_CONFL
         if not isinstance(row, dict) or row.get("error") or row.get("minimal"):
             continue
         outputs, inputs = row.get("key_outputs") or {}, row.get("inputs") or {}
+        period = tuple(str(_first((k,), inputs, outputs) or "") for k in _PERIOD_KEYS)
+        if not any(period):
+            continue                                    # period unspecified: never flagged
         tool = str(row.get("tool_name") or row.get("slot") or "")
-        method = str(_first(_METHOD_KEYS, inputs, outputs) or tool)
+        method = "/".join(str(x) for x in (_first(_METHOD_KEYS, inputs, outputs) or tool,
+                                           _first(_MODEL_KEYS, inputs, outputs) or "") if x)
         feature = str(_first(_FEATURE_KEYS, inputs, outputs) or getattr(session, "site_id", "") or "")
-        period = (str(_first(("start_date",), inputs, outputs) or ""), str(_first(("end_date",), inputs, outputs) or ""))
-        for name, value in _numeric_items(outputs):
+        seen_in_run: set[str] = set()
+        for name, value, parent in _numeric_items(outputs):
             metric = canonical_metric(name)
-            if metric in {canonical_metric(k) for k in _FEATURE_KEYS + _METHOD_KEYS + ("start_date", "end_date")}:
+            if metric not in _SIGNATURE_METRICS or metric in seen_in_run:
                 continue
+            seen_in_run.add(metric)
             obs = {"value": value, "method": method, "tool": tool, "run_id": str(run_id),
                    "metric_name": name, "_ts": str(row.get("timestamp") or "")}
             slot = latest.setdefault((metric, feature, period), {})
-            key = (tool, method)
+            key = (tool, method, parent)
             if key not in slot or obs["_ts"] >= slot[key]["_ts"]:
                 slot[key] = obs
     conflicts: list[dict] = []
@@ -273,9 +300,11 @@ def find_metric_conflicts(session: "HydroSession", rel_tol: float = METRIC_CONFL
         hi, lo = max(vals), min(vals)
         if hi - lo <= rel_tol * max(abs(hi), abs(lo), 1e-12):
             continue
+        p = dict(zip(_PERIOD_KEYS, period))
         conflicts.append({
             "metric": metric, "feature": feature,
-            "period": {"start": period[0] or None, "end": period[1] or None},
+            "period": {k: (v or None) for k, v in p.items() if v} | {"start": p["start_date"] or None,
+                                                                   "end": p["end_date"] or None},
             "observations": [{k: v for k, v in o.items() if k != "_ts"}
                              for o in sorted(by_src.values(), key=lambda o: (o["value"], o["run_id"]))],
             "spread": hi - lo,

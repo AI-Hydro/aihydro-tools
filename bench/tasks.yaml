@@ -1039,6 +1039,12 @@ tasks:
       This ensures the structured gate is targeted and does not over-block.
     setup:
       session_id: bench-uncert-034
+      run_log:
+        run-abc:
+          run_id: run-abc
+          session_id: bench-uncert-034
+          tool_name: fixture
+          key_outputs: {perennial_flow: true}
       claims:
         claim-q02:
           id: claim-q02
@@ -1875,6 +1881,12 @@ tasks:
     setup:
       session_id: bench-hrb-059
       slots: {}
+      run_log:
+        bench-run-059:
+          run_id: bench-run-059
+          session_id: bench-hrb-059
+          tool_name: fixture
+          key_outputs: {baseflow_index: 0.4}
       claims: {}
     pre_call:
       - tool: add_claim

@@ -149,7 +149,7 @@ def get_session_health(session_id: str | None = None) -> dict:
             "n_warnings": len(warnings),
             "site_name_history": session._site_name_history,
             "n_notes": len(session.notes),
-            "n_computed_slots": len(session.computed()),
+            "n_computed_slots": len(session.computed_healthy()),
             "has_interpretation": bool(session.interpretation),
             "_remediation": (
                 "If a warning is real, fix the underlying field via the "

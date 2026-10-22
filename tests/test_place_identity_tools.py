@@ -18,6 +18,7 @@ from ai_hydro.session import store
 from ai_hydro.session.models import ClaimScope, ScientificClaim
 from ai_hydro.session.store import HydroSession
 from ai_hydro.skeptic.checks import check_scope_overreach
+from approval_helpers import seed_run
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +39,7 @@ def _ref(site="01013500", comid="1234567") -> dict:
 
 
 def _add(sid, **over):
+    seed_run(sid, "r1")
     kw = dict(session_id=sid, claim_id="c1", statement="s", claim_type="empirical_result",
               status="supported", confidence="medium",
               confidence_rationale="Run-backed result with bootstrap interval reported.",
@@ -143,8 +145,8 @@ def test_promotion_passes_basin_gate_when_bound():
     _session_with_slot("pb", _ref())
     _add("pb")
     res = promote_claim_to_registry("pb", "c1", researcher_approved=True)
-    assert res.get("code") != "BASIN_REF_REQUIRED"   # next gate (the cited run is not retained) now speaks
-    assert "not retained" in res["message"]
+    assert res.get("code") != "BASIN_REF_REQUIRED"   # next gate (human approval) now speaks
+    assert "approval" in res["message"]
 
 
 # --- (5) one USGS rule and alias equivalence -------------------------------

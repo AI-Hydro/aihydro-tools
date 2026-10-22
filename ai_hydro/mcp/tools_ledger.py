@@ -433,6 +433,11 @@ def add_claim(
         except Exception as exc:            # advisory only: never costs the user the recorded claim
             log.warning("uncertainty-assertion check skipped: %s", exc)
             warnings = []
+        try:
+            from ai_hydro.claims.status_gate import forcing_prose_warnings
+            warnings = warnings + forcing_prose_warnings(session_id, claim_dict)
+        except Exception as exc:            # advisory only
+            log.warning("forcing prose hint skipped: %s", exc)
         if warnings:
             out["warnings"] = warnings
             out["_note"] = warnings[0]["message"] + " " + warnings[0]["how_to_fix"]
@@ -507,8 +512,17 @@ def update_claim_status(
             revision_digest=rev.revision_digest,
         )
         # C2 advisory: what promotion would block on this claim as stored (same policy).
-        return {"id": claim_id, "status": "updated", **path_report,
-                "promotion_check": promotion_check(session, claim_dict, claim_id=claim_id)}
+        out = {"id": claim_id, "status": "updated", **path_report,
+               "promotion_check": promotion_check(session, claim_dict, claim_id=claim_id)}
+        try:
+            from ai_hydro.claims.status_gate import forcing_prose_warnings
+            hint = forcing_prose_warnings(session_id, claim_dict)
+        except Exception as exc:            # advisory only
+            log.warning("forcing prose hint skipped: %s", exc)
+            hint = []
+        if hint:
+            out["warnings"] = hint
+        return out
     except LocalPathRefused as exc:
         return exc.refusal
     except Exception as exc:

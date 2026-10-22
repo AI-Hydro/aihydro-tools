@@ -8,34 +8,59 @@ Code: `ai_hydro/session/store.py` (`slot_health`), `ai_hydro/claims/status_gate.
 
 | value | meaning |
 |---|---|
-| `ok` | nothing found wrong (a `_data_file` with no recorded digest cannot be checked and is `ok`) |
-| `missing_artifact` | the slot's `_data_file` does not exist |
+| `ok` | nothing found wrong |
+| `missing_artifact` | the slot's `_data_file` does not exist, is unreadable, or lies outside the session/workspace data dirs (`outside_session_dir`; symlinks that leave those dirs count as outside) |
 | `digest_mismatch` | the file's digest differs from `meta.retained_series.digest` |
-| `legacy_convention` | a `signatures` result without `flow_quantile_convention` (q5/q95 may be swapped) or without `_precipitation.completeness` (computed before precipitation completeness) |
+| `digest_missing` | the slot declares `meta.retained_series` (or is the streamflow slot) but records no digest, or another path than `_data_file`: the same rule the signatures tool applies before consuming the file |
+| `legacy_convention` | a `signatures` result without `flow_quantile_convention` (q5/q95 may be swapped); or, from a producer that emits `signature_definitions` (aihydro-watershed >= 0.2.0), without a `_precipitation` report. A completeness of `None` is legitimate (precipitation unavailable, not attempted or skipped), so presence of the report is what counts |
+
+A fresh slot from watershed 0.1.x (convention key, no `signature_definitions`) is `ok`.
 
 `slot_health` maps every stored slot to its worst value across features. Unhealthy slots appear under `degraded`
-(`slot`, `health`, `reason`, `fix`) and are removed from `computed`. Nothing is rewritten. Re-run the producing tool
-(`clear_session([slot])` first when it answers from cache) before citing a degraded slot.
+(`slot`, `health`, `reason`, `fix`), are removed from `computed`, are listed in `pending` (so the user is prompted to
+re-run them), and are not counted by `get_session_health.n_computed_slots` or the defensibility report
+(`HydroSession.computed_healthy()`). Other readers of `computed()` are unchanged (follow-up). Nothing is rewritten.
+Re-run the producing tool (`clear_session([slot])` first when it answers from cache) before citing a degraded slot.
+File digests are hashed in chunks and cached by (path, size, mtime).
 
 ## Claim status gate
 
 Every path that sets a status runs one gate, in this order:
 
 1. `uncertainty_gate`: metric-scoped `supported` needs verified uncertainty (unchanged).
-2. `evidence_gate`: `supported` / `weakly_supported` need at least one evidence span.
-3. `forcing_scope_gate`: if a cited run metric's CI declares `scope.excludes` containing `forcing_product`, a claim
-   asserting a difference from a reference cannot be `supported` / `weakly_supported`. The scope shape is
-   `{"varies": [...], "assumes": [...], "excludes": [...]}`; a missing, free-text or malformed scope never triggers it.
-   The rule reads scope metadata only: no tool or metric names. Why: a CI that covers inter-annual sampling only is
-   narrower than the forcing-product discrepancy, so "outside the CI" does not mean "different from the reference".
+2. `evidence_gate`: `supported` / `weakly_supported` need at least one evidence span and every span must be real.
+   - `run`: non-empty `source_id`; the run exists in the session run log; it is not hollow (no `error`, not a
+     middleware-only `minimal` row, non-empty `key_outputs`); a given `metric_ref` is one of its outputs.
+   - `paper` / `dataset`: non-empty `source_id` only. There is no local registry to resolve them against at status
+     time; promotion checks further.
+3. `forcing_scope_gate` / `comparison_gate` (structural). A `supported` / `weakly_supported` claim is refused when
+   - it cites a run whose output carries a `reference_comparison` (or the claim carries a `comparison_ref`, or its
+     `claim_type` is `comparison`/`comparative`) **and** that metric's CI declares `scope.excludes` containing
+     `forcing_product` (`{"varies": [...], "assumes": [...], "excludes": [...]}`): `forcing_scope_gate`; or
+   - the `reference_comparison` entry for the cited metric says `can_claim_difference: false`: `comparison_gate`.
+
+   The rule reads scope and comparison metadata only: no tool or metric names, and no wording. **It is inert until the
+   producers (aihydro-watershed 0.2.0 / Wave 3 PR-4b) emit the scope and `reference_comparison` outputs**; a missing,
+   free-text or malformed scope never triggers it. Why: a CI that covers inter-annual sampling only is narrower than the
+   forcing-product discrepancy, so "outside the CI" does not mean "different from the reference".
+
+A wording heuristic (a difference word and a reference word, negation-aware, including "does not agree with") adds a
+non-blocking `FORCING_SCOPE_PROSE` warning when a supported claim's cited CI excludes the forcing product. It is a hint,
+never the gate, and can miss paraphrases.
 
 Refusals are typed errors (`error` = gate name, `teaching_error` = `rule`, `explanation`, `how_to_fix`), never tracebacks.
-Whether prose "asserts a difference from a reference" is a cheap word heuristic; it can miss paraphrases and errs
-towards not blocking. Claims stored before a rule existed are listed under `claim_flags` at session start and left as is.
+
+**Stored claims.** Claims saved before a rule existed are listed under `claim_flags` at session start and left as they
+are. A stored `supported` claim without real evidence must first gain evidence (record it again with `add_claim` and real
+`evidence_spans`) or move to another status: `update_claim_status` re-runs the gate whenever the status it sets is
+`supported`, so even changing only its confidence is refused until then.
 
 ## Metric conflicts
 
-Skeptic check `metric_conflicts` (also `metric_conflicts` in `start_session`): the same metric (aliases resolved,
-`bfi` = `baseflow_index`), feature and period with values differing by more than 1% (relative; an engineering
-threshold), taking the latest run per (tool, method). Values that agree across methods are not a conflict. It exists for
-sessions that hold results from before a method was corrected, e.g. BFI 0.357 and 0.445 for one gauge and period.
+Skeptic check `metric_conflicts` (also `metric_conflicts` in `start_session`): the same signature metric (allowlist: the
+hydrologic signature set; aliases resolved, `bfi` = `baseflow_index`), feature and *known* period (`start_date`/`end_date`,
+`years`, `water_year`) with values differing by more than 1% (relative; an engineering threshold). Per (tool,
+method/model, container) only the latest run counts. Not compared: model-skill metrics (`nse`, `kge`, ...), generic keys,
+runs with an unknown period, and nested outputs other than direct children of container dicts (`signatures`, `data`, ...),
+so `obs`/`sim` outputs never collide. Values that agree across methods are not a conflict. It exists for sessions that hold
+results from before a method was corrected, e.g. BFI 0.357 and 0.445 for one gauge and period.

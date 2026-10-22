@@ -15,6 +15,7 @@ from ai_hydro.session.store import HydroSession
 from ai_hydro.skeptic.checks import canonical_metric, find_metric_conflicts, run_all_checks
 
 SID = "w3-integrity"
+NEW_SIGNATURE_MARKER = {"signature_definitions": {"q5": {"formula": "fixture"}}}   # watershed >= 0.2.0 shape
 RAT = "Synthetic fixture rationale, long enough to pass."
 
 
@@ -42,12 +43,22 @@ def _current_signatures(**over):
 
 # ------------------------------------------------------------------ slot health
 
+def _session(tmp_path):
+    s = HydroSession(SID)
+    s.workspace_dir = str(tmp_path)
+    return s
+
+
+def _streamflow(f, **meta):
+    return {"data": {"gauge_id": "1", "_data_file": str(f)},
+            "meta": _stamp(retained_series={"path": str(f), "digest": _digest(f)}, **meta)}
+
+
 def test_healthy_session_has_ok_slots_and_no_degraded(tmp_path):
     f = tmp_path / "q.json"
     f.write_text(json.dumps({"q_cms": [1, 2]}))
-    s = HydroSession(SID)
-    s.set("streamflow", {"data": {"gauge_id": "1", "_data_file": str(f)},
-                         "meta": _stamp(retained_series={"path": str(f), "digest": _digest(f)})})
+    s = _session(tmp_path)
+    s.set("streamflow", _streamflow(f))
     s.set("signatures", _current_signatures())
     out = s.summary()
     assert out["slot_health"] == {"streamflow": "ok", "signatures": "ok"}
@@ -55,7 +66,7 @@ def test_healthy_session_has_ok_slots_and_no_degraded(tmp_path):
 
 
 def test_missing_data_file_is_degraded_not_computed(tmp_path):
-    s = HydroSession(SID)
+    s = _session(tmp_path)
     s.set("streamflow", {"data": {"gauge_id": "1", "_data_file": str(tmp_path / "gone.json")}, "meta": _stamp()})
     out = s.summary()
     assert out["slot_health"]["streamflow"] == "missing_artifact"
@@ -67,9 +78,8 @@ def test_missing_data_file_is_degraded_not_computed(tmp_path):
 def test_digest_mismatch_is_degraded_not_computed(tmp_path):
     f = tmp_path / "q.json"
     f.write_text(json.dumps({"q_cms": [1, 2]}))
-    s = HydroSession(SID)
-    s.set("streamflow", {"data": {"_data_file": str(f)},
-                         "meta": _stamp(retained_series={"path": str(f), "digest": _digest(f)})})
+    s = _session(tmp_path)
+    s.set("streamflow", _streamflow(f))
     assert s.summary()["slot_health"]["streamflow"] == "ok"
     f.write_text(json.dumps({"q_cms": [1, 3]}))                 # changed after it was recorded
     out = s.summary()
@@ -77,31 +87,112 @@ def test_digest_mismatch_is_degraded_not_computed(tmp_path):
     assert "streamflow" not in out["computed"] and out["degraded"][0]["health"] == "digest_mismatch"
 
 
-def test_file_without_a_recorded_digest_cannot_be_checked_and_is_ok(tmp_path):
+@pytest.mark.parametrize("meta", [
+    {},                                                                 # streamflow slot, nothing recorded
+    {"retained_series": {"path": "SELF"}},                              # path but no digest
+    {"retained_series": {"path": "/elsewhere/q.json", "digest": "sha256:" + "0" * 64}},   # other path
+])
+def test_retained_file_without_a_matching_digest_reads_digest_missing(tmp_path, meta):
     f = tmp_path / "q.json"
     f.write_text("{}")
+    meta = json.loads(json.dumps(meta).replace("SELF", str(f)))
+    s = _session(tmp_path)
+    s.set("streamflow", {"data": {"_data_file": str(f)}, "meta": _stamp(**meta)})
+    out = s.summary()
+    assert out["slot_health"]["streamflow"] == "digest_missing" and "streamflow" not in out["computed"]
+
+
+def test_relative_data_file_resolves_against_the_session_dirs(tmp_path):
+    (tmp_path / "ws").mkdir()
+    f = tmp_path / "ws" / "q.json"
+    f.write_text("{}")
     s = HydroSession(SID)
-    s.set("streamflow", {"data": {"_data_file": str(f)}, "meta": _stamp()})
+    s.workspace_dir = str(tmp_path / "ws")
+    s.set("forcing", {"data": {"_data_file": "q.json"}, "meta": _stamp()})
+    assert s.summary()["slot_health"]["forcing"] == "ok"
+
+
+def test_data_file_outside_the_session_dirs_is_refused_even_through_a_symlink(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.json"
+    secret.write_text("{}")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "link.json").symlink_to(secret)
+    s = HydroSession(SID)
+    s.workspace_dir = str(ws)
+    s.set("forcing", {"data": {"_data_file": str(secret)}, "meta": _stamp()})
+    s.set("evap", {"data": {"_data_file": str(ws / "link.json")}, "meta": _stamp()})
+    h = s.slot_health()
+    assert h["forcing"]["health"] == "missing_artifact" and "outside_session_dir" in h["forcing"]["reason"]
+    assert h["evap"]["health"] == "missing_artifact"
+
+
+def test_digest_is_cached_by_size_and_mtime(tmp_path, monkeypatch):
+    f = tmp_path / "q.json"
+    f.write_text(json.dumps({"q": [1, 2, 3]}))
+    s = _session(tmp_path)
+    s.set("streamflow", _streamflow(f))
+    s.summary()
+    calls = []
+    real = store.hashlib.sha256
+    monkeypatch.setattr(store.hashlib, "sha256", lambda *a, **k: calls.append(1) or real(*a, **k))
     assert s.summary()["slot_health"]["streamflow"] == "ok"
+    assert calls == []                                              # second look hashed nothing
 
 
-@pytest.mark.parametrize("data,missing", [
-    ({"q_mean": 1.0}, "flow_quantile_convention"),                                     # pre-q5/q95 fix
-    ({"q_mean": 1.0, "flow_quantile_convention": "camels_nonexceedance_v1"}, "_precipitation.completeness"),
-    ({"q_mean": 1.0, "flow_quantile_convention": "camels_nonexceedance_v1",
-      "_precipitation": {"status": "used"}}, "_precipitation.completeness"),            # before completeness
+@pytest.mark.parametrize("data", [
+    {"q_mean": 1.0},                                                        # pre-q5/q95 fix: no convention
+    {"q_mean": 1.0, **NEW_SIGNATURE_MARKER, "flow_quantile_convention": "camels_nonexceedance_v1"},   # 0.2.0, no report
 ])
-def test_legacy_signatures_slot_is_degraded(data, missing):
+def test_legacy_signatures_slot_is_degraded(data):
     s = HydroSession(SID)
     s.set("signatures", {"data": data, "meta": _stamp()})
     out = s.summary()
     assert out["slot_health"]["signatures"] == "legacy_convention"
-    assert "signatures" not in out["computed"]
-    assert missing in out["degraded"][0]["reason"]
+    assert "signatures" not in out["computed"] and "signatures" in out["pending"]
+    assert out["degraded"][0]["reason"]
+
+
+def test_fresh_slot_from_the_released_watershed_is_ok():
+    """aihydro-watershed 0.1.x: convention key, no signature_definitions, no _precipitation."""
+    s = HydroSession(SID)
+    s.set("signatures", {"data": {"q_mean": 1.0, "flow_quantile_convention": "camels_nonexceedance_v1"},
+                         "meta": _stamp()})
+    out = s.summary()
+    assert out["slot_health"]["signatures"] == "ok" and "signatures" in out["computed"]
+    assert "signatures" not in out["pending"]
+
+
+@pytest.mark.parametrize("prec", [
+    {"status": "unavailable", "completeness": None, "reason": "no network"},
+    {"status": "not_attempted", "completeness": None},
+    {"status": "skip"},
+    {"completeness": None},
+    {"status": "used", "completeness": 0.97},
+])
+def test_current_slot_with_a_precipitation_report_is_ok_even_when_completeness_is_none(prec):
+    s = HydroSession(SID)
+    s.set("signatures", {"data": {"q_mean": 1.0, **NEW_SIGNATURE_MARKER,
+                                  "flow_quantile_convention": "camels_nonexceedance_v1", "_precipitation": prec},
+                         "meta": _stamp()})
+    assert s.summary()["slot_health"]["signatures"] == "ok"
+
+
+def test_degraded_slot_is_pending_and_not_counted_as_evidence(tmp_path):
+    s = _session(tmp_path)
+    s.set("signatures", {"data": {"q_mean": 1.0}, "meta": _stamp()})
+    s.set("watershed", {"data": {"area_km2": 5.0}, "meta": _stamp()})
+    s.save()
+    assert "signatures" in s.pending() and "watershed" not in s.pending()
+    assert s.computed_healthy() == ["watershed"]
+    from ai_hydro.mcp.tools_session import get_session_health
+    assert get_session_health(SID)["n_computed_slots"] == 1
 
 
 def test_worst_health_wins_and_other_slots_keep_theirs(tmp_path):
-    s = HydroSession(SID)
+    s = _session(tmp_path)
     s.set("signatures", {"data": {"q_mean": 1.0}, "meta": _stamp()})
     s.set("streamflow", {"data": {"_data_file": str(tmp_path / "gone.json")}, "meta": _stamp()})
     s.set("watershed", {"data": {"area_km2": 5.0}, "meta": _stamp()})
@@ -112,7 +203,7 @@ def test_worst_health_wins_and_other_slots_keep_theirs(tmp_path):
 
 
 def test_start_session_surfaces_degraded_slots(tmp_path):
-    s = HydroSession(SID)
+    s = _session(tmp_path)
     s.set("streamflow", {"data": {"_data_file": str(tmp_path / "gone.json")}, "meta": _stamp()})
     s.set("signatures", {"data": {"q_mean": 1.0}, "meta": _stamp()})
     s.save()
@@ -124,6 +215,21 @@ def test_start_session_surfaces_degraded_slots(tmp_path):
 
 # ------------------------------------------------------------------ evidence gate
 
+def _run(run_id="r1", outputs=None, evidence=None, **row):
+    """A run-log row as a finished tool run leaves it (``outputs=None`` -> a plain numeric output)."""
+    entry = {"run_id": run_id, "session_id": SID, "tool_name": "fixture", "timestamp": "2026-10-01T00:00:00+00:00",
+             "key_outputs": {"baseflow_index": 0.4} if outputs is None else outputs, **row}
+    if evidence is not None:
+        entry["evidence"] = evidence
+    return entry
+
+
+def _seed(*rows):
+    s = HydroSession.load(SID)
+    s.set("_run_log", {r["run_id"]: r for r in rows})
+    s.save()
+
+
 def _claim(status="tested", claim_id="c1", **over):
     args = dict(session_id=SID, claim_id=claim_id, statement="Baseflow dominates summer low flow.",
                 claim_type="empirical_result", status=status, confidence="medium",
@@ -132,17 +238,64 @@ def _claim(status="tested", claim_id="c1", **over):
     return add_claim(**args)
 
 
+def _span(run_id="r1", metric=None):
+    d = {"source_type": "run", "source_id": run_id}
+    if metric:
+        d["metric_ref"] = metric
+    return [d]
+
+
 @pytest.mark.parametrize("status", ["supported", "weakly_supported"])
 def test_supported_claim_with_no_span_is_refused_with_a_teaching_error(status):
     HydroSession(SID).save()
     res = _claim(status)
     assert res["error"] == "evidence_gate" and res["requested_status"] == status
     assert "_traceback" not in res
-    assert "evidence_spans" in res["teaching_error"]["how_to_fix"]
-    assert "c1" not in HydroSession.load(SID).claims                  # nothing stored
+    how = res["teaching_error"]["how_to_fix"]
+    assert "evidence_spans" in how and "'lit'" not in how                # EvidenceSpan has no 'lit' type
+    assert "c1" not in HydroSession.load(SID).claims                    # nothing stored
 
 
-def test_update_to_supported_without_span_is_refused_and_leaves_the_claim():
+@pytest.mark.parametrize("label,span,seed", [
+    ("nonexistent run", _span("ghost"), None),
+    ("empty source_id", [{"source_type": "run", "source_id": ""}], None),
+    ("blank source_id", [{"source_type": "paper", "source_id": "  "}], None),
+    ("hollow run: no outputs", _span("r1"), _run("r1", outputs={})),
+    ("hollow run: error", _span("r1"), _run("r1", error=True)),
+    ("hollow run: middleware row", _span("r1"), _run("r1", minimal=True)),
+    ("metric missing from the run", _span("r1", "nse"), _run("r1")),
+])
+def test_junk_spans_are_refused(label, span, seed):
+    HydroSession(SID).save()
+    if seed:
+        _seed(seed)
+    res = _claim("weakly_supported", evidence_spans=span)
+    assert res["error"] == "evidence_gate", label
+    assert res["span_problems"] and "_traceback" not in res
+    assert "c1" not in HydroSession.load(SID).claims
+
+
+def test_one_junk_span_among_real_ones_is_still_refused():
+    HydroSession(SID).save()
+    _seed(_run("r1"))
+    res = _claim("weakly_supported", evidence_spans=_span("r1") + _span("ghost"))
+    assert res["error"] == "evidence_gate" and [p["index"] for p in res["span_problems"]] == [1]
+
+
+def test_real_run_paper_and_dataset_spans_are_accepted():
+    HydroSession(SID).save()
+    _seed(_run("r1", {"baseflow_index": 0.4}))
+    assert _claim("weakly_supported", evidence_spans=_span("r1", "baseflow_index"))["status"] == "recorded"
+    assert _claim("weakly_supported", claim_id="c2",
+                  evidence_spans=_span("r1", "key_outputs.baseflow_index"))["status"] == "recorded"
+    assert _claim("supported", claim_id="c3", evidence_spans=_span("r1"))["status"] == "recorded"
+    assert _claim("weakly_supported", claim_id="p", evidence_spans=[
+        {"source_type": "paper", "source_id": "addor2017camels"}])["status"] == "recorded"
+    assert _claim("weakly_supported", claim_id="d", evidence_spans=[
+        {"source_type": "dataset", "source_id": "camels-us"}])["status"] == "recorded"
+
+
+def test_update_to_supported_without_real_evidence_is_refused_and_leaves_the_claim():
     HydroSession(SID).save()
     assert _claim("proposed")["status"] == "recorded"
     res = update_claim_status(SID, "c1", "supported", "medium", RAT)
@@ -150,117 +303,139 @@ def test_update_to_supported_without_span_is_refused_and_leaves_the_claim():
     assert HydroSession.load(SID).claims["c1"]["status"] == "proposed"
 
 
-def test_supported_claim_with_a_span_and_other_statuses_pass():
+def test_other_statuses_need_no_evidence():
     HydroSession(SID).save()
-    span = [{"source_type": "run", "source_id": "r1"}]
-    assert _claim("supported", evidence_spans=span)["status"] == "recorded"
-    assert _claim("weakly_supported", claim_id="c2", evidence_spans=span)["status"] == "recorded"
     for i, st in enumerate(["proposed", "tested", "inconclusive", "contradicted"]):
         assert _claim(st, claim_id=f"o{i}")["status"] == "recorded"
 
 
-def test_stored_supported_claim_without_span_is_flagged_at_start_not_rewritten():
-    s = HydroSession(SID)
-    s.claims["old"] = {"id": "old", "claim": "Stored before the gate existed.", "claim_type": "empirical_result",
-                       "status": "supported", "confidence": "medium", "confidence_rationale": RAT,
-                       "scope": {"basins": []}, "evidence_spans": [], "limitations": []}
-    s.claims["fine"] = {**s.claims["old"], "id": "fine", "evidence_spans": [{"source_type": "run", "source_id": "r1"}]}
+def test_stored_supported_claim_without_real_evidence_is_flagged_not_rewritten_and_cannot_be_re_saved_supported():
+    _seed(_run("r1"))
+    s = HydroSession.load(SID)
+    base = {"claim": "Stored before the gate existed.", "claim_type": "empirical_result",
+            "status": "supported", "confidence": "medium", "confidence_rationale": RAT,
+            "scope": {"basins": ["01013500"], "period": "2000-2010"}, "limitations": []}
+    s.claims["old"] = {**base, "id": "old", "evidence_spans": []}
+    s.claims["junk"] = {**base, "id": "junk", "evidence_spans": _span("ghost")}
+    s.claims["fine"] = {**base, "id": "fine", "evidence_spans": _span("r1")}
     s.save()
     out = start_session(session_id=SID)
-    assert [f["claim_id"] for f in out["claim_flags"]] == ["old"]
-    assert out["claim_flags"][0]["code"] == "evidence_gate" and out["claim_flags"][0]["how_to_fix"]
+    assert sorted(f["claim_id"] for f in out["claim_flags"]) == ["junk", "old"]
+    assert all(f["code"] == "evidence_gate" and f["how_to_fix"] for f in out["claim_flags"])
     assert HydroSession.load(SID).claims["old"]["status"] == "supported"        # never rewritten
+    # N5: re-saving it as supported (even to change confidence) is refused until evidence is added
+    assert update_claim_status(SID, "old", "supported", "high", RAT)["error"] == "evidence_gate"
+    assert update_claim_status(SID, "old", "tested", "high", RAT)["status"] == "updated"
 
 
-# ------------------------------------------------------------------ forcing-scope gate
+# ------------------------------------------------------------------ forcing / comparison gate
 
 EXCLUDES_FORCING = {"varies": ["water_year_sample"], "assumes": ["exchangeable_years"],
                     "excludes": ["forcing_product", "rating_measurement", "method_definition"]}
 SAMPLING_AND_FORCING = {"varies": ["water_year_sample", "forcing_product"], "assumes": [], "excludes": ["rating_measurement"]}
 DIFF_CLAIM = "The runoff ratio of 0.605 is higher than the CAMELS reference value of 0.576."
+PLAIN_CLAIM = "The runoff ratio is 0.605 over water years 2000-2020."
+COMPARISON = {"runoff_ratio": {"can_claim_difference": True, "forcing_differs": True}}
 
 
-def _seed_run(scope, run_id="r_rr", metric="runoff_ratio"):
-    s = HydroSession(SID)
+def _rr_run(scope, run_id="r_rr", metric="runoff_ratio", comparison=COMPARISON):
     ci = {"value": 0.605, "ci_low": 0.58, "ci_high": 0.63, "ci_level": 0.9, "n": 20, "method": "fixture"}
     if scope is not None:
         ci["scope"] = scope
-    s.set("_run_log", {run_id: {"run_id": run_id, "session_id": SID, "tool_name": "fixture",
-                                "timestamp": "2026-10-01T00:00:00+00:00",
-                                "key_outputs": {metric: 0.605}, "evidence": {"uncertainty": {metric: ci}}}})
-    s.save()
+    outputs = {metric: 0.605}
+    if comparison is not None:
+        outputs["reference_comparison"] = comparison
+    return _run(run_id, outputs, evidence={"uncertainty": {metric: ci}})
 
 
-def _propose(statement, run_id="r_rr", metric="runoff_ratio"):
-    r = _claim("proposed", statement=statement,
-               evidence_spans=[{"source_type": "run", "source_id": run_id, "metric_ref": metric}])
+def _propose(statement, claim_id="c1", run_id="r_rr", metric="runoff_ratio", **over):
+    r = _claim("proposed", claim_id=claim_id, statement=statement, evidence_spans=_span(run_id, metric), **over)
     assert r["status"] == "recorded", r
 
 
-def _support(**kw):
-    return update_claim_status(SID, "c1", "supported", "medium", RAT, uncertainty_verified=True, **kw)
+def _support(claim_id="c1"):
+    return update_claim_status(SID, claim_id, "supported", "medium", RAT, uncertainty_verified=True)
 
 
-def test_difference_from_reference_on_a_forcing_excluded_ci_is_refused():
-    _seed_run(EXCLUDES_FORCING)
-    _propose(DIFF_CLAIM)
+def test_comparison_run_on_a_forcing_excluded_ci_is_refused_whatever_the_wording():
+    _seed(_rr_run(EXCLUDES_FORCING))
+    _propose(PLAIN_CLAIM)                       # no "differs" in the prose: the gate is structural
     res = _support()
-    assert res["error"] == "forcing_scope_gate" and res["metrics"] == [{"metric_ref": "runoff_ratio", "run_id": "r_rr"}]
+    assert res["error"] == "forcing_scope_gate"
+    assert res["metrics"][0]["metric_ref"] == "runoff_ratio" and res["metrics"][0]["run_id"] == "r_rr"
     assert "forcing_product" in res["teaching_error"]["explanation"] and "_traceback" not in res
     assert HydroSession.load(SID).claims["c1"]["status"] == "proposed"
-    weak = update_claim_status(SID, "c1", "weakly_supported", "low", RAT)
-    assert weak["error"] == "forcing_scope_gate"
-
-
-def test_downgraded_statuses_and_wording_that_does_not_assert_a_difference_pass():
-    _seed_run(EXCLUDES_FORCING)
-    _propose(DIFF_CLAIM)
+    assert update_claim_status(SID, "c1", "weakly_supported", "low", RAT)["error"] == "forcing_scope_gate"
     assert update_claim_status(SID, "c1", "tested", "low", RAT)["status"] == "updated"
     assert update_claim_status(SID, "c1", "inconclusive", "low", RAT)["status"] == "updated"
-    r = _claim("proposed", claim_id="c2", statement="The runoff ratio is 0.605 over water years 2000-2020.",
-               evidence_spans=[{"source_type": "run", "source_id": "r_rr", "metric_ref": "runoff_ratio"}])
-    assert r["status"] == "recorded"
-    ok = update_claim_status(SID, "c2", "supported", "medium", RAT, uncertainty_verified=True)
-    assert ok["status"] == "updated"
-    _claim("proposed", claim_id="c3", statement="The runoff ratio does not differ from the CAMELS reference.",
-           evidence_spans=[{"source_type": "run", "source_id": "r_rr", "metric_ref": "runoff_ratio"}])
-    # (a statement of no difference is not the overclaim this gate targets)
-    assert update_claim_status(SID, "c3", "supported", "medium", RAT, uncertainty_verified=True)["status"] == "updated"
+
+
+def test_a_claim_carrying_a_comparison_ref_is_a_comparison_even_if_the_run_is_not():
+    _seed(_rr_run(EXCLUDES_FORCING, comparison=None))
+    _propose(PLAIN_CLAIM)
+    assert _support()["status"] == "updated"                    # not a comparison: sampling interval is fine
+    s = HydroSession.load(SID)
+    s.claims["c1"]["status"] = "proposed"
+    s.claims["c1"]["comparison_ref"] = "cmp-1"
+    s.save()
+    assert _support()["error"] == "forcing_scope_gate"
+
+
+def test_can_claim_difference_false_is_honoured_directly():
+    _seed(_rr_run(None, comparison={"runoff_ratio": {"can_claim_difference": False,
+                                                      "reason": "period differs"}}))
+    _propose(PLAIN_CLAIM)
+    res = _support()
+    assert res["error"] == "comparison_gate" and "can_claim_difference=false" in res["teaching_error"]["explanation"]
+    # other table shapes
+    _seed(_rr_run(None, comparison={"table": [{"metric": "runoff_ratio", "can_claim_difference": False}]}))
+    assert _support()["error"] == "comparison_gate"
 
 
 @pytest.mark.parametrize("scope", [
     SAMPLING_AND_FORCING,                                   # forcing is varied, not excluded
-    None,                                                   # no scope metadata: nothing known, nothing claimed
+    None,                                                   # no scope metadata: gate inert
     "inter-annual sampling only; excludes forcing-product and rating error",   # older free text
     {"excludes": "forcing_product"},                        # malformed
 ])
 def test_gate_needs_the_documented_scope_shape_to_fire(scope):
-    _seed_run(scope)
+    _seed(_rr_run(scope))
     _propose(DIFF_CLAIM)
     assert _support()["status"] == "updated"
 
 
 def test_gate_is_keyed_on_scope_not_on_metric_or_tool_names():
-    _seed_run(EXCLUDES_FORCING, run_id="r_x", metric="some_new_metric")
+    _seed(_rr_run(EXCLUDES_FORCING, run_id="r_x", metric="some_new_metric",
+                  comparison={"some_new_metric": {"can_claim_difference": True}}))
     _propose("some_new_metric is larger than the published benchmark.", run_id="r_x", metric="some_new_metric")
     assert _support()["error"] == "forcing_scope_gate"
+
+
+def test_prose_is_only_an_advisory_hint_never_the_gate():
+    _seed(_rr_run(EXCLUDES_FORCING, comparison=None))           # not a structural comparison
+    _propose(DIFF_CLAIM)
+    ok = _support()
+    assert ok["status"] == "updated"                           # prose alone does not block
+    assert ok["warnings"][0]["code"] == "FORCING_SCOPE_PROSE" and ok["warnings"][0]["blocking"] is False
 
 
 def test_reference_difference_heuristic():
     assert asserts_reference_difference(DIFF_CLAIM)
     assert asserts_reference_difference("Our BFI is lower than the benchmark value.")
+    assert asserts_reference_difference("The ratio does not agree with the CAMELS value.")
+    assert asserts_reference_difference("The ratio doesn't match the published value.")
     assert not asserts_reference_difference("The runoff ratio is 0.605.")
     assert not asserts_reference_difference("The value does not differ from the reference.")
+    assert not asserts_reference_difference("The value is not inconsistent with the reference.")
     assert not asserts_reference_difference("Peak flow is higher in spring than in autumn.")   # no reference
 
 
-def test_stored_forcing_claim_is_flagged_at_start():
-    _seed_run(EXCLUDES_FORCING)
+def test_stored_comparison_claim_is_flagged_at_start():
+    _seed(_rr_run(EXCLUDES_FORCING))
     s = HydroSession.load(SID)
     s.claims["old"] = {"id": "old", "claim": DIFF_CLAIM, "claim_type": "empirical_result", "status": "supported",
                        "confidence": "medium", "confidence_rationale": RAT, "scope": {"basins": []},
-                       "evidence_spans": [{"source_type": "run", "source_id": "r_rr", "metric_ref": "runoff_ratio"}],
-                       "limitations": []}
+                       "evidence_spans": _span("r_rr", "runoff_ratio"), "limitations": []}
     s.save()
     flags = stored_claim_flags(HydroSession.load(SID))
     assert [(f["claim_id"], f["code"]) for f in flags] == [("old", "forcing_scope_gate")]
@@ -271,9 +446,10 @@ def test_stored_forcing_claim_is_flagged_at_start():
 # ------------------------------------------------------------------ metric conflicts
 
 def _row(run_id, outputs, tool="signatures", ts="2026-10-01T00:00:00+00:00", **inputs):
+    inp = {"gauge_id": "01013500", "start_date": "2000-01-01", "end_date": "2020-12-31", **inputs}
+    inp = {k: v for k, v in inp.items() if v is not None}
     return {"run_id": run_id, "session_id": SID, "tool_name": tool, "timestamp": ts,
-            "key_outputs": outputs, "inputs": {"gauge_id": "01013500", "start_date": "2000-01-01",
-                                               "end_date": "2020-12-31", **inputs}}
+            "key_outputs": outputs, "inputs": inp}
 
 
 def _log(*rows):
@@ -298,9 +474,46 @@ def test_bfi_under_two_methods_is_flagged_across_aliases():
     report = run_all_checks(s, "")
     assert any(i.issue_type == "metric_conflict" and "baseflow_index" in i.description for i in report.issues)
     assert report.verdict == "advisory"
-    HydroSession.load(SID).save()
     out = start_session(session_id=SID)
     assert out["metric_conflicts"][0]["metric"] == "baseflow_index"
+
+
+def test_model_skill_metrics_are_not_compared_across_models():
+    s = _log(_row("r1", {"nse": 0.81}, tool="train_lstm", model="lstm"),
+             _row("r2", {"nse": 0.55}, tool="train_hbv", model="hbv"),
+             _row("r3", {"mean": 1.0, "value": 3.0}, tool="a"), _row("r4", {"mean": 2.0, "value": 9.0}, tool="b"))
+    assert find_metric_conflicts(s) == []
+
+
+def test_same_signature_from_two_models_is_keyed_by_model_identity():
+    s = _log(_row("r1", {"q_mean": 1.0}, tool="sim", model="lstm"),
+             _row("r2", {"q_mean": 1.0}, tool="sim", model="hbv", ts="2026-10-02T00:00:00+00:00"))
+    assert find_metric_conflicts(s) == []                      # same value, distinct sources: concordant
+    s = _log(_row("r1", {"q_mean": 1.0}, tool="sim", model="lstm"),
+             _row("r2", {"q_mean": 2.0}, tool="sim", model="hbv"))
+    [c] = find_metric_conflicts(s)
+    assert {o["method"] for o in c["observations"]} == {"sim/lstm", "sim/hbv"}
+
+
+def test_unknown_period_runs_are_not_flagged():
+    s = _log(_row("r1", {"bfi": 0.357}, tool="a", start_date=None, end_date=None),
+             _row("r2", {"baseflow_index": 0.445}, tool="b", start_date=None, end_date=None))
+    assert find_metric_conflicts(s) == []
+
+
+def test_years_and_water_year_are_part_of_the_period():
+    s = _log(_row("r1", {"bfi": 0.357}, tool="a", start_date=None, end_date=None, water_year=2001),
+             _row("r2", {"baseflow_index": 0.445}, tool="b", start_date=None, end_date=None, water_year=2002))
+    assert find_metric_conflicts(s) == []
+    s = _log(_row("r1", {"bfi": 0.357}, tool="a", start_date=None, end_date=None, water_year=2001),
+             _row("r2", {"baseflow_index": 0.445}, tool="b", start_date=None, end_date=None, water_year=2001))
+    assert len(find_metric_conflicts(s)) == 1
+
+
+def test_nested_obs_sim_outputs_never_collide_with_themselves():
+    s = _log(_row("r1", {"obs": {"bfi": 0.357}, "sim": {"bfi": 0.445}}, tool="evaluate"),
+             _row("r2", {"signatures": {"bfi": 0.30}, "bfi": 0.30}, tool="sig"))
+    assert find_metric_conflicts(s) == []
 
 
 def test_agreement_other_periods_other_features_and_recomputes_are_not_conflicts():
@@ -310,8 +523,7 @@ def test_agreement_other_periods_other_features_and_recomputes_are_not_conflicts
              _row("r4", {"bfi": 0.31}, tool="d", gauge_id="01031500"),                 # another feature
              _row("r5", {"bfi": 0.10}, tool="a", ts="2026-09-01T00:00:00+00:00"))      # older run of tool a
     assert find_metric_conflicts(s) == []
-    out = start_session(session_id=SID)
-    assert "metric_conflicts" not in out
+    assert "metric_conflicts" not in start_session(session_id=SID)
 
 
 def test_latest_run_per_tool_is_what_counts():

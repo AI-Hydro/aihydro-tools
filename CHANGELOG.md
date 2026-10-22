@@ -14,27 +14,45 @@ No new package pins. Minor bump: additive response fields (`slot_health`, `degra
 ### Added
 
 - **Session artifact health.** `HydroSession.summary()` (so `start_session` and `get_session_summary`) adds
-  `slot_health` (`{slot: ok | missing_artifact | digest_mismatch | legacy_convention}`). A slot is
-  `missing_artifact` when its `_data_file` is gone, `digest_mismatch` when the file's digest differs from
-  `meta.retained_series.digest` (a file with no recorded digest cannot be checked and counts as `ok`), and, for
-  `signatures`, `legacy_convention` when the result lacks `flow_quantile_convention` or `_precipitation.completeness`
-  (computed before the q5/q95 fix or before precipitation completeness existed). Unhealthy slots are listed under
-  `degraded` (`slot`, `health`, `reason`, `fix`) and **no longer under `computed`**; `pending` is unchanged.
-  Stored results are never rewritten. New: `HydroSession.slot_health()`.
-- **One status gate** (`ai_hydro/claims/status_gate.py`, applied by `_status_gate` in `tools_ledger.py` to every path that
-  sets a status: `add_claim`, `update_claim_status`). After the existing `uncertainty_gate`:
-  - `evidence_gate`: `supported` and `weakly_supported` require at least one evidence span. The refusal is a typed,
-    traceback-free error whose `teaching_error` says how to fix it.
-  - `forcing_scope_gate` (general mechanism, keyed on scope metadata only): when the CI behind a cited run metric declares
-    `scope.excludes` containing `forcing_product` (documented shape `{"varies":[...],"assumes":[...],"excludes":[...]}`),
-    a claim asserting a difference from a reference cannot be `supported`/`weakly_supported`. Absent, free-text or
-    malformed scopes never trigger it. "Asserts a difference from a reference" is a cheap prose heuristic (a difference
-    word and a reference word, not negated), so it can miss paraphrases; it errs towards not blocking.
+  `slot_health` (`{slot: ok | missing_artifact | digest_mismatch | digest_missing | legacy_convention}`):
+  - `missing_artifact`: the slot's `_data_file` is gone, unreadable, or outside the session/workspace data dirs
+    (reason `outside_session_dir`; relative paths resolve against those dirs, symlinks are followed and must stay inside).
+  - `digest_mismatch`: the file's digest differs from `meta.retained_series.digest`.
+  - `digest_missing`: the slot declares `meta.retained_series` (or is the streamflow slot) with no digest, or a different
+    path than `_data_file` (same rule as the consumer in `extract_hydrological_signatures`).
+  - `legacy_convention` (signatures only): no `flow_quantile_convention`; or, from a producer new enough to emit
+    `signature_definitions` (aihydro-watershed >= 0.2.0), no `_precipitation` report. A `completeness` of `None`
+    (precipitation unavailable / not attempted / skipped) is legitimate. A fresh slot from watershed 0.1.x that has the
+    convention key reads `ok`.
+  Unhealthy slots are listed under `degraded` (`slot`, `health`, `reason`, `fix`), leave `computed`, **appear in `pending`**
+  and are not counted by `n_computed_slots` or the defensibility report (`HydroSession.computed_healthy()`). Digests are
+  hashed in chunks and cached by (path, size, mtime). Stored results are never rewritten. Other `computed()` readers
+  (research.md, exports, tool listings) still see the raw list: follow-up.
+- **One status gate** (`ai_hydro/claims/status_gate.py`, applied by `_status_gate` in `tools_ledger.py` to `add_claim` and
+  `update_claim_status`). After the existing `uncertainty_gate`:
+  - `evidence_gate`: `supported` and `weakly_supported` need at least one evidence span, and every span must be real. For
+    `run` spans: non-empty `source_id`; the run exists in the session run log; it is not hollow (no `error`, not a
+    `minimal` middleware row, non-empty `key_outputs`); a given `metric_ref` is among its outputs. `paper` and `dataset`
+    spans: non-empty `source_id` only (nothing local to resolve them against at status time). Typed, traceback-free
+    refusal with a `teaching_error` and `span_problems`.
+  - `forcing_scope_gate` / `comparison_gate` (structural, keyed on scope metadata only, no tool or metric names): a
+    `supported`/`weakly_supported` claim is refused when it cites a run whose output carries a `reference_comparison`
+    (or the claim has a `comparison_ref`, or `claim_type` is `comparison`/`comparative`) and that metric's CI declares
+    `scope.excludes` containing `forcing_product` (documented shape `{"varies":[...],"assumes":[...],"excludes":[...]}`).
+    A `reference_comparison` entry with `can_claim_difference: false` is honoured directly. **The gate is inert until
+    aihydro-watershed 0.2.0 / PR-4b supply the scope and `reference_comparison` outputs**; absent, free-text or malformed
+    scopes never trigger it. A wording heuristic ("differs from the reference ...", negation-aware) only adds a
+    non-blocking `FORCING_SCOPE_PROSE` warning.
   - Stored claims that break either rule are **flagged, never rewritten**: `start_session` returns them as `claim_flags`.
-- **Skeptic check 5, `metric_conflicts`.** Same metric (aliases resolved, e.g. `bfi` = `baseflow_index`), same feature,
-  same period, different values (relative difference above 1%, an engineering threshold), taking the latest run per
-  (tool, method). Reported by `run_skeptic` (`metric_conflict`, warning) and by `start_session` as `metric_conflicts`.
-  It stays for legacy sessions after the BFI kernel is fixed upstream.
+    A stored `supported` claim must gain real evidence (re-record it with `add_claim`) or move to another status before
+    `update_claim_status` can save it again as `supported`, even to change only its confidence.
+- **Skeptic check 5, `metric_conflicts`.** Same signature metric (allowlist: the hydrologic signature set; aliases resolved,
+  e.g. `bfi` = `baseflow_index`), same feature, same *known* period (`start_date`/`end_date`/`years`/`water_year`), different
+  values (relative difference above 1%, an engineering threshold), latest run per (tool, method/model, container). Model
+  skill (`nse`, `kge`, ...) and generic keys are never compared; runs with an unknown period are not flagged; only top-level
+  outputs and direct children of container dicts (`signatures`, `data`, ...) count, so `obs`/`sim` outputs of one run never
+  collide. Reported by `run_skeptic` (`metric_conflict`, warning) and by `start_session` as `metric_conflicts`. It stays for
+  legacy sessions after the BFI kernel is fixed upstream.
 
 ### Fixed
 
@@ -44,8 +62,9 @@ No new package pins. Minor bump: additive response fields (`slot_health`, `degra
 
 ### Changed
 
-- **Behaviour change:** `add_claim` / `update_claim_status` now refuse `supported` and `weakly_supported` with no evidence
-  span (previously accepted). Bench task B-059 and five test modules that built such claims now cite a span.
+- **Behaviour change:** `add_claim` / `update_claim_status` now refuse `supported` and `weakly_supported` without real
+  evidence (previously accepted anything). Bench tasks B-034 and B-059 and the test modules that built such claims now
+  create and cite real runs; defensibility fixtures use current-convention signature slots.
 - Package version 2.7.0 (`pyproject.toml`, `ai_hydro/__version__`, `CITATION.cff`).
 - **A tool with no `tool_annotations.toml` row is no longer served unannotated.** `apply_tool_annotations`
   now stamps explicit conservative hints (`readOnlyHint=false`, `destructiveHint=true`,

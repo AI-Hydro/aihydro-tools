@@ -14,6 +14,7 @@ from ai_hydro.mcp import eval_condition as ec
 from ai_hydro.mcp.tools_ledger import add_claim, promote_claim_to_registry, update_claim_status
 from ai_hydro.session import store
 from ai_hydro.session.store import HydroSession
+from approval_helpers import seed_run
 from test_promotion_refusal_golden import (  # noqa: F401  (isolated: autouse fixture)
     CID, SCENARIOS, SID, _claim, _seed, isolated,
 )
@@ -59,6 +60,7 @@ def _new(status, **kw):
                 status=status, confidence="medium", confidence_rationale="Synthetic rationale long enough to pass.", basins=[], period="2000",
                 metric="nse", evidence_spans=[{"source_type": "run", "source_id": "r1", "metric_ref": "nse"}])
     args.update(kw)
+    seed_run(SID, "r1", {"nse": 0.8})
     return add_claim(**args)
 
 
