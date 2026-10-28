@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 Fixes the 2026-10-28 owner failure: a chat launched from the map called the read-only `measure_feature` and
 ended in `SESSION_RESOLUTION_FAILED` with no recovery path. The recovery tools read no chat id and bound
 nothing, the binding file was one-chat-per-study (a second chat stole the first's binding), and no tool
-recorded which study owns which file. No tool is renamed and no tool argument changes. Read `docs/context.md`.
+recorded which study owns which file. No tool is renamed; one optional argument is added (`include_hidden` on `aihydro_rebind_chat`). Read `docs/context.md`.
 
 ### Changed (behaviour)
 
@@ -35,6 +35,17 @@ recorded which study owns which file. No tool is renamed and no tool argument ch
   machine-global, written by the last-focused VS Code window.
 - Results gain `session_binding` (`{chat_id, study_id, label, previous_study_id, bound_by}`) when the call changed a chat's
   binding (an auto-create on delineation, a rebind, an explicit `session_id` on a writer). Not added in evaluation runs.
+
+- **Review fixes (same release).**
+  - `aihydro_rebind_chat` gains `include_hidden` (default false). Archived and test studies are refused with `STUDY_HIDDEN`
+    unless it is true; the tool is unavailable in evaluation runs (`NOT_AVAILABLE_IN_EVALUATION`).
+  - An explicit `session_id` / `_meta.study_id` binds only a study that already exists. `start_session(session_id)` binds an
+    existing study unless it belongs to a different workspace, and then returns `session_binding_skipped` with the reason, binds
+    nothing and does NOT change the study's `workspace_dir` (re-homing is never a side effect). A new study binds only when the
+    call carries a workspace. With no call context, `workspace_single_study` serves read-only calls only.
+  - The binding file is written under a cross-process lock (`chat_bindings.v2.json.lock`) with temp + fsync + rename; reads
+    never write. A corrupt file is quarantined as `chat_bindings.v2.json.corrupt-<ts>` with a warning and never overwritten.
+  - Recorder: files over 64 MB are listed with `hash_deferred: true` and no `sha256`; shard writes are not recorded.
 
 ### Added
 

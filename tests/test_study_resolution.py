@@ -304,3 +304,17 @@ def test_workspace_from_the_global_file_serves_reads_but_never_writers(ws):
     poly = '{"type": "Polygon", "coordinates": [[[-69.5, 45.0], [-69.0, 45.0], [-69.0, 45.4], [-69.5, 45.0]]]}'
     res, body = call("register_feature", {"geojson": poly, "name": "roi"})
     assert body.get("code") == "SESSION_RESOLUTION_FAILED"
+
+
+def test_start_session_never_rehomes_a_study_into_another_workspace(ws, tmp_path):
+    from ai_hydro.session import HydroSession
+
+    ws2 = tmp_path / "ws2"
+    ws2.mkdir()
+    make_study("B", workspace=str(ws2))
+    res, body = call("start_session", {"session_id": "B", "workspace_dir": str(ws)}, meta=ctx(CHAT_A, ws))
+    assert not res.is_error
+    assert "different workspace" in body["session_binding_skipped"]
+    assert get_binding_store().lookup_study(CHAT_A) is None
+    assert HydroSession.load("B").workspace_dir == str(ws2)                  # unchanged on disk
+    assert body["workspace_dir"] == str(ws2)

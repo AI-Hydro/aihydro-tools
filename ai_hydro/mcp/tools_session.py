@@ -103,12 +103,19 @@ def start_session(
         from ai_hydro.session.study_index import study_exists as _exists
         existed = _exists(session_id)
         session = HydroSession.load(session_id, shard_id=shard_id)
-        if workspace_dir:
-            session.workspace_dir = workspace_dir
-        session.save(sync_context=True)      # session start: refresh the agent's context file
+        original_ws = session.workspace_dir      # before any assignment: the comparison must use this
         skipped = None
-        if explicit_id and not shard_id:
-            skipped = _bind_started_session(session_id, existed, session.workspace_dir, workspace_dir)
+        if workspace_dir:
+            from ai_hydro.session.study_index import norm_path
+            if existed and original_ws and norm_path(original_ws) != norm_path(workspace_dir):
+                # Re-homing a study is an explicit, separate action, never a side effect of starting it.
+                skipped = ("study belongs to a different workspace; its workspace_dir was not changed "
+                           "and the chat was not bound. Use aihydro_rebind_chat to move this chat to it")
+            else:
+                session.workspace_dir = workspace_dir
+        session.save(sync_context=True)      # session start: refresh the agent's context file
+        if skipped is None and explicit_id and not shard_id:
+            skipped = _bind_started_session(session_id, existed, original_ws, workspace_dir)
         summary = session.summary()
         if skipped:
             summary["session_binding_skipped"] = skipped
