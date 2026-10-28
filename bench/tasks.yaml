@@ -358,7 +358,7 @@ tasks:
     category: signatures
     call_style: compute_fn
     rationale: >
-      Since aihydro-watershed 0.2.0 slope_fdc is the CAMELS-US v1.2 file
+      Since aihydro-watershed 0.2.0 slope_fdc is the CAMELS attributes v2.0 file
       definition, (Q66 - Q33) / (mean(Q) * 0.33) with Q33 and Q66 the 33rd and
       66th NON-EXCEEDANCE percentiles (type 7), no logarithm; Q66 > Q33 so the
       slope is positive (1.46 on this series). The previous aihydro value, the

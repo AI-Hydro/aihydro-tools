@@ -19,7 +19,7 @@ for forcing-dependent metrics was written against a shape no producer emitted ye
    Standalone `source="signatures"` calls resolve `session.get("signatures")` (active feature or legacy); a result stored
    under `__override__` (an explicit `geometry_geojson=`) is not found there, and `series_digest` is the guard against
    a wrong resolution.
-3. The CAMELS-US v1.2 hydro, topo (`area_gages2`) and clim (`frac_snow`, `aridity`, `p_seasonality`) tables are packaged as
+3. The CAMELS attributes v2.0 hydro, topo (`area_gages2`) and clim (`frac_snow`, `aridity`, `p_seasonality`) tables are packaged as
    verbatim files with provenance JSON and attribution (CC-BY 4.0, OQ8). The session `camels` slot overrides them when it holds
    the same gauge. The source used is recorded with its hash (S6). The soil, vegetation and geology tables are not packaged.
 4. `reference_comparison` lives at one place, `key_outputs.reference_comparison` of the run row; the gate reads exactly there

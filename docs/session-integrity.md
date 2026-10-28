@@ -126,7 +126,7 @@ gap reason is `client_calendar_assumption` and no water year was excluded (`prec
 Every signatures result carries `camels_reference` (summary) and `reference_comparison` (aihydro-watershed's per-signature
 table, see above):
 
-- **Source.** The session `camels` slot (`fetch_camels_us`) when it holds this gauge; otherwise the packaged CAMELS-US v1.2 tables
+- **Source.** The session `camels` slot (`fetch_camels_us`) when it holds this gauge; otherwise the packaged CAMELS attributes v2.0 tables
   in `ai_hydro/knowledge/reference/camels_us_v1_2` (hydro, topo for `area_gages2`, clim for `frac_snow`, `aridity`,
   `p_seasonality`; verbatim, CC-BY 4.0, `ATTRIBUTION.md`, provenance JSON; md5 re-checked before use). Not packaged: soil,
   vegetation and geology tables. `camels_reference.source` records which was used and its hash (packaged: sha256 over the file
