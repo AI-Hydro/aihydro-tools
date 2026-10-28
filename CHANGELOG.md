@@ -11,10 +11,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Reworded the slope_fdc definition provenance to describe the definition neutrally; values unchanged. The `slope_fdc` caution in
-  `knowledge/camels_metadata.json` (both copies) no longer comments on the Addor et al. (2017) text, and the reference ATTRIBUTION
-  note describes the definition without comparing it. (The earlier wording remains in git history; that is accepted.) The
-  `signature_definitions` provenance strings are emitted by aihydro-watershed, whose neutral wording ships in 0.2.1; the dependency
-  floor stays `>=0.2.0,<0.3`.
+  `knowledge/camels_metadata.json` (both copies) and the reference ATTRIBUTION note now describe the definition only. (The earlier
+  wording remains in git history; that is accepted.) The `signature_definitions` provenance strings are emitted by
+  aihydro-watershed, whose neutral wording ships in 0.2.1, so the dependency floor is now `aihydro-watershed>=0.2.1,<0.3`.
 - Corrected the label of the packaged/compared attribute file `camels_hydro.txt`: it is CAMELS attributes v2.0 ("CAMELS-US v1.2" is the time-series version). Wording only; values unchanged. The machine-readable `CAMELS-US v1.2` reference name (`camels_reference.REFERENCE_NAME`, `comparison_ref`) and the `reference/camels_us_v1_2` directory are unchanged.
 
 ## [2.8.0] - 2026-10-22 (Science Wave 3, PR-4b: series-bound validators, CAMELS reference, gates on real producer output)
