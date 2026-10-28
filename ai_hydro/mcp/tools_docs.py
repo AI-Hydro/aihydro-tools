@@ -211,7 +211,13 @@ def _write_tools_md() -> Path:
 
         lines.append("")
 
-    tools_md.write_text("\n".join(lines))
+    body = "\n".join(lines)
+    try:                                   # identical content: leave the file (and its mtime) alone
+        if tools_md.exists() and tools_md.read_text() == body:
+            return tools_md
+    except OSError:
+        pass
+    tools_md.write_text(body)
     log.info("tools.md written: %d tools -> %s", len(tools), tools_md)
     return tools_md
 

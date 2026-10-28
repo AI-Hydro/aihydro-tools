@@ -60,6 +60,25 @@ The rows were classified by reading the code; they are not machine-proved. Two t
 
 Adding a tool means adding its row (and its tier in `TOOL_TIERS`).
 
+## Annotation vocabulary (`aihydro/*` in `_meta`)
+
+A row may add optional keys beyond the four hints. They are data for hosts, served in `tools/list` `_meta`, and change no hint:
+
+| Row key | `_meta` key | Meaning |
+| --- | --- | --- |
+| `effect = "ui"` | `aihydro/effect` | The tool only queues a map or preview command for the host and reads state. It writes no session, claim or workspace file and uses no network. Enforced by a static scan and an audit-hook run in `tests/test_tool_surface.py`. |
+| `requiresConsent = true` | `aihydro/requiresConsent` | The tool records or changes facts about the researcher (`log_researcher_observation`, `update_researcher_profile`); a host should ask first. |
+| `audience = "host"` | `aihydro/audience` | For the host application, not the agent: a host should not list it to the model and should refuse agent-originated calls. No tool has it yet. |
+
+The vocabulary is closed (a misspelt key fails `test_every_tool_has_a_row_and_the_vocabulary_is_closed`). The server applies it
+generically in `apply_tool_annotations` (`META_KEYS`); no code is keyed on a tool name.
+
+## Discovery answers are capped
+
+`list_available_tools()` returns one page (names with a one-line summary, sorted) of at most about 4,000 characters; follow
+`next_offset`, filter with `domain=`, or fetch one tool in full with `name=`. `describe_tool(name)` remains the call for parameters
+before using a tool.
+
 ## Order
 
 `tools/list` is sorted by tool name. The order no longer depends on import order or

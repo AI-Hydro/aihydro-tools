@@ -346,7 +346,7 @@ mcp = FastMCP(
         "to fulfil a procedural checklist. Do not infer a tool, library, or "
         "another server's abilities from its name: your own native toolset is "
         "the primary instrument — verify capabilities with "
-        "aihydro_describe_capability or list_available_tools(), and use another "
+        "aihydro_describe_capability(domain), and use another "
         "connected server only when the task explicitly needs its specialty. "
         "Prefer the most direct tool that satisfies the request; do not launch "
         "a long-running or multi-stage pipeline unless the request requires "

@@ -406,3 +406,142 @@ def test_representative_tools_of_each_class():
             continue
         a = reg[name].annotations
         assert (a.readOnlyHint, a.destructiveHint, a.openWorldHint) == (ro, de, ow), name
+
+
+# ── T-A1: annotation vocabulary (effect / requiresConsent / audience), data only ─────────────
+
+_META_PREFIX = "aihydro/"
+_VOCAB_KEYS = ("effect", "requiresConsent", "audience")
+_VOCAB_VALUES = {"effect": {"ui"}, "audience": {"host"}}
+_SESSION_WRITERS = {"save", "_ensure_session", "_resolve_session", "_workspace_write", "HydroSession",
+                    "add_note", "record_change", "set_slot", "write_ledger_event"}
+_COMMAND_WRITERS = {"write_map_command", "write_preview_command", "mkdir", "write_text"}
+
+
+def _rows_with(key: str, value=True) -> set[str]:
+    return {n for n, r in ROWS.items() if r.get(key) == value and (
+        r["source"] == "builtin" or importlib.util.find_spec(PLUGIN_MODULES[r["source"]]) is not None)}
+
+
+def test_every_tool_has_a_row_and_the_vocabulary_is_closed():
+    """Each class is optional per row, but a row may use only the three keys and known values."""
+    known = set(HINTS) | {"source", "evidence"} | set(_VOCAB_KEYS)
+    for name, row in ROWS.items():
+        assert set(row) <= known, (name, sorted(set(row) - known))
+        for key, allowed in _VOCAB_VALUES.items():
+            if key in row:
+                assert row[key] in allowed, (name, key, row[key])
+        if "requiresConsent" in row:
+            assert row["requiresConsent"] is True, name        # absence means false; never write false
+    assert set(_registered()) <= set(ROWS)
+
+
+def test_vocabulary_is_served_in_tools_list_meta_and_only_there():
+    listed = {t.name: t for t in _run(_client_list())}
+    for name, tool in listed.items():
+        meta = tool.meta or {}
+        served = {k: v for k, v in meta.items() if k.startswith(_META_PREFIX)}
+        expected = {f"{_META_PREFIX}{k}": ROWS[name][k] for k in _VOCAB_KEYS if k in ROWS[name]}
+        assert served == expected, name
+    # the tool-specific classes the program names must exist
+    assert {"map_fly_to", "map_fit_extent", "map_set_time_range"} <= _rows_with("effect", "ui")
+    assert {"log_researcher_observation", "update_researcher_profile"} <= _rows_with("requiresConsent")
+
+
+def test_vocabulary_changes_no_hint():
+    """Annotating a class never flips a hint: the hint columns of those rows are the audited ones."""
+    snapshot = {n: tuple(r[h] for h in HINTS) for n, r in ROWS.items()}
+    for n in _rows_with("effect", "ui") | _rows_with("requiresConsent"):
+        assert snapshot[n][0] is False, n                       # none of these claims read-only
+    listed = {t.name: t for t in _run(_client_list())}
+    for n, tool in listed.items():
+        assert tuple(getattr(tool.annotations, h) for h in HINTS) == snapshot[n], n
+
+
+def test_ui_class_is_only_ui_by_static_scan():
+    """A `ui` tool reaches only the map/preview command writers: no session, claim, workspace or network."""
+    tools = _registered()
+    ui = _rows_with("effect", "ui")
+    assert len(ui) >= 10
+    for name in sorted(ui):
+        assert name.startswith(("map_", "preview_")), name
+        calls = _own_calls(tools[name].fn)
+        assert not (calls & _SESSION_WRITERS), (name, sorted(calls & _SESSION_WRITERS))
+        other_writers = (calls & (_WRITE_ATTRS | _WRITE_NAMES)) - _COMMAND_WRITERS
+        assert not other_writers, (name, sorted(other_writers))
+        assert not (_static_violations(tools[name].fn) - _COMMAND_WRITERS), name
+        assert not (ROWS[name]["openWorldHint"] or ROWS[name]["destructiveHint"]), name
+
+
+def test_ui_class_writes_only_command_files_at_runtime(tmp_path, monkeypatch):
+    """Run each `ui` tool whose arguments are simple, recording file/process/network events."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    from _runtime_guard import recording
+    import ai_hydro.mcp.map_commands as mc
+    import ai_hydro.mcp.preview_commands as pc
+    import ai_hydro.mcp.tools_map as tm
+
+    map_dir, prev_dir = tmp_path / "map_commands", tmp_path / "preview_commands"
+    monkeypatch.setattr(mc, "_MAP_COMMANDS_DIR", map_dir)
+    monkeypatch.setattr(pc, "_PREVIEW_COMMANDS_DIR", prev_dir)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    monkeypatch.setattr(tm, "find_catalog_layer", lambda lid: {"id": lid, "type": "vector"})
+    calls = {
+        "map_show": {}, "map_fit_extent": {}, "map_fit_layer": {"layer_id": "L1"},
+        "map_fly_to": {"longitude": -70.0, "latitude": 45.0},
+        "map_set_basemap": {"basemap_id": "esri-imagery"},
+        "map_set_time_range": {"start_iso": "2020-01-01", "end_iso": "2020-12-31"},
+        "map_remove_layer": {"layer_id": "L1"},
+        "map_update_layer": {"layer_id": "L1", "fill_color": "#336699", "visible": True},
+        "preview_focus_cell": {"module_id": "m1", "cell_id": "c1"},
+        "preview_revise_section": {"module_id": "m1", "section_id": "s1", "new_html": "<p>x</p>"},
+        "preview_address_comment": {"module_id": "m1", "comment_id": "k1"},
+    }
+    assert set(calls) <= _rows_with("effect", "ui")
+
+    async def go():
+        from fastmcp import Client
+        out = {}
+        async with Client(mcp) as c:
+            for n, args in calls.items():
+                with recording() as rec:
+                    r = await c.call_tool(n, args, raise_on_error=False)
+                out[n] = (r, list(rec.events))
+        return out
+
+    for n, (res, events) in _run(go()).items():
+        assert not res.is_error, n
+        assert res.structured_content.get("ok", res.structured_content.get("success")) is True, n
+        bad = [str(e) for e in events if e.kind in ("process", "network") or not (
+            str(map_dir) in e.detail or str(prev_dir) in e.detail or ".runlog.sqlite3" in e.detail
+            or "__pycache__" in e.detail)]
+        assert not bad, (n, bad)
+    # map_update_layer(visible=...) queues two commands (style, then visibility)
+    assert len(list(map_dir.glob("*.json"))) == 9 and len(list(prev_dir.glob("*.json"))) == 3
+
+
+def test_host_audience_is_a_mechanism_without_tools_yet():
+    """`audience = "host"` is defined (closed vocabulary, `_meta` key); no tool claims it yet, and
+    the mechanism serves it as it would any other key (no code branches on a tool name)."""
+    from ai_hydro.mcp.tool_surface import META_KEYS, apply_tool_annotations
+
+    assert META_KEYS["audience"] == "aihydro/audience"
+    assert _rows_with("audience", "host") == set()
+
+    class _Comp:
+        name, meta, annotations = "t", None, None
+    comp = _Comp()
+    holder = type("M", (), {"_local_provider": type("P", (), {"_components": {"k": comp}})()})()
+    row = {h: False for h in HINTS} | {"source": "builtin", "evidence": "x", "audience": "host"}
+    apply_tool_annotations(holder, {"t": row})
+    assert comp.meta == {"aihydro/audience": "host"}
+
+
+def test_class_membership_is_stable_for_the_audited_lists():
+    """The audited lists: a change here is a deliberate, reviewed edit of the table."""
+    assert _rows_with("effect", "ui") == {
+        "map_add_layer_from_run", "map_apply_symbology", "map_fit_extent", "map_fit_layer", "map_fly_to",
+        "map_remove_layer", "map_set_basemap", "map_set_time_range", "map_show", "map_update_layer",
+        "preview_address_comment", "preview_focus_cell", "preview_revise_section",
+    }
+    assert _rows_with("requiresConsent") == {"log_researcher_observation", "update_researcher_profile"}
