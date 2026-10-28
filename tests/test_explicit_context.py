@@ -172,12 +172,12 @@ def test_chat_binding_follows_aihydro_home(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_binding, "_store", None)
     home_a, home_b = tmp_path / "a", tmp_path / "b"
     monkeypatch.setenv("AIHYDRO_HOME", str(home_a))
-    get_binding_store().bind("c1", "s1")
-    assert (home_a / "chat_studies.json").exists()
+    get_binding_store().bind("01HC1000000000000000000000", "s1")
+    assert (home_a / "chat_bindings.v2.json").exists()
     monkeypatch.setenv("AIHYDRO_HOME", str(home_b))
-    assert get_binding_store().lookup_study("c1") is None
-    get_binding_store().bind("c2", "s2")
-    assert (home_b / "chat_studies.json").exists()
+    assert get_binding_store().lookup_study("01HC1000000000000000000000") is None
+    get_binding_store().bind("01HC2000000000000000000000", "s2")
+    assert (home_b / "chat_bindings.v2.json").exists()
 
 
 def test_writer_row_in_other_session_is_flagged_mismatch(server):

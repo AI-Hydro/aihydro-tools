@@ -6,9 +6,75 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] - 2.8.2 (Wave 0: context diet T-C1, annotation vocabulary T-A1)
+## [2.8.2] - 2026-10-28 (UX program Wave 0: study binding v2 and the study recorder; T-B1, T-B2)
 
-Released together with the chat-binding PR as 2.8.2; this change does not bump the version.
+Fixes the 2026-10-28 owner failure: a chat launched from the map called the read-only `measure_feature` and
+ended in `SESSION_RESOLUTION_FAILED` with no recovery path. The recovery tools read no chat id and bound
+nothing, the binding file was one-chat-per-study (a second chat stole the first's binding), and no tool
+recorded which study owns which file. No tool is renamed; one optional argument is added (`include_hidden` on `aihydro_rebind_chat`). Read `docs/context.md`.
+
+### Changed (behaviour)
+
+- **The global "most recent study on disk" guess is OFF by default** (owner decision 2: it picked `test-*` and
+  unrelated studies). `AIHYDRO_RECENT_SESSION_FALLBACK=on` (also `1`/`true`/`yes`) turns it back on for this release
+  only; it stays off in an evaluation run. The guess no longer picks from hidden (test, archived) studies. The
+  project default (T-P1) replaces it.
+- **One study in the workspace resolves** (new rule `workspace_single_study`): exactly one visible study whose
+  `workspace_dir` is the call's workspace. The result carries a `session_note`; a read-only tool does not bind the
+  chat, a writer does. Closed to `audit_interpretation`, evaluation runs, and state-changing admin tools
+  (`clear_session`, `archive_session`, `add_note`, ...), which need a named or bound study.
+- **`SESSION_RESOLUTION_FAILED` lists candidates**: at most 5 `{study_id, label, last_run}` (the workspace's studies,
+  else the most recent visible ones) and `next_tools` naming `aihydro_rebind_chat`.
+- **`aihydro_rebind_chat(study_id)` and `aihydro_chat_status()` read the injected chat id** and actually bind. An explicit
+  `chat_id` must equal it (`CHAT_ID_MISMATCH`); without a chat context it must be a ULID and not a study id. Rebinding to a
+  study that does not exist no longer creates it: `STUDY_NOT_FOUND` with candidates. The `aihydro_chat_status` output keys are
+  frozen by a contract test (`bound`, `study_id`, `chat_id`, `computed_slots`, `notes`, `message`; unbound: `bound`, `study_id`,
+  `chat_id`, `message`); candidates for an unbound chat are named in `message`.
+- **`start_session(session_id)` binds the chat** (not with `shard_id`, not in an evaluation run, not when `session_id` is omitted).
+- **`active_workspace.json` is ignored when the call carries its own context** (`_meta` or the legacy hidden arguments). It was
+  machine-global, written by the last-focused VS Code window.
+- Results gain `session_binding` (`{chat_id, study_id, label, previous_study_id, bound_by}`) when the call changed a chat's
+  binding (an auto-create on delineation, a rebind, an explicit `session_id` on a writer). Not added in evaluation runs.
+
+- **Review fixes (same release).**
+  - `aihydro_rebind_chat` gains `include_hidden` (default false). Archived and test studies are refused with `STUDY_HIDDEN`
+    unless it is true; the tool is unavailable in evaluation runs (`NOT_AVAILABLE_IN_EVALUATION`).
+  - An explicit `session_id` / `_meta.study_id` binds only a study that already exists. `start_session(session_id)` binds an
+    existing study unless it belongs to a different workspace, and then returns `session_binding_skipped` with the reason, binds
+    nothing and does NOT change the study's `workspace_dir` (re-homing is never a side effect). A new study binds only when the
+    call carries a workspace. With no call context, `workspace_single_study` serves read-only calls only.
+  - The binding file is written under a cross-process lock (`chat_bindings.v2.json.lock`) with temp + fsync + rename; reads
+    never write. A corrupt file is quarantined as `chat_bindings.v2.json.corrupt-<ts>` with a warning and never overwritten.
+  - Recorder: files over 64 MB are listed with `hash_deferred: true` and no `sha256`; shard writes are not recorded.
+
+### Added
+
+- **Binding store v2** (`session/chat_binding.py`): `chat_bindings.v2.json`, many chats to one study, no stored inverse, `bound_at`
+  and `bound_by` per binding. Chat ids must be ULIDs and not equal a study id (`bind("basin_x", "basin_x")` raises). The v1 file
+  `chat_studies.json` is imported once (original kept as `chat_studies.json.v1.bak`; entries that are not valid chat ids are
+  skipped and counted), then never read. A derived v1-shaped projection (active studies only) is still written for one release
+  so the installed extension's header chip keeps working. The pinned 2.3.7 server reads and writes only v1: give it its own
+  `AIHYDRO_HOME` (OD-1), since the projection overwrites a shared v1 file.
+- **Study recorder** (`session/artifact_recorder.py`, one call site in `run_records._record_call`): every file a tool writes
+  through `HydroSession.write_workspace_file` and every layer it pushes through `map_events.push_*` is recorded in the owning
+  study's `artifact_manifest` as `{artifact_id, kind, type, path, sha256, size_bytes, study_id, run_id, tool, recorded_at}`;
+  `run_id` is the call's run row. Before this the manifest was empty in all 25 live studies.
+- **Study labels** (`session/study_index.py`): user label, else site name plus gauge alias, else outlet coordinates, else
+  "<id> (unnamed study)"; never a bare id.
+- **Resources**: `aihydro://study/list{?workspace,include_hidden}` (labels, no full session loads; archived studies and
+  `test-*` / `e2e-proof-*` studies with no workspace are hidden by default, never deleted),
+  `aihydro://study/by-artifact{?path,workspace}` (rule `manifest`, or `artifact_name_heuristic` returning candidates only for
+  files written before the recorder), and `aihydro://capabilities` (flags such as `binding.v2`, `study.by_artifact`;
+  hosts detect features by flag, not by version).
+
+### Tests
+
+- New: `test_binding_store_v2.py`, `test_study_resolution.py`, `test_study_recorder.py`, `test_binding_acceptance.py` (the
+  failure replayed: host binds, read-only `measure_feature` resolves by `chat_binding`; an unbound two-study folder returns
+  labelled candidates and the recovery tool works; a one-study folder resolves).
+- Updated for the new defaults: the recent-study guess is opt-in, chat ids are ULIDs, a study may have many chats.
+
+## Also in 2.8.2 (Wave 0: context diet T-C1, annotation vocabulary T-A1; tools#13)
 
 ### Changed
 

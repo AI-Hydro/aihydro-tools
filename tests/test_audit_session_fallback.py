@@ -1,7 +1,8 @@
 """The audit never resolves a study by guessing ("most recent study on disk").
 
-``_resolve_session`` keeps its WS-4 recent-study fallback for analysis tools by default; a tool
-(or a deployment, via AIHYDRO_RECENT_SESSION_FALLBACK=off) can forbid it. The audit forbids it.
+``_resolve_session`` keeps its WS-4 recent-study fallback for analysis tools only as an opt-in
+(AIHYDRO_RECENT_SESSION_FALLBACK=on; off by default since 2.8.2); a tool can forbid it even then.
+The audit forbids it.
 """
 from __future__ import annotations
 
@@ -24,15 +25,25 @@ def one_study_on_disk(tmp_path, monkeypatch):
     return "study_on_disk"
 
 
-def test_resolver_still_falls_back_to_the_recent_study_by_default(one_study_on_disk):
+def test_resolver_does_not_guess_the_recent_study_by_default(one_study_on_disk):
+    from ai_hydro.mcp.helpers import SessionResolutionError, _resolve_session_with_rule
+
+    with pytest.raises(SessionResolutionError) as err:
+        _resolve_session_with_rule(None, None)
+    assert [c["study_id"] for c in err.value.candidates] == [one_study_on_disk]     # offered, never chosen
+
+
+def test_resolver_falls_back_to_the_recent_study_only_when_opted_in(one_study_on_disk, monkeypatch):
     from ai_hydro.mcp.helpers import _resolve_session_with_rule
 
+    monkeypatch.setenv("AIHYDRO_RECENT_SESSION_FALLBACK", "on")
     assert _resolve_session_with_rule(None, None) == (one_study_on_disk, "recent_fallback")
 
 
 def test_resolver_can_forbid_the_recent_fallback_per_call_and_globally(one_study_on_disk, monkeypatch):
     from ai_hydro.mcp.helpers import SessionResolutionError, _resolve_session
 
+    monkeypatch.setenv("AIHYDRO_RECENT_SESSION_FALLBACK", "on")
     with pytest.raises(SessionResolutionError):
         _resolve_session(None, None, allow_recent_fallback=False)
     monkeypatch.setenv("AIHYDRO_RECENT_SESSION_FALLBACK", "off")

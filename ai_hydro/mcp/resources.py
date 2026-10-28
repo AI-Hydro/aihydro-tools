@@ -335,3 +335,52 @@ def session_experiments(session_id: str) -> str:
         "n_experiments": len(exp_list),
         "experiments": exp_list,
     }, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Capabilities, study list and artifact lookup (host-facing; 2.8.2)
+# ---------------------------------------------------------------------------
+
+@mcp.resource("aihydro://capabilities")
+def capabilities() -> str:
+    """Capability flags of this server. Hosts read these instead of comparing version numbers."""
+    from ai_hydro.mcp.app import _pkg_version
+    from ai_hydro.mcp.capabilities import CAPABILITIES
+
+    return json.dumps({"version": _pkg_version(), "capabilities": list(CAPABILITIES)}, indent=2)
+
+
+@mcp.resource("aihydro://study/list{?workspace,include_hidden}")
+def study_list(workspace: str = "", include_hidden: str = "false") -> str:
+    """Studies with display labels, newest first. Read from the session files without loading them.
+
+    workspace: keep only studies of that directory. include_hidden=true adds archived studies and
+    test studies (ids ``test-*`` / ``e2e-proof-*`` with no workspace); they are hidden, never deleted.
+    """
+    from ai_hydro.session.study_index import study_summaries
+
+    hidden = str(include_hidden).strip().lower() in ("1", "true", "yes", "on")
+    rows = study_summaries(include_hidden=hidden, workspace=workspace or None)
+    studies = []
+    for s in rows:
+        row = {
+            "study_id": s["study_id"], "label": s["label"], "last_run": s["last_run"],
+            "workspace_dir": s["workspace_dir"], "site_id": s["site_id"],
+        }
+        if s["hidden_reason"]:
+            row["hidden"] = s["hidden_reason"]
+        studies.append(row)
+    return json.dumps({"studies": studies, "n_studies": len(studies), "include_hidden": hidden}, indent=2)
+
+
+@mcp.resource("aihydro://study/by-artifact{?path,workspace}")
+def study_by_artifact(path: str = "", workspace: str = "") -> str:
+    """Which study owns a workspace file (or pushed layer).
+
+    rule ``manifest``: the study's artifact manifest names the file and its sha256 still matches;
+    ``resolved`` is true when exactly one study does. rule ``artifact_name_heuristic``: a file written
+    before the recorder existed; only ``candidates`` are returned and nothing is resolved.
+    """
+    from ai_hydro.session.study_index import by_artifact
+
+    return json.dumps(by_artifact(path, workspace or None), indent=2)

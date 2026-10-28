@@ -28,6 +28,19 @@ log = logging.getLogger(__name__)
 _MAP_EVENTS_DIR = home_path("map_events")
 
 
+def _note_layer(layer_id: str, name: str, layer_type: str, paths: tuple = (), content: str | None = None) -> None:
+    """Tell the call's study recorder that a layer was pushed (no-op outside a recorded call)."""
+    try:
+        import hashlib
+
+        from ai_hydro.session.run_records import note_layer_pushed
+
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else None
+        note_layer_pushed(layer_id, name=name, layer_type=layer_type, paths=paths, content_sha256=digest)
+    except Exception:
+        pass
+
+
 # Hydrology-specific colour palette ─────────────────────────────────────────
 
 STYLES: dict[str, dict[str, Any]] = {
@@ -161,6 +174,7 @@ def push_layer(
         event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
         event_file.write_text(json.dumps(event), encoding="utf-8")
         log.debug("Map event written: %s → %s", layer_id, event_file.name)
+        _note_layer(layer_id, name, layer_type, content=geojson_str)
         return True
 
     except Exception as exc:
@@ -227,6 +241,7 @@ def push_raster_layer(
         event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
         event_file.write_text(json.dumps(event), encoding="utf-8")
         log.debug("Raster map event written: %s → %s", layer_id, event_file.name)
+        _note_layer(layer_id, name, "raster", paths=(png_path,))
         return True
 
     except Exception as exc:
@@ -304,6 +319,7 @@ def push_tile_layer(
         event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
         event_file.write_text(json.dumps(event), encoding="utf-8")
         log.debug("Tile layer map event written: %s → %s", layer_id, event_file.name)
+        _note_layer(layer_id, name, "raster", paths=(overview_png, manifest_path))
         return True
 
     except Exception as exc:
@@ -349,6 +365,7 @@ def push_inundation_3d_manifest(
         event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
         event_file.write_text(json.dumps(event), encoding="utf-8")
         log.debug("Inundation 3D manifest event written: %s → %s", layer_id, event_file.name)
+        _note_layer(layer_id, name, "inundation_3d", paths=(manifest_path,))
         return True
     except Exception as exc:
         log.warning("push_inundation_3d_manifest failed (non-fatal): %s", exc)

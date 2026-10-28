@@ -591,7 +591,12 @@ class _ContextInjectionMiddleware(Middleware):
 
 
 class _SessionWarningMiddleware(Middleware):
-    """Outermost: add a visible top-level ``session_warning`` to a result whose session was guessed.
+    """Outermost: add visible top-level fields to a result whose session was inferred or rebound.
+
+    ``session_warning``  the session was the recent-study guess.
+    ``session_note``     the session was the only study in the workspace.
+    ``session_binding``  this call changed the chat's binding; the host refreshes its display from it
+                         (the server store is the only authority). Not added in evaluation runs.
 
     Applies to every tool (including record-exempt ones) and runs after the run record is sealed, so
     the sealed digest is unaffected. Errors are left alone.
@@ -610,6 +615,15 @@ class _SessionWarningMiddleware(Middleware):
 
             name = getattr(context.message, "name", "") or ""
             _inject_session_warning(result, sid, read_only=name in read_only_tools())
+        single = notes.get("workspace_single_study")
+        if single:
+            _inject_top_level(result, "session_note", WORKSPACE_SINGLE_STUDY_NOTE.format(**single))
+        binding = notes.get("session_binding")
+        if binding:
+            from ai_hydro.mcp.helpers import _in_eval
+
+            if not _in_eval():
+                _inject_top_level(result, "session_binding", binding)
         return result
 
 
@@ -804,6 +818,37 @@ def _inject_session_warning(tool_result, session_id: str, read_only: bool = Fals
                 return
     except Exception as exc:
         _record_log.debug("could not inject session_warning: %s", exc)
+
+
+WORKSPACE_SINGLE_STUDY_NOTE = "Used the only study in this workspace: {label} ({study_id})."
+
+
+def _inject_top_level(tool_result, key: str, value) -> None:
+    """Add ``key`` to a successful dict result, in the structured content and the text block.
+
+    Never overwrites a value the tool set. Added after the run record is sealed, so the sealed
+    digest is unaffected. Best effort; the result must still go out.
+    """
+    try:
+        structured = getattr(tool_result, "structured_content", None)
+        if isinstance(structured, dict) and set(structured) != {"result"}:
+            if not structured.get("error"):
+                structured.setdefault(key, value)
+        for block in getattr(tool_result, "content", None) or []:
+            raw = getattr(block, "text", None)
+            if not isinstance(raw, str):
+                continue
+            try:
+                parsed = _json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                if not parsed.get("error") and key not in parsed:
+                    parsed[key] = value
+                    block.text = _json.dumps(parsed, default=str)
+                return
+    except Exception as exc:
+        _record_log.debug("could not inject %s: %s", key, exc)
 
 
 def _mcp_client_label(context) -> str | None:
