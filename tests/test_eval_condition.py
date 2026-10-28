@@ -560,8 +560,12 @@ def test_discovery_tools_expose_exactly_the_visible_tool_set(home, monkeypatch, 
             async def call(tool, args):
                 return await c.call_tool(tool, args, meta={META: {"study_id": SID, **ctx}},
                                          raise_on_error=False)
-            res = await call("list_available_tools", {})
-            out["list_available_tools"] = {t["name"] for t in res.structured_content["tools"]}
+            listed, offset = set(), 0
+            while offset is not None:        # the answer is paged (about 4k characters a page)
+                res = await call("list_available_tools", {"offset": offset})
+                listed |= {t["name"] for t in res.structured_content["tools"]}
+                offset = res.structured_content["next_offset"]
+            out["list_available_tools"] = listed
             res = await call("describe_tools", {"names": registry})
             out["describe_tools"] = {t["name"] for t in res.structured_content["tools"]}
             seen = set()
@@ -734,7 +738,8 @@ def test_discovery_counts_match_filtered_entries(home, monkeypatch, condition):
                                   raise_on_error=False)
             return a.structured_content, b.structured_content
     a, b = asyncio.run(run())
-    assert a["n_tools"] == len(a["tools"])
+    assert a["n_tools"] >= len(a["tools"]) > 0       # n_tools is the listed total; `tools` is one page
+    assert hidden_name not in json.dumps(a)
     assert b["count"] == len(b["tools"]) == 1
 
 

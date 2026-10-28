@@ -38,6 +38,21 @@
 # _resolve_session bookkeeping (chat binding, workspace_dir backfill) is NOT allowed for read-only
 # calls: it is switched off for them.
 #
+# Optional vocabulary keys (data only; T-A1). A row may add any of these; absence means "not in
+# that class". They are served in tools/list `_meta` under the `aihydro/` namespace and change no
+# hint above. Hosts read them; the server never branches on a tool name for them.
+#   effect = "ui"          the tool only queues a command for the map/preview host (a one-shot file
+#                          in map_commands/ or preview_commands/) and reads session/catalog state;
+#                          it writes no session, claim, workspace file or network. -> _meta["aihydro/effect"]
+#   requiresConsent = true the tool records or changes facts about the researcher (profile,
+#                          observations); a host should ask the person first.
+#                          -> _meta["aihydro/requiresConsent"]
+#   audience = "host"      the tool is for the host application, not the agent; a host should not
+#                          list it to the model and should refuse agent-originated calls.
+#                          -> _meta["aihydro/audience"]. No tool has it yet.
+# tests/test_tool_surface.py checks each class: `ui` tools only reach the map/preview command
+# writers (static scan plus an audit-hook run), and the vocabulary is closed.
+#
 # `source` is the distribution that registers the tool (builtin = aihydro-tools); rows for an
 # optional plugin are only enforced when that plugin is importable.
 
@@ -859,6 +874,7 @@ evidence = "static or local-file lookup (registry, knowledge cards, manifests, c
 
 ["log_researcher_observation"]
 source = "builtin"
+requiresConsent = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
@@ -963,6 +979,7 @@ evidence = "static/local recipe metadata; no network, no writes [guard: no write
 
 ["map_add_layer_from_run"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
@@ -971,6 +988,7 @@ evidence = "adds a layer to the map (command queue + run-derived layer); repeat 
 
 ["map_apply_symbology"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -979,6 +997,7 @@ evidence = "writes a UI command file to the map command queue (replace-style com
 
 ["map_fit_extent"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -987,6 +1006,7 @@ evidence = "writes a UI command file to the map command queue (replace-style com
 
 ["map_fit_layer"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1011,6 +1031,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["map_fly_to"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1035,6 +1056,7 @@ evidence = "reads the session store; no slot/file writes (HydroSession.load does
 
 ["map_remove_layer"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1051,6 +1073,7 @@ evidence = "writes session fields (workspace_dir, ROI, working geometry) and/or 
 
 ["map_set_basemap"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1067,6 +1090,7 @@ evidence = "writes session fields (workspace_dir, ROI, working geometry) and/or 
 
 ["map_set_time_range"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1083,6 +1107,7 @@ evidence = "writes session fields (workspace_dir, ROI, working geometry) and/or 
 
 ["map_show"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1091,6 +1116,7 @@ evidence = "writes a UI command file to the map command queue (replace-style com
 
 ["map_update_layer"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1155,6 +1181,7 @@ evidence = "network download of regional MERIT data into the data cache (downloa
 
 ["preview_address_comment"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1163,6 +1190,7 @@ evidence = "writes a UI command file to the preview command queue [calls: mkdir,
 
 ["preview_focus_cell"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1203,6 +1231,7 @@ evidence = "static or local-file lookup (registry, knowledge cards, manifests, c
 
 ["preview_revise_section"]
 source = "builtin"
+effect = "ui"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1403,6 +1432,7 @@ evidence = "overwrites or removes researcher-authored session/profile/skill stat
 
 ["update_researcher_profile"]
 source = "builtin"
+requiresConsent = true
 readOnlyHint = false
 destructiveHint = true
 idempotentHint = true

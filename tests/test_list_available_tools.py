@@ -20,11 +20,15 @@ def test_list_available_tools_through_the_real_app_is_not_empty():
     res = asyncio.run(run())
     out = res.structured_content
     assert not res.is_error
-    assert out["n_tools"] > 100 and out["n_tools"] == len(out["tools"])
-    names = {t["name"] for t in out["tools"]}
-    assert {"add_claim", "list_available_tools"} <= names
-    add_claim = next(t for t in out["tools"] if t["name"] == "add_claim")
-    assert "session_id" in add_claim["parameters"]
+    # no-argument answer is one capped page (see tests/test_context_diet.py); the total is the registry
+    assert out["n_tools"] > 100 and 0 < len(out["tools"]) < out["n_tools"]
+    assert out["next_offset"] == len(out["tools"])
+
+    async def one():
+        async with Client(mcp) as c:
+            return await c.call_tool("list_available_tools", {"name": "add_claim"}, raise_on_error=False)
+    add_claim = asyncio.run(one()).structured_content["tool"]
+    assert add_claim["name"] == "add_claim" and "session_id" in add_claim["parameters"]
 
 
 def test_list_tools_sync_works_with_and_without_a_running_loop():

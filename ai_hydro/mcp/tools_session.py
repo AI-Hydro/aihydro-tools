@@ -24,6 +24,9 @@ from ai_hydro.registry.paths import aihydro_home
 
 log = logging.getLogger("ai_hydro.mcp")
 
+# start_session keeps the last few notes only (see start_session); get_session_summary has them all.
+START_SESSION_NOTES = 5
+
 
 def _surface_integrity_findings(session, summary: dict) -> None:
     """Add what a returning researcher must not miss to the start-of-session summary.
@@ -63,6 +66,7 @@ def start_session(
     enables auto-save of tool outputs there. shard_id: for sub-agent forks.
     include_packages: also return `available_packages` ({name: version} of the
     MCP interpreter; ~12k characters and a slow `pip list`, so off by default).
+    Only the last 5 notes are returned (`notes_total` counts all; get_session_summary has them all).
     """
     try:
         from ai_hydro.session import HydroSession
@@ -72,6 +76,13 @@ def start_session(
             session.workspace_dir = workspace_dir
         session.save(sync_context=True)      # session start: refresh the agent's context file
         summary = session.summary()
+        # A long-running study accumulates notes without bound; the start-of-session answer keeps the
+        # most recent few (each trimmed) and says how many exist. get_session_summary returns all.
+        notes = summary.get("notes")
+        if isinstance(notes, list) and len(notes) > START_SESSION_NOTES:
+            summary["notes"] = [n if len(str(n)) <= 240 else str(n)[:237] + "..."
+                                for n in notes[-START_SESSION_NOTES:]]
+            summary["notes_total"] = len(notes)
         summary["shard_id"] = session.shard_id
         summary["workspace_dir"] = session.workspace_dir
         _surface_integrity_findings(session, summary)
@@ -310,14 +321,14 @@ def write_research_interpretation(
 ) -> dict:
     """
     Phase 2 of interpretation: persist LLM-authored scientific synthesis to
-    research.md + session so it's auto-injected into every future conversation.
+    the session (read back by get_session_summary, exports and the defensibility
+    report). It does not rewrite .aihydrorules/research.md mid-task.
     interpretation: 3-6 sentences of flowing prose (no bullets). site_name:
     short descriptive slug for display + exports.
     """
     try:
         session_id = _resolve_session(session_id, None, allow_auto_create=False)
         from ai_hydro.session import HydroSession
-        from ai_hydro.registry.paths import rules_dir
         from ai_hydro.mcp.tools_docs import _write_tools_md, _list_tools_sync
 
         # ── Answer Auditor gate ───────────────────────────────────────────────
@@ -386,10 +397,13 @@ def write_research_interpretation(
         # site_name during interpretation and drifted from the canonical
         # gauge_name" failure mode.
         session.set_site_name(site_name, reason="set via write_research_interpretation")
-        session.save(sync_context=True)      # end-of-task write-up: the interpretation belongs in research.md
+        # No sync_context: research.md is part of the agent's system prompt, and rewriting it
+        # mid-task busts the provider's prompt cache (DECISIONS 2026-10-28). The interpretation is
+        # read from the session; research.md is regenerated at start_session only.
+        session.save()
 
         tools_path = _write_tools_md()
-        research_md_path = rules_dir(session.workspace_dir) / "research.md"
+        session_path = HydroSession._path(session_id, session.shard_id)
 
         citations_path: str | None = None
         bib = session.export_bibtex()
@@ -415,7 +429,7 @@ def write_research_interpretation(
                 pass
 
         return {
-            "written_path": str(research_md_path),
+            "written_path": str(session_path),
             "char_count": len(session.interpretation),
             "session_id": session_id,
             "site_name": session.site_name,
@@ -426,8 +440,8 @@ def write_research_interpretation(
             **audit_summary,
             **skeptic_summary,
             "_note": (
-                "Interpretation stored. research.md updated — your scientific "
-                "context will be pre-loaded into every future conversation. "
+                "Interpretation stored in the session (get_session_summary returns it); "
+                ".aihydrorules/research.md is not rewritten mid-task. "
                 f"citations.bib written with {n_citations} data-source entries."
             ),
         }
@@ -435,46 +449,100 @@ def write_research_interpretation(
         log.error("write_research_interpretation failed: %s", e)
         return _tool_error_to_dict(e)
 
+# list_available_tools is a discovery call, so its answer must stay cheap enough to read: every
+# response is capped at this many characters (serialised), whatever the registry size. The full
+# registry (about 136k characters) comes only one tool at a time, with name=.
+LIST_TOOLS_MAX_CHARS = 4000
+_LIST_SUMMARY_CHARS = 70
+
+
+def _first_line(text: str | None, cap: int = _LIST_SUMMARY_CHARS) -> str:
+    line = next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")
+    return line if len(line) <= cap else line[: cap - 3].rstrip() + "..."
+
+
+def _tool_detail(t) -> dict:
+    """Name, description and compact parameter table of one registered tool."""
+    entry: dict = {"name": t.name, "description": (t.description or "").strip()}
+    schema = getattr(t, "parameters", None)
+    if schema:
+        # FastMCP exposes the JSON schema as a dict; older shapes as an object.
+        get = schema.get if isinstance(schema, dict) else (lambda k, d=None: getattr(schema, k, d))
+        params = {}
+        for pname, pschema in (get("properties", None) or {}).items():
+            params[pname] = {
+                "type": pschema.get("type", "any"),
+                "description": pschema.get("description", ""),
+                "required": pname in (get("required", None) or []),
+            }
+            if "default" in pschema:
+                params[pname]["default"] = pschema["default"]
+        entry["parameters"] = params
+    return entry
+
+
 @mcp.tool()
-async def list_available_tools() -> dict:
+async def list_available_tools(
+    domain: str | None = None,
+    name: str | None = None,
+    offset: int = 0,
+    limit: int | None = None,
+) -> dict:
     """
-    List all registered MCP tools (built-in + community plugins via the
-    aihydro.tools entry point). For token-efficient discovery, prefer
-    aihydro_describe_capability(domain) over this full dump.
+    Browse the registered MCP tools (built-in + community plugins). Each answer is capped
+    at about 4k characters and sorted by name. No arguments: names with a one-line summary,
+    one page at a time (follow next_offset). domain=<name>: only that domain's tools (see
+    aihydro_describe_capability for the domains). name=<tool>: that one tool in full.
+    offset below 0 is treated as 0; limit of 0, None or below 1 means no limit beyond the size cap.
+    For parameters of a tool you are about to call, describe_tool(name) is the usual call.
     """
     try:
-        tools_raw = await mcp.list_tools()   # on the server loop: no second loop, no blocking
-        tools_out = []
-        for t in tools_raw:
-            entry: dict = {"name": t.name, "description": (t.description or "").strip()}
-            schema = getattr(t, "parameters", None)
-            if schema:
-                # FastMCP exposes the JSON schema as a dict; older shapes as an object.
-                get = schema.get if isinstance(schema, dict) else (lambda k, d=None: getattr(schema, k, d))
-                params = {}
-                props = get("properties", None) or {}
-                for pname, pschema in props.items():
-                    params[pname] = {
-                        "type": pschema.get("type", "any"),
-                        "description": pschema.get("description", ""),
-                        "required": pname in (get("required", None) or []),
-                    }
-                    if "default" in pschema:
-                        params[pname]["default"] = pschema["default"]
-                entry["parameters"] = params
-            tools_out.append(entry)
-        return {
-            "tools": tools_out,
-            "n_tools": len(tools_out),
-            "python_interpreter": sys.executable,
-            "note": (
-                "Install community plugins with: pip install <plugin-package>. "
-                "Restart the MCP server to discover newly installed plugins."
-            ),
-        }
+        from ai_hydro.mcp.tools_discovery import _DOMAIN_PREFIXES
+
+        tools_raw = sorted(await mcp.list_tools(), key=lambda t: t.name)   # server loop; deterministic
+        base: dict = {"n_tools": len(tools_raw)}
+
+        if name:
+            wanted = name.strip()
+            hit = next((t for t in tools_raw if t.name == wanted), None) or \
+                next((t for t in tools_raw if t.name.lower() == wanted.lower()), None)
+            if hit is None:
+                near = [t.name for t in tools_raw if wanted.lower() in t.name.lower()][:20]
+                return {"error": True, "message": f"Unknown tool '{wanted}'.", "similar": near, **base}
+            return {**base, "tool": _tool_detail(hit)}
+
+        if domain:
+            d = domain.strip().lower()
+            if d not in _DOMAIN_PREFIXES:
+                return {"error": True, "message": f"Unknown domain '{domain}'.",
+                        "available_domains": sorted(_DOMAIN_PREFIXES), **base}
+            prefixes = _DOMAIN_PREFIXES[d]
+            tools_raw = [t for t in tools_raw if any(t.name.startswith(p) for p in prefixes)]
+            base = {"domain": d, "n_tools": len(tools_raw)}
+
+        start = max(0, int(offset or 0))
+        cap = int(limit) if limit and int(limit) >= 1 else len(tools_raw)   # 0 / None / negative: size cap only
+        entries: list[dict] = []
+        for i, t in enumerate(tools_raw[start:], start):
+            if len(entries) >= cap:
+                break
+            candidate = {"name": t.name, "summary": _first_line(t.description)}
+            probe = {**base, "offset": start, "tools": entries + [candidate], "next_offset": i + 1,
+                     "note": _LIST_NOTE}
+            if entries and len(json.dumps(probe, default=str)) > LIST_TOOLS_MAX_CHARS:
+                break
+            entries.append(candidate)
+        end = start + len(entries)
+        out = {**base, "offset": start, "tools": entries,
+               "next_offset": end if end < len(tools_raw) else None, "note": _LIST_NOTE}
+        return out
     except Exception as e:
         log.error("list_available_tools failed: %s", e)
         return _tool_error_to_dict(e)
+
+
+_LIST_NOTE = ("Capped at ~4k characters: pass offset=next_offset for the next page, domain=<name> "
+              "to filter, name=<tool> for one tool in full.")
 
 
 # The capsule's replay.py is the standalone verifier in

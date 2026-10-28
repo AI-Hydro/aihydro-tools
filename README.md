@@ -88,7 +88,7 @@ The [AI-Hydro VS Code extension](https://github.com/AI-Hydro/AI-Hydro) auto-dete
 | **Validators** | `check_temporal_alignment` | Verify forcing and streamflow cover the same time window |
 | **Validators** | `check_unit_consistency` | Confirm a session slot carries the expected physical units |
 | **Visualization** | `show_on_map` | Push any GeoJSON geometry onto the AI-Hydro map panel |
-| **Discover** | `list_available_tools` | Enumerate all installed tools, including community plugins |
+| **Discover** | `list_available_tools` | Browse installed tools, including community plugins (paged, about 4k characters an answer; `domain=` and `name=` narrow it) |
 | **Discover** | `list_skills` | List available workflow playbooks by domain |
 | **Discover** | `load_skill` | Load a workflow playbook for a multi-step analysis |
 | **Discover** | `get_library_reference` | Retrieve an API idiom card for a Python library |
