@@ -54,6 +54,28 @@ it does not depend on which optional plugins are installed (the old 0.55 fractio
 88/162 without). Follow-up: add a CI job with a read-only token for both private repos so these paths run on
 every PR; then drop the skips. The sibling SHA pins are temporary until the next PyPI batch.
 
+## 2026-10-28 — `write_research_interpretation` stops rewriting `research.md`; discovery answers are capped (Wave 0, T-C1/T-A1)
+
+`write_research_interpretation` was one of the five `sync_context=True` call sites in the 2026-10-20 rule below and the only one that
+fires mid-task in a normal run. The owner has retired `research.md` as an agent-facing surface (the mid-task rewrite included), so the
+call now uses a plain `save()`; `research.md` is regenerated at `start_session` (and archive, shard merge, export). Consequence: an
+interpretation reaches the next chat through the session (`get_session_summary`), not through the prompt file.
+
+`list_available_tools` returned the full registry (135,896 characters, no arguments), and the server's own notes told the agent to call
+it. Every answer is now capped at `LIST_TOOLS_MAX_CHARS` (4,000, serialised) and paged; one tool in full needs `name=`. The cap is a
+property of the call, not of a tool list, so a larger registry (plugins) pages instead of growing.
+
+Annotation vocabulary (`effect`, `requiresConsent`, `audience`) lives in the existing `tool_annotations.toml` rows and is served as
+`_meta["aihydro/..."]`. It is data: the server never reads it to decide anything, hosts do. The vocabulary is closed and tested; a
+`ui` row must pass a static scan (map/preview command writers only) and a runtime audit-hook run of every `ui` tool.
+Definition of `ui`: the tool only queues a command for the host. It may read session, run-log, workspace and catalog files; the host
+may persist map-layer state in response; it never writes scientific state (slots, claims, run records, workspace files) and uses no
+network. Precondition for the extension's X1-A1 auto-run: `preview_revise_section` and `preview_address_comment` are safe to
+auto-run only while the host keeps the person's accept step for previews (recorded in `docs/tool-surface.md`).
+
+`start_session` returns only the last 5 notes (each trimmed to 240 characters) with `notes_total`; notes were its unbounded part.
+`computed` / `slot_health` scale with the slot count, so the 4,000-character budget holds for a session with a normal slot count.
+
 ## 2026-10-20 — `research.md` is written at task boundaries only (session study 01031500, M3)
 
 `.aihydrorules/research.md` is part of the agent's system prompt. Until now every `HydroSession.save()`

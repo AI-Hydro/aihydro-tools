@@ -7,7 +7,8 @@ Three small mechanisms, installed once after every tool is registered
 1. ``apply_tool_annotations`` stamps ``readOnlyHint`` / ``destructiveHint`` /
    ``idempotentHint`` / ``openWorldHint`` from ``tool_annotations.toml`` (one row per tool, with
    the code evidence) onto each registered tool, so hosts can auto-approve read-only tools and
-   gate destructive or open-world ones.
+   gate destructive or open-world ones. A row may also carry the optional ``effect`` /
+   ``requiresConsent`` / ``audience`` keys, served in ``_meta`` as ``aihydro/*`` (``META_KEYS``).
 2. ``ToolSurfaceMiddleware.on_list_tools`` sorts ``tools/list`` by name, so the order no longer
    depends on import or entry-point iteration order.
 3. The same middleware implements server-side progressive disclosure:
@@ -36,10 +37,21 @@ ANNOTATIONS_PATH = Path(__file__).with_name("tool_annotations.toml")
 SURFACE_ENV = "AIHYDRO_TOOL_SURFACE"
 _HINT_KEYS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
 
+# Optional vocabulary keys of a row -> the tools/list `_meta` key they are served under (T-A1).
+# Data only: the server never branches on them; a host reads them. The vocabulary is closed, so a
+# misspelt key in the table fails a test instead of being silently ignored.
+META_KEYS = {
+    "effect": "aihydro/effect",
+    "requiresConsent": "aihydro/requiresConsent",
+    "audience": "aihydro/audience",
+}
+META_VALUES = {"effect": {"ui"}, "audience": {"host"}}
+
 HOT_MODE_NOTE = (
     "TOOL SURFACE: this server lists only the common tools (tools/list). Many more exist: "
-    "call aihydro_describe_capability(domain) or list_available_tools() to browse them, and "
-    "describe_tool(name) for parameters; any registered tool can be called by name."
+    "call aihydro_describe_capability(domain) to browse them by domain (list_available_tools() "
+    "is a short paged name list), and describe_tool(name) for parameters; any registered tool "
+    "can be called by name."
 )
 
 
@@ -140,6 +152,9 @@ def apply_tool_annotations(mcp: Any, rows: dict[str, dict[str, Any]] | None = No
         existing = comp.annotations.model_dump(exclude_none=True) if comp.annotations else {}
         existing.update({k: bool(row[k]) for k in _HINT_KEYS})
         comp.annotations = ToolAnnotations(**existing)
+        vocab = {META_KEYS[k]: row[k] for k in META_KEYS if k in row}
+        if vocab:
+            comp.meta = {**(dict(comp.meta) if comp.meta else {}), **vocab}
         stamped += 1
     return stamped
 

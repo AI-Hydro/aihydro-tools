@@ -421,12 +421,14 @@ def map_add_layer_from_run(
     try:
         import os
 
-        session_id = session_id.strip()
         run_id = run_id.strip()
-        if not session_id or not run_id:
+        if not (session_id or "").strip() or not run_id:
             return {"ok": False, "message": "session_id and run_id are required"}
-
-        session_path = aihydro_home() / "sessions" / f"{session_id}.json"
+        session_id = _normalize_session_id(session_id)
+        # The session store's own path rule: separators and '..' runs are neutralised, so a
+        # session_id such as "../x" cannot reach a file outside the sessions directory.
+        from ai_hydro.session.store import HydroSession
+        session_path = HydroSession._path(session_id)
         if not session_path.exists():
             return {"ok": False, "message": f"Session '{session_id}' not found at {session_path}"}
 

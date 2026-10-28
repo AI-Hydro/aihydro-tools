@@ -281,7 +281,7 @@ async def describe_tool(name: str) -> dict:
             "message": f"Unknown tool '{name}'.",
             "did_you_mean": suggestions,
             "hint": "Use aihydro_describe_capability(domain) to browse tools, "
-                    "or list_available_tools() for the full name list.",
+                    "or list_available_tools() for a paged name list.",
         }
 
     return _describe_one(tool)
