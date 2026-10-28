@@ -47,18 +47,18 @@
 		"interpretation": "Sensitivity of streamflow to precipitation changes"
 	},
 	"slope_fdc": {
-		"description": "Slope of the flow duration curve, CAMELS-US v1.2 file definition: (Q66 - Q33) / (mean(Q) * 0.33), Q33 and Q66 the 33rd and 66th percentiles of daily flow (non-exceedance, R type 7), zero-flow days kept, defined only when mean(Q) > 0, no logarithm",
+		"description": "Slope of the flow duration curve, CAMELS attributes v2.0 file definition: (Q66 - Q33) / (mean(Q) * 0.33), Q33 and Q66 the 33rd and 66th percentiles of daily flow (non-exceedance, R type 7), zero-flow days kept, defined only when mean(Q) > 0, no logarithm",
 		"units": "dimensionless (flow difference per unit of mean flow)",
 		"group": "hydrology",
-		"reference": "naddor/camels@88e7a0d2d2 hydro/hydro_signatures.R:97. Reproduces the CAMELS-US v1.2 file at 8.7e-9 (01013500) and 2.3e-7 (01031500) relative",
-		"caution": "The Addor et al. (2017) text and Table 3 describe a log-space slope; the distributed file does not use it, and later naddor/camels code (CAMELS-GB) emits the log form under the same name. Compare slope_fdc across datasets or tool versions only through the result's signature_definitions. aihydro-tools before 2.8.0 / aihydro-watershed before 0.2.0 reported the Sawicz et al. (2011) log slope under this name (now slope_fdc_sawicz2011)."
+		"reference": "naddor/camels@88e7a0d2d2 hydro/hydro_signatures.R:97. Reproduces the CAMELS attributes v2.0 file at 8.7e-9 (01013500) and 2.3e-7 (01031500) relative",
+		"caution": "Later naddor/camels code (CAMELS-GB) emits a log-space form under the same name. Compare slope_fdc across datasets or tool versions only through the result's signature_definitions. aihydro-tools before 2.8.0 / aihydro-watershed before 0.2.0 reported the Sawicz et al. (2011) log slope under this name (now slope_fdc_sawicz2011)."
 	},
 	"slope_fdc_sawicz2011": {
 		"description": "Slope of the flow duration curve between the 33% and 66% exceedance flows in log space, (ln Q33exc - ln Q66exc) / 0.33 (exceedance points taken as non-exceedance quantiles 0.67 and 0.34, type 7), zero-flow days dropped, needs >= 100 positive days",
 		"units": "dimensionless",
 		"group": "hydrology",
 		"reference": "Sawicz et al. (2011), Catchment classification, HESS 15:2895. This is the value aihydro reported as slope_fdc before aihydro-watershed 0.2.0",
-		"caution": "Not the CAMELS-US v1.2 slope_fdc column (a different quantity: compare with slope_fdc instead)"
+		"caution": "Not the CAMELS attributes v2.0 slope_fdc column (a different quantity: compare with slope_fdc instead)"
 	},
 	"hfd_mean": {
 		"description": "Mean half-flow date (day of water year)",

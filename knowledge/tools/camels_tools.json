@@ -389,7 +389,7 @@
 				"flow_variability: Flow variability (CV)",
 				"hfd_mean: Mean half-flow date (DOY)",
 				"half_flow_date_std: Half-flow date std (days)",
-				"slope_fdc: Flow duration curve slope, CAMELS-US v1.2 file definition (Q66 - Q33) / (mean(Q) * 0.33), no logarithm (dimensionless)",
+				"slope_fdc: Flow duration curve slope, CAMELS attributes v2.0 file definition (Q66 - Q33) / (mean(Q) * 0.33), no logarithm (dimensionless)",
 				"slope_fdc_sawicz2011: Log-space FDC slope between 33% and 66% exceedance, Sawicz et al. (2011) (dimensionless; the value reported as slope_fdc before 2.8.0)"
 			],
 			"attributes_count": 18,

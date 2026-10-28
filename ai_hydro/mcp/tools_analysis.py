@@ -1609,7 +1609,7 @@ def extract_hydrological_signatures(
         _internal.append(_prec_entry)
         _rr.declare_lineage(internal_acquisitions=_internal,
                             **({"retained_files": _retained_files} if _retained_files else {}))
-        # CAMELS-US reference: packaged v1.2 tables, overridden by the session `camels` slot (fetch_camels_us).
+        # CAMELS-US reference: packaged CAMELS attributes v2.0 tables, overridden by the session `camels` slot (fetch_camels_us).
         # `reference_comparison` is the table the claim gate reads (run row: key_outputs.reference_comparison);
         # `camels_reference` is the summary (source + hash, period, area, forcing, climate context).
         if isinstance(_dd, dict) and _dd:
@@ -3603,7 +3603,7 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
 
     Returns percentile flows under the hydrologic convention (Qxx = discharge
     equalled or exceeded xx% of the time, so Q95 is a low flow and Q5 a high
-    flow), the FDC mid-section slope (flashiness; the CAMELS-US v1.2 slope_fdc definition
+    flow), the FDC mid-section slope (flashiness; the CAMELS attributes v2.0 slope_fdc definition
     since aihydro-watershed 0.2.0), and 7Q10 when ≥10 years
     of daily data are present.
 

@@ -1,6 +1,6 @@
-# CAMELS-US v1.2 reference tables (packaged)
+# CAMELS attributes v2.0 reference tables (packaged)
 
-Verbatim copies of three attribute files of the CAMELS-US v1.2 data set, shipped so the
+Verbatim copies of three attribute files of the CAMELS attributes v2.0 data set, shipped so the
 `camels_reference` block of `extract_hydrological_signatures` works offline, hermetically and pinned to one
 version of the reference.
 
@@ -43,6 +43,6 @@ attribution. Please cite:
 
 ## What the values are (read before comparing)
 
-The CAMELS-US v1.2 signatures are for water years 1990-2009 (1989-10-01 to 2009-09-30) from Daymet forcing and
-`area_gages2`. `slope_fdc` is the file's distributed definition `(Q66 - Q33) / (mean(Q) * 0.33)`, not the log-space
-Sawicz et al. (2011) slope. See `docs/session-integrity.md` and the watershed 0.2.0 changelog.
+The CAMELS attributes v2.0 signatures are for water years 1990-2009 (1989-10-01 to 2009-09-30) from Daymet forcing and
+`area_gages2`. `slope_fdc` is the file's distributed definition `(Q66 - Q33) / (mean(Q) * 0.33)`; the log-space
+Sawicz et al. (2011) slope is `slope_fdc_sawicz2011`. See `docs/session-integrity.md` and the watershed 0.2.0 changelog.

@@ -6,6 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.8.1] - 2026-10-28
+
+### Changed
+
+- Reworded the slope_fdc definition provenance to describe the definition neutrally; values unchanged. The `slope_fdc` caution in
+  `knowledge/camels_metadata.json` (both copies) and the reference ATTRIBUTION note now describe the definition only. (The earlier
+  wording remains in git history; that is accepted.) The `signature_definitions` provenance strings are emitted by
+  aihydro-watershed, whose neutral wording ships in 0.2.1, so the dependency floor is now `aihydro-watershed>=0.2.1,<0.3`.
+- Corrected the label of the packaged/compared attribute file `camels_hydro.txt`: it is CAMELS attributes v2.0 ("CAMELS-US v1.2" is the time-series version). Wording only; values unchanged. The machine-readable `CAMELS-US v1.2` reference name (`camels_reference.REFERENCE_NAME`, `comparison_ref`) and the `reference/camels_us_v1_2` directory are unchanged.
+
 ## [2.8.0] - 2026-10-22 (Science Wave 3, PR-4b: series-bound validators, CAMELS reference, gates on real producer output)
 
 Requires **aihydro-core >= 0.2.11, aihydro-data >= 0.2.5, aihydro-watershed >= 0.2.0** (pins `>=...,<0.3`). All three are on
@@ -15,7 +25,7 @@ PyPI (core 0.2.11, data 0.2.5, watershed 0.2.0; watershed#4 merged as 96feff2). 
 
 ### BREAKING-VALUE (inherited from aihydro-watershed 0.2.0; sessions that hold older results should be re-run)
 
-- `slope_fdc` is the CAMELS-US v1.2 file definition `(Q66 - Q33) / (mean(Q) * 0.33)` (01013500: 1.528, was 2.697); the old log-space
+- `slope_fdc` is the CAMELS attributes v2.0 file definition `(Q66 - Q33) / (mean(Q) * 0.33)` (01013500: 1.528, was 2.697); the old log-space
   Sawicz et al. (2011) value is `slope_fdc_sawicz2011`. `separate_baseflow` and `baseflow_index` use the Ladson et al. (2013) kernel
   (01031500: BFI 0.36 -> 0.445). Intervals are water-year grouped (`method: bootstrap_group`, no `block_size`; no interval below 10
   complete water years). `runoff_ratio` / `stream_elas` use complete water years only. Sealed records gain `slope_fdc_sawicz2011`,
@@ -41,7 +51,7 @@ PyPI (core 0.2.11, data 0.2.5, watershed 0.2.0; watershed#4 merged as 96feff2). 
   different series. They run automatically inside `extract_hydrological_signatures` (on the in-memory series) and are appended to
   `quality_flags`; the old post-run `check_stationarity` registration on the slot is removed.
 - **`camels_reference` + `reference_comparison` in the signatures output.** aihydro-watershed's `reference_comparison` against the
-  packaged CAMELS-US v1.2 tables (hydro, `area_gages2`, `frac_snow`, `aridity`, `p_seasonality`; CC-BY 4.0, attribution, md5 and
+  packaged CAMELS attributes v2.0 tables (hydro, `area_gages2`, `frac_snow`, `aridity`, `p_seasonality`; CC-BY 4.0, attribution, md5 and
   sha256 provenance JSON, md5 re-checked before use), overridden by the session `camels` slot (`fetch_camels_us`) when it holds the
   gauge. The block carries the source and its hash (S6), `period` used/ref/differs (the CAMELS signatures are WY1990-2009), area and
   rescaling, the "GridMET vs Daymet" forcing disclosure, climate context and `can_claim_difference` with blockers per signature. The

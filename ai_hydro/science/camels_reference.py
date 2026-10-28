@@ -13,7 +13,7 @@ Both go into the signatures result data. The run row keeps ``reference_compariso
 Reference source, in order:
 
 1. the session ``camels`` slot (``fetch_camels_us``, pygeohydro) when it holds THIS gauge;
-2. the packaged CAMELS-US v1.2 tables (``ai_hydro/knowledge/reference/camels_us_v1_2``, CC-BY 4.0), whose files
+2. the packaged CAMELS attributes v2.0 tables (``ai_hydro/knowledge/reference/camels_us_v1_2``, CC-BY 4.0), whose files
    are re-checked against the md5 in their provenance JSON before use.
 
 The source actually used is recorded with a hash either way (critique S6): the md5/sha256 of the packaged
