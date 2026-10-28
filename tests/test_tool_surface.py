@@ -486,6 +486,17 @@ def test_ui_class_writes_only_command_files_at_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(pc, "_PREVIEW_COMMANDS_DIR", prev_dir)
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
     monkeypatch.setattr(tm, "find_catalog_layer", lambda lid: {"id": lid, "type": "vector"})
+    # a seeded scratch session with a run log (map_add_layer_from_run reads it, writes nothing)
+    from ai_hydro.session import store as _store
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setattr(_store, "_SESSIONS_DIR", sessions)
+    (sessions / "s1.json").write_text(json.dumps({"_run_log": {"run1": {
+        "tool_name": "demo", "key_outputs": {"basin": {"type": "Point", "coordinates": [0.0, 1.0]}}}}}))
+    fc = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [0, 0]}, "properties": {"v": float(i)}}
+        for i in range(10)]}
+    monkeypatch.setattr(tm, "load_geojson_for_layer", lambda entry, root: fc)
     calls = {
         "map_show": {}, "map_fit_extent": {}, "map_fit_layer": {"layer_id": "L1"},
         "map_fly_to": {"longitude": -70.0, "latitude": 45.0},
@@ -493,11 +504,14 @@ def test_ui_class_writes_only_command_files_at_runtime(tmp_path, monkeypatch):
         "map_set_time_range": {"start_iso": "2020-01-01", "end_iso": "2020-12-31"},
         "map_remove_layer": {"layer_id": "L1"},
         "map_update_layer": {"layer_id": "L1", "fill_color": "#336699", "visible": True},
+        "map_add_layer_from_run": {"session_id": "s1", "run_id": "run1"},
+        "map_apply_symbology": {"layer_id": "L1", "attribute": "v"},
         "preview_focus_cell": {"module_id": "m1", "cell_id": "c1"},
         "preview_revise_section": {"module_id": "m1", "section_id": "s1", "new_html": "<p>x</p>"},
         "preview_address_comment": {"module_id": "m1", "comment_id": "k1"},
     }
     assert set(calls) <= _rows_with("effect", "ui")
+    session_before = {p.name: p.read_bytes() for p in sessions.iterdir()}
 
     async def go():
         from fastmcp import Client
@@ -517,7 +531,28 @@ def test_ui_class_writes_only_command_files_at_runtime(tmp_path, monkeypatch):
             or "__pycache__" in e.detail)]
         assert not bad, (n, bad)
     # map_update_layer(visible=...) queues two commands (style, then visibility)
-    assert len(list(map_dir.glob("*.json"))) == 9 and len(list(prev_dir.glob("*.json"))) == 3
+    assert len(list(map_dir.glob("*.json"))) == 11 and len(list(prev_dir.glob("*.json"))) == 3
+    assert {p.name: p.read_bytes() for p in sessions.iterdir()} == session_before   # no session write
+    assert set(calls) == _rows_with("effect", "ui"), "every ui tool is exercised"
+
+
+def test_map_add_layer_from_run_cannot_traverse_out_of_the_sessions_dir(tmp_path, monkeypatch):
+    import ai_hydro.mcp.map_commands as mc
+    import ai_hydro.mcp.tools_map as tm
+    from ai_hydro.session import store as _store
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setattr(_store, "_SESSIONS_DIR", sessions)
+    monkeypatch.setenv("AIHYDRO_HOME", str(tmp_path))     # so "<home>/sessions/../evil.json" would be this file
+    monkeypatch.setattr(mc, "_MAP_COMMANDS_DIR", tmp_path / "map_commands")
+    # a well-formed run log OUTSIDE the sessions dir: reachable only through "../"
+    (tmp_path / "evil.json").write_text(json.dumps({"_run_log": {"run1": {
+        "tool_name": "demo", "key_outputs": {"basin": {"type": "Point", "coordinates": [0.0, 1.0]}}}}}))
+    for sid in ("../evil", "..\\evil", "../../evil", "a/../../evil"):
+        out = tm.map_add_layer_from_run(session_id=sid, run_id="run1")
+        assert out["ok"] is False, sid
+    assert not (tmp_path / "map_commands").exists()
 
 
 def test_host_audience_is_a_mechanism_without_tools_yet():

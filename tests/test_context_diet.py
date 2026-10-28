@@ -100,7 +100,7 @@ def scratch_sessions(tmp_path, monkeypatch):
 
 
 def test_start_session_does_not_dump_the_pip_package_map(scratch_sessions, monkeypatch):
-    """Pinned (off by default since 2.8.0): no `pip list`, no package map, and a small result."""
+    """Pins the existing 2.8.0 behaviour (off by default): no `pip list`, no package map; plus a size bound."""
     calls = []
     real = subprocess.run
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a) or real(*a, **k))
@@ -112,7 +112,39 @@ def test_start_session_does_not_dump_the_pip_package_map(scratch_sessions, monke
     assert _size(res) <= CAP, _size(res)
 
 
+def test_start_session_stays_under_the_cap_for_a_populated_session(scratch_sessions):
+    """A long study: many notes, many slots. Notes are the unbounded part and are trimmed to the last 5.
+
+    `computed` / `slot_health` grow with the number of slots (bounded by the slot registry), so the
+    4k budget is a property of a session with a normal slot count, not an absolute guarantee.
+    """
+    s = store.HydroSession("diet_pop")
+    for i in range(60):
+        s.add_note(f"note {i} " + "x" * 300)
+    for i in range(25):
+        s.set(f"slot{i}", {"v": i})
+    s.save()
+    res = _call("start_session", {"session_id": "diet_pop"})
+    out = res.structured_content
+    assert _size(res) <= CAP, _size(res)
+    assert out["notes_total"] == 60 and len(out["notes"]) == 5
+    assert out["notes"][-1].startswith("note 59") or "note 59" in str(out["notes"][-1])
+    full = _call("get_session_summary", {"session_id": "diet_pop"}).structured_content
+    assert len(full["notes"]) == 60                              # nothing is lost, only not echoed here
+
+
+def test_list_limit_coercion_is_documented_behaviour():
+    """limit of 0, None or negative means "no limit beyond the size cap"; a negative offset is 0."""
+    base = _call("list_available_tools").structured_content
+    for lim in (0, -3):
+        assert [t["name"] for t in _call("list_available_tools", {"limit": lim}).structured_content["tools"]] \
+            == [t["name"] for t in base["tools"]]
+    assert _call("list_available_tools", {"offset": -5}).structured_content["offset"] == 0
+    assert len(_call("list_available_tools", {"limit": 1}).structured_content["tools"]) == 1
+
+
 def test_start_session_opt_in_still_returns_packages(scratch_sessions):
+    """Pins the existing 2.8.0 behaviour (include_packages is opt-in); not new in this change."""
     out = _call("start_session", {"session_id": "diet02", "include_packages": True}).structured_content
     assert isinstance(out["available_packages"], dict)
 

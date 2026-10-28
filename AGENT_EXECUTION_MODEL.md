@@ -51,7 +51,7 @@ aihydro_describe_capability()          → domain inventory (counts)
 aihydro_describe_capability("watershed")→ 1 line per tool in that domain
 describe_tool("compute_twi")           → full schema + worked example call
 describe_tools(["a","b"])              → batch, before chaining several
-list_available_tools()                 → every tool name
+list_available_tools()                 → paged names + one-line summaries (~4k chars/page; domain=, name=)
 ```
 
 `describe_tool` returns a **copy-pasteable `example_call`** built from required

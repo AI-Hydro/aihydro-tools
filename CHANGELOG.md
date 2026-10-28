@@ -13,7 +13,9 @@ Released together with the chat-binding PR as 2.8.2; this change does not bump t
 ### Changed
 
 - `list_available_tools` no longer dumps the registry. With no arguments it returns one deterministic page (sorted by name,
-  name plus one-line summary) capped at about 4,000 characters (it was 135,896 characters on 162 tools). New optional arguments:
+  name plus one-line summary) capped at about 4,000 characters (it was 135,896 characters on 162 tools; measured as the length of the text block of the `tools/call` result as the in-memory
+  FastMCP client returns it, the same method before and after, in an environment without the private lsh/modelling plugins; other
+  installs differ, e.g. 142,556 with more tools). New optional arguments:
   `domain=` (that domain's tools, same domains as `aihydro_describe_capability`), `name=` (one tool in full: description and
   parameters), `offset=` / `limit=` (paging; the answer carries `next_offset`, `None` on the last page). `n_tools` is now the total
   that matches, not the length of `tools`. The server instructions, the hot-mode note and the unknown-tool hint no longer send the
@@ -22,6 +24,12 @@ Released together with the chat-binding PR as 2.8.2; this change does not bump t
   busted the provider's prompt cache mid-task). The interpretation is stored in the session as before; `research.md` is regenerated at
   `start_session` (and archive, shard merge, export) only. `written_path` is now the session file, and `_note` says so.
   `_write_tools_md` leaves `tools.md` untouched when the content is identical.
+
+- `start_session` returns the last 5 notes (each trimmed to 240 characters) plus `notes_total`, so a long study cannot push it past
+  about 4,000 characters; `get_session_summary` still returns every note. `list_available_tools`: `limit` of 0, `None` or below 1 means no
+  limit beyond the size cap (a negative `limit` used to mean 1); `offset` below 0 is 0.
+- `map_add_layer_from_run` resolves its session file through the session store's path rule, so a `session_id` such as `../x` cannot
+  read outside the sessions directory.
 
 ### Added
 

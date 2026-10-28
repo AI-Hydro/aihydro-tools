@@ -66,9 +66,14 @@ A row may add optional keys beyond the four hints. They are data for hosts, serv
 
 | Row key | `_meta` key | Meaning |
 | --- | --- | --- |
-| `effect = "ui"` | `aihydro/effect` | The tool only queues a map or preview command for the host and reads state. It writes no session, claim or workspace file and uses no network. Enforced by a static scan and an audit-hook run in `tests/test_tool_surface.py`. |
+| `effect = "ui"` | `aihydro/effect` | The tool only queues a command for the map or preview host. It may read session, run-log, workspace and catalog files, and the host may persist map-layer state in response to the command. It never writes scientific state (session slots, claims, run records, workspace files) and uses no network. Enforced by a static scan and an audit-hook run of every `ui` tool in `tests/test_tool_surface.py`. |
 | `requiresConsent = true` | `aihydro/requiresConsent` | The tool records or changes facts about the researcher (`log_researcher_observation`, `update_researcher_profile`); a host should ask first. |
 | `audience = "host"` | `aihydro/audience` | For the host application, not the agent: a host should not list it to the model and should refuse agent-originated calls. No tool has it yet. |
+
+**Precondition for host auto-run (extension X1-A1).** `effect = "ui"` makes a tool safe to auto-run on the server side only.
+`preview_revise_section` and `preview_address_comment` queue a proposal that the person accepts or rejects as a diff in the
+preview. They are safe to auto-run only while the host keeps that accept step; if a host ever applies previews without the
+person's accept, those two must be treated as consent-required again.
 
 The vocabulary is closed (a misspelt key fails `test_every_tool_has_a_row_and_the_vocabulary_is_closed`). The server applies it
 generically in `apply_tool_annotations` (`META_KEYS`); no code is keyed on a tool name.
@@ -76,7 +81,8 @@ generically in `apply_tool_annotations` (`META_KEYS`); no code is keyed on a too
 ## Discovery answers are capped
 
 `list_available_tools()` returns one page (names with a one-line summary, sorted) of at most about 4,000 characters; follow
-`next_offset`, filter with `domain=`, or fetch one tool in full with `name=`. `describe_tool(name)` remains the call for parameters
+`next_offset`, filter with `domain=`, or fetch one tool in full with `name=`. `offset` below 0 is 0; `limit` of 0, `None` or
+below 1 means no limit beyond the size cap. `describe_tool(name)` remains the call for parameters
 before using a tool.
 
 ## Order

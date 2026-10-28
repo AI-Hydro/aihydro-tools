@@ -24,6 +24,9 @@ from ai_hydro.registry.paths import aihydro_home
 
 log = logging.getLogger("ai_hydro.mcp")
 
+# start_session keeps the last few notes only (see start_session); get_session_summary has them all.
+START_SESSION_NOTES = 5
+
 
 def _surface_integrity_findings(session, summary: dict) -> None:
     """Add what a returning researcher must not miss to the start-of-session summary.
@@ -63,6 +66,7 @@ def start_session(
     enables auto-save of tool outputs there. shard_id: for sub-agent forks.
     include_packages: also return `available_packages` ({name: version} of the
     MCP interpreter; ~12k characters and a slow `pip list`, so off by default).
+    Only the last 5 notes are returned (`notes_total` counts all; get_session_summary has them all).
     """
     try:
         from ai_hydro.session import HydroSession
@@ -72,6 +76,13 @@ def start_session(
             session.workspace_dir = workspace_dir
         session.save(sync_context=True)      # session start: refresh the agent's context file
         summary = session.summary()
+        # A long-running study accumulates notes without bound; the start-of-session answer keeps the
+        # most recent few (each trimmed) and says how many exist. get_session_summary returns all.
+        notes = summary.get("notes")
+        if isinstance(notes, list) and len(notes) > START_SESSION_NOTES:
+            summary["notes"] = [n if len(str(n)) <= 240 else str(n)[:237] + "..."
+                                for n in notes[-START_SESSION_NOTES:]]
+            summary["notes_total"] = len(notes)
         summary["shard_id"] = session.shard_id
         summary["workspace_dir"] = session.workspace_dir
         _surface_integrity_findings(session, summary)
@@ -482,6 +493,7 @@ async def list_available_tools(
     at about 4k characters and sorted by name. No arguments: names with a one-line summary,
     one page at a time (follow next_offset). domain=<name>: only that domain's tools (see
     aihydro_describe_capability for the domains). name=<tool>: that one tool in full.
+    offset below 0 is treated as 0; limit of 0, None or below 1 means no limit beyond the size cap.
     For parameters of a tool you are about to call, describe_tool(name) is the usual call.
     """
     try:
@@ -509,7 +521,7 @@ async def list_available_tools(
             base = {"domain": d, "n_tools": len(tools_raw)}
 
         start = max(0, int(offset or 0))
-        cap = max(1, int(limit)) if limit else len(tools_raw)
+        cap = int(limit) if limit and int(limit) >= 1 else len(tools_raw)   # 0 / None / negative: size cap only
         entries: list[dict] = []
         for i, t in enumerate(tools_raw[start:], start):
             if len(entries) >= cap:
