@@ -49,6 +49,22 @@ def _surface_integrity_findings(session, summary: dict) -> None:
         log.warning("metric conflicts skipped: %s", exc)
 
 
+def _bind_started_session(session_id: str) -> None:
+    """``start_session(session_id)`` under a chat context binds the chat to that study.
+
+    Not for a subagent shard (``shard_id``; the caller skips it) and not in an evaluation run: an
+    arm must not have its binding changed by a tool call it did not choose to depend on.
+    """
+    from ai_hydro.mcp.app import ACTIVE_CHAT_ID
+    from ai_hydro.mcp.eval_condition import in_evaluation_run
+    from ai_hydro.mcp.helpers import _bind
+    from ai_hydro.session.chat_binding import get_binding_store
+
+    chat = ACTIVE_CHAT_ID.get()
+    if chat and not in_evaluation_run():
+        _bind(get_binding_store(), chat, session_id, "start_session")
+
+
 @mcp.tool()
 def start_session(
     session_id: str | None = None,
@@ -59,18 +75,21 @@ def start_session(
     """
     Start or resume a research session (persistent memory for a study).
     session_id: any string (slug, USGS gauge id, UUID); auto-generated if
-    omitted. workspace_dir: pass once, remembered for all future calls —
+    omitted. With a session_id, the current chat is bound to that study. workspace_dir: pass once, remembered for all future calls —
     enables auto-save of tool outputs there. shard_id: for sub-agent forks.
     include_packages: also return `available_packages` ({name: version} of the
     MCP interpreter; ~12k characters and a slow `pip list`, so off by default).
     """
     try:
         from ai_hydro.session import HydroSession
+        explicit_id = bool(session_id and str(session_id).strip())
         session_id = _normalize_session_id(session_id)
         session = HydroSession.load(session_id, shard_id=shard_id)
         if workspace_dir:
             session.workspace_dir = workspace_dir
         session.save(sync_context=True)      # session start: refresh the agent's context file
+        if explicit_id and not shard_id:
+            _bind_started_session(session_id)
         summary = session.summary()
         summary["shard_id"] = session.shard_id
         summary["workspace_dir"] = session.workspace_dir
@@ -958,49 +977,97 @@ def _build_environment_yml(name: str) -> str:
 # Admin: Chat ↔ Study rebinding (Wave 3)
 # ============================================================================
 
+def _chat_context_id(explicit: str | None) -> tuple[str | None, dict | None]:
+    """``(chat_id, error)`` for the binding tools.
+
+    Under a chat context the injected id (``ACTIVE_CHAT_ID``) is the only chat a tool can touch:
+    an explicit id that differs is refused, which stops a model rebinding another chat or passing
+    a study id as the chat id. Without a chat context (CLI, tests) the explicit id is used.
+    """
+    from ai_hydro.mcp.app import ACTIVE_CHAT_ID
+
+    ctx = ACTIVE_CHAT_ID.get()
+    explicit = (explicit or "").strip() or None
+    if ctx:
+        if explicit and explicit != ctx:
+            return None, {
+                "error": True, "code": "CHAT_ID_MISMATCH",
+                "message": (f"chat_id {explicit!r} is not this chat. Under a chat context the chat id is "
+                            "injected by the host; omit chat_id."),
+                "recovery": "Call again without chat_id.",
+                "next_tools": [],
+            }
+        return ctx, None
+    return explicit, None
+
+
 @mcp.tool()
 def aihydro_rebind_chat(
     study_id: str,
     chat_id: str | None = None,
 ) -> dict:
     """
-    Rebind the current chat to a specific existing study.
+    Bind the current chat to an existing study (recovery tool).
 
-    Use when the agent selected the wrong study, or when you want to resume a
-    previous study from a fresh chat.
+    Use when no study is bound to this chat, when the wrong one is, or to resume a
+    study from a fresh chat. Several chats may be bound to the same study.
 
     Parameters
     ----------
     study_id : str
-        The session/study ID to bind to (e.g. 'basin_26p9_78p1' or '01031500').
+        An existing study id (e.g. 'basin_26p9_78p1' or '01031500'); the candidates in a
+        SESSION_RESOLUTION_FAILED error are valid values.
     chat_id : str | None
-        The Cline chat ULID to bind. Normally injected automatically by the
-        extension; pass explicitly only in edge cases.
+        Leave empty: the chat's id is injected by the host. An explicit id must equal it.
 
     Returns
     -------
-    dict with ``bound_to``, ``study_id``, and confirmation message.
+    dict with ``bound_to``, ``study_id``, ``chat_id``, ``label`` and a ``session_binding`` field.
     """
     try:
+        from ai_hydro.mcp.helpers import _bind
         from ai_hydro.session import HydroSession
-        from ai_hydro.session.chat_binding import get_binding_store
+        from ai_hydro.session.chat_binding import ChatBindingStore, get_binding_store
+        from ai_hydro.session.study_index import candidates_for, label_of, study_exists
 
-        # Validate study exists (loads or creates)
+        chat, err = _chat_context_id(chat_id)
+        if err:
+            return err
+        if not chat:
+            return {
+                "error": True, "code": "NO_CHAT_CONTEXT",
+                "message": "This call carries no chat id, so there is no chat to bind.",
+                "recovery": "Pass session_id=<study id> on the tool calls instead.",
+                "next_tools": [],
+            }
         sid = _normalize_session_id(study_id)
-        session = HydroSession.load(sid)  # raises if truly invalid path
+        if not study_exists(sid):
+            cands, _scope = candidates_for(None, limit=5)
+            return {
+                "error": True, "code": "STUDY_NOT_FOUND",
+                "message": f"No study {sid!r} exists; nothing was bound.",
+                "recovery": "Use one of the candidates, or run a delineation to create a study.",
+                "next_tools": ["delineate_watershed", "delineate_watershed_from_point"],
+                "candidates": cands,
+            }
+        try:
+            ChatBindingStore.validate(chat, sid)
+        except ValueError as exc:
+            return {"error": True, "code": "INVALID_CHAT_ID", "message": str(exc),
+                    "recovery": "The chat id is injected by the host; call without chat_id.",
+                    "next_tools": []}
+        _bind(get_binding_store(), chat, sid, "agent_rebind")
+        session = HydroSession.load(sid)
         slots_done = session.computed_healthy()
-
-        store = get_binding_store()
-        if chat_id:
-            store.bind(chat_id, sid)
-
+        label = label_of(sid)
         return {
             "bound_to": sid,
             "study_id": sid,
-            "chat_id": chat_id,
+            "chat_id": chat,
+            "label": label,
             "study_slots": slots_done,
             "message": (
-                f"Chat rebound to study '{sid}'. "
+                f"Chat bound to study '{sid}' ({label}). "
                 f"Computed slots: {slots_done or 'none yet'}. "
                 "All subsequent analysis tools will operate on this study."
             ),
@@ -1019,11 +1086,20 @@ def aihydro_chat_status(chat_id: str | None = None) -> dict:
     came from a previous session or is brand new.  Useful for diagnostics and
     at the start of a fresh conversation to see if a study is already in scope.
 
-    chat_id : str | None — injected automatically by the extension; pass
-    explicitly when calling outside a chat context.
+    chat_id : str | None - leave empty: the chat's id is injected by the host.
+    Pass it only when calling outside a chat context.
+
+    The output keys are a contract (the answer audit and the host header read ``bound`` and
+    ``study_id``); candidates for an unbound chat are named in ``message`` and listed by the
+    ``aihydro://study/list`` resource.
     """
     try:
         from ai_hydro.session.chat_binding import get_binding_store
+        from ai_hydro.session.study_index import candidates_for
+
+        chat_id, err = _chat_context_id(chat_id)
+        if err:
+            return err
         store = get_binding_store()
         bound = store.lookup_study(chat_id) if chat_id else None
 
@@ -1053,14 +1129,24 @@ def aihydro_chat_status(chat_id: str | None = None) -> dict:
                     "warning": f"Study file unreadable: {load_err}",
                 }
         else:
+            from ai_hydro.mcp.helpers import _call_workspace
+
+            try:
+                cands, _scope = candidates_for(_call_workspace(), limit=5)
+            except Exception:
+                cands = []
+            listing = (" Candidate studies: "
+                       + "; ".join(f"{c['study_id']} = {c['label']}" for c in cands) + "."
+                       if cands else "")
             return {
                 "bound": False,
                 "study_id": None,
                 "chat_id": chat_id,
                 "message": (
-                    "No study is bound to this chat yet. "
-                    "Run delineate_watershed or delineate_watershed_from_point "
-                    "to auto-create one, or call start_session(session_id=...) explicitly."
+                    "No study is bound to this chat yet."
+                    + listing
+                    + " Call aihydro_rebind_chat(study_id=<id>) to bind one, or run "
+                    "delineate_watershed / delineate_watershed_from_point to create one."
                 ),
             }
     except Exception as e:

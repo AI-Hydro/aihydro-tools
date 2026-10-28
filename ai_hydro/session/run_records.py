@@ -404,6 +404,10 @@ class CallCapture:
     notes: Dict[str, Any] = dataclasses.field(default_factory=dict)
     failed_rows: List[Tuple[str, str, str, str]] = dataclasses.field(default_factory=list)  # (session, run, writer, reason)
     refused_rows: List[Tuple[str, str, str, str]] = dataclasses.field(default_factory=list)  # (session, run, writer, outcome)
+    #: Workspace files a tool wrote during the call: (study that owns the write or None, absolute path).
+    files: List[Tuple[Optional[str], str]] = dataclasses.field(default_factory=list)
+    #: Map layers a tool pushed during the call (see ``note_layer_pushed``).
+    layers: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
 
 
 _CAPTURE: contextvars.ContextVar[Optional[CallCapture]] = contextvars.ContextVar(
@@ -435,6 +439,29 @@ def row_written_this_call(session_id: str, run_id: str, writer: str) -> bool:
     """
     capture = _CAPTURE.get()
     return capture is not None and (session_id, run_id, writer) in capture.rows
+
+
+def note_file_written(path: Any, study_id: Optional[str] = None) -> None:
+    """A tool wrote ``path`` into the workspace. No-op outside a recorded call.
+
+    The study recorder (``ai_hydro.session.artifact_recorder``) turns every noted file into an
+    ``artifact_manifest`` entry once the call is sealed. Called from the low-level write helpers
+    (``HydroSession.write_workspace_file``, the map layer pushers), never from individual tools.
+    """
+    capture = _CAPTURE.get()
+    if capture is not None and path:
+        capture.files.append((study_id, str(path)))
+
+
+def note_layer_pushed(layer_id: str, *, name: Optional[str] = None, layer_type: Optional[str] = None,
+                      paths: Iterable[Any] = (), content_sha256: Optional[str] = None) -> None:
+    """A tool pushed map layer ``layer_id``; ``paths`` are the files it points at (PNG, manifest)."""
+    capture = _CAPTURE.get()
+    if capture is not None and layer_id:
+        capture.layers.append({
+            "layer_id": str(layer_id), "name": name, "layer_type": layer_type,
+            "paths": [str(p) for p in paths if p], "content_sha256": content_sha256,
+        })
 
 
 def note_row_failed(session_id: str, run_id: str, writer: str, reason: str) -> None:
@@ -930,6 +957,21 @@ def record_call(
         return RecordOutcome("error", record_error=f"record_call: {type(exc).__name__}: {exc}")
 
 
+def _record_artifacts(capture: CallCapture, tool: str, session_id: Optional[str],
+                      run_id: Optional[str]) -> None:
+    """The one place every file a tool wrote and every layer it pushed enters the study manifest."""
+    if not capture.files and not capture.layers:
+        return
+    try:
+        from ai_hydro.session.artifact_recorder import record_artifacts
+
+        n = record_artifacts(capture, tool=tool, call_session_id=session_id, run_id=run_id)
+        count("artifacts_recorded", n)
+    except Exception as exc:        # provenance bookkeeping never breaks a tool call
+        log.warning("artifact recording failed for %s: %s", tool, exc)
+        count("artifact_record_failed")
+
+
 def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_factory,
                  duration_ms, mcp_client, output_bytes, context=None) -> RecordOutcome:
     from ai_hydro.session import store
@@ -940,6 +982,7 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         arguments, result, chat_id, capture, context.get("study_id"))
     if session_id is None:
         count("no_session")
+        _record_artifacts(capture, tool, None, None)
         return RecordOutcome("no_session")
 
     rows: List[Tuple[str, str, str]] = []
@@ -1083,6 +1126,8 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
     # call's single deadline (skipped when the budget is already spent).
     reseal_unsealed_rows(session_id, deadline=deadline, limit=RESEAL_PER_CALL,
                          exclude=[rid for _sid, rid, _w in rows])
+
+    _record_artifacts(capture, tool, session_id, call_id if call_id in run_ids else None)
 
     count("recorded", len(run_ids))
     if created:

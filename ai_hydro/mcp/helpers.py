@@ -34,10 +34,12 @@ class SessionResolutionError(RuntimeError):
         *,
         recovery: str = "",
         next_tools: list[str] | None = None,
+        candidates: list[dict] | None = None,
     ) -> None:
         super().__init__(message)
         self.recovery = recovery
         self.next_tools = next_tools or []
+        self.candidates = candidates or []
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -49,6 +51,8 @@ class SessionResolutionError(RuntimeError):
             d["recovery"] = self.recovery
         if self.next_tools:
             d["next_tools"] = self.next_tools
+        if self.candidates:
+            d["candidates"] = self.candidates
         return d
 
 
@@ -72,20 +76,39 @@ def _read_active_workspace_file() -> str | None:
     return None
 
 
+def _call_workspace() -> str | None:
+    """The workspace of THIS call: the per-call context first; the machine-global
+    ``active_workspace.json`` only when the call carries no context of its own.
+
+    The global file is written by whichever VS Code window was focused last, so with two
+    windows on two projects it names the wrong one. A call that sent ``_meta`` (or the legacy
+    hidden arguments) is therefore never answered from it, even when that context holds no workspace.
+    """
+    from ai_hydro.mcp.app import ACTIVE_CONTEXT_SOURCE, ACTIVE_WORKSPACE
+
+    ws = ACTIVE_WORKSPACE.get()
+    if ws and Path(ws).is_dir():
+        return ws
+    if ACTIVE_CONTEXT_SOURCE.get() == "none":
+        return _read_active_workspace_file()
+    return None
+
+
 def _maybe_set_workspace(session: "Any") -> None:
     """
     If the session has no workspace_dir yet, resolve it from (in priority order):
-      1. ACTIVE_WORKSPACE ContextVar   — set per-call by UseMcpToolHandler.ts injection
-      2. ~/.aihydro/active_workspace.json — written on every extension activation
+      1. ACTIVE_WORKSPACE ContextVar   - set per call from ``_meta`` (or the legacy hidden argument)
+      2. ~/.aihydro/active_workspace.json - written on every extension activation; used ONLY when
+         the call carries no context of its own (see ``_call_workspace``)
 
     Having a file-based fallback means the workspace is available even when the
     extension has not been reloaded after a VSIX install (no window-reload ceremony).
     """
     try:
         if session.workspace_dir:
-            return  # already set — don't override
+            return  # already set - don't override
         from ai_hydro.mcp.app import ACTIVE_WORKSPACE
-        ws = ACTIVE_WORKSPACE.get() or _read_active_workspace_file()
+        ws = _call_workspace()
         if ws and Path(ws).is_dir():
             session.workspace_dir = ws
             session.save()
@@ -96,20 +119,22 @@ def _maybe_set_workspace(session: "Any") -> None:
         log.debug("_maybe_set_workspace failed (non-fatal): %s", exc)
 
 
-_FALLBACK_OFF_VALUES = frozenset({"off", "0", "false", "no"})
+_FALLBACK_ON_VALUES = frozenset({"on", "1", "true", "yes"})
 
 
 def recent_fallback_enabled() -> bool:
-    """False when AIHYDRO_RECENT_SESSION_FALLBACK is off/0/false/no, or in an evaluation run.
+    """True only when ``AIHYDRO_RECENT_SESSION_FALLBACK`` is on/1/true/yes, and never in an evaluation run.
 
-    An evaluation run is one the P1 harness started (see eval_condition.in_evaluation_run): a guessed study
-    would silently change what an arm computes. Interactive use keeps the fallback.
+    The global "most recent study on disk" guess is OFF by default (2.8.2; owner decision, 2026-10-28):
+    it picked test and unrelated studies. The variable is kept for one release as an opt-in and then
+    removed; the project default replaces it. An evaluation run is one the P1 harness started
+    (see eval_condition.in_evaluation_run): a guessed study would silently change what an arm computes.
     """
     from ai_hydro.mcp.eval_condition import in_evaluation_run
 
     if in_evaluation_run():
         return False
-    return os.environ.get("AIHYDRO_RECENT_SESSION_FALLBACK", "").strip().lower() not in _FALLBACK_OFF_VALUES
+    return os.environ.get("AIHYDRO_RECENT_SESSION_FALLBACK", "").strip().lower() in _FALLBACK_ON_VALUES
 
 
 def _extract_chat_id(args: dict) -> tuple[str | None, dict]:
@@ -140,21 +165,21 @@ def _resolve_session(
 
     Priority chain
     --------------
-    1. **Explicit** ``session_id`` — always wins (rule ``explicit_arg``).
-       Also rebinds the chat to this study if ``chat_id`` is provided.
-    1b. **Request context** — ``study_id`` from
-       ``_meta["aihydro/context"]`` (rule ``meta``); same rebinding.
-    2. **Chat binding** (rule ``chat_binding``) — look up ``~/.aihydro/chat_studies.json`` for
-       a study previously bound to *chat_id*.
-    3. **Auto-create** (rule ``auto_create``) — if *auto_create_hint* is set (typically a
-       gauge ID, lat/lon slug, or explicit name) and
-       *allow_auto_create* is True, create a new HydroSession with
-       that ID and bind it to the chat.
-    3.5. **Most recent study** on disk (rule ``recent_fallback``). Skipped when
-       ``allow_recent_fallback=False`` (audits and other tools that must act on
-       an explicit or bound study) or when ``AIHYDRO_RECENT_SESSION_FALLBACK=off``.
-    4. **Error** — raises ``SessionResolutionError`` with a helpful
-       recovery message.
+    1. **Explicit** ``session_id`` - always wins (rule ``explicit_arg``).
+       Also rebinds the chat to this study if ``chat_id`` is provided and the tool is not read-only.
+    1b. **Request context** - ``study_id`` from ``_meta["aihydro/context"]`` (rule ``meta``); same rebinding.
+    2. **Chat binding** (rule ``chat_binding``) - the study bound to *chat_id* in
+       ``chat_bindings.v2.json``. Many chats may share one study.
+    3. **Auto-create** (rule ``auto_create``) - if *auto_create_hint* is set (a gauge ID,
+       lat/lon slug or explicit name) and *allow_auto_create* is True, create the study and bind it.
+    5. **Single study in the workspace** (rule ``workspace_single_study``) - exactly one visible
+       study whose ``workspace_dir`` is this call's workspace. Inferred, so closed to the audit
+       (``allow_recent_fallback=False``), to evaluation runs, and to state-changing admin tools
+       (``allow_auto_create=False`` and not readOnlyHint). A read-only call does not bind.
+    5b. **Most recent study** on disk (rule ``recent_fallback``): OFF unless
+       ``AIHYDRO_RECENT_SESSION_FALLBACK=on``; kept for one release.
+    6. **Error** - ``SessionResolutionError`` listing at most 5 labelled candidate studies
+       and ``next_tools`` naming ``aihydro_rebind_chat``.
 
     Parameters
     ----------
@@ -168,12 +193,12 @@ def _resolve_session(
         supplied by delineation tools.
     allow_auto_create:
         Set to ``False`` for admin / query tools that should not
-        silently create sessions.  Also disables the recent-study fallback.
+        silently create sessions.  Also disables the recent-study guess, and the
+        workspace inference unless the tool is read-only.
     allow_recent_fallback:
-        Set to ``False`` to forbid the most-recent-study guess even though
-        auto-create is allowed.  ``AIHYDRO_RECENT_SESSION_FALLBACK=off`` (or
-        off/0/false/no), or an evaluation run, forbids it for every
-        tool.  When it does fire, the result carries a top-level ``session_warning``.
+        Set to ``False`` to forbid every inferred resolution (steps 5 and 5b), as the audit does.
+        An evaluation run forbids them for every tool.  When the recent-study guess
+        fires, the result carries a top-level ``session_warning``.
 
     Returns
     -------
@@ -213,6 +238,76 @@ def _resolve_session_with_rule(
     return sid, rule
 
 
+def note_binding_change(chat_id: str, study_id: str, previous: str | None, bound_by: str) -> None:
+    """Record, on the call's notes, that a chat's binding changed.
+
+    ``_SessionWarningMiddleware`` adds it to the result as ``session_binding``, which is how the
+    host learns about a server-side bind (an auto-create on delineation, a rebind). The host mirror
+    is display-only: this field is the only way it is refreshed. No-op outside a tool call.
+    """
+    from ai_hydro.mcp.app import ACTIVE_CALL_NOTES
+
+    notes = ACTIVE_CALL_NOTES.get()
+    if notes is None:
+        return
+    try:
+        from ai_hydro.session.study_index import label_of
+
+        label = label_of(study_id)
+    except Exception:
+        label = study_id
+    notes["session_binding"] = {
+        "chat_id": chat_id, "study_id": study_id, "label": label,
+        "previous_study_id": previous, "bound_by": bound_by,
+    }
+
+
+def _bind(store, chat_id: str, study_id: str, bound_by: str) -> None:
+    """Bind and report the change; a failed bind (invalid chat id, I/O) never fails the call."""
+    try:
+        previous = store.lookup_study(chat_id)
+        if store.bind(chat_id, study_id, bound_by=bound_by):
+            note_binding_change(chat_id, study_id, previous, bound_by)
+            log.debug("Bound chat=%s -> study=%s (%s)", chat_id, study_id, bound_by)
+    except Exception as exc:
+        from ai_hydro.session.chat_binding import InvalidChatIdError
+
+        if isinstance(exc, InvalidChatIdError):      # not silent: the chat stays unbound
+            log.warning("Chat binding skipped (%s): %s", bound_by, exc)
+        else:
+            log.debug("Could not persist chat binding (%s): %s", bound_by, exc)
+
+
+def _resolution_failure(chat_id: str | None) -> SessionResolutionError:
+    """The step-6 error: labelled candidates (at most 5) and a recovery tool that works."""
+    from ai_hydro.session.study_index import candidates_for
+
+    try:
+        cands, scope = candidates_for(_call_workspace(), limit=5)
+    except Exception as exc:
+        log.debug("candidate listing failed: %s", exc)
+        cands, scope = [], "none"
+    where = "in this workspace" if scope == "workspace" else "recently active (other workspaces)"
+    parts = ["Cannot determine which study to use: no session_id, no chat binding, "
+             "and no unambiguous study for this call."]
+    if cands:
+        parts.append(f"Candidate studies {where}: "
+                     + "; ".join(f"{c['study_id']} = {c['label']}" for c in cands) + ".")
+    if chat_id:
+        how = ("Pick one and call aihydro_rebind_chat(study_id=<id>) to bind this chat, "
+               "or pass session_id=<id> to this call. ")
+    else:
+        how = "This call carries no chat context: pass session_id=<id> explicitly. "
+    recovery = how + "To start a new study, run delineate_watershed or delineate_watershed_from_point."
+    return SessionResolutionError(
+        " ".join(parts),
+        recovery=recovery,
+        next_tools=["aihydro_rebind_chat", "aihydro_chat_status", "start_session",
+                    "delineate_watershed", "delineate_watershed_from_point"],
+        candidates=cands,
+    )
+
+
 def _resolve_session_impl(
     session_id: str | None,
     chat_id: str | None,
@@ -246,7 +341,7 @@ def _resolve_session_impl(
     if session_id and _normalize_session_id(session_id) == "map":
         raise SessionResolutionError(
             "'map' is a reserved legacy placeholder and cannot be used as a session_id. "
-            "Omit session_id entirely — it is auto-resolved from the chat context via "
+            "Omit session_id entirely - it is auto-resolved from the chat context via "
             "Wave 3 chat binding.",
             recovery=(
                 "Remove session_id='map' from your tool call. "
@@ -256,15 +351,11 @@ def _resolve_session_impl(
             next_tools=["aihydro_chat_status", "aihydro_rebind_chat"],
         )
 
-    # 1. Explicit session_id (or _meta study_id) → use it; optionally rebind chat
+    # 1. Explicit session_id (or _meta study_id) -> use it; optionally rebind chat
     if session_id:
         sid = _normalize_session_id(session_id)
-        if chat_id and not read_only and store.lookup_study(chat_id) != sid:
-            try:
-                store.bind(chat_id, sid)
-                log.debug("Rebound chat=%s → study=%s (explicit override)", chat_id, sid)
-            except Exception as exc:
-                log.debug("Could not persist chat binding: %s", exc)
+        if chat_id and not read_only:
+            _bind(store, chat_id, sid, rule)
         return sid, rule
 
     # 2. Chat binding lookup
@@ -295,41 +386,50 @@ def _resolve_session_impl(
         except Exception as exc:
             log.debug("Auto-create session %s: %s", sid, exc)
         if chat_id and not read_only:
-            try:
-                store.bind(chat_id, sid)
-                log.debug("Auto-created study=%s and bound to chat=%s", sid, chat_id)
-            except Exception as exc:
-                log.debug("Could not persist auto-created binding: %s", exc)
+            _bind(store, chat_id, sid, "auto_create")
         return sid, "auto_create"
 
-    # 3.5 Most-recent-session fallback (WS-4 session-binding fix).
-    # The weak model frequently omits session_id on a follow-up call before a
-    # chat binding exists. Rather than hard-failing, fall back to the most
-    # recently modified study on disk and bind it to the chat. This is gated by
-    # allow_auto_create so query/admin tools that opt out are unaffected, and by
-    # allow_recent_fallback / AIHYDRO_RECENT_SESSION_FALLBACK=off for tools (the
-    # audit) or deployments that must never act on a guessed study.
+    # 5. Exactly one study in this call's workspace. Inferred, so it is closed to the audit
+    # (allow_recent_fallback=False), to evaluation runs, and to admin tools that change state
+    # (they pass allow_auto_create=False and are not readOnlyHint): those need a named or bound study.
+    # A read-only call resolves it without binding; a writer binds the chat and the result says so.
+    if allow_recent_fallback and (allow_auto_create or read_only) and not _in_eval():
+        try:
+            from ai_hydro.session.study_index import study_summaries
+
+            ws = _call_workspace()
+            here = study_summaries(workspace=ws) if ws else []
+            if len(here) == 1:
+                sid = here[0]["study_id"]
+                if chat_id and not read_only:
+                    _bind(store, chat_id, sid, "workspace_single_study")
+                if not read_only:
+                    try:
+                        from ai_hydro.session import HydroSession
+                        _maybe_set_workspace(HydroSession.load(sid))
+                    except Exception:
+                        pass
+                notes = ACTIVE_CALL_NOTES.get()
+                if notes is not None:
+                    notes["workspace_single_study"] = {"study_id": sid, "label": here[0]["label"]}
+                return sid, "workspace_single_study"
+        except Exception as exc:
+            log.debug("Single-study workspace resolution skipped: %s", exc)
+
+    # 5b. Most-recent-session guess. OFF unless AIHYDRO_RECENT_SESSION_FALLBACK=on (kept one release).
     if allow_auto_create and allow_recent_fallback and recent_fallback_enabled():
         try:
-            # Reference the private symbol: tests patch ``_SESSIONS_DIR`` to a
-            # tmp dir, so reading it here keeps the fallback test-isolated.
-            from ai_hydro.session.store import _SESSIONS_DIR as SESSIONS_DIR
-            candidates = [
-                p for p in SESSIONS_DIR.glob("*.json")
-                if ".shard." not in p.name and not p.name.startswith("_")
-            ]
-            if candidates:
-                latest = max(candidates, key=lambda p: p.stat().st_mtime)
-                sid = latest.stem
+            from ai_hydro.session.study_index import study_summaries
+
+            recent = study_summaries()
+            if recent:
+                sid = recent[0]["study_id"]
                 log.info(
                     "No session_id and no chat binding; falling back to most "
                     "recent study '%s'. Pass session_id to target another.", sid
                 )
                 if chat_id and not read_only:
-                    try:
-                        store.bind(chat_id, sid)
-                    except Exception as exc:
-                        log.debug("Could not persist fallback binding: %s", exc)
+                    _bind(store, chat_id, sid, "recent_fallback")
                 if not read_only:
                     try:
                         from ai_hydro.session import HydroSession
@@ -343,25 +443,14 @@ def _resolve_session_impl(
         except Exception as exc:
             log.debug("Most-recent-session fallback skipped: %s", exc)
 
-    # 4. Failure
-    hint_parts: list[str] = []
-    if chat_id:
-        hint_parts.append(
-            "No study is bound to this chat yet. "
-            "Run a delineation first (delineate_watershed or delineate_watershed_from_point)."
-        )
-    else:
-        hint_parts.append("Pass session_id explicitly, or run a delineation first.")
+    # 6. Failure: labelled candidates and a recovery tool that works
+    raise _resolution_failure(chat_id)
 
-    raise SessionResolutionError(
-        "Cannot determine which study to use: no session_id, no chat binding, "
-        "and no auto-create hint is available.",
-        recovery=" ".join(hint_parts) or (
-            "Pass session_id explicitly. "
-            "Example: compute_twi(session_id='basin_26p9_78p1')"
-        ),
-        next_tools=["delineate_watershed", "delineate_watershed_from_point", "start_session"],
-    )
+
+def _in_eval() -> bool:
+    from ai_hydro.mcp.eval_condition import in_evaluation_run
+
+    return in_evaluation_run()
 
 
 # ---------------------------------------------------------------------------

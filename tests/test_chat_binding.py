@@ -28,14 +28,14 @@ class TestChatBindingStore:
     def test_bind_and_lookup_study(self, tmp_path):
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "bindings.json")
-        store.bind("chat-001", "basin_123")
-        assert store.lookup_study("chat-001") == "basin_123"
+        store.bind("01HCHAT0010000000000000000", "basin_123")
+        assert store.lookup_study("01HCHAT0010000000000000000") == "basin_123"
 
     def test_bind_and_lookup_chat(self, tmp_path):
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "bindings.json")
-        store.bind("chat-001", "basin_123")
-        assert store.lookup_chat("basin_123") == "chat-001"
+        store.bind("01HCHAT0010000000000000000", "basin_123")
+        assert store.lookup_chat("basin_123") == "01HCHAT0010000000000000000"
 
     def test_lookup_missing_returns_none(self, tmp_path):
         from ai_hydro.session.chat_binding import ChatBindingStore
@@ -47,37 +47,37 @@ class TestChatBindingStore:
         """A chat rebound to a new study: old study's reverse pointer removed."""
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "bindings.json")
-        store.bind("chat-001", "basin_old")
-        store.bind("chat-001", "basin_new")
-        assert store.lookup_study("chat-001") == "basin_new"
+        store.bind("01HCHAT0010000000000000000", "basin_old")
+        store.bind("01HCHAT0010000000000000000", "basin_new")
+        assert store.lookup_study("01HCHAT0010000000000000000") == "basin_new"
         assert store.lookup_chat("basin_old") is None
-        assert store.lookup_chat("basin_new") == "chat-001"
+        assert store.lookup_chat("basin_new") == "01HCHAT0010000000000000000"
 
-    def test_rebind_removes_old_reverse_pointer(self, tmp_path):
-        """A study rebound to a new chat: old chat's forward pointer removed."""
+    def test_second_chat_on_a_study_does_not_steal_the_first(self, tmp_path):
+        """v2: many chats may share a study (v1 removed the first chat's binding)."""
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "bindings.json")
-        store.bind("chat-A", "basin_shared")
-        store.bind("chat-B", "basin_shared")
-        assert store.lookup_study("chat-A") is None
-        assert store.lookup_study("chat-B") == "basin_shared"
+        store.bind("01HCHATA000000000000000000", "basin_shared")
+        store.bind("01HCHATB000000000000000000", "basin_shared")
+        assert store.lookup_study("01HCHATA000000000000000000") == "basin_shared"
+        assert store.lookup_study("01HCHATB000000000000000000") == "basin_shared"
 
     def test_unbind_chat(self, tmp_path):
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "bindings.json")
-        store.bind("chat-001", "basin_123")
-        removed = store.unbind_chat("chat-001")
+        store.bind("01HCHAT0010000000000000000", "basin_123")
+        removed = store.unbind_chat("01HCHAT0010000000000000000")
         assert removed is True
-        assert store.lookup_study("chat-001") is None
+        assert store.lookup_study("01HCHAT0010000000000000000") is None
         assert store.lookup_chat("basin_123") is None
 
     def test_unbind_study(self, tmp_path):
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "bindings.json")
-        store.bind("chat-001", "basin_123")
+        store.bind("01HCHAT0010000000000000000", "basin_123")
         removed = store.unbind_study("basin_123")
         assert removed is True
-        assert store.lookup_study("chat-001") is None
+        assert store.lookup_study("01HCHAT0010000000000000000") is None
 
     def test_unbind_missing_returns_false(self, tmp_path):
         from ai_hydro.session.chat_binding import ChatBindingStore
@@ -88,26 +88,27 @@ class TestChatBindingStore:
     def test_all_bindings(self, tmp_path):
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "bindings.json")
-        store.bind("chat-A", "study-1")
-        store.bind("chat-B", "study-2")
+        store.bind("01HCHATA000000000000000000", "study-1")
+        store.bind("01HCHATB000000000000000000", "study-2")
         pairs = dict(store.all_bindings())
-        assert pairs["chat-A"] == "study-1"
-        assert pairs["chat-B"] == "study-2"
+        assert pairs["01HCHATA000000000000000000"] == "study-1"
+        assert pairs["01HCHATB000000000000000000"] == "study-2"
 
     def test_atomic_write_creates_valid_json(self, tmp_path):
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "bindings.json")
-        store.bind("chat-001", "basin_xyz")
+        store.bind("01HCHAT0010000000000000000", "basin_xyz")
         data = json.loads((tmp_path / "bindings.json").read_text())
-        assert data["chat_to_study"]["chat-001"] == "basin_xyz"
-        assert data["study_to_chat"]["basin_xyz"] == "chat-001"
+        assert data["schema"] == 2
+        assert data["bindings"]["01HCHAT0010000000000000000"]["study_id"] == "basin_xyz"
+        assert "study_to_chat" not in data              # v2 stores no inverse
 
     def test_is_bound(self, tmp_path):
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "bindings.json")
-        assert store.is_bound("chat-X") is False
-        store.bind("chat-X", "study-A")
-        assert store.is_bound("chat-X") is True
+        assert store.is_bound("01HCHATX000000000000000000") is False
+        store.bind("01HCHATX000000000000000000", "study-A")
+        assert store.is_bound("01HCHATX000000000000000000") is True
 
     def test_corrupt_file_starts_fresh(self, tmp_path):
         """Corrupted JSON file should not crash — starts with empty store."""
@@ -116,7 +117,7 @@ class TestChatBindingStore:
         p.write_text("{not valid json!!!")
         store = ChatBindingStore(p)
         assert store.lookup_study("any") is None  # graceful recovery
-        store.bind("c", "s")                       # write still works
+        store.bind("01HC0000000000000000000000", "s")                       # write still works
 
 
 # ---------------------------------------------------------------------------
@@ -136,28 +137,28 @@ class TestResolveSession:
         from ai_hydro.mcp.helpers import _resolve_session
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "b.json")
-        store.bind("chat-1", "old-study")
+        store.bind("01HCHAT1000000000000000000", "old-study")
         with _patch_store(store), _patch_sessions(tmp_path):
-            result = _resolve_session("explicit-session", "chat-1")
+            result = _resolve_session("explicit-session", "01HCHAT1000000000000000000")
         assert result == "explicit-session"
 
     def test_explicit_session_rebinds_chat(self, tmp_path):
         from ai_hydro.mcp.helpers import _resolve_session
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "b.json")
-        store.bind("chat-1", "old-study")
+        store.bind("01HCHAT1000000000000000000", "old-study")
         with _patch_store(store), _patch_sessions(tmp_path):
-            _resolve_session("new-study", "chat-1")
+            _resolve_session("new-study", "01HCHAT1000000000000000000")
         # Chat should now point to new-study
-        assert store.lookup_study("chat-1") == "new-study"
+        assert store.lookup_study("01HCHAT1000000000000000000") == "new-study"
 
     def test_chat_binding_used_when_session_id_omitted(self, tmp_path):
         from ai_hydro.mcp.helpers import _resolve_session
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "b.json")
-        store.bind("chat-1", "bound-study")
+        store.bind("01HCHAT1000000000000000000", "bound-study")
         with _patch_store(store), _patch_sessions(tmp_path):
-            result = _resolve_session(None, "chat-1")
+            result = _resolve_session(None, "01HCHAT1000000000000000000")
         assert result == "bound-study"
 
     def test_auto_create_when_no_session_or_binding(self, tmp_path):
@@ -173,8 +174,8 @@ class TestResolveSession:
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "b.json")
         with _patch_store(store), _patch_sessions(tmp_path):
-            _resolve_session(None, "chat-X", auto_create_hint="basin-new")
-        assert store.lookup_study("chat-X") == "basin-new"
+            _resolve_session(None, "01HCHATX000000000000000000", auto_create_hint="basin-new")
+        assert store.lookup_study("01HCHATX000000000000000000") == "basin-new"
 
     def test_no_auto_create_when_disabled(self, tmp_path):
         from ai_hydro.mcp.helpers import _resolve_session, SessionResolutionError
@@ -208,9 +209,9 @@ class TestResolveSession:
         store = ChatBindingStore(tmp_path / "b.json")
         with _patch_store(store), _patch_sessions(tmp_path):
             # First call: auto-create
-            s1 = _resolve_session(None, "chat-A", auto_create_hint="basin-abc")
+            s1 = _resolve_session(None, "01HCHATA000000000000000000", auto_create_hint="basin-abc")
             # Second call: should find binding without hint
-            s2 = _resolve_session(None, "chat-A")
+            s2 = _resolve_session(None, "01HCHATA000000000000000000")
         assert s1 == s2 == "basin-abc"
 
     def test_different_chats_never_collide(self, tmp_path):
@@ -218,10 +219,10 @@ class TestResolveSession:
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "b.json")
         with _patch_store(store), _patch_sessions(tmp_path):
-            _resolve_session(None, "chat-1", auto_create_hint="basin-1")
-            _resolve_session(None, "chat-2", auto_create_hint="basin-2")
-            r1 = _resolve_session(None, "chat-1")
-            r2 = _resolve_session(None, "chat-2")
+            _resolve_session(None, "01HCHAT1000000000000000000", auto_create_hint="basin-1")
+            _resolve_session(None, "01HCHAT2000000000000000000", auto_create_hint="basin-2")
+            r1 = _resolve_session(None, "01HCHAT1000000000000000000")
+            r2 = _resolve_session(None, "01HCHAT2000000000000000000")
         assert r1 == "basin-1"
         assert r2 == "basin-2"
         assert r1 != r2
@@ -230,9 +231,9 @@ class TestResolveSession:
         from ai_hydro.mcp.helpers import _resolve_session
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "b.json")
-        store.bind("chat-1", "study-A")
+        store.bind("01HCHAT1000000000000000000", "study-A")
         with _patch_store(store), _patch_sessions(tmp_path):
-            result = _resolve_session("study-B", "chat-1")
+            result = _resolve_session("study-B", "01HCHAT1000000000000000000")
         assert result == "study-B"
 
 
@@ -264,7 +265,7 @@ class TestChatStatusTool:
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "b.json")
         with _patch_store(store), _patch_sessions(tmp_path):
-            result = aihydro_chat_status(chat_id="unbound-chat")
+            result = aihydro_chat_status(chat_id="01HVNB0VNDCHAT000000000000")
         assert result["bound"] is False
         assert result["study_id"] is None
 
@@ -272,9 +273,9 @@ class TestChatStatusTool:
         from ai_hydro.mcp.tools_session import aihydro_chat_status
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "b.json")
-        store.bind("chat-bound", "study-xyz")
+        store.bind("01HCHATB0VND00000000000000", "study-xyz")
         with _patch_store(store), _patch_sessions(tmp_path):
-            result = aihydro_chat_status(chat_id="chat-bound")
+            result = aihydro_chat_status(chat_id="01HCHATB0VND00000000000000")
         assert result["bound"] is True
         assert result["study_id"] == "study-xyz"
 
@@ -289,12 +290,14 @@ class TestRebindChatTool:
         from ai_hydro.session.chat_binding import ChatBindingStore
         store = ChatBindingStore(tmp_path / "b.json")
         with _patch_store(store), _patch_sessions(tmp_path):
+            from ai_hydro.session import HydroSession
+            HydroSession.load("my-study").save()      # rebinding needs an existing study
             result = aihydro_rebind_chat(
-                study_id="my-study", chat_id="chat-XYZ"
+                study_id="my-study", chat_id="01HCHATXYZ0000000000000000"
             )
         assert result.get("error") is None or "error" not in result
         assert result["study_id"] == "my-study"
-        assert store.lookup_study("chat-XYZ") == "my-study"
+        assert store.lookup_study("01HCHATXYZ0000000000000000") == "my-study"
 
 
 # ---------------------------------------------------------------------------

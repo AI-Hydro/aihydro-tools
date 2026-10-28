@@ -1601,6 +1601,11 @@ class HydroSession:
                 f.write(content)
             else:
                 json.dump(content, f, indent=2)
+        try:                                   # the study recorder records it once the call is sealed
+            from ai_hydro.session.run_records import note_file_written
+            note_file_written(out_path, None if self.shard_id else self.session_id)
+        except Exception:
+            pass
         return str(out_path)
 
     # ------------------------------------------------------------------

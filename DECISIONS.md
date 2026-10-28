@@ -204,7 +204,7 @@ is forced to `full` in an evaluation run (`AIHYDRO_EVAL_NONCE`, via `eval_condit
 host that refuses to call an unlisted tool name cannot reach the tools `hot` omits; such hosts stay on
 `full`. The extension is unaffected (it reads `_meta.hot` from the full list).
 
-**Recent-study fallback (lead ruling).** The guess stays on for interactive use, because turning it
+**Recent-study fallback (lead ruling; superseded 2026-10-28, tools 2.8.2: the guess is now OFF by default and opt-in, see `docs/context.md`).** The guess stayed on for interactive use, because turning it
 off would make a weak model's omitted `session_id` an error in the extension. It is not silent: a
 result produced through it carries a top-level `session_warning` naming the study, as well as
 `extra.session_resolution`. It is off whenever `AIHYDRO_EVAL_NONCE` is set (via `in_evaluation_run()`) (a guessed study would
@@ -293,3 +293,27 @@ causes, two rules.
    still verify unchanged and are not rewritten. Readers that need the host version for an old record read
    `env_digest` / the environment fingerprint, not `tool_version`. Paper A is pinned at 2.3.7 and its
    records are unaffected.
+
+## 2026-10-28: binding store v2, inferred resolution and the study recorder (tools 2.8.2)
+
+Decided by the owner (UX program, OD-1, OD-2; memory defaults): stay on the 2.8.x line; the global most-recent-study
+fallback is removed (here: off by default, opt-in for one release) and becomes a project default later (T-P1); test and duplicate
+studies are hidden, never deleted; P1 runs with its own `AIHYDRO_HOME`.
+
+1. **A new binding file, not a changed one.** v2 is `chat_bindings.v2.json`. The installed extension (0.4.0) reads
+   `chat_studies.json` directly and the pinned 2.3.7 server writes it; a schema change in place would break one and be overwritten
+   by the other. v1 is imported once and then never read; a derived v1 projection keeps the old header chip alive for one release.
+2. **Many chats per study, no inverse.** Two chats on one study is normal (a continued analysis, a fork). The v1 "a study has one
+   chat" rule made every second chat steal the first's binding.
+3. **Inference is narrower than the old guess and closed where it must be.** The workspace's single study is a deterministic scope,
+   not a guess, but it is still inferred: it is not used by the audit, in evaluation runs, or by admin tools that change state.
+   A read-only call resolves without binding (the resolver never binds on a read-only call).
+4. **The host must bind before the first call** (the original PSMH 7.5 test expected a read-only first call to bind; it cannot).
+   The acceptance test is rewritten accordingly (`tests/test_binding_acceptance.py`).
+5. **The recorder has one call site, in the run-record layer.** Low-level helpers (`write_workspace_file`, `push_*`) only note what
+   happened on the call's capture; `run_records._record_call` writes the manifest once the call's run row is stored, so an entry
+   names the sealed run. A file written by a tool that bypasses those helpers is not recorded; it can call
+   `run_records.note_file_written`. Legacy files are resolved by a declared name heuristic that returns candidates and never binds.
+6. **`aihydro_chat_status` keeps its exact output keys** (the answer audit and the header read them); candidate studies for an
+   unbound chat go in `message` and in the `aihydro://study/list` resource, not in new keys.
+7. **Capability flags are a resource** (`aihydro://capabilities`), not a line in the server instructions, so the prompt does not grow.

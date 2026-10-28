@@ -57,31 +57,31 @@ def _body(res) -> dict:
 
 def test_read_only_call_with_explicit_session_and_chat_does_not_rebind(world):
     before = _mtimes(world)
-    res = _call("get_session_summary", {"session_id": "s_old", "_chat_id": "chatA"})
+    res = _call("get_session_summary", {"session_id": "s_old", "_chat_id": "01HCHATA000000000000000000"})
     assert not res.is_error
-    assert world["bindings"].lookup_study("chatA") is None
+    assert world["bindings"].lookup_study("01HCHATA000000000000000000") is None
     assert _mtimes(world) == before
 
 
 def test_a_writer_with_explicit_session_and_chat_still_binds(world):
-    res = _call("add_note", {"session_id": "s_old", "note": "n", "_chat_id": "chatA"})
+    res = _call("add_note", {"session_id": "s_old", "note": "n", "_chat_id": "01HCHATA000000000000000000"})
     assert not res.is_error, res.content
-    assert world["bindings"].lookup_study("chatA") == "s_old"
+    assert world["bindings"].lookup_study("01HCHATA000000000000000000") == "s_old"
 
 
 def test_read_only_call_does_not_backfill_workspace_or_touch_mtime(world):
     before = _mtimes(world)
     res = _call("get_session_summary",
-                {"session_id": "s_old", "_chat_id": "chatA", "_workspace": world["workspace"]})
+                {"session_id": "s_old", "_chat_id": "01HCHATA000000000000000000", "_workspace": world["workspace"]})
     assert not res.is_error
     assert _store.HydroSession.load("s_old").workspace_dir in (None, "")
     assert _mtimes(world) == before
 
 
 def test_read_only_call_via_chat_binding_does_not_backfill(world):
-    world["bindings"].bind("chatB", "s_old")
+    world["bindings"].bind("01HCHATB000000000000000000", "s_old")
     before = _mtimes(world)
-    res = _call("list_features", {"_chat_id": "chatB", "_workspace": world["workspace"]})
+    res = _call("list_features", {"_chat_id": "01HCHATB000000000000000000", "_workspace": world["workspace"]})
     assert not res.is_error
     assert _body(res)["session_id"] == "s_old"
     assert _mtimes(world) == before
@@ -92,14 +92,15 @@ def test_get_model_results_and_list_features_echo_the_session_they_read(world):
     assert _body(_call("get_model_results", {"session_id": "s_new"}))["session_id"] == "s_new"
 
 
-def test_recent_fallback_result_carries_a_visible_session_warning(world):
+def test_recent_fallback_result_carries_a_visible_session_warning(world, monkeypatch):
+    monkeypatch.setenv("AIHYDRO_RECENT_SESSION_FALLBACK", "on")        # off by default since 2.8.2
     res = _call("list_features", {})
     body = _body(res)
     assert body["session_id"] == "s_new"
     assert body["session_warning"] == (
         "No study was named or bound; used most-recent study s_new \u2014 name a session to be sure")
     # no binding, no mtime change from the guess itself (read-only)
-    assert world["bindings"].lookup_study("chatZ") is None
+    assert world["bindings"].lookup_study("01HCHATZ000000000000000000") is None
 
 
 def test_recent_fallback_warning_says_wrote_to_for_a_writer():
@@ -120,16 +121,20 @@ def test_named_session_has_no_warning(world):
     assert "session_warning" not in _body(_call("list_features", {"session_id": "s_new"}))
 
 
-@pytest.mark.parametrize("value", ["off", "OFF", "0", "false", "no", " No "])
-def test_fallback_switch_accepts_off_0_false_no(world, monkeypatch, value):
+@pytest.mark.parametrize("value", ["", "off", "OFF", "0", "false", "no", " No ", "garbage"])
+def test_fallback_is_off_unless_switched_on(world, monkeypatch, value):
     monkeypatch.setenv("AIHYDRO_RECENT_SESSION_FALLBACK", value)
     assert recent_fallback_enabled() is False
     res = _call("list_features", {})
     assert res.is_error or _body(res).get("code") == "SESSION_RESOLUTION_FAILED"
 
 
-@pytest.mark.parametrize("value", ["", "on", "1", "true", "yes"])
-def test_fallback_switch_other_values_leave_it_on(world, monkeypatch, value):
+def test_fallback_is_off_when_the_variable_is_unset(world):
+    assert recent_fallback_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["on", "ON", "1", "true", "yes"])
+def test_fallback_switch_on_values_turn_it_on(world, monkeypatch, value):
     monkeypatch.setenv("AIHYDRO_RECENT_SESSION_FALLBACK", value)
     assert recent_fallback_enabled() is True
 
