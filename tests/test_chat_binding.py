@@ -110,15 +110,18 @@ class TestChatBindingStore:
         store.bind("01HCHATX000000000000000000", "study-A")
         assert store.is_bound("01HCHATX000000000000000000") is True
 
-    def test_corrupt_file_starts_fresh(self, tmp_path):
-        """Corrupted JSON file should not crash — starts with empty store."""
+    def test_corrupt_file_is_set_aside_not_overwritten(self, tmp_path):
+        """Corrupt JSON must not wipe the bindings: the file is kept as .corrupt-<ts> and the store starts empty."""
         from ai_hydro.session.chat_binding import ChatBindingStore
         p = tmp_path / "bindings.json"
         p.write_text("{not valid json!!!")
         store = ChatBindingStore(p)
-        assert store.lookup_study("any") is None  # graceful recovery
-        store.bind("01HC0000000000000000000000", "s")                       # write still works
-
+        assert store.lookup_study("any") is None          # a read never touches the file
+        assert p.read_text() == "{not valid json!!!"
+        store.bind("01HCHAT0010000000000000000", "s")     # the next write sets it aside first
+        kept = list(tmp_path.glob("bindings.json.corrupt-*"))
+        assert len(kept) == 1 and kept[0].read_text() == "{not valid json!!!"
+        assert store.lookup_study("01HCHAT0010000000000000000") == "s"
 
 # ---------------------------------------------------------------------------
 # _resolve_session priority chain tests
@@ -148,9 +151,20 @@ class TestResolveSession:
         store = ChatBindingStore(tmp_path / "b.json")
         store.bind("01HCHAT1000000000000000000", "old-study")
         with _patch_store(store), _patch_sessions(tmp_path):
+            from ai_hydro.session import HydroSession
+            HydroSession.load("new-study").save()      # an explicit id binds only an existing study
             _resolve_session("new-study", "01HCHAT1000000000000000000")
         # Chat should now point to new-study
         assert store.lookup_study("01HCHAT1000000000000000000") == "new-study"
+
+    def test_explicit_unknown_session_does_not_rebind_chat(self, tmp_path):
+        from ai_hydro.mcp.helpers import _resolve_session
+        from ai_hydro.session.chat_binding import ChatBindingStore
+        store = ChatBindingStore(tmp_path / "b.json")
+        store.bind("01HCHAT1000000000000000000", "old-study")
+        with _patch_store(store), _patch_sessions(tmp_path):
+            assert _resolve_session("Bogus", "01HCHAT1000000000000000000") == "Bogus"
+        assert store.lookup_study("01HCHAT1000000000000000000") == "old-study"
 
     def test_chat_binding_used_when_session_id_omitted(self, tmp_path):
         from ai_hydro.mcp.helpers import _resolve_session

@@ -112,28 +112,69 @@ class ChatBindingStore:
     # Internal I/O helpers
     # ------------------------------------------------------------------
 
-    def _load(self) -> dict[str, Any]:
+    @property
+    def lock_path(self) -> Path:
+        return self._path.with_name(self._path.name + ".lock")
+
+    def _lock(self):
+        from ai_hydro.registry.locking import file_lock
+
+        return file_lock(self.lock_path)
+
+    def _read_v2(self, *, quarantine: bool) -> dict[str, Any] | None:
+        """The parsed v2 file, ``None`` when absent. A file that cannot be parsed is never
+        overwritten: with ``quarantine`` (caller holds the lock) it is renamed to
+        ``<name>.corrupt-<ts>`` and the store starts empty; without it (a read) the damage is
+        logged and the read sees an empty store. Reads never write."""
         if not self._path.exists():
-            data = self._import_v1()
-            return data if data is not None else _empty()
+            return None
         try:
             with open(self._path, encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
                 raise ValueError("not an object")
-            if not isinstance(data.get("bindings"), dict):
-                data["bindings"] = {}
-            if not isinstance(data.get("meta"), dict):
-                data["meta"] = {}
-            data.setdefault("schema", SCHEMA_VERSION)
-            return data
         except Exception as exc:
-            log.warning("%s unreadable (%s); starting fresh", self._path.name, exc)
+            if quarantine:
+                dest = self._path.with_name(
+                    f"{self._path.name}.corrupt-{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}")
+                try:
+                    os.replace(self._path, dest)
+                    log.warning("%s unreadable (%s); kept as %s and starting empty", self._path.name, exc, dest.name)
+                except OSError as mv:
+                    log.warning("%s unreadable (%s) and could not be set aside (%s)", self._path.name, exc, mv)
+            else:
+                log.warning("%s unreadable (%s); treating the store as empty", self._path.name, exc)
             return _empty()
+        if not isinstance(data.get("bindings"), dict):
+            data["bindings"] = {}
+        if not isinstance(data.get("meta"), dict):
+            data["meta"] = {}
+        data.setdefault("schema", SCHEMA_VERSION)
+        return data
+
+    def _load(self) -> dict[str, Any]:
+        """Read-only view. If v2 is absent but v1 exists, the one-time import runs once, under the lock."""
+        data = self._read_v2(quarantine=False)
+        if data is not None:
+            return data
+        if self.v1_path != self._path and self.v1_path.exists():
+            with self._lock():
+                data = self._read_v2(quarantine=True)
+                if data is None:
+                    data = self._import_v1() or _empty()
+                return data
+        return _empty()
+
+    def _load_for_update(self) -> dict[str, Any]:
+        """Caller holds the lock."""
+        data = self._read_v2(quarantine=True)
+        if data is None:
+            data = self._import_v1() or _empty()
+        return data
 
     def _import_v1(self) -> dict[str, Any] | None:
-        """One-time import of the v1 file when v2 does not exist. Idempotent: it runs
-        only while v2 is absent, and v2 is written as soon as there is anything to keep."""
+        """One-time import of the v1 file when v2 does not exist (caller holds the lock). Idempotent: it
+        runs only while v2 is absent, and v2 is written as soon as the import succeeds."""
         v1 = self.v1_path
         if v1 == self._path or not v1.exists():
             return None
@@ -174,6 +215,8 @@ class ChatBindingStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, path)
         except Exception:
             try:
@@ -183,7 +226,7 @@ class ChatBindingStore:
             raise
 
     def _save(self, data: dict[str, Any]) -> None:
-        """Atomic write-then-rename so the file is never half-written; then the v1 projection."""
+        """Atomic temp + fsync + rename (caller holds the lock); then the v1 projection."""
         data["schema"] = SCHEMA_VERSION
         self._atomic_write(self._path, json.dumps(data, indent=2, ensure_ascii=False), ".chat_bindings_")
         if self.v1_path == self._path:      # a caller named the v2 file like the v1 one: never overwrite it
@@ -241,8 +284,8 @@ class ChatBindingStore:
         and binding another chat to it leaves the others bound.
         """
         self.validate(chat_id, study_id)
-        with _LOCK:
-            data = self._load()
+        with _LOCK, self._lock():
+            data = self._load_for_update()
             current = data["bindings"].get(chat_id)
             if current and current.get("study_id") == study_id:
                 return False
@@ -284,8 +327,8 @@ class ChatBindingStore:
 
     def unbind_chat(self, chat_id: str) -> bool:
         """Remove the binding for *chat_id*. Returns True if something was removed."""
-        with _LOCK:
-            data = self._load()
+        with _LOCK, self._lock():
+            data = self._load_for_update()
             rec = data["bindings"].pop(chat_id, None)
             if rec is None:
                 return False
@@ -296,8 +339,8 @@ class ChatBindingStore:
 
     def unbind_study(self, study_id: str) -> bool:
         """Remove every binding of *study_id*. Returns True if something was removed."""
-        with _LOCK:
-            data = self._load()
+        with _LOCK, self._lock():
+            data = self._load_for_update()
             chats = [c for c, rec in data["bindings"].items()
                      if isinstance(rec, dict) and rec.get("study_id") == study_id]
             for chat in chats:

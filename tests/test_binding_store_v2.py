@@ -137,10 +137,34 @@ def test_two_chats_on_one_study_both_appear_in_the_projection(tmp_path):
     assert v1["chat_to_study"] == {CHAT_A: "s", CHAT_B: "s"}
 
 
-def test_corrupt_v2_starts_fresh_and_still_writes(tmp_path):
+def test_a_corrupt_v2_file_is_preserved_and_never_overwritten(tmp_path):
     p = tmp_path / "b.json"
-    p.write_text("{not valid json!!!")
+    p.write_text('{"schema": 2, "bindings": {"01KV1EPM88P9FV5CWNVJ9V60JY": ')   # truncated mid-write
     store = ChatBindingStore(p)
     assert store.lookup_study(CHAT_A) is None
-    store.bind(CHAT_A, "s")
-    assert store.lookup_study(CHAT_A) == "s"
+    assert p.read_text().startswith('{"schema": 2')                              # reads do not write
+    store.bind(CHAT_B, "s")
+    kept = list(tmp_path.glob("b.json.corrupt-*"))
+    assert len(kept) == 1 and kept[0].read_text().startswith('{"schema": 2')
+    assert store.lookup_study(CHAT_B) == "s"
+
+
+def _worker(args):
+    path, worker, n = args
+    from ai_hydro.session.chat_binding import ChatBindingStore
+
+    store = ChatBindingStore(__import__("pathlib").Path(path))
+    for i in range(n):
+        store.bind(f"01H{worker:02d}{i:02d}".ljust(26, "0"), f"study_{worker}_{i}")
+
+
+def test_concurrent_processes_lose_no_binding(tmp_path):
+    import multiprocessing as mp
+
+    path = tmp_path / "chat_bindings.v2.json"
+    ChatBindingStore(path)
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(4) as pool:
+        pool.map(_worker, [(str(path), w, 20) for w in range(4)])
+    assert len(ChatBindingStore(path).all_bindings()) == 80
+    assert not list(tmp_path.glob("*.corrupt-*"))

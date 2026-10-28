@@ -36,8 +36,8 @@ from ai_hydro.session.study_index import MANIFEST_KIND, sha256_file, study_exist
 
 log = logging.getLogger("ai_hydro.session.artifact_recorder")
 
-#: Files larger than this are listed without a digest (``sha256`` None, ``sha256_skipped`` set).
-MAX_HASH_BYTES = 512 * 1024 * 1024
+#: Files larger than this are listed without a digest (``sha256`` None, ``hash_deferred`` true).
+MAX_HASH_BYTES = 64 * 1024 * 1024
 MAX_MANIFEST_ENTRIES = 5000
 
 
@@ -63,7 +63,7 @@ def _file_facts(path: str) -> dict[str, Any]:
         return facts
     facts["size_bytes"] = size
     if size > MAX_HASH_BYTES:
-        facts["sha256_skipped"] = f"{size} bytes exceeds {MAX_HASH_BYTES}"
+        facts["hash_deferred"] = True
     else:
         facts["sha256"] = sha256_file(path)
     return facts

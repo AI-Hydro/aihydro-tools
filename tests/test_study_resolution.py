@@ -251,3 +251,56 @@ def test_a_non_ulid_chat_id_is_not_bound_and_the_skip_is_logged_at_warning(ws, c
         assert _resolve_session("s1", "chat-001") == "s1"          # the call still resolves
     assert get_binding_store().lookup_study("chat-001") is None
     assert any(r.levelno == logging.WARNING and "not a ULID" in r.getMessage() for r in caplog.records)
+
+
+def test_an_explicit_typo_does_not_bind_the_chat(ws):
+    res, body = call("add_note", {"session_id": "Bogus", "note": "x"}, meta=ctx(CHAT_A, ws))
+    assert get_binding_store().lookup_study(CHAT_A) is None
+
+
+def test_start_session_does_not_pull_a_chat_into_a_foreign_workspace_study(ws, tmp_path):
+    other = tmp_path / "other_project"
+    other.mkdir()
+    make_study("theirs", workspace=str(other))
+    call("aihydro_rebind_chat", {"study_id": "theirs"}, meta=ctx(CHAT_A, other))
+    make_study("mine", workspace=str(ws))
+    call("aihydro_rebind_chat", {"study_id": "mine"}, meta=ctx(CHAT_B, ws))
+    res, body = call("start_session", {"session_id": "theirs"}, meta=ctx(CHAT_B, ws))
+    assert get_binding_store().lookup_study(CHAT_B) == "mine"
+    assert "different workspace" in body["session_binding_skipped"]
+
+
+def test_start_session_binds_an_existing_study_of_this_workspace_and_reports_the_move(ws):
+    make_study("a", workspace=str(ws))
+    make_study("b", workspace=str(ws))
+    call("aihydro_rebind_chat", {"study_id": "a"}, meta=ctx(CHAT_A, ws))
+    res, body = call("start_session", {"session_id": "b"}, meta=ctx(CHAT_A, ws))
+    assert body["session_binding"]["previous_study_id"] == "a" and body["session_binding"]["study_id"] == "b"
+
+
+def test_new_study_via_start_session_binds_only_with_a_workspace(ws):
+    call("start_session", {"session_id": "new-with-ws"}, meta=ctx(CHAT_A, ws))
+    assert get_binding_store().lookup_study(CHAT_A) == "new-with-ws"
+    res, body = call("start_session", {"session_id": "new-no-ws"}, meta=ctx(CHAT_B))
+    assert get_binding_store().lookup_study(CHAT_B) is None and "without a workspace" in body["session_binding_skipped"]
+
+
+def test_rebind_refuses_hidden_studies_unless_asked_and_in_eval_runs(ws, monkeypatch):
+    make_study("old", workspace=str(ws), archived=True)
+    res, body = call("aihydro_rebind_chat", {"study_id": "old"}, meta=ctx(CHAT_A, ws))
+    assert body["code"] == "STUDY_HIDDEN" and get_binding_store().lookup_study(CHAT_A) is None
+    res, body = call("aihydro_rebind_chat", {"study_id": "old", "include_hidden": True}, meta=ctx(CHAT_A, ws))
+    assert body["bound_to"] == "old"
+    monkeypatch.setattr("ai_hydro.mcp.eval_condition.in_evaluation_run", lambda: True)
+    res, body = call("aihydro_rebind_chat", {"study_id": "old", "include_hidden": True}, meta=ctx(CHAT_B, ws))
+    assert body["code"] == "NOT_AVAILABLE_IN_EVALUATION"
+
+
+def test_workspace_from_the_global_file_serves_reads_but_never_writers(ws):
+    make_study("only", workspace=str(ws))
+    _write_global_workspace(ws)
+    res, body = call("list_features", {})
+    assert body["session_id"] == "only"
+    poly = '{"type": "Polygon", "coordinates": [[[-69.5, 45.0], [-69.0, 45.0], [-69.0, 45.4], [-69.5, 45.0]]]}'
+    res, body = call("register_feature", {"geojson": poly, "name": "roi"})
+    assert body.get("code") == "SESSION_RESOLUTION_FAILED"

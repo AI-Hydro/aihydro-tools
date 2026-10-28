@@ -51,6 +51,10 @@ study of the call's workspace, else an error that lists labelled candidates.
   how the host refreshes its display; the server store is the only authority, so a host must not send
   `_meta.study_id` back on every call.
 
+The legacy hidden `_chat_id` argument is trusted only when the host injects no `_meta` chat id (the `_meta` value wins per field); a model-supplied `_chat_id` is not a supported way to choose a chat.
+
+Explicit ids bind only an existing study (a typo is not bound). `start_session(session_id)` binds an existing study unless it belongs to a different workspace than the call's, and binds a newly created study only when the call carries a workspace. `aihydro_rebind_chat` refuses archived/test studies unless `include_hidden=true` and is unavailable in evaluation runs. With no call context (workspace from the global file) `workspace_single_study` serves read-only calls only.
+
 A read-only tool (`readOnlyHint`) resolves its session with no side effects: it never rebinds the chat and never
 backfills `workspace_dir`.
 
@@ -94,8 +98,8 @@ Every file a tool writes into the workspace (through `HydroSession.write_workspa
 (`map_events.push_*`) is noted on the call's capture and, once the call's run row is sealed, recorded in the owning
 study's `artifact_manifest` by one function (`session/artifact_recorder.py`, called from
 `run_records._record_call`). Entry: `{artifact_id, kind: "workspace_artifact", type, path, sha256, size_bytes,
-study_id, run_id, tool, recorded_at}`; `run_id` is the call's run row. Not recorded: files written inside a subagent shard,
-files outside the study's workspace, files a tool writes without those helpers.
+study_id, run_id, tool, recorded_at}`; `run_id` is the call's run row. Not recorded: files written inside a subagent shard (filtered at the write helper),
+files outside the study's workspace; files over 64 MB are listed with `hash_deferred: true` and no sha256, files a tool writes without those helpers.
 
 - `aihydro://study/list{?workspace,include_hidden}`: studies with labels, read from the files without loading sessions.
   Archived studies and studies whose id starts `test-` / `e2e-proof-` and that have no workspace are hidden unless

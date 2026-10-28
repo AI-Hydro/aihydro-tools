@@ -297,8 +297,8 @@ causes, two rules.
 ## 2026-10-28: binding store v2, inferred resolution and the study recorder (tools 2.8.2)
 
 Decided by the owner (UX program, OD-1, OD-2; memory defaults): stay on the 2.8.x line; the global most-recent-study
-fallback is removed (here: off by default, opt-in for one release) and becomes a project default later (T-P1); test and duplicate
-studies are hidden, never deleted; P1 runs with its own `AIHYDRO_HOME`.
+fallback is removed (here: off by default, opt-in for one release) and becomes a project default later (T-P1); test studies (ids `test-*` / `e2e-proof-*` with no workspace) and archived studies
+are hidden, never deleted. Duplicates are not auto-detected: a duplicate is hidden when the user archives it, and the study picker shows labelled candidates; P1 runs with its own `AIHYDRO_HOME`.
 
 1. **A new binding file, not a changed one.** v2 is `chat_bindings.v2.json`. The installed extension (0.4.0) reads
    `chat_studies.json` directly and the pinned 2.3.7 server writes it; a schema change in place would break one and be overwritten

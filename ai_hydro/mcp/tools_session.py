@@ -49,20 +49,32 @@ def _surface_integrity_findings(session, summary: dict) -> None:
         log.warning("metric conflicts skipped: %s", exc)
 
 
-def _bind_started_session(session_id: str) -> None:
-    """``start_session(session_id)`` under a chat context binds the chat to that study.
+def _bind_started_session(session_id: str, existed: bool, study_workspace: str | None,
+                          arg_workspace: str | None) -> str | None:
+    """``start_session(session_id)`` under a chat context binds the chat. Returns why it did not, else None.
 
-    Not for a subagent shard (``shard_id``; the caller skips it) and not in an evaluation run: an
-    arm must not have its binding changed by a tool call it did not choose to depend on.
+    Not for a subagent shard (the caller skips it) and not in an evaluation run. An EXISTING study is bound
+    unless it belongs to a different workspace than this call's (that would silently move the chat to
+    another project's study). A NEW study is bound only when the call carries a workspace (``_meta`` or
+    ``workspace_dir``): creating a study here and binding it is the legitimate "start a study" path.
     """
-    from ai_hydro.mcp.app import ACTIVE_CHAT_ID
+    from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_WORKSPACE
     from ai_hydro.mcp.eval_condition import in_evaluation_run
     from ai_hydro.mcp.helpers import _bind
     from ai_hydro.session.chat_binding import get_binding_store
+    from ai_hydro.session.study_index import norm_path
 
     chat = ACTIVE_CHAT_ID.get()
-    if chat and not in_evaluation_run():
-        _bind(get_binding_store(), chat, session_id, "start_session")
+    if not chat or in_evaluation_run():
+        return None
+    call_ws = ACTIVE_WORKSPACE.get() or arg_workspace
+    if existed:
+        if call_ws and study_workspace and norm_path(call_ws) != norm_path(study_workspace):
+            return "study belongs to a different workspace; use aihydro_rebind_chat to move this chat to it"
+    elif not call_ws:
+        return "new study created without a workspace in the call context; chat not bound"
+    _bind(get_binding_store(), chat, session_id, "start_session")
+    return None
 
 
 @mcp.tool()
@@ -84,13 +96,18 @@ def start_session(
         from ai_hydro.session import HydroSession
         explicit_id = bool(session_id and str(session_id).strip())
         session_id = _normalize_session_id(session_id)
+        from ai_hydro.session.study_index import study_exists as _exists
+        existed = _exists(session_id)
         session = HydroSession.load(session_id, shard_id=shard_id)
         if workspace_dir:
             session.workspace_dir = workspace_dir
         session.save(sync_context=True)      # session start: refresh the agent's context file
+        skipped = None
         if explicit_id and not shard_id:
-            _bind_started_session(session_id)
+            skipped = _bind_started_session(session_id, existed, session.workspace_dir, workspace_dir)
         summary = session.summary()
+        if skipped:
+            summary["session_binding_skipped"] = skipped
         summary["shard_id"] = session.shard_id
         summary["workspace_dir"] = session.workspace_dir
         _surface_integrity_findings(session, summary)
@@ -1005,6 +1022,7 @@ def _chat_context_id(explicit: str | None) -> tuple[str | None, dict | None]:
 def aihydro_rebind_chat(
     study_id: str,
     chat_id: str | None = None,
+    include_hidden: bool = False,
 ) -> dict:
     """
     Bind the current chat to an existing study (recovery tool).
@@ -1019,6 +1037,8 @@ def aihydro_rebind_chat(
         SESSION_RESOLUTION_FAILED error are valid values.
     chat_id : str | None
         Leave empty: the chat's id is injected by the host. An explicit id must equal it.
+    include_hidden : bool
+        Set true to bind an archived or test study; refused otherwise.
 
     Returns
     -------
@@ -1028,8 +1048,13 @@ def aihydro_rebind_chat(
         from ai_hydro.mcp.helpers import _bind
         from ai_hydro.session import HydroSession
         from ai_hydro.session.chat_binding import ChatBindingStore, get_binding_store
-        from ai_hydro.session.study_index import candidates_for, label_of, study_exists
+        from ai_hydro.session.study_index import candidates_for, label_of, study_exists, study_summaries
 
+        from ai_hydro.mcp.eval_condition import in_evaluation_run
+
+        if in_evaluation_run():
+            return {"error": True, "code": "NOT_AVAILABLE_IN_EVALUATION",
+                    "message": "Chat binding is not available in an evaluation run.", "next_tools": []}
         chat, err = _chat_context_id(chat_id)
         if err:
             return err
@@ -1050,6 +1075,14 @@ def aihydro_rebind_chat(
                 "next_tools": ["delineate_watershed", "delineate_watershed_from_point"],
                 "candidates": cands,
             }
+        if not include_hidden:
+            hidden = next((x["hidden_reason"] for x in study_summaries(include_hidden=True)
+                           if x["study_id"] == sid and x["hidden_reason"]), None)
+            if hidden:
+                return {"error": True, "code": "STUDY_HIDDEN",
+                        "message": f"Study {sid!r} is hidden ({hidden}); nothing was bound.",
+                        "recovery": "Pass include_hidden=true to bind it anyway, or pick a visible study.",
+                        "next_tools": [], "candidates": candidates_for(None, limit=5)[0]}
         try:
             ChatBindingStore.validate(chat, sid)
         except ValueError as exc:

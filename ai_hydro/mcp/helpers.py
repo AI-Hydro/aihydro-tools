@@ -355,7 +355,13 @@ def _resolve_session_impl(
     if session_id:
         sid = _normalize_session_id(session_id)
         if chat_id and not read_only:
-            _bind(store, chat_id, sid, rule)
+            # Only a study that already exists is bound: a typo or a made-up id must not become the chat's study.
+            from ai_hydro.session.study_index import study_exists
+
+            if study_exists(sid):
+                _bind(store, chat_id, sid, rule)
+            else:
+                log.info("Explicit session_id %r does not exist; chat %s not bound to it", sid, chat_id)
         return sid, rule
 
     # 2. Chat binding lookup
@@ -398,6 +404,12 @@ def _resolve_session_impl(
             from ai_hydro.session.study_index import study_summaries
 
             ws = _call_workspace()
+            from ai_hydro.mcp.app import ACTIVE_WORKSPACE
+
+            # A workspace taken from the machine-global file (no call context) may belong to another window:
+            # fine to read from, never to bind or write through.
+            if ws and not ACTIVE_WORKSPACE.get() and not read_only:
+                ws = None
             here = study_summaries(workspace=ws) if ws else []
             if len(here) == 1:
                 sid = here[0]["study_id"]
