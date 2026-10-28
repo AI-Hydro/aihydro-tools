@@ -43,7 +43,7 @@ read once per process and cached.
 ## 2026-10-20 — Public CI does not exercise the modelling-backed and aihydro-lsh tools (private repos)
 
 `aihydro-modelling` and `aihydro-lsh` are private repositories, so the public CI install
-(`.github/ci/install-siblings.sh`: core, data, watershed, pygeoglim from pinned SHAs) cannot include them.
+(CI installs core, data and watershed from PyPI via the pyproject pins; until 2.8.0 `.github/ci/install-siblings.sh` installed them from pinned SHAs) cannot include them.
 Consequences: (1) tests needing the modelling package are skipped via the `needs_modelling` marker, so the
 modelling-backed science tools (autoresearch, model-space, episode scoring) and the aihydro-lsh tools are not
 run in public CI; without the package a modelling tool returns a structured `MODELLING_NOT_INSTALLED` error.

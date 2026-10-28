@@ -29,14 +29,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install sibling packages (pinned git SHAs, pending PyPI batch)
-        run: .github/ci/install-siblings.sh
-
       - name: Install package with dev + extras
         run: |
           pip install import-linter
           # No `modelling`/`all` extra: aihydro-modelling is private (see
-          # .github/ci/install-siblings.sh); its tests skip when it is absent.
+          # DECISIONS.md); its tests skip when it is absent.
           pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]" pyyaml
 
       - name: Lint with ruff (advisory — pre-existing debt, not yet a merge gate)

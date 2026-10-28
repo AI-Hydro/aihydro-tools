@@ -8,10 +8,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [2.8.0] - 2026-10-22 (Science Wave 3, PR-4b: series-bound validators, CAMELS reference, gates on real producer output)
 
-Requires **aihydro-core >= 0.2.11, aihydro-data >= 0.2.5, aihydro-watershed >= 0.2.0** (pins `>=...,<0.3`). None of the three is
-on PyPI yet: `.github/ci/install-siblings.sh` installs core and data from their merged `main` commits (`8331d19`, `4a25b12`)
-and watershed from the head of its open PR branch (AI-Hydro/aihydro-watershed#4, `6ba6615`, not merged: re-pin to the merge commit
-when it lands). Only github.com is contacted. A plain `pip install aihydro-tools` fails until the owner publishes the three.
+Requires **aihydro-core >= 0.2.11, aihydro-data >= 0.2.5, aihydro-watershed >= 0.2.0** (pins `>=...,<0.3`). All three are on
+PyPI (core 0.2.11, data 0.2.5, watershed 0.2.0; watershed#4 merged as 96feff2). CI installs them from PyPI through the pyproject pins;
+`.github/ci/install-siblings.sh` (pinned git SHAs, added while they were unpublished) and its workflow steps are removed.
+`pygeoglim`, which that script also installed, is not a dependency and nothing in the code or tests imports it.
 
 ### BREAKING-VALUE (inherited from aihydro-watershed 0.2.0; sessions that hold older results should be re-run)
 
