@@ -27,9 +27,6 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install sibling packages (pinned git SHAs, pending PyPI batch)
-        run: .github/ci/install-siblings.sh
-
       - name: Install package + dev deps
         run: pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]" pyyaml
 
@@ -64,9 +61,6 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-
-      - name: Install sibling packages (pinned git SHAs, pending PyPI batch)
-        run: .github/ci/install-siblings.sh
 
       - name: Install package + dev deps
         run: pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]"

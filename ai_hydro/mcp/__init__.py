@@ -103,13 +103,10 @@ _rpv(
     lambda sid: {"session_id": sid},
 )
 
-# extract_hydrological_signatures → stationarity advisory
-# Mann-Kendall trend test on annual streamflow totals; warns if p < 0.05.
-_rpv(
-    "extract_hydrological_signatures",
-    check_stationarity,
-    lambda sid: {"session_id": sid},
-)
+# extract_hydrological_signatures → record_length, usgs_qualification_codes, stationarity, regulated_basin.
+# NOT registered here: a kwargs builder only sees the session id, and these must judge the series the
+# signatures consumed (bound by digest), not whatever the session's streamflow slot holds. The tool runs them
+# itself (ai_hydro.mcp.tools_validators.run_signature_validators) and appends them to quality_flags.
 
 # ── Tier 1 next-steps registrations ──────────────────────────────────────────
 # Injected automatically by post_run() into every successful Tier 1 result.

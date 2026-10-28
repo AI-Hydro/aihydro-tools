@@ -35,7 +35,9 @@ from ai_hydro.session.store import HydroSession
 from _usgs_replay import Replay, ok
 
 SID = "exp-real-tools"
-START, END = "2000-01-01", "2001-12-31"
+# 12 complete water years: aihydro-watershed 0.2.0 refuses an interval from fewer than 10 (the per-row CIs below
+# are what shows rows do not share each other's numbers).
+START, END = "1990-10-01", "2002-09-30"
 
 # Three gauges whose site records are recorded fixtures (tests/fixtures/usgs_waterdata).
 # SYNTHETIC daily discharge (ft^3/s): (base, amplitude, seed) differ per gauge.

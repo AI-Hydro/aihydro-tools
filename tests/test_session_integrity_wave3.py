@@ -414,16 +414,75 @@ def test_can_claim_difference_false_does_not_block_a_plain_claim_citing_the_metr
     assert _support()["status"] == "updated"
 
 
-@pytest.mark.parametrize("scope", [
-    SAMPLING_AND_FORCING,                                   # forcing is varied, not excluded
-    None,                                                   # no scope metadata: gate inert
-    "inter-annual sampling only; excludes forcing-product and rating error",   # older free text
-    {"excludes": "forcing_product"},                        # malformed
-])
-def test_gate_needs_the_documented_scope_shape_to_fire(scope):
-    _seed(_rr_run(scope))
+def test_a_ci_that_varies_the_forcing_product_does_not_trigger_the_gate():
+    _seed(_rr_run(SAMPLING_AND_FORCING))                        # forcing is varied, not excluded
     _propose(DIFF_CLAIM, comparison_ref="CAMELS-US v1.2")
     assert _support()["status"] == "updated"
+
+
+@pytest.mark.parametrize("scope", [
+    None,                                                   # a cited CI with no scope: core says "excluded"
+    "inter-annual sampling only; excludes forcing-product and rating error",   # older free text
+    {"excludes": "forcing_product"},                        # malformed
+    {"varies": ["water_year_sample"], "assumes": [], "excludes": "forcing_product"},
+    {"varies": "forcing_product", "excludes": []},          # varies is not a list: malformed, so excluded
+])
+def test_gate_uses_cores_conservative_scope_excludes_absent_or_malformed_scope_excludes_forcing(scope):
+    """Reconciled with aihydro-core ``scope_excludes`` (PR-4b): producers now emit scope, so a CI without a
+    well-formed scope that VARIES the forcing product no longer lets a comparison claim through."""
+    _seed(_rr_run(scope))
+    _propose(DIFF_CLAIM, comparison_ref="CAMELS-US v1.2")
+    res = _support()
+    assert res["error"] == "forcing_scope_gate"
+
+
+def test_scope_excludes_is_cores_function_not_a_second_implementation():
+    from aihydro_core.science import scope_excludes as core
+    from ai_hydro.claims.status_gate import scope_excludes as tools
+    for scope in (EXCLUDES_FORCING, SAMPLING_AND_FORCING, None, "text", {"excludes": "forcing_product"},
+                  {"varies": [], "excludes": []}, {"varies": ["forcing_product"], "excludes": ["forcing_product"]}):
+        assert tools({"scope": scope}) == core(scope, "forcing_product"), scope
+    assert tools(None) is True                                   # not a CI entry at all: conservative
+
+
+def test_forcing_differs_false_skips_the_forcing_refusal_but_unknown_or_true_applies():
+    ok = {"bfi_like": {"can_claim_difference": True, "forcing_differs": False}}
+    _seed(_rr_run(EXCLUDES_FORCING, metric="bfi_like", comparison=ok))
+    _propose("bfi_like agrees with the reference.", metric="bfi_like", comparison_ref="CAMELS-US v1.2")
+    assert _support()["status"] == "updated"
+    for entry in ({"can_claim_difference": True, "forcing_differs": True}, {"can_claim_difference": True}):
+        _seed(_rr_run(EXCLUDES_FORCING, metric="bfi_like", comparison={"bfi_like": entry}))
+        assert _support()["error"] == "forcing_scope_gate"
+
+
+def test_without_a_comparison_entry_only_precipitation_defined_metrics_are_forcing_scoped():
+    _seed(_rr_run(EXCLUDES_FORCING, metric="runoff_ratio", comparison=None))
+    _propose(PLAIN_CLAIM, comparison_ref="CAMELS-US v1.2")
+    res = _support()
+    assert res["error"] == "forcing_scope_gate" and "no tool produces one yet" in res["teaching_error"]["how_to_fix"]
+    _seed(_rr_run(EXCLUDES_FORCING, metric="baseflow_index", comparison=None))
+    _propose("Baseflow index agrees with the CAMELS value.", claim_id="c2", metric="baseflow_index",
+             comparison_ref="CAMELS-US v1.2")
+    assert _support("c2")["status"] == "updated"
+
+
+def test_scope_less_ci_on_a_model_comparison_gets_the_generic_message_not_a_forcing_one():
+    ci = {"value": 0.71, "ci_low": 0.69, "ci_high": 0.73, "ci_level": 0.9, "n": 500, "method": "bootstrap_block"}
+    _seed(_run("r_nse", {"nse": 0.71}, evidence={"uncertainty": {"nse": ci}}))
+    _propose("Model A has a higher NSE than model B.", run_id="r_nse", metric="nse", comparison_ref="model-B")
+    res = _support()
+    assert res["error"] == "interval_scope_gate"
+    text = json.dumps(res["teaching_error"]).lower()
+    assert "forcing" not in text and "scope" in text and res["teaching_error"]["how_to_fix"]
+    # a plain (non-comparison) claim on the same interval is unaffected
+    _propose("The NSE was 0.71.", claim_id="c2", run_id="r_nse", metric="nse")
+    assert _support("c2")["status"] == "updated"
+
+
+def test_a_cited_metric_with_no_ci_entry_is_not_the_forcing_gates_business():
+    _seed(_run("r_noci", {"runoff_ratio": 0.605}))             # no uncertainty block at all
+    _propose(DIFF_CLAIM, run_id="r_noci", comparison_ref="CAMELS-US v1.2")
+    assert _support()["status"] == "updated"                    # (the uncertainty gate asks for a CI separately)
 
 
 def test_gate_is_keyed_on_scope_not_on_metric_or_tool_names():

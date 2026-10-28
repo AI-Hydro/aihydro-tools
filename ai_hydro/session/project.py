@@ -241,7 +241,7 @@ class ProjectSession:
         for sid in self.session_ids:
             try:
                 s = HydroSession.load(sid)
-                for slot in s.computed():
+                for slot in s.computed_healthy():     # a degraded slot is not a finding to surface
                     result = s.get(slot)
                     if not result:
                         continue
@@ -347,12 +347,15 @@ class ProjectSession:
             for sid in self.session_ids:
                 try:
                     s = HydroSession.load(sid)
-                    computed = s.computed()
+                    computed = s.computed_healthy()
                     display = s.site_name or s.site_id or sid
                     label = (
                         f"  - **{display}** (`{sid}`): "
                         f"{', '.join(computed) if computed else 'no results yet'}"
                     )
+                    _deg = s.degraded()
+                    if _deg:
+                        label += " [degraded: " + ", ".join(f"{d['slot']} ({d['health']})" for d in _deg) + "]"
                     if s.signatures:
                         bfi = s.signatures.get("data", {}).get("baseflow_index")
                         if bfi is not None:

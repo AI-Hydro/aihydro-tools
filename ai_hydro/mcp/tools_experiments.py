@@ -77,7 +77,7 @@ _TOOL_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
         "q_mean", "q_std", "q5", "q95", "q_median", "baseflow_index",
         "runoff_ratio", "stream_elas", "high_q_freq", "high_q_dur",
         "low_q_freq", "low_q_dur", "zero_q_freq", "flow_variability",
-        "hfd_mean", "half_flow_date_std", "slope_fdc",
+        "hfd_mean", "half_flow_date_std", "slope_fdc", "slope_fdc_sawicz2011",
     ),
     # aihydro_watershed.characterize.geomorphic.extract_geomorphic_parameters
     "extract_geomorphic_parameters": (
@@ -100,6 +100,7 @@ _TOOL_UNITS: dict[str, dict[str, str]] = {
         "high_q_freq": "days/year", "high_q_dur": "days", "low_q_freq": "days/year",
         "low_q_dur": "days", "zero_q_freq": "fraction of days", "flow_variability": "-",
         "hfd_mean": "day of water year", "half_flow_date_std": "days", "slope_fdc": "-",
+        "slope_fdc_sawicz2011": "-",
     },
     "extract_geomorphic_parameters": {
         "DA_km2": "km2", "Lp_km": "km", "Lb_km": "km", "Lca_km": "km", "Rff": "-", "Rc": "-",

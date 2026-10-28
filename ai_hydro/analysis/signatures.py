@@ -2,4 +2,4 @@
 from __future__ import annotations
 
 from aihydro_watershed.signatures.signatures import *  # noqa: F401, F403
-from aihydro_watershed.signatures.signatures import _fetch_precipitation_data_bygeom, _lyne_hollick_baseflow  # noqa: F401  (private names)
+from aihydro_watershed.signatures.signatures import _fetch_precipitation_data_bygeom  # noqa: F401  (private names)

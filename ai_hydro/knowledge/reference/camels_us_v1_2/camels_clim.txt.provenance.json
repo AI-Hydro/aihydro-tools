@@ -1,0 +1,11 @@
+{
+  "file": "camels_clim.txt",
+  "source": "https://zenodo.org/api/records/15529996/files/camels_clim.txt/content",
+  "record": "Zenodo 15529996 — CAMELS: Catchment Attributes and MEteorology for Large-sample Studies, version 1.2, DOI 10.5065/D6MW2F4D",
+  "downloaded_utc": "2026-10-17T13:34:53Z",
+  "md5_published": "67f22592f3fb72c57df81358ce68458b",
+  "md5_observed": "67f22592f3fb72c57df81358ce68458b",
+  "sha256": "6a3a80256afbaea13f59f279c174d3c010156b826ffb53a4cfb5508814404f5f",
+  "size_bytes": 100673,
+  "permission": "owner approved download 2026-10-17"
+}
