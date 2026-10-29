@@ -113,8 +113,8 @@ class TestHelpers:
     def test_normalize_session_id_auto_generates(self):
         from ai_hydro.mcp.helpers import _normalize_session_id
         result = _normalize_session_id(None)
-        assert result.startswith("hydro-")
-        assert len(result) == len("hydro-") + 8
+        assert result.startswith("st_")                 # a minted study id (T-P1)
+        assert len(result) == len("st_") + 26
 
     def test_result_to_dict_passthrough(self):
         from ai_hydro.mcp.helpers import _result_to_dict

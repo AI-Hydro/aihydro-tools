@@ -62,7 +62,10 @@ def test_paging_visits_every_tool_exactly_once_and_every_page_is_capped():
         offset = res.structured_content["next_offset"]
         pages += 1
         assert pages < 100
-    registered = sorted(asyncio.run(mcp.get_tools()))
+    from ai_hydro.mcp.tool_surface import load_annotation_rows
+
+    host_only = {n for n, r in load_annotation_rows().items() if r.get("audience") == "host"}
+    registered = sorted(set(asyncio.run(mcp.get_tools())) - host_only)     # host-audience tools are not listed (T-P1)
     assert seen == registered
     assert len(set(seen)) == len(seen)
 

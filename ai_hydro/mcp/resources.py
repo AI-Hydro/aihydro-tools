@@ -14,6 +14,10 @@ Serves two families of resources via the native MCP resource protocol:
     aihydro://session/{session_id}/evidence_board — claims grouped by status
     aihydro://session/{session_id}/experiments    — experiment table slot
 
+  Project registry (host-facing):
+    aihydro://project/by-dir{?path}      — the project of a directory
+    aihydro://project/{project_id}       — one project with labelled studies
+
 CLI and cloud agents can read session resources with an explicit session_id
 without needing the VS Code extension or a chat binding.  The facade tools
 (audit_interpretation, list_claims, etc.) work identically in both modes;
@@ -384,3 +388,42 @@ def study_by_artifact(path: str = "", workspace: str = "") -> str:
     from ai_hydro.session.study_index import by_artifact
 
     return json.dumps(by_artifact(path, workspace or None), indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Project registry (host-facing; T-P1). Read-only: creating a project is the host-audience
+# `ensure_project` tool, never a side effect of reading.
+# ---------------------------------------------------------------------------
+
+@mcp.resource("aihydro://project/by-dir{?path}")
+def project_by_dir(path: str = "") -> str:
+    """The project of a directory (its realpath, case-normalised; ``root_dir_aliases`` count).
+
+    ``found: false`` when there is none: call ``ensure_project(root_dir)`` to create it.
+    ``moved_candidates`` lists projects whose folder is gone from disk but hold a study that lives
+    here (a moved folder; the host offers "Reattach" through ``ensure_project(root_dir, attach_to=...)``).
+    """
+    from ai_hydro.session.project_registry import get_project_registry
+
+    reg = get_project_registry()
+    if not path.strip():
+        return json.dumps({"found": False, "error": "path is required"}, indent=2)
+    rec = reg.find_by_dir(path)
+    if rec is None:
+        return json.dumps({"found": False, "path": path, "moved_candidates": reg.moved_candidates(path)}, indent=2)
+    return json.dumps({"found": True, **reg.view(rec)}, indent=2)
+
+
+@mcp.resource("aihydro://project/{project_id}")
+def project_record(project_id: str) -> str:
+    """One project: title, root directory, studies with labels (never a bare id), the default study and
+    whether it is confirmed, duplicate studies grouped by site (``duplicate_groups``; never merged), and
+    ``revision`` (pass it back as ``expected_revision`` to the host operations to detect a lost update).
+    Reads the study index only: no session is loaded."""
+    from ai_hydro.session.project_registry import get_project_registry
+
+    reg = get_project_registry()
+    rec = reg.get(project_id)
+    if rec is None:
+        return json.dumps({"found": False, "project_id": project_id}, indent=2)
+    return json.dumps({"found": True, **reg.view(rec)}, indent=2)

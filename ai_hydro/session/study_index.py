@@ -138,6 +138,18 @@ def hidden_reason(session_id: str, raw: dict) -> str | None:
     return None
 
 
+def alias_key_of(session_id: str, site_id: str) -> str | None:
+    """Identity of the place a study is about, for read-side duplicate grouping (D8).
+
+    The study's ``canonical_id`` when it names a site (the gauge/site id, slugified as in
+    ``HydroSession.canonical_id``); ``None`` for a study with no site id, which is never grouped.
+    """
+    if not site_id:
+        return None
+    key = re.sub(r"[^a-zA-Z0-9._-]+", "-", site_id).strip("-_.").lower()
+    return key or None
+
+
 def _summarise(path: Path, raw: dict) -> dict[str, Any]:
     sid = str(raw.get("session_id") or path.stem)
     manifest = raw.get("artifact_manifest") if isinstance(raw.get("artifact_manifest"), dict) else {}
@@ -150,6 +162,7 @@ def _summarise(path: Path, raw: dict) -> dict[str, Any]:
         "study_id": sid,
         "label": make_label(sid, raw),
         "site_id": site_id or None,
+        "alias_key": alias_key_of(sid, site_id),
         "workspace_dir": raw.get("workspace_dir") or None,
         "workspace_norm": norm_path(raw.get("workspace_dir")),
         "archived": bool(raw.get("archived")),

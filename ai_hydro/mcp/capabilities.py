@@ -27,4 +27,11 @@ CAPABILITIES: tuple[str, ...] = (
     "map.claim_links",                  # bind_claim_to_item: a ledger link, never the claim status
     "map.state_scope",                  # map_get_state(scope="chat"|"project") lists items with provenance
     "jobs.context_echo",                # background jobs carry the submitting call's context and echo it in status.json
+    # project registry v2 (T-P1)
+    "project.registry_v2",              # prj_ ids; aihydro://project/by-dir and aihydro://project/{id}
+    "project.host_ops",                 # ensure/rename/set-default/add/remove tools, audience = "host"
+    "project.revision_check",           # expected_revision on the host operations (REVISION_CONFLICT)
+    "binding.project_default",          # resolver rule project_default: a CONFIRMED default only
+    "binding.meta_project_id",          # _meta["aihydro/context"].project_id is read
+    "study.minted_ids",                 # a study created with no id gets st_<ULID>
 )

@@ -587,8 +587,12 @@ def test_discovery_tools_expose_exactly_the_visible_tool_set(home, monkeypatch, 
     observed = asyncio.run(run())
     for surface, got in observed.items():
         assert got <= visible, (surface, sorted(got - visible))
+    from ai_hydro.mcp.tool_surface import load_annotation_rows
+
+    host_only = {n for n, r in load_annotation_rows().items() if r.get("audience") == "host"}
     for surface in ("list_available_tools", "describe_tools", "describe_tool"):
-        assert observed[surface] == visible, (surface, sorted(visible - observed[surface]))
+        want = visible - host_only if surface == "list_available_tools" else visible   # host-audience: never listed (T-P1)
+        assert observed[surface] == want, (surface, sorted(want - observed[surface]))
 
 
 def test_scrub_drops_hidden_entries_from_lists_and_scrubs_mentions():
