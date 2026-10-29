@@ -34,4 +34,6 @@ CAPABILITIES: tuple[str, ...] = (
     "binding.project_default",          # resolver rule project_default: a CONFIRMED default only
     "binding.meta_project_id",          # _meta["aihydro/context"].project_id is read
     "study.minted_ids",                 # a study created with no id gets st_<ULID>
+    # active-study context (T-R1)
+    "project.context_resource",         # aihydro://project/{id}/context?chat=; research.md is a stub (no longer a digest)
 )

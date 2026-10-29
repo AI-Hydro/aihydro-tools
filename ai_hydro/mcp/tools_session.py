@@ -113,7 +113,7 @@ def start_session(
                            "and the chat was not bound. Use aihydro_rebind_chat to move this chat to it")
             else:
                 session.workspace_dir = workspace_dir
-        session.save(sync_context=True)      # session start: refresh the agent's context file
+        session.save(sync_context=True)      # session start: make sure research.md is the retirement stub
         if skipped is None and explicit_id and not shard_id:
             skipped = _bind_started_session(session_id, existed, original_ws, workspace_dir)
         summary = session.summary()
@@ -174,7 +174,7 @@ def get_session_health(session_id: str | None = None) -> dict:
     """
     Audit a session for identity drift, workspace problems, and consistency
     gaps. Returns warnings keyed by code so the agent can fix issues before
-    they propagate into research.md, exports, or downstream tools.
+    they propagate into exports, or downstream tools.
 
     Common warning codes:
       - site_name_drift: display name disagrees with watershed.gauge_name
@@ -289,8 +289,8 @@ def add_note(session_id: str | None = None, note: str = "") -> dict:
 @mcp.tool()
 def archive_session(session_id: str | None = None) -> dict:
     """
-    Freeze the session: move current interpretations + notes to a 'Historical'
-    section in research.md. Use when concluding a study phase. Archived
+    Freeze the session: its interpretation and notes are marked historical in the
+    study context. Use when concluding a study phase. Archived
     sessions stay readable and exportable.
     """
     try:
@@ -440,9 +440,8 @@ def write_research_interpretation(
         # site_name during interpretation and drifted from the canonical
         # gauge_name" failure mode.
         session.set_site_name(site_name, reason="set via write_research_interpretation")
-        # No sync_context: research.md is part of the agent's system prompt, and rewriting it
-        # mid-task busts the provider's prompt cache (DECISIONS 2026-10-28). The interpretation is
-        # read from the session; research.md is regenerated at start_session only.
+        # No sync_context: research.md is a retired stub (T-R1); the interpretation is read from the
+        # session and the study context resource.
         session.save()
 
         tools_path = _write_tools_md()
@@ -632,9 +631,9 @@ def export_session(
 
         session = HydroSession.load(session_id)
         try:
-            session.write_research_context()      # an explicit export refreshes research.md
+            session.write_research_context()      # makes sure research.md is the retirement stub
         except Exception as exc:
-            log.warning("research.md refresh at export failed: %s", exc)
+            log.warning("research.md stub at export failed: %s", exc)
         today = datetime.now().strftime("%Y-%m-%d")
         slug = session.site_name or session.site_id or session_id
         files_written: list[str] = []
