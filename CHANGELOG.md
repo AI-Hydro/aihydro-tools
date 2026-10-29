@@ -6,9 +6,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] (UX program Wave 1: map provenance, tools half; T-M1)
+## [2.8.3] - 2026-10-29 (UX program Wave 1: map provenance T-M1, project registry v2 T-P1, active-study context T-R1)
 
-No version bump here: the lead releases 2.9.0 (the line stays on 2.8.x until then). Read `docs/context.md`, "Map provenance".
+The line stays on 2.8.x (owner decision, 2026-10-28). Three Wave 1 PRs ship together: map provenance (tools#16), project registry v2 (tools#15) and the active-study context resource (tools#17).
+
+### Map provenance (T-M1)
+
+Read `docs/context.md`, "Map provenance".
 
 ### Added
 
@@ -40,11 +44,7 @@ No version bump here: the lead releases 2.9.0 (the line stays on 2.8.x until the
   `BaseJobRunner` echoes `context` into every `status.json` it writes. The job is a detached subprocess (`Popen`), so the
   ContextVars of the submitting call never reach it (tested).
 
-## [Unreleased] (UX program Wave 1: project registry v2; T-P1)
-
-## [Unreleased] (UX program Wave 1: project registry v2 (T-P1); active-study context (T-R1))
-
-The package version is not bumped here; the lead releases (2.9.0).
+## Also in 2.8.3: project registry v2 (T-P1) and active-study context (T-R1)
 
 ### T-R1: active-study context resource; `research.md` retired
 
