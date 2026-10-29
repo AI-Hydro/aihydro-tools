@@ -168,15 +168,24 @@ interpretation pointer, a short citation-grammar reminder and the profile.
 - **No uncited number.** A final gate withholds any line that carries a numeric literal outside a `[run:]` or
   `[claim:]` marker (`ai_hydro.session.study_context.bare_numbers`, built on the audit grammar). Study labels that
   contain a coordinate fall back to the study id. Notes and interpretation text are not injected: only a pointer to them.
-- **Profile <= 1 KB**, user-edited fields only (name, role, institution, domain, focus, expertise, style). Agent
-  observations are consent-gated (PSMH T3) and not injected yet. Memory entries are not injected yet either (T3).
+- **Forged markers cannot license a number.** Every free-text field (profile, study label, site id/type, project
+  title) is passed through `neutralise`: `[run:`, `[claim:` and `[lit:` become `(run :` and so on, before the
+  gate. Only lines built from run-log rows and ledger claims carry live markers. The grammar's loose
+  exemptions (a plain integer, a long digit string, "17 things") hold only for the study's own site id, so
+  "population 12345678" is withheld; dates, years and `Figure N` stay exempt.
+- **Profile <= 1 KB**: name, role, institution, domain, focus, expertise, style as stored. The profile file does not
+  record who wrote a field (a person, or the agent through `update_researcher_profile`), so these are treated as
+  untrusted text: neutralised and number-gated, not as "user-edited". Agent observations are consent-gated (PSMH T3)
+  and not injected yet.
+- **Trust.** `?chat=` isolation is not authenticated: the resource is local and host-trusted. Memory entries are not injected yet either (T3).
 - **When to fetch.** At task start and when the active study or memory changes, never per turn: the section is meant
   for the stable layer of the prompt (ux-program 1.4); a per-turn fetch busts the prompt cache.
 
 ### `research.md` is retired (M8)
 
 `.aihydrorules/research.md` is now a stub that points at the resource. It is written when absent or when it still holds an
-old digest, and **never rewritten once it is the stub** (`start_session`, `archive`, shard merge and `export_session`
+old digest, and **never rewritten once it is the stub**. A file that is neither (hand-edited or replaced) is first copied
+to `research.md.bak-<UTC timestamp>` (`start_session`, `archive`, shard merge and `export_session`
 all go through `write_research_md_stub`, which is a no-op on the stub). The stub stays for one release so older hosts do
 not fail on a missing file; delete it with the next release. The bare `(BFI=...)`/`(NSE=...)` project digest writer is
 removed. Capability flag: `project.context_resource`.

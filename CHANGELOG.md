@@ -20,6 +20,12 @@ The package version is not bumped here; the lead releases (2.9.0).
 - **Changed** `.aihydrorules/research.md` is a one-release stub (M8) pointing at the resource. It is written when absent or
   holding an old digest and never rewritten once it is the stub (`HydroSession.write_research_context`,
   `ProjectSession.write_research_context` and every `save(sync_context=True)` path now only ensure the stub).
+- **Backup:** a `research.md` that is neither the stub nor a digest AI-Hydro generated (a hand-edited file) is copied once to
+  `.aihydrorules/research.md.bak-<UTC timestamp>` before the stub replaces it; a generated digest is replaced without a copy.
+- **Hardened** (review of the first push): free-text fields are neutralised (`[run:`/`[claim:`/`[lit:` defused) before the numeric
+  gate, so an agent-written profile field, site name, label or project title cannot supply a forged marker; the grammar's
+  plain-integer and long-digit exemptions apply only to the study's own site id; numbers render as plain decimals
+  (`1000000`, not `1e+06`).
 - **Removed** the project digest writer with bare `(BFI=...)`/`(NSE=...)` values (`session/project.py`).
 - **Tests** `tests/test_study_context.py`; the research.md tests in `test_rules_dir`, `test_provenance_units`,
   `test_context_diet`, `test_staleness` and `test_camels_reference_pr4b` now pin the stub.

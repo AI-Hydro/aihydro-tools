@@ -12,9 +12,15 @@
    A line-level gate (`bare_numbers`, on the audit grammar) withholds anything else that carries a number, rather than
    trying to enumerate which free-text fields might. A coordinate study label therefore falls back to the study id. A
    `[lit:]` marker does not satisfy the gate: this section carries stored results only.
-4. Not injected on purpose: notes, interpretation text (a pointer only; its numbers are already audited in the session, but
+4. Free text is untrusted: profile fields, study label, site name/type/id and project title can be written by the agent
+   (`update_researcher_profile`, `set_site_name`) and are neutralised (marker syntax defused) before the gate, so only lines
+   built from run rows and ledger claims carry markers. The profile does not record who wrote a field, so it is described
+   as stored fields, not "user-edited". The gate's plain-integer / long-digit exemptions hold only for the study's own site
+   id. `?chat=` isolation is not authenticated: the resource is local and host-trusted, accepted as is.
+   A non-generated `research.md` is backed up once (`research.md.bak-<ts>`) before the stub replaces it.
+5. Not injected on purpose: notes, interpretation text (a pointer only; its numbers are already audited in the session, but
    the digest should not be a second copy), agent observations (consent-gated, T3) and memory (T3).
-5. The long Citation Grammar block that lived in `research.md` is replaced by a short, number-free reminder in the context
+6. The long Citation Grammar block that lived in `research.md` is replaced by a short, number-free reminder in the context
    text; the audit tools (`audit_interpretation`, `write_research_interpretation`) report the exact violation. Risk: the worked example and the exemption list are no longer in the always-loaded prompt; if agents regress on citing, put the full grammar behind the same resource, number-free.
 
 ## 2026-10-29 — Project registry v2: confirmed default only, read-side duplicate grouping (UX Wave 1, T-P1)
