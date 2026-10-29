@@ -59,8 +59,10 @@ def _submit_context() -> dict:
     """
     from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_STUDY_ID, ACTIVE_WORKSPACE
 
+    from ai_hydro.session.project_key import project_key
+
     ctx = {"chat_id": ACTIVE_CHAT_ID.get(), "study_id": ACTIVE_STUDY_ID.get(),
-           "workspace": ACTIVE_WORKSPACE.get()}
+           "project_key": project_key(ACTIVE_WORKSPACE.get())}   # the key, not the absolute path
     return {k: v for k, v in ctx.items() if v}
 
 

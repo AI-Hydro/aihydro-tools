@@ -514,23 +514,44 @@ def map_add_layer_from_run(
 
         chosen = artifacts[0]
         ws = session.workspace_dir
-        path = os.path.join(ws, chosen["path"]) if ws else None
-        if not path or not os.path.isfile(path):
+        if not ws:
+            return _run_error("ARTIFACT_MISSING", "The study has no workspace, so its artifact cannot be located.",
+                              "Re-run the tool in a workspace.", run_id=run_id, artifact_id=chosen.get("artifact_id"))
+        # The manifest path is data: it must resolve to a file inside the workspace.
+        ws_real = os.path.realpath(ws)
+        path = os.path.realpath(os.path.join(ws_real, str(chosen["path"])))
+        try:
+            inside = os.path.commonpath([ws_real, path]) == ws_real
+        except ValueError:
+            inside = False
+        if not inside:
+            return _run_error("ARTIFACT_OUTSIDE_WORKSPACE",
+                              f"The recorded artifact path '{chosen['path']}' resolves outside the study workspace.",
+                              "Re-run the tool so its output is recorded inside the workspace.",
+                              run_id=run_id, artifact_id=chosen.get("artifact_id"))
+        if not os.path.isfile(path):
             return _run_error("ARTIFACT_MISSING",
                               f"The recorded artifact '{chosen['path']}' is not on disk.",
                               "Restore the file or re-run the tool.", run_id=run_id, artifact_id=chosen.get("artifact_id"))
+        # Read once: the bytes that are hashed are the bytes that are parsed.
+        try:
+            raw_bytes = Path(path).read_bytes()
+        except OSError:
+            return _run_error("ARTIFACT_MISSING", f"The recorded artifact '{chosen['path']}' could not be read.",
+                              "Restore the file or re-run the tool.", run_id=run_id, artifact_id=chosen.get("artifact_id"))
         recorded = chosen.get("sha256")
+        hash_checked = bool(recorded)
         if recorded:
-            from ai_hydro.session.study_index import sha256_file
-            if sha256_file(path) != recorded:
+            import hashlib
+            if hashlib.sha256(raw_bytes).hexdigest() != recorded:
                 return _run_error(
                     "ARTIFACT_MODIFIED",
                     f"'{chosen['path']}' changed after run '{run_id}' recorded it, so it is no longer that run's output.",
                     "Re-run the tool, or push the edited file as a new layer.",
                     run_id=run_id, artifact_id=chosen.get("artifact_id"))
         try:
-            geojson = json.loads(Path(path).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            geojson = json.loads(raw_bytes.decode("utf-8"))
+        except ValueError:
             geojson = None
         if not (isinstance(geojson, dict) and geojson.get("type") in _GEOJSON_TYPES):
             return _run_error("ARTIFACT_NOT_GEOJSON", f"'{chosen['path']}' is not GeoJSON.",
@@ -564,6 +585,7 @@ def map_add_layer_from_run(
             "artifact_id": chosen.get("artifact_id"),
             "run_id": run_id,
             "provenance": provenance,
+            "hash_checked": hash_checked,
             "message": "Layer add command queued for map host" if ok else "Failed to queue add_layer_from_run",
         }
     except Exception as e:

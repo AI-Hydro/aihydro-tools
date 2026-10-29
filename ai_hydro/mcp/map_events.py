@@ -279,9 +279,9 @@ def push_raster_layer(
             "autoZoom": auto_zoom,
             "openMap": open_map,
             "metadata": {
+                **_stamp(metadata, envelope),
                 "raster_colormap": colormap,
                 "raster_bounds": json.dumps(bounds_wgs84),
-                **_stamp(metadata, envelope),
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -355,12 +355,12 @@ def push_tile_layer(
             "autoZoom": auto_zoom,
             "openMap": open_map,
             "metadata": {
+                **_stamp(metadata, envelope),
                 "raster_colormap": colormap,
                 "raster_bounds": json.dumps(bounds_wgs84),
                 "tile_pyramid": "true",
                 "tile_pyramid_manifest": str(manifest_path),
                 "tile_pyramid_overview": str(overview_png),
-                **_stamp(metadata, envelope),
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -405,10 +405,10 @@ def push_inundation_3d_manifest(
             "autoZoom": auto_zoom,
             "openMap": open_map,
             "metadata": {
+                **_stamp(metadata, envelope),
                 "presentation_tier": "flood_3d",
                 "inundation_3d_manifest_path": str(manifest_path),
                 "inundation_3d_bounds": json.dumps(bounds_wgs84),
-                **_stamp(metadata, envelope),
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }

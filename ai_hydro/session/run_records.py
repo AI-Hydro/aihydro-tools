@@ -1073,10 +1073,13 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
             rows.append((sid, rid, writer))
     created = False
     # A layer pushed before any row existed named this id; the row it names must exist.
-    if capture.reserved and capture.reserved[0] == session_id and (session_id, capture.reserved[1]) not in seen:
-        seen.add((session_id, capture.reserved[1]))
-        rows.insert(0, (session_id, capture.reserved[1], "middleware"))
-        created = len(rows) == 1
+    # The reservation may name another study than the one the call ended up in (a layer pushed under
+    # session A, a result stored under B): the row is stored under its own study, so the id never dangles.
+    if capture.reserved and capture.reserved not in seen and _session_exists(capture.reserved[0]):
+        r_sid, r_rid = capture.reserved
+        seen.add((r_sid, r_rid))
+        rows.insert(0, (r_sid, r_rid, "middleware"))
+        created = len(rows) == 1 and r_sid == session_id
     if not rows:
         rows.append((session_id, id_factory(tool, session_id), "middleware"))
         created = True

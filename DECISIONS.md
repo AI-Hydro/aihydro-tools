@@ -17,7 +17,15 @@ Claims change status after a layer is on the map.
    item would go stale.
 5. The ContextVar does not survive into `data_fetch_background`: the job is a `Popen` subprocess. `chat_id`, `study_id` and
    `workspace` are captured at submit time into the job config and echoed in the status.
-6. Until T-P1, a project is `dir:<sha256(realpath)>` behind one helper (`project_key`).
+6. Until T-P1, a project is `dir:<sha256(realpath)>` behind one helper (`project_key`). `project_key.py` switches to the
+   `prj_...` id once T-P1 lands; callers treat the key as opaque. Job status carries the key, not the absolute workspace path.
+7. `map_get_state` accepts a caller-supplied `chat_id` and `workspace`. This is acceptable because the server is a single-user,
+   local process: the caller is the user's own agent, and there is no other principal to isolate.
+8. `map_add_layer_from_run` treats the manifest `path` as data: the real path must lie inside the study workspace
+   (`ARTIFACT_OUTSIDE_WORKSPACE`), the file is read once and the same bytes are hashed and parsed, and the result says
+   `hash_checked: false` when no digest was recorded.
+9. A reserved run id is stored as a row under its own study even when the call's results end up in another study, so a
+   layer's `_run_id` never dangles.
 
 
 ## 2026-10-22 — Validators judge the series a computation used, bound by digest; the CAMELS reference is packaged (Science Wave 3, PR-4b, 2.8.0)

@@ -319,7 +319,9 @@ def test_a_background_job_captures_the_chat_id_at_submit_time(ws, monkeypatch):
                                                "start": "2000-01-01", "end": "2000-01-31"},
                      meta=ctx(CHAT_A, ws, study="s1"))
     assert not res.is_error and not body.get("error"), body
-    assert seen["config"]["context"] == {"chat_id": CHAT_A, "study_id": "s1", "workspace": str(ws)}
+    from ai_hydro.session.project_key import project_key
+    assert seen["config"]["context"] == {"chat_id": CHAT_A, "study_id": "s1", "project_key": project_key(ws)}
+    assert str(ws) not in json.dumps(seen["config"]["context"])
     assert seen["seed"]["context"]["chat_id"] == CHAT_A
 
 
@@ -356,3 +358,86 @@ def test_a_contextvar_does_not_reach_a_detached_job_process():
     finally:
         ACTIVE_CHAT_ID.reset(token)
     assert out.stdout.strip().splitlines()[-1] == "None", out
+
+
+# ------------------------------------------------------ review fixes
+
+def test_a_layer_reserved_under_one_study_is_stored_even_when_post_run_writes_another(ws, map_dirs):
+    """Cross-study probe: session_id="A" pushes a layer, then post_run stores the result under "B"."""
+    import mcp.types as mcp_types
+    from fastmcp import FastMCP
+
+    from ai_hydro.mcp import app
+    from ai_hydro.mcp.enforcement import post_run
+    from ai_hydro.mcp.map_events import push_layer
+
+    srv = FastMCP(name="probe")
+    srv.add_middleware(app._ContextInjectionMiddleware())
+    srv.add_middleware(app.RunRecordMiddleware())
+
+    @srv.tool()
+    def crosses(session_id: str) -> dict:
+        push_layer("L_x", "L", GEOJSON)
+        return post_run("crosses", "B", {"data": {"n": 1}}, inputs={})
+
+    make_study("A", workspace=str(ws))
+    make_study("B", workspace=str(ws))
+    handler = srv._mcp_server.request_handlers[mcp_types.CallToolRequest]
+    asyncio.run(handler(mcp_types.CallToolRequest(method="tools/call", params=mcp_types.CallToolRequestParams(
+        name="crosses", arguments={"session_id": "A"}))))
+    meta = _events(map_dirs[0])["L_x"]["metadata"]
+    rid, sid = meta["_run_id"], meta["study_id"]
+    assert rid and (HydroSession.load(sid).get("_run_log") or {}).get(rid) is not None, (sid, rid)
+
+
+def _study_with_recorded_path(ws, path_value):
+    make_study("s1", workspace=str(ws))
+    s = HydroSession.load("s1")
+    s.artifact_manifest["file:x"] = {"artifact_id": "file:x", "kind": "workspace_artifact", "type": "workspace_file",
+                                     "path": path_value, "run_id": "r1", "sha256": None}
+    s.save()
+    from ai_hydro.session import store
+    store._run_log_record("s1", "r1", {"tool_name": "x"})
+
+
+def test_add_layer_from_run_refuses_a_path_that_escapes_the_workspace(tmp_path, ws, map_dirs):
+    outside = tmp_path / "secret.json"
+    outside.write_text(json.dumps(GEOJSON))
+    for value in ("../secret.json", str(outside)):
+        _study_with_recorded_path(ws, value)
+        _, out = call("map_add_layer_from_run", {"session_id": "s1", "run_id": "r1"}, meta=ctx(CHAT_A, ws))
+        assert out["code"] == "ARTIFACT_OUTSIDE_WORKSPACE", (value, out)
+    assert not _commands(map_dirs[1])
+
+
+def test_add_layer_from_run_refuses_a_symlink_that_leaves_the_workspace(tmp_path, ws, map_dirs):
+    outside = tmp_path / "secret.geojson"
+    outside.write_text(json.dumps(GEOJSON))
+    (ws / "link.geojson").symlink_to(outside)
+    _study_with_recorded_path(ws, "link.geojson")
+    _, out = call("map_add_layer_from_run", {"session_id": "s1", "run_id": "r1"}, meta=ctx(CHAT_A, ws))
+    assert out["code"] == "ARTIFACT_OUTSIDE_WORKSPACE"
+
+
+def test_add_layer_from_run_reports_when_no_digest_was_checked(ws, map_dirs):
+    (ws / "g.geojson").write_text(json.dumps(GEOJSON))
+    _study_with_recorded_path(ws, "g.geojson")
+    _, out = call("map_add_layer_from_run", {"session_id": "s1", "run_id": "r1"}, meta=ctx(CHAT_A, ws))
+    assert out["ok"] is True and out["hash_checked"] is False
+
+
+def test_pusher_owned_metadata_keys_cannot_be_overridden(map_dirs):
+    from ai_hydro.mcp.map_events import push_inundation_3d_manifest, push_raster_layer, push_tile_layer
+
+    bad = {"raster_colormap": "forged", "raster_bounds": "forged", "tile_pyramid": "forged",
+           "tile_pyramid_manifest": "forged", "presentation_tier": "forged"}
+    push_raster_layer("R", "R", "/tmp/x.png", [0, 0, 1, 1], metadata=bad)
+    push_tile_layer("T", "T", "/tmp/o.png", "/tmp/m.json", [0, 0, 1, 1], metadata=bad)
+    push_inundation_3d_manifest("D", "D", "/tmp/m.json", [0, 0, 1, 1], metadata=bad)
+    ev = _events(map_dirs[0])
+    owned = {"R": ("raster_colormap", "raster_bounds"),
+             "T": ("raster_colormap", "raster_bounds", "tile_pyramid", "tile_pyramid_manifest"),
+             "D": ("presentation_tier",)}
+    for lid, keys in owned.items():
+        for k in keys:
+            assert ev[lid]["metadata"][k] != "forged", (lid, k)
