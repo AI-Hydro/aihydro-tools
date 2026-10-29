@@ -1517,13 +1517,10 @@ class HydroSession:
     def save(self, *, sync_context: bool = False) -> None:
         """Persist atomically (write temp, rename over target).
 
-        ``sync_context`` additionally regenerates ``.aihydrorules/research.md``. It defaults to
-        False: that file is part of the agent's system prompt, so rewriting it on every save
-        during a task changes the agent's own instructions mid-task and busts the provider's
-        prompt cache for the rest of the conversation (session study 01031500, M3: one request
-        cost 26% of the task). It is written only at the boundaries of a task: ``start_session``,
-        ``archive``, ``write_research_interpretation``, shard merge and an explicit export
-        (``export_session`` / ``write_research_context()``).
+        ``sync_context`` makes sure ``.aihydrorules/research.md`` is the retirement stub (T-R1). The file
+        is no longer a digest and is never rewritten once it is the stub, so a save cannot change the
+        agent's instructions mid-task (the F-TS6 / session-study M3 problem). The digest is the
+        ``aihydro://project/{prj}/context`` resource.
         """
         self.updated_at = _now()
         try:
@@ -1808,161 +1805,14 @@ class HydroSession:
     # ------------------------------------------------------------------
 
     def write_research_context(self) -> None:
-        display = self.site_name or self.site_id or self.session_id
-        name_str = self._display_name_str()
-        computed = self.computed_healthy()      # a degraded slot is not offered to the next session as computed
-        degraded = self.degraded()
-        pending = self.pending()
+        """Retired (T-R1): ``.aihydrorules/research.md`` is now a stub, written once and never refreshed.
 
-        lines: list[str] = [
-            "# Research Session",
-            f"**Session**: {display}{name_str}",
-            f"**ID**: {self.session_id}",
-        ]
-        if self.archived:
-            lines += ["> [!IMPORTANT]", "> **This session is ARCHIVED.**", ""]
+        The study digest is served by ``aihydro://project/{prj}/context?chat=``
+        (``ai_hydro.session.study_context``). The method keeps its name for its callers.
+        """
+        from ai_hydro.session.study_context import write_research_md_stub
 
-        if self.site_id:
-            lines.append(f"**Site**: {self.site_id}"
-                         + (f" ({self.site_type})" if self.site_type else ""))
-        lines += [f"**Updated**: {self.updated_at[:10]}", ""]
-
-        # Identity warnings
-        warnings = self.validate_identity()
-        if warnings:
-            lines.append("> [!WARNING]")
-            lines.append("> **Identity warnings — investigate before exporting:**")
-            for w in warnings:
-                lines.append(f"> - `{w['code']}` ({w['severity']}): {w['message']}")
-            lines.append("")
-
-        # C1: surface registered features
-        real_features = {k: v for k, v in self._features.items()
-                         if k != _LEGACY_FEATURE_ID}
-        if real_features:
-            lines.append("**Registered features** (addressable by id or name):")
-            for fid, fd in real_features.items():
-                active_marker = " ← active" if fid == self.active_feature_id else ""
-                name = fd.get("name", "")
-                lines.append(f"  - `{fid}`" + (f" ({name})" if name else "") + active_marker)
-            lines.append("")
-
-        active_computed = [s for s in computed if not self.is_stale(s)]
-        stale_computed = [s for s in computed if self.is_stale(s)]
-        if active_computed:
-            lines.append("**Computed (Active)**: " + ", ".join(active_computed))
-        if degraded:
-            lines.append("**Degraded (do not cite; re-run)**: "
-                         + "; ".join(f"{d['slot']} ({d['health']})" for d in degraded))
-        if pending:
-            lines.append("**Pending**: " + ", ".join(pending))
-        lines.append("")
-
-        interp_stale = self.is_stale("interpretation")
-        if self.interpretation and not interp_stale:
-            lines.append("## Scientific Context (Active)")
-            lines.append(self.interpretation)
-            lines.append("")
-
-        notes_stale = self.is_stale("notes")
-        if self.notes and not notes_stale:
-            lines.append("## Researcher Notes (Active)")
-            for note in self.notes:
-                lines.append(f"- {note}")
-            lines.append("")
-
-        if self.archived or stale_computed or (self.interpretation and interp_stale) or (self.notes and notes_stale):
-            lines += ["---", "## Historical / Stale Context",
-                      "> The following context is older than the staleness threshold.", ""]
-            if stale_computed:
-                lines.append("**Computed (Stale)**: " + ", ".join(stale_computed))
-            if self.interpretation and interp_stale:
-                lines += [
-                    "### Historical Interpretation",
-                    f"*(Authored {self.interpretation_at[:10] if self.interpretation_at else 'unknown'})*",
-                    self.interpretation, "",
-                ]
-            if self.notes and notes_stale:
-                lines.append("### Historical Notes")
-                for note in self.notes:
-                    lines.append(f"- {note}")
-                lines.append("")
-
-        try:
-            from ai_hydro.session.persona import ResearcherProfile
-            profile = ResearcherProfile.load()
-            if not profile.is_blank():
-                lines.append(profile.to_context_string())
-                lines.append("")
-        except Exception:
-            pass
-
-        if not self.interpretation:
-            lines += [
-                "_No scientific interpretation yet — call `get_session_raw_state` "
-                "then `write_research_interpretation` to generate one._", "",
-            ]
-
-        lines += [
-            "---",
-            "## Citation Grammar (Required for write_research_interpretation)",
-            "",
-            "Every **quantity** in synthesis prose MUST be followed by one of the markers below,",
-            "inside the SAME sentence, bullet or table cell (a marker in the next row does not count):",
-            "",
-            "| Marker | When to use |",
-            "|--------|-------------|",
-            "| `[run:<run_id>#<json.path>]` | Value came from a tool run in this session |",
-            "| `[claim:<claim_id>]`         | Sentence asserts a claim already in the ledger |",
-            "| `[lit:<tag>]`                | Literature / design / widely-known constant |",
-            "",
-            "`[lit:<tag>]` tags are single tokens without spaces, at least 3 characters, e.g. `[lit:smith2020]`;",
-            "`[lit:Smith et al. 2020]` is a malformed marker (hard error).",
-            "",
-            "**Canonical path form:** `key_outputs.<field>` (e.g. `key_outputs.runoff_ratio`).",
-            "`data.<field>` and `evidence.data.<field>` are accepted aliases of the same stored field;",
-            "bootstrap CIs live at `evidence.uncertainty.<field>.{ci_low,ci_high,n,ci_level}`.",
-            "If the run declares a `units` map, the unit you write must match it.",
-            "",
-            "**What needs a marker:** any decimal, any number with a unit, any number next to a metric",
-            "word (a bare integer next to a metric word or unit still needs a marker), a bare integer in a",
-            "sentence that carries a marker, and every sample size / record length (`7,305 daily",
-            "observations`, `21 years`). Markers must be well-formed: a malformed `[run:...` is a hard error.",
-            "Method parameters (`bootstrap 90% CIs`, `seed 42`) only draw an advisory.",
-            "",
-            "**What does not (never mark these):** identifiers (gauge/site/claim/run ids), codes",
-            "(HUC, EPSG, FIPS, NLCD class), dates and years, `Figure/Table/Section N`, and plain counts of",
-            "things you listed (`17 signatures`, `6 steps` - not beside a metric word). Digits in URLs,",
-            "file paths, real run/claim-id shapes and code spans without decimals/units are ignored;",
-            "`NSE:0.61`, `site_0.61` or `` `0.61` `` are NOT. A run that recorded no outputs (a minimal / cache-hit entry)",
-            "is `hollow_evidence`: cite the run its `derived_from` names instead.",
-            "",
-            "**`write_research_interpretation` will REFUSE the prose on any HARD violation**",
-            "(uncited quantity or sample size, value_mismatch, unit_mismatch, json_path_not_found,",
-            "run_id_not_found, hollow_evidence). Advisories are reported but do not block.",
-            "",
-            "**Obtaining run_ids:** call `get_session_summary` — `_run_log` section lists every",
-            "tool run with its id, tool name, and `key_outputs` keys to use as the json path.",
-            "",
-            "**Example compliant sentence:**",
-            "```",
-            "The basin yielded a mean annual runoff ratio of 0.42 [run:xhyd.20260610.sign.a3f1#key_outputs.runoff_ratio],",
-            "consistent with the literature benchmark of 0.35–0.50 [lit:dunne1978].",
-            "The Nash–Sutcliffe efficiency of 0.81 [run:xhyd.20260610.cal.b72c#key_outputs.nse]",
-            "supports [claim:C-001] that the basin is well-represented by HBV-light.",
-            "```",
-            "",
-        ]
-
-        lines.append(
-            "> *Skeleton auto-generated by HydroSession. "
-            "Scientific context authored by the LLM via `write_research_interpretation`.*"
-        )
-
-        from ai_hydro.registry.paths import rules_dir
-        research_md = rules_dir(self.workspace_dir) / "research.md"
-        research_md.parent.mkdir(parents=True, exist_ok=True)
-        research_md.write_text("\n".join(lines))
+        write_research_md_stub(self.workspace_dir)
 
     def _display_name_str(self) -> str:
         if self.watershed:

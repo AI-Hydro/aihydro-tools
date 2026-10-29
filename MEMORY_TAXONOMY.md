@@ -10,7 +10,7 @@ A diagnostic reference, not a system architecture. When a design decision is amb
 | **Provenance memory** | `HydroSession`, `artifact_manifest`, `HydroMeta` hashes | Append-only | Every tool write adds a record; no record is deleted or modified. |
 | **Operational registry** | `knowledge/*.yaml` — variables, metrics, datasets | Human-approved only | Agent reads; agent never writes. Workspace overrides require `overrides:` declaration or `KnowledgeConflictError`. |
 | **Claims + assumptions** | `ScientificClaim`, `Assumption` in session ledger | Evidence-gated + human promotion | Agent authors claim text; promotion to global registry requires a human approval record for the claim's current revision (`aihydro-approve`; `researcher_approved=True` is only a request flag) + evidence spans + limitations. |
-| **Synthesis pages** | Markdown wiki pages, `research.md` | Agent-proposed, human-reviewed | Must carry `epistemic_status` frontmatter. Agent writes; researcher reviews before treating as settled. |
+| **Synthesis pages** | Markdown wiki pages | Agent-proposed, human-reviewed | Must carry `epistemic_status` frontmatter. Agent writes; researcher reviews before treating as settled. |
 | **Retrieval index** | BM25 / embedding index over literature | Auto-rebuild only | Derived from raw sources. Never the authoritative record. |
 | **Skills** | `SKILL.md` workflow playbooks | Read-only at runtime | Workspace tier skills are researcher-authored and not reviewed; agent applies skepticism if they conflict with built-in skills. |
 

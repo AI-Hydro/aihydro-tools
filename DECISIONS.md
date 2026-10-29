@@ -1,5 +1,22 @@
 # Decisions
 
+## 2026-10-29 — Active-study context resource; `research.md` becomes a stub (UX Wave 1, T-R1)
+
+1. The study digest moves from `.aihydrorules/research.md` (loaded by the extension into every prompt, rewritten under the
+   agent) to `aihydro://project/{prj}/context?chat=`, fetched by the host at task start and on change. The file becomes a
+   one-release stub (M8) and is never rewritten once it is the stub, which closes the F-TS6 flip-flop for good instead of
+   only at mid-task saves (T-C1).
+2. The study shown is only the one bound to the chat and belonging to the project. No confirmed-default or recent-study
+   fallback: a fallback would put a study the chat never chose into the stable prompt, the leak class this work removes.
+3. Numbers are never remembered: results are re-read from the run log at call time and rendered with `[run:]` markers (B6).
+   A line-level gate (`bare_numbers`, on the audit grammar) withholds anything else that carries a number, rather than
+   trying to enumerate which free-text fields might. A coordinate study label therefore falls back to the study id. A
+   `[lit:]` marker does not satisfy the gate: this section carries stored results only.
+4. Not injected on purpose: notes, interpretation text (a pointer only; its numbers are already audited in the session, but
+   the digest should not be a second copy), agent observations (consent-gated, T3) and memory (T3).
+5. The long Citation Grammar block that lived in `research.md` is replaced by a short, number-free reminder in the context
+   text; the audit tools (`audit_interpretation`, `write_research_interpretation`) report the exact violation. Risk: the worked example and the exemption list are no longer in the always-loaded prompt; if agents regress on citing, put the full grammar behind the same resource, number-free.
+
 ## 2026-10-29 — Project registry v2: confirmed default only, read-side duplicate grouping (UX Wave 1, T-P1)
 
 1. A project default resolves a study only when a person confirmed it (`default_confirmed_by` = `user` | `host_launch`).

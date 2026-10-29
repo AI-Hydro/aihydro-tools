@@ -6,9 +6,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] (UX program Wave 1: project registry v2; T-P1)
+## [Unreleased] (UX program Wave 1: project registry v2 (T-P1); active-study context (T-R1))
 
 The package version is not bumped here; the lead releases (2.9.0).
+
+### T-R1: active-study context resource; `research.md` retired
+
+- **Added** resource `aihydro://project/{project_id}/context?chat=`: the digest of the chat's active study (and only that
+  study) plus the researcher profile (<= 1 KB, user-edited fields). Values are re-read from the run log and rendered in
+  audit grammar (`name = value [run:<id>#key_outputs.name]`, B6); a final gate withholds any line with a number outside a
+  `[run:]`/`[claim:]` marker. Read-only. No memory entries yet. Capability `project.context_resource`.
+  New module `session/study_context.py`; see `docs/context.md`.
+- **Changed** `.aihydrorules/research.md` is a one-release stub (M8) pointing at the resource. It is written when absent or
+  holding an old digest and never rewritten once it is the stub (`HydroSession.write_research_context`,
+  `ProjectSession.write_research_context` and every `save(sync_context=True)` path now only ensure the stub).
+- **Removed** the project digest writer with bare `(BFI=...)`/`(NSE=...)` values (`session/project.py`).
+- **Tests** `tests/test_study_context.py`; the research.md tests in `test_rules_dir`, `test_provenance_units`,
+  `test_context_diet`, `test_staleness` and `test_camels_reference_pr4b` now pin the stub.
+
+### T-P1: project registry v2
 
 ### Added
 

@@ -51,7 +51,7 @@ def test_session_staleness_logic(tmp_path):
         store.SESSIONS_DIR = old_dir
         store._SESSIONS_DIR = old_dir
 
-def test_research_md_staleness_formatting(tmp_path):
+def test_research_md_is_a_stub_not_a_digest(tmp_path):
     import ai_hydro.session.store as store
     old_dir = store.SESSIONS_DIR
     test_sessions_dir = tmp_path / "sessions"
@@ -76,12 +76,12 @@ def test_research_md_staleness_formatting(tmp_path):
         
         research_md = tmp_path / ".aihydrorules" / "research.md"
         content = research_md.read_text()
-        
-        assert "## Historical / Stale Context" in content
-        assert "Historical Interpretation" in content
-        assert "## Researcher Notes (Active)" in content
-        assert "Recent note" in content
-        
+
+        # T-R1: research.md is the retirement stub; staleness is rendered by the context resource
+        # (tests/test_study_context.py::test_stale_interpretation_is_marked).
+        assert "no longer updated" in content
+        assert "Recent note" not in content and "Historical" not in content
+
     finally:
         store.SESSIONS_DIR = old_dir
         store._SESSIONS_DIR = old_dir

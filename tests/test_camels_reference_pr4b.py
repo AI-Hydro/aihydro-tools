@@ -184,14 +184,14 @@ def test_get_session_raw_state_omits_degraded_slots_and_lists_them():
     assert [d["slot"] for d in out["degraded"]] == ["signatures"] and out["degraded"][0]["health"] == "legacy_convention"
 
 
-def test_research_md_does_not_list_a_degraded_slot_as_computed(tmp_path):
+def test_research_md_is_a_stub_even_for_a_degraded_session(tmp_path):
+    """T-R1: the digest moved to the context resource (tests/test_study_context.py covers the degraded slot)."""
     s = _degraded_session()
     s.workspace_dir = str(tmp_path)
     s.write_research_context()
     from ai_hydro.registry.paths import rules_dir
     text = (rules_dir(str(tmp_path)) / "research.md").read_text()
-    assert "**Computed (Active)**: watershed" in text and "signatures (legacy_convention)" in text
-    assert "**Degraded (do not cite; re-run)**" in text
+    assert "no longer updated" in text and "signatures" not in text
 
 
 def test_sync_reminder_counts_only_healthy_analyses():

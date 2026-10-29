@@ -158,7 +158,7 @@ def test_write_research_interpretation_does_not_touch_research_md(scratch_sessio
     sid = "diet03"
     out = _call("start_session", {"session_id": sid, "workspace_dir": str(ws)}).structured_content
     rm = ws / ".aihydrorules" / "research.md"
-    assert rm.is_file(), "start_session is the boundary that writes research.md"
+    assert rm.is_file(), "start_session leaves the retirement stub"
     before = (rm.stat().st_mtime_ns, rm.read_bytes())
 
     res = _call("write_research_interpretation", {
@@ -169,9 +169,10 @@ def test_write_research_interpretation_does_not_touch_research_md(scratch_sessio
     saved = store.HydroSession.load(sid)
     assert saved.interpretation.startswith("The basin is hydrologically complex")   # still persisted
     assert "research.md" in res.structured_content["_note"] and "not rewritten" in res.structured_content["_note"]
-    # and a later start_session (the next boundary) does publish it
+    # and a later start_session does not rewrite it either: it is the stub, never a digest again (T-R1)
     _call("start_session", {"session_id": sid})
-    assert b"hydrologically complex" in rm.read_bytes()
+    assert (rm.stat().st_mtime_ns, rm.read_bytes()) == before
+    assert b"hydrologically complex" not in rm.read_bytes()
 
 
 def test_tools_md_is_not_rewritten_when_the_registry_is_unchanged(tmp_path, monkeypatch):

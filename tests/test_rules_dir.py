@@ -16,6 +16,7 @@ from ai_hydro.registry.paths import RULES_DIR_NAME, aihydro_home, rules_dir
 from ai_hydro.session import project as project_mod
 from ai_hydro.session import store
 from ai_hydro.session.store import HydroSession
+from ai_hydro.session.study_context import STUB_MARKER
 
 CHECKOUT_PARENT = Path(ai_hydro.__file__).resolve().parent.parent.parent   # the old _REPO_ROOT
 
@@ -70,11 +71,11 @@ def test_server_start_and_session_save_write_nothing_beside_the_checkout(scratch
     s.interpretation = "synthetic"
     s.save()                                                          # mid-task save: nothing in the rules dir
     assert not (scratch / "aihydro_home" / RULES_DIR_NAME / "research.md").exists()
-    s.save(sync_context=True)                                         # a task boundary writes it
+    s.save(sync_context=True)                                         # a task boundary writes the stub
 
     ah_rules = scratch / "aihydro_home" / RULES_DIR_NAME
     assert (ah_rules / "tools.md").is_file()
-    assert "noworkspace" in (ah_rules / "research.md").read_text()
+    assert STUB_MARKER in (ah_rules / "research.md").read_text()
     assert _snapshot(CHECKOUT_PARENT) == before
 
 
@@ -85,7 +86,7 @@ def test_workspace_session_writes_research_md_in_its_workspace_only(scratch):
     s = HydroSession("withws")
     s.workspace_dir = str(ws)
     s.save(sync_context=True)
-    assert "withws" in (ws / RULES_DIR_NAME / "research.md").read_text()
+    assert STUB_MARKER in (ws / RULES_DIR_NAME / "research.md").read_text()
     assert not (scratch / "aihydro_home" / RULES_DIR_NAME / "research.md").exists()
     assert _snapshot(CHECKOUT_PARENT) == before
 
@@ -96,8 +97,8 @@ def test_project_digest_uses_the_same_resolver(scratch):
     before = _snapshot(CHECKOUT_PARENT)
     p = project_mod.ProjectSession("proj1")
     p.save()                                                          # no workspace: AIHYDRO_HOME
-    assert "proj1" in (scratch / "aihydro_home" / RULES_DIR_NAME / "research.md").read_text()
+    assert STUB_MARKER in (scratch / "aihydro_home" / RULES_DIR_NAME / "research.md").read_text()
     p.write_research_context(workspace_dir=str(ws))
-    assert "proj1" in (ws / RULES_DIR_NAME / "research.md").read_text()
+    assert STUB_MARKER in (ws / RULES_DIR_NAME / "research.md").read_text()
     assert _snapshot(CHECKOUT_PARENT) == before
 

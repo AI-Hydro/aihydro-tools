@@ -27,7 +27,7 @@ slot and reads `ok` while the file is intact.
 (`slot`, `health`, `reason`, `fix`), are removed from `computed`, are listed in `pending` (so the user is prompted to
 re-run them), and are not counted by `get_session_health.n_computed_slots` or the defensibility report
 (`HydroSession.computed_healthy()`). Since 2.8.0 the other readers use it too: `get_session_raw_state` (slots and a `degraded`
-list), `research.md` (a `Degraded (do not cite; re-run)` line instead of listing the slot as computed), the sync reminder,
+list), the study context resource (`Degraded (do not cite; re-run)` instead of listing the slot as computed; it replaced `research.md`, T-R1), the sync reminder,
 `export_session` (`computed` is the healthy list, `degraded` is added; the capsule README and methods table mark a degraded
 slot rather than omit it), project search and overview, and `bind_study`/`get_current_study`. Not changed on purpose: shard
 merge (copies every slot) and `synopsis_for_llm` (no caller). Nothing is rewritten.
