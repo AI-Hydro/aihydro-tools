@@ -408,6 +408,12 @@ class CallCapture:
     files: List[Tuple[Optional[str], str]] = dataclasses.field(default_factory=list)
     #: Map layers a tool pushed during the call (see ``note_layer_pushed``).
     layers: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
+    #: What the middleware knew when the call began: ``tool``, ``arguments``, ``chat_id``, ``study_id``
+    #: and ``id_factory``. A layer pusher needs them to name the run that will own the layer.
+    call: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    #: ``(session, run id)`` minted early because a layer was pushed before any run row existed.
+    #: ``post_run`` and ``_record_call`` adopt it, so the row the layer names is the row that is stored.
+    reserved: Optional[Tuple[str, str]] = None
 
 
 _CAPTURE: contextvars.ContextVar[Optional[CallCapture]] = contextvars.ContextVar(
@@ -415,8 +421,8 @@ _CAPTURE: contextvars.ContextVar[Optional[CallCapture]] = contextvars.ContextVar
 )
 
 
-def begin_capture() -> Tuple[CallCapture, "contextvars.Token"]:
-    capture = CallCapture()
+def begin_capture(**call: Any) -> Tuple[CallCapture, "contextvars.Token"]:
+    capture = CallCapture(call=dict(call))
     return capture, _CAPTURE.set(capture)
 
 
@@ -454,14 +460,65 @@ def note_file_written(path: Any, study_id: Optional[str] = None) -> None:
 
 
 def note_layer_pushed(layer_id: str, *, name: Optional[str] = None, layer_type: Optional[str] = None,
-                      paths: Iterable[Any] = (), content_sha256: Optional[str] = None) -> None:
-    """A tool pushed map layer ``layer_id``; ``paths`` are the files it points at (PNG, manifest)."""
+                      paths: Iterable[Any] = (), content_sha256: Optional[str] = None,
+                      envelope: Optional[Dict[str, Any]] = None) -> None:
+    """A tool pushed map layer ``layer_id``; ``paths`` are the files it points at (PNG, manifest).
+
+    ``envelope`` is the provenance the layer was stamped with (``map_events.provenance_envelope``);
+    the study recorder keeps it on the manifest entry so ``map_get_state`` can answer for a chat or a project.
+    """
     capture = _CAPTURE.get()
     if capture is not None and layer_id:
         capture.layers.append({
             "layer_id": str(layer_id), "name": name, "layer_type": layer_type,
             "paths": [str(p) for p in paths if p], "content_sha256": content_sha256,
+            "envelope": dict(envelope) if envelope else None,
         })
+
+
+def run_ref_for_layer() -> Tuple[Optional[str], Optional[str]]:
+    """``(study id, run id)`` of the run row that will own whatever the current call pushes.
+
+    Outside a recorded call: ``(None, None)``. Order: the row a writer already stored during this call
+    (a slot's ``put_result`` row, which ``post_run`` adopts); the id reserved earlier in this call; a new
+    reservation in the call's session. The reservation is the id the sealed row will carry (``reserved_run_id``).
+    """
+    capture = _CAPTURE.get()
+    if capture is None:
+        return None, None
+    if capture.rows:
+        sid, rid, _writer = capture.rows[-1]
+        return sid, rid
+    if capture.reserved:
+        return capture.reserved
+    call = capture.call
+    factory = call.get("id_factory")
+    if not (call.get("tool") and callable(factory)):
+        return None, None
+    try:
+        sid, _rule = resolve_call_session_rule(
+            call.get("arguments"), None, call.get("chat_id"), capture, call.get("study_id"))
+        if not sid:
+            return None, None
+        capture.reserved = (sid, factory(call["tool"], sid))
+    except Exception as exc:        # a layer without a run reference is honest; a failed push is not
+        log.debug("run id reservation skipped: %s", exc)
+        return None, None
+    return capture.reserved
+
+
+def reserved_run_id(session_id: str) -> Optional[str]:
+    """The run id reserved in this call for ``session_id`` (see ``run_ref_for_layer``), else None."""
+    capture = _CAPTURE.get()
+    if capture is not None and capture.reserved and capture.reserved[0] == session_id:
+        return capture.reserved[1]
+    return None
+
+
+def call_context() -> Dict[str, Any]:
+    """Tool name and chat id of the call being recorded (empty outside one)."""
+    capture = _CAPTURE.get()
+    return dict(capture.call) if capture is not None else {}
 
 
 def note_row_failed(session_id: str, run_id: str, writer: str, reason: str) -> None:
@@ -1015,6 +1072,14 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
             seen.add((sid, rid))
             rows.append((sid, rid, writer))
     created = False
+    # A layer pushed before any row existed named this id; the row it names must exist.
+    # The reservation may name another study than the one the call ended up in (a layer pushed under
+    # session A, a result stored under B): the row is stored under its own study, so the id never dangles.
+    if capture.reserved and capture.reserved not in seen and _session_exists(capture.reserved[0]):
+        r_sid, r_rid = capture.reserved
+        seen.add((r_sid, r_rid))
+        rows.insert(0, (r_sid, r_rid, "middleware"))
+        created = len(rows) == 1 and r_sid == session_id
     if not rows:
         rows.append((session_id, id_factory(tool, session_id), "middleware"))
         created = True

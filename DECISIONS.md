@@ -1,5 +1,33 @@
 # Decisions
 
+## 2026-10-29 - Map provenance is stamped by the server and the claim link carries no status (UX program Wave 1, T-M1)
+
+**Context.** Layers reach the host through a file drop, so the host cannot tell which call produced one. The old
+`map_add_layer_from_run` parsed the study JSON for a run log that now lives in SQLite and took geometry from summary values.
+Claims change status after a layer is on the map.
+
+**Decisions.**
+1. Python stamps `chat_id`, `study_id`, `_run_id`, `tool`, `source`, `retrieved_at` inside the `push_*` functions; the host only adds
+   `project_id` and the item id. A missing value is omitted, never blank, so the host can say "no run record" honestly.
+2. A layer pushed before its run row exists reserves the row's id on the call capture; `post_run` and the run recorder store the row
+   under it. The alternative (patch the event file after the call) races the host watcher.
+3. `map_add_layer_from_run` takes geometry only from a recorded artifact and refuses one whose digest no longer matches. A layer must
+   not claim to be a run's output when the file was edited afterwards.
+4. `bind_claim_to_item` stores the pair of ids only. Claim status is read from the claim at the time it is asked; storing it on the
+   item would go stale.
+5. The ContextVar does not survive into `data_fetch_background`: the job is a `Popen` subprocess. `chat_id`, `study_id` and
+   `workspace` are captured at submit time into the job config and echoed in the status.
+6. Until T-P1, a project is `dir:<sha256(realpath)>` behind one helper (`project_key`). `project_key.py` switches to the
+   `prj_...` id once T-P1 lands; callers treat the key as opaque. Job status carries the key, not the absolute workspace path.
+7. `map_get_state` accepts a caller-supplied `chat_id` and `workspace`. This is acceptable because the server is a single-user,
+   local process: the caller is the user's own agent, and there is no other principal to isolate.
+8. `map_add_layer_from_run` treats the manifest `path` as data: the real path must lie inside the study workspace
+   (`ARTIFACT_OUTSIDE_WORKSPACE`), the file is read once and the same bytes are hashed and parsed, and the result says
+   `hash_checked: false` when no digest was recorded.
+9. A reserved run id is stored as a row under its own study even when the call's results end up in another study, so a
+   layer's `_run_id` never dangles.
+
+
 ## 2026-10-29 — Active-study context resource; `research.md` becomes a stub (UX Wave 1, T-R1)
 
 1. The study digest moves from `.aihydrorules/research.md` (loaded by the extension into every prompt, rewritten under the

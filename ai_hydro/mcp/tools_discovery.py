@@ -74,7 +74,7 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "literature":  ("index_passages", "search_passages_tool", "resolve_passage"),
     # Feature registry (C2 — multi-geometry)
     "features":    ("register_feature", "list_features", "set_active_feature",
-                    "bind_map_to_claim"),
+                    "bind_map_to_claim", "bind_claim_to_item"),
     # Wave 2.5 — aihydro-data tools surfaced via the `aihydro.tools` entry-point group.
     # Longest-prefix match means these win over any generic prefixes.
     "data_fetch":  ("data_fetch", "data_batch", "data_list_products",

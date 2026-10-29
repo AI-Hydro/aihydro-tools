@@ -28,7 +28,51 @@ log = logging.getLogger(__name__)
 _MAP_EVENTS_DIR = home_path("map_events")
 
 
-def _note_layer(layer_id: str, name: str, layer_type: str, paths: tuple = (), content: str | None = None) -> None:
+#: Keys the server stamps on every layer; a caller cannot override them.
+ENVELOPE_KEYS = ("chat_id", "study_id", "_run_id", "tool", "retrieved_at")
+
+
+def provenance_envelope() -> dict[str, str]:
+    """The provenance a layer carries (UX program 2026-11 section 1.1).
+
+    ``chat_id`` (the chat's ContextVar, read on the calling thread), ``study_id`` and ``_run_id`` (the
+    run row that will own the layer, see ``run_records.run_ref_for_layer``), ``tool`` and ``retrieved_at``.
+    A value that is not known is left out, never filled with an empty string: the host shows
+    "no run record" for a layer without ``_run_id``. The host adds only ``project_id`` and the item id.
+    """
+    env: dict[str, str] = {"retrieved_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        from ai_hydro.mcp.app import ACTIVE_CHAT_ID
+        from ai_hydro.session import run_records
+
+        call = run_records.call_context()
+        chat = ACTIVE_CHAT_ID.get() or call.get("chat_id")
+        if chat:
+            env["chat_id"] = str(chat)
+        if call.get("tool"):
+            env["tool"] = str(call["tool"])
+        study_id, run_id = run_records.run_ref_for_layer()
+        if study_id:
+            env["study_id"] = str(study_id)
+        if run_id:
+            env["_run_id"] = str(run_id)
+    except Exception as exc:        # provenance never blocks a map push
+        log.debug("provenance envelope incomplete: %s", exc)
+    return env
+
+
+def _stamp(metadata: dict[str, Any] | None, envelope: dict[str, str]) -> dict[str, Any]:
+    """Caller metadata plus the envelope. The envelope wins on its own keys; ``source`` (the data origin a
+    tool names, e.g. "USGS NLDI") is kept when given and otherwise falls back to ``aihydro:<tool>``."""
+    out = {k: v for k, v in (metadata or {}).items() if k not in ENVELOPE_KEYS}
+    out.update(envelope)
+    if not out.get("source") and envelope.get("tool"):
+        out["source"] = f"aihydro:{envelope['tool']}"
+    return out
+
+
+def _note_layer(layer_id: str, name: str, layer_type: str, paths: tuple = (), content: str | None = None,
+                envelope: dict[str, Any] | None = None) -> None:
     """Tell the call's study recorder that a layer was pushed (no-op outside a recorded call)."""
     try:
         import hashlib
@@ -36,7 +80,8 @@ def _note_layer(layer_id: str, name: str, layer_type: str, paths: tuple = (), co
         from ai_hydro.session.run_records import note_layer_pushed
 
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else None
-        note_layer_pushed(layer_id, name=name, layer_type=layer_type, paths=paths, content_sha256=digest)
+        note_layer_pushed(layer_id, name=name, layer_type=layer_type, paths=paths, content_sha256=digest,
+                          envelope=envelope)
     except Exception:
         pass
 
@@ -158,6 +203,8 @@ def push_layer(
         geojson_str = geojson if isinstance(geojson, str) else json.dumps(geojson)
 
         style = {**STYLES.get(style_preset, STYLES["default"]), **(style_override or {})}
+        envelope = provenance_envelope()
+        stamped = _stamp(metadata, envelope)
 
         event: dict[str, Any] = {
             "id": layer_id,
@@ -167,14 +214,14 @@ def push_layer(
             "style": style,
             "autoZoom": auto_zoom,
             "openMap": open_map,
-            "metadata": metadata or {},
+            "metadata": stamped,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
         event_file.write_text(json.dumps(event), encoding="utf-8")
         log.debug("Map event written: %s → %s", layer_id, event_file.name)
-        _note_layer(layer_id, name, layer_type, content=geojson_str)
+        _note_layer(layer_id, name, layer_type, content=geojson_str, envelope=stamped)
         return True
 
     except Exception as exc:
@@ -215,6 +262,7 @@ def push_raster_layer(
     """
     try:
         _MAP_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+        envelope = provenance_envelope()
 
         event: dict[str, Any] = {
             "id": layer_id,
@@ -231,9 +279,9 @@ def push_raster_layer(
             "autoZoom": auto_zoom,
             "openMap": open_map,
             "metadata": {
+                **_stamp(metadata, envelope),
                 "raster_colormap": colormap,
                 "raster_bounds": json.dumps(bounds_wgs84),
-                **(metadata or {}),
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -241,7 +289,7 @@ def push_raster_layer(
         event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
         event_file.write_text(json.dumps(event), encoding="utf-8")
         log.debug("Raster map event written: %s → %s", layer_id, event_file.name)
-        _note_layer(layer_id, name, "raster", paths=(png_path,))
+        _note_layer(layer_id, name, "raster", paths=(png_path,), envelope=event["metadata"])
         return True
 
     except Exception as exc:
@@ -287,6 +335,7 @@ def push_tile_layer(
     """
     try:
         _MAP_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+        envelope = provenance_envelope()
 
         event: dict[str, Any] = {
             "id": layer_id,
@@ -306,12 +355,12 @@ def push_tile_layer(
             "autoZoom": auto_zoom,
             "openMap": open_map,
             "metadata": {
+                **_stamp(metadata, envelope),
                 "raster_colormap": colormap,
                 "raster_bounds": json.dumps(bounds_wgs84),
                 "tile_pyramid": "true",
                 "tile_pyramid_manifest": str(manifest_path),
                 "tile_pyramid_overview": str(overview_png),
-                **(metadata or {}),
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -319,7 +368,7 @@ def push_tile_layer(
         event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
         event_file.write_text(json.dumps(event), encoding="utf-8")
         log.debug("Tile layer map event written: %s → %s", layer_id, event_file.name)
-        _note_layer(layer_id, name, "raster", paths=(overview_png, manifest_path))
+        _note_layer(layer_id, name, "raster", paths=(overview_png, manifest_path), envelope=event["metadata"])
         return True
 
     except Exception as exc:
@@ -345,6 +394,7 @@ def push_inundation_3d_manifest(
     """
     try:
         _MAP_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+        envelope = provenance_envelope()
         event: dict[str, Any] = {
             "id": layer_id,
             "name": name,
@@ -355,17 +405,17 @@ def push_inundation_3d_manifest(
             "autoZoom": auto_zoom,
             "openMap": open_map,
             "metadata": {
+                **_stamp(metadata, envelope),
                 "presentation_tier": "flood_3d",
                 "inundation_3d_manifest_path": str(manifest_path),
                 "inundation_3d_bounds": json.dumps(bounds_wgs84),
-                **(metadata or {}),
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         event_file = _MAP_EVENTS_DIR / f"{uuid.uuid4().hex}.json"
         event_file.write_text(json.dumps(event), encoding="utf-8")
         log.debug("Inundation 3D manifest event written: %s → %s", layer_id, event_file.name)
-        _note_layer(layer_id, name, "inundation_3d", paths=(manifest_path,))
+        _note_layer(layer_id, name, "inundation_3d", paths=(manifest_path,), envelope=event["metadata"])
         return True
     except Exception as exc:
         log.warning("push_inundation_3d_manifest failed (non-fatal): %s", exc)

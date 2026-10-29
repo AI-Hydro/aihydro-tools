@@ -6,6 +6,42 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased] (UX program Wave 1: map provenance, tools half; T-M1)
+
+No version bump here: the lead releases 2.9.0 (the line stays on 2.8.x until then). Read `docs/context.md`, "Map provenance".
+
+### Added
+
+- **Provenance envelope on every pushed layer.** `push_layer`, `push_raster_layer`, `push_tile_layer` and
+  `push_inundation_3d_manifest` stamp `chat_id`, `study_id`, `_run_id`, `tool` and `retrieved_at` into the layer metadata, and
+  `source` when the tool named none (`aihydro:<tool>`; a tool's own source such as "USGS NLDI" is kept). The server stamps them
+  (the host adds only `project_id` and the item id). They are not caller-overridable. A value that is not known is left out, never
+  empty. `_run_id` is the id of the run row the call stores: a row a writer already stored in the call, else an id reserved at the
+  first push (`run_records.run_ref_for_layer`) that `post_run` and the run recorder then store the row under. The study recorder keeps
+  `chat_id`, `source` and `retrieved_at` on the `layer:<id>` manifest entry.
+- **`bind_claim_to_item(claim_id, item_id)`.** One ledger link in the study (`extra.map_item_claim_links`) plus a
+  `map_item_claim_linked` ledger event. Claim status is never stored on the item, the manifest entry or the link.
+  `CLAIM_NOT_FOUND` and `ITEM_NOT_FOUND` are structured errors. Idempotent. (`bind_map_to_claim` is unchanged.)
+- **`map_get_state(scope="chat"|"project", chat_id?, workspace?)`** adds `items` (each with `item_id`, `study_id`, `run_id`, `tool`,
+  `chat_id`, `source`, `retrieved_at`, `sha256`, `in_host_catalog`, `claim_ids`), `scope`, `resolved` and, for the chat scope,
+  `unattributed_item_ids` (layers recorded before the envelope). Default scope `chat`; the existing host fields are unchanged.
+  `INVALID_SCOPE` for any other value. A project is keyed `dir:<sha256(realpath)>` (`ai_hydro/session/project_key.py`, the one
+  helper T-P1 switches to `prj_...`).
+- Capability flags `map.provenance_envelope`, `map.layer_from_run_artifact`, `map.claim_links`, `map.state_scope`, `jobs.context_echo`.
+
+### Changed (behaviour)
+
+- **`map_add_layer_from_run` reads the run row through the session store and the geometry from the run's recorded artifact.** It used
+  to parse the study JSON for `_run_log` (empty since the run log moved to SQLite) and scan `key_outputs` for GeoJSON. Now a run
+  with no recorded GeoJSON artifact returns `NO_GEOMETRY_ARTIFACT`; also `RUN_NOT_FOUND`, `STUDY_NOT_FOUND`, `ARTIFACT_MISSING`,
+  `ARTIFACT_MODIFIED` (the file no longer matches the digest recorded for the run) and `ARTIFACT_NOT_GEOJSON`. `geojson_key` now
+  selects an artifact (`artifact_id` or workspace path). The `add_layer_from_run` map command carries a `provenance` object.
+- **`data_fetch_background` captures `chat_id`, `study_id` and `workspace` at submit time** (`job_config.json` `context`), and
+  `BaseJobRunner` echoes `context` into every `status.json` it writes. The job is a detached subprocess (`Popen`), so the
+  ContextVars of the submitting call never reach it (tested).
+
+## [Unreleased] (UX program Wave 1: project registry v2; T-P1)
+
 ## [Unreleased] (UX program Wave 1: project registry v2 (T-P1); active-study context (T-R1))
 
 The package version is not bumped here; the lead releases (2.9.0).

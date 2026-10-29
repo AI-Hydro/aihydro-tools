@@ -21,6 +21,12 @@ CAPABILITIES: tuple[str, ...] = (
     "study.list",                       # aihydro://study/list
     "study.by_artifact",                # aihydro://study/by-artifact
     "artifact.recorder",                # artifact_manifest records every workspace file / pushed layer
+    # map provenance (T-M1)
+    "map.provenance_envelope",          # pushed layers carry chat_id, study_id, _run_id, tool, source, retrieved_at
+    "map.layer_from_run_artifact",      # map_add_layer_from_run reads the run store + recorded artifact; add_layer_from_run carries provenance
+    "map.claim_links",                  # bind_claim_to_item: a ledger link, never the claim status
+    "map.state_scope",                  # map_get_state(scope="chat"|"project") lists items with provenance
+    "jobs.context_echo",                # background jobs carry the submitting call's context and echo it in status.json
     # project registry v2 (T-P1)
     "project.registry_v2",              # prj_ ids; aihydro://project/by-dir and aihydro://project/{id}
     "project.host_ops",                 # ensure/rename/set-default/add/remove tools, audience = "host"

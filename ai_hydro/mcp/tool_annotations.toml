@@ -191,6 +191,14 @@ idempotentHint = true
 openWorldHint = false
 evidence = "writes workspace files (scaffold/export); recomputed from session [calls: mkdir, save, write_ledger_event, write_text]"
 
+["bind_claim_to_item"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "writes one ledger link into the study (session.extra) and a ledger event; a repeat call changes nothing"
+
 ["bootstrap_statistic"]
 source = "builtin"
 readOnlyHint = true

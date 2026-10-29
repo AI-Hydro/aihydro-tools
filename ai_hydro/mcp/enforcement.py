@@ -342,7 +342,9 @@ def post_run(tool_name: str, session_id: str, result: dict, inputs: dict | None 
     # was recorded under two ids).
     run_id, merge_row = _adopt_slot_row(tool_name, session_id, result)
     if run_id is None:
-        run_id = _generate_unique_run_id(tool_name, session_id)
+        # A layer pushed earlier in this call already names a run id for it: store the row under it.
+        from ai_hydro.session import run_records
+        run_id = run_records.reserved_run_id(session_id) or _generate_unique_run_id(tool_name, session_id)
     result["_run_id"] = run_id
     _write_run_log(session_id, run_id, tool_name, result, inputs, merge_row=merge_row)
 

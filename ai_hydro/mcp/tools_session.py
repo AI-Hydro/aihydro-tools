@@ -1484,3 +1484,66 @@ def bind_map_to_claim(
     except Exception as e:
         log.error("bind_map_to_claim failed: %s", e)
         return _tool_error_to_dict(e)
+
+
+@mcp.tool()
+def bind_claim_to_item(
+    claim_id: str,
+    item_id: str,
+    session_id: str | None = None,
+) -> dict:
+    """Link a claim to a map item (a layer, by its ``item_id`` = layer id).
+
+    Writes one ledger link in the study and emits a ledger event. The link is all that is stored:
+    the claim's status is never copied onto the item, so a later promotion, refutation or revision of
+    the claim is read from the claim, not from the map. The item then lists the claim under ``claim_ids``
+    in ``map_get_state``.
+
+    Errors: ``CLAIM_NOT_FOUND`` (no such claim in the study), ``ITEM_NOT_FOUND`` (the study recorded no
+    such layer and the map holds none).
+    """
+    try:
+        session_id = _resolve_session(session_id, None)
+        from ai_hydro.session import HydroSession
+        from ai_hydro.mcp.map_items import add_link
+        from ai_hydro.mcp.map_layer_catalog import find_catalog_layer
+
+        session = HydroSession.load(session_id)
+        if claim_id not in set(session.claims.keys()):
+            return {
+                "error": True,
+                "code": "CLAIM_NOT_FOUND",
+                "message": f"Claim '{claim_id}' not found in study '{session_id}'. "
+                           f"Available claim IDs: {sorted(session.claims.keys()) or '(none)'}",
+                "recovery": "Add the claim first, or pass the id of an existing claim.",
+                "next_tools": ["add_claim"],
+            }
+        if f"layer:{item_id}" not in session.artifact_manifest and not find_catalog_layer(item_id):
+            return {
+                "error": True,
+                "code": "ITEM_NOT_FOUND",
+                "message": f"No map item '{item_id}' in study '{session_id}' or on the map.",
+                "recovery": "List the items with map_get_state and pass one of their item_id values.",
+                "next_tools": ["map_get_state"],
+            }
+        created = add_link(session.extra, item_id, claim_id)
+        if created:
+            session.save()
+            from ai_hydro.mcp.ledger_commands import write_ledger_event
+            write_ledger_event({
+                "change_type": "map_item_claim_linked",
+                "session_id": session_id,
+                "claim_id": claim_id,
+                "item_id": item_id,
+            })
+        return {
+            "session_id": session_id,
+            "claim_id": claim_id,
+            "item_id": item_id,
+            "linked": True,
+            "already_linked": not created,
+            "message": f"Claim '{claim_id}' is linked to map item '{item_id}'.",
+        }
+    except Exception as e:
+        log.error("bind_claim_to_item failed: %s", e)
+        return _tool_error_to_dict(e)

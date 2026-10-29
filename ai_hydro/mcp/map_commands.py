@@ -140,7 +140,10 @@ def push_add_layer_from_run(
     run_id: str,
     session_id: str = "",
     auto_zoom: bool = True,
+    provenance: dict[str, str] | None = None,
 ) -> bool:
+    """``provenance`` is the envelope (``_run_id``, ``study_id``, ``tool``, ``chat_id``, ``source``,
+    ``retrieved_at``) the host copies onto the layer; ``run_id``/``session_id`` stay for older hosts."""
     return write_map_command(
         {
             "type": "add_layer_from_run",
@@ -150,6 +153,7 @@ def push_add_layer_from_run(
             "run_id": run_id,
             "session_id": session_id,
             "auto_zoom": auto_zoom,
+            **({"provenance": provenance} if provenance else {}),
         }
     )
 
