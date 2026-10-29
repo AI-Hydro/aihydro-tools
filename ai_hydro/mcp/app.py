@@ -252,6 +252,7 @@ TOOL_TIERS: dict[str, int] = {
     "list_features":                    3,
     "set_active_feature":               3,
     "bind_map_to_claim":                2,
+    "bind_claim_to_item":               2,
     # ── Phase 1.7: pre-registration ──────────────────────────────────────
     "register_research_plan":           2,
     # ── Phase 1.8: validators ─────────────────────────────────────────────
@@ -888,7 +889,11 @@ class RunRecordMiddleware(Middleware):
             "study_id": ACTIVE_STUDY_ID.get(),
             "client": ACTIVE_CONTEXT_CLIENT.get(),
         }
-        capture, token = run_records.begin_capture()
+        from ai_hydro.mcp.enforcement import _generate_unique_run_id as _run_id_factory
+
+        capture, token = run_records.begin_capture(
+            tool=tool, arguments=arguments, chat_id=ACTIVE_CHAT_ID.get(),
+            study_id=run_context["study_id"], id_factory=_run_id_factory)
         started = _time.monotonic()
         failure = None
         tool_result = None

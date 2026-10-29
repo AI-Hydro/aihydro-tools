@@ -114,6 +114,25 @@ files outside the study's workspace; files over 64 MB are listed with `hash_defe
 Study label (never a bare id): a user-set label, else the site name with its gauge alias ("Piscataquis River near
 Dover-Foxcroft, ME (USGS 01031500)"), else the outlet ("Basin at 24.20°N, 75.75°E"), else "<id> (unnamed study)".
 
+## Map provenance
+
+Every layer a tool pushes carries an envelope, stamped by the server inside the `push_*` functions
+(`map_events.provenance_envelope`): `chat_id` (the `ACTIVE_CHAT_ID` ContextVar), `study_id` and `_run_id` (the run row that
+owns the call), `tool`, `retrieved_at`, and `source`. The host stamps only `project_id` and the item id.
+
+- `_run_id` is the id of the row the call stores. A slot row already stored in the call (`put_result`) wins; otherwise the first
+  push reserves an id (`run_records.run_ref_for_layer`) and `post_run` / `_record_call` store the row under it. A layer pushed outside
+  a recorded call has no `_run_id`, and the host says "no run record".
+- Items: the layer id is the `item_id`. `map_get_state(scope)` merges the artifact manifest (provenance) with the host catalog
+  (`in_host_catalog`). Scope `chat` = layers stamped with this chat id; scope `project` = layers of every study whose workspace has
+  this project key. The key is `dir:<sha256(realpath)>` from `ai_hydro/session/project_key.py` until the project registry replaces it.
+- Claim links are ledger records: `bind_claim_to_item` writes `extra.map_item_claim_links[item_id] = [claim_id, ...]` in the study.
+  The claim's status is read from the claim; it is never copied onto an item.
+- `map_add_layer_from_run(session_id, run_id)` reads the run row from the run store and the geometry from the GeoJSON artifact
+  the study recorder stored for that run. No artifact: `NO_GEOMETRY_ARTIFACT`. It refuses a file edited since the run recorded it.
+- Background jobs (`data_fetch_background`) are detached subprocesses, so the call's ContextVars do not reach them. The submit call
+  copies `chat_id`, `study_id` and `workspace` into `job_config.json` (`context`); the runner echoes it into `status.json`.
+
 ## FastMCP 2.14 note
 
 FastMCP 2.14.7 does not copy `_meta` onto the middleware message

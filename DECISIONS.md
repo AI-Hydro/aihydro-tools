@@ -1,5 +1,25 @@
 # Decisions
 
+## 2026-10-29 - Map provenance is stamped by the server and the claim link carries no status (UX program Wave 1, T-M1)
+
+**Context.** Layers reach the host through a file drop, so the host cannot tell which call produced one. The old
+`map_add_layer_from_run` parsed the study JSON for a run log that now lives in SQLite and took geometry from summary values.
+Claims change status after a layer is on the map.
+
+**Decisions.**
+1. Python stamps `chat_id`, `study_id`, `_run_id`, `tool`, `source`, `retrieved_at` inside the `push_*` functions; the host only adds
+   `project_id` and the item id. A missing value is omitted, never blank, so the host can say "no run record" honestly.
+2. A layer pushed before its run row exists reserves the row's id on the call capture; `post_run` and the run recorder store the row
+   under it. The alternative (patch the event file after the call) races the host watcher.
+3. `map_add_layer_from_run` takes geometry only from a recorded artifact and refuses one whose digest no longer matches. A layer must
+   not claim to be a run's output when the file was edited afterwards.
+4. `bind_claim_to_item` stores the pair of ids only. Claim status is read from the claim at the time it is asked; storing it on the
+   item would go stale.
+5. The ContextVar does not survive into `data_fetch_background`: the job is a `Popen` subprocess. `chat_id`, `study_id` and
+   `workspace` are captured at submit time into the job config and echoed in the status.
+6. Until T-P1, a project is `dir:<sha256(realpath)>` behind one helper (`project_key`).
+
+
 ## 2026-10-22 — Validators judge the series a computation used, bound by digest; the CAMELS reference is packaged (Science Wave 3, PR-4b, 2.8.0)
 
 **Context.** Before 2.8.0 every streamflow validator read the session `streamflow` slot, which need not be the series

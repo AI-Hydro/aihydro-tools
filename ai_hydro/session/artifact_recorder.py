@@ -17,6 +17,9 @@ An entry (key ``file:<path>`` or ``layer:<layer_id>``)::
      "study_id": "01031500", "run_id": "<run row id>", "tool": "delineate_watershed",
      "recorded_at": "..."}
 
+Layer entries also carry the envelope the layer was stamped with (``chat_id``, ``source``,
+``retrieved_at``), which ``map_get_state`` reads to answer for a chat or a project.
+
 ``study/by-artifact`` (``ai_hydro.session.study_index``) reads these. Files written before the
 recorder existed have no entry and are resolved by a declared name heuristic that returns
 candidates only.
@@ -119,6 +122,8 @@ def record_artifacts(capture: Any, *, tool: str, call_session_id: str | None, ru
                 entry = {"type": "map_layer", "path": None, "layer_id": spec["layer_id"],
                          "name": spec.get("name"), "layer_type": spec.get("layer_type"),
                          "sha256": spec.get("content_sha256"), "size_bytes": None}
+                env = spec.get("envelope") or {}
+                entry.update({k: env[k] for k in ("chat_id", "source", "retrieved_at") if env.get(k)})
                 for p in spec.get("paths", []):
                     rel = _rel(p, ws)
                     if rel is not None:

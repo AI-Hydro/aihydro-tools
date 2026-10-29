@@ -73,12 +73,37 @@ def _recent_outbound_events(limit: int = 10) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def map_get_state(session_id: str | None = None, event_limit: int = 10) -> dict:
+def map_get_state(
+    session_id: str | None = None,
+    event_limit: int = 10,
+    scope: str = "chat",
+    chat_id: str | None = None,
+    workspace: str | None = None,
+) -> dict:
     """
     Map session snapshot from ~/.aihydro/map_session.json: basemap, view,
-    visible layers, workspace root, active ROI, recent events.
+    visible layers, workspace root, active ROI, recent events. The host fields are
+    global to the map panel (``display_state_scope: global_host``).
+
+    ``items`` lists the map items that belong to ``scope`` with the provenance each was stamped
+    with (``study_id``, ``run_id``, ``tool``, ``chat_id``, ``source``, ``retrieved_at``) and the
+    ``claim_ids`` linked to it. ``scope="chat"`` (default) is this chat's items, ``"project"`` every
+    item in this workspace. ``chat_id`` and ``workspace`` default to the call's context. A claim's
+    status is not part of an item: read the claim.
     """
     try:
+        from ai_hydro.mcp.map_items import SCOPES, collect
+
+        if scope not in SCOPES:
+            return {
+                "error": True,
+                "code": "INVALID_SCOPE",
+                "message": f"scope={scope!r} is not one of {list(SCOPES)}.",
+                "recovery": 'Pass scope="chat" or scope="project".',
+                "next_tools": ["map_get_state"],
+            }
+        from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_WORKSPACE
+
         session_id = _normalize_session_id(session_id) if session_id else None
         persisted = _read_map_session_file()
         requested_workspace = None
@@ -128,6 +153,13 @@ def map_get_state(session_id: str | None = None, event_limit: int = 10) -> dict:
         basemap_name = persisted.get("basemapName") or persisted.get("basemap_name")
 
         catalog = read_layer_catalog()
+        scoped = collect(
+            scope,
+            chat_id=chat_id or ACTIVE_CHAT_ID.get(),
+            workspace=workspace or ACTIVE_WORKSPACE.get() or persisted.get("workspaceRoot")
+            or persisted.get("workspace_root"),
+        )
+        scoped.pop("scope", None)
 
         return {
             "display_state_scope": "global_host",
@@ -157,6 +189,8 @@ def map_get_state(session_id: str | None = None, event_limit: int = 10) -> dict:
             "resolved_roi_for_session": resolved,
             "recent_events": _recent_outbound_events(max(1, min(event_limit, 50))),
             "recent_events_scope": "global_host",
+            "scope": scope,
+            **scoped,
         }
     except Exception as e:
         return _tool_error_to_dict(e)
@@ -400,6 +434,30 @@ def map_fly_to(
     }
 
 
+_GEOJSON_TYPES = frozenset({
+    "Feature", "FeatureCollection", "Point", "LineString", "Polygon", "MultiPolygon",
+    "MultiPoint", "MultiLineString", "GeometryCollection",
+})
+_GEOMETRY_SUFFIXES = (".geojson", ".json")
+
+
+def _run_error(code: str, message: str, recovery: str, **extra: Any) -> dict:
+    return {"error": True, "code": code, "message": message, "recovery": recovery,
+            "next_tools": ["map_get_state", "map_list_layers"], **extra}
+
+
+def _geometry_artifacts(session: Any, run_id: str) -> list[dict[str, Any]]:
+    """Manifest entries the study recorder stored for ``run_id`` that can hold geometry."""
+    out = []
+    for entry in (session.artifact_manifest or {}).values():
+        if not isinstance(entry, dict) or entry.get("run_id") != run_id or not entry.get("path"):
+            continue
+        if entry.get("type") == "workspace_file" or entry.get("type") == "map_layer":
+            if str(entry["path"]).lower().endswith(_GEOMETRY_SUFFIXES):
+                out.append(entry)
+    return out
+
+
 @mcp.tool()
 def map_add_layer_from_run(
     session_id: str,
@@ -409,145 +467,107 @@ def map_add_layer_from_run(
     geojson_key: str | None = None,
 ) -> dict:
     """
-    Add a GeoJSON result from a tool run directly to the map as a new layer.
+    Add the geometry a tool run produced to the map as a new layer.
 
-    Reads the run log entry for `run_id` in session `session_id`, extracts the
-    first GeoJSON value from `key_outputs` (or the value under `geojson_key`),
-    and pushes it as a provenance-tagged layer. The layer carries `run_id` and
-    `session_id` in its metadata so provenance chips can link back.
+    The run row is read through the session store (the row may exist only in the run-log
+    database) and the geometry is read from the run's recorded artifact: a GeoJSON file the
+    study recorder stored for that run. Nothing is taken from the row's summary values. The layer
+    carries the run's provenance (``_run_id``, ``study_id``, ``tool``) so chips link back.
+    When the run has no GeoJSON artifact the call fails with ``NO_GEOMETRY_ARTIFACT``.
 
-    `auto_zoom=True` (default) zooms the map to the new layer's extent.
+    ``geojson_key`` picks one artifact (its ``artifact_id`` such as ``file:watershed_X.geojson``, or
+    its workspace-relative path) when the run recorded several. ``auto_zoom=True`` (default) zooms to it.
     """
     try:
         import os
 
-        run_id = run_id.strip()
+        from ai_hydro.session import HydroSession, run_records, store
+
+        run_id = (run_id or "").strip()
         if not (session_id or "").strip() or not run_id:
-            return {"ok": False, "message": "session_id and run_id are required"}
+            return _run_error("RUN_REQUIRED", "session_id and run_id are required",
+                              "Pass the study id and a run id returned by a tool as _run_id.")
         session_id = _normalize_session_id(session_id)
-        # The session store's own path rule: separators and '..' runs are neutralised, so a
-        # session_id such as "../x" cannot reach a file outside the sessions directory.
-        from ai_hydro.session.store import HydroSession
-        session_path = HydroSession._path(session_id)
-        if not session_path.exists():
-            return {"ok": False, "message": f"Session '{session_id}' not found at {session_path}"}
+        if not run_records._session_exists(session_id):
+            return _run_error("STUDY_NOT_FOUND", f"Study '{session_id}' was not found.",
+                              "Call aihydro_chat_status or list_sessions for the studies you can use.")
 
-        raw = json.loads(session_path.read_text(encoding="utf-8"))
+        row = store._run_log_read_one(session_id, run_id)
+        if not isinstance(row, dict):
+            recent = list((HydroSession.load(session_id).get("_run_log") or {}).keys())[-10:]
+            return _run_error("RUN_NOT_FOUND", f"run_id '{run_id}' is not in study '{session_id}'.",
+                              "Use a run id from a tool result's _run_id.", recent_run_ids=recent)
 
-        run_log_slot = raw.get("_run_log")
-        if not run_log_slot:
-            return {"ok": False, "message": "No _run_log in session — ensure aihydro-tools enforcement is running"}
+        session = HydroSession.load(session_id)
+        artifacts = _geometry_artifacts(session, run_id)
+        if geojson_key:
+            artifacts = [a for a in artifacts
+                         if geojson_key in (a.get("artifact_id"), a.get("path"), a.get("layer_id"))]
+        if not artifacts:
+            return _run_error(
+                "NO_GEOMETRY_ARTIFACT",
+                f"Run '{run_id}' recorded no GeoJSON artifact"
+                + (f" matching '{geojson_key}'" if geojson_key else "")
+                + ". Runs from before the study recorder, and runs that wrote no geometry file, have none.",
+                "Re-run the tool so its output is recorded, or add the file with map_set_working_geometry.",
+                run_id=run_id, study_id=session_id)
 
-        run_log: dict[str, Any] = (
-            run_log_slot.get("data", run_log_slot)
-            if isinstance(run_log_slot, dict) and "data" in run_log_slot
-            else run_log_slot
-        )
+        chosen = artifacts[0]
+        ws = session.workspace_dir
+        path = os.path.join(ws, chosen["path"]) if ws else None
+        if not path or not os.path.isfile(path):
+            return _run_error("ARTIFACT_MISSING",
+                              f"The recorded artifact '{chosen['path']}' is not on disk.",
+                              "Restore the file or re-run the tool.", run_id=run_id, artifact_id=chosen.get("artifact_id"))
+        recorded = chosen.get("sha256")
+        if recorded:
+            from ai_hydro.session.study_index import sha256_file
+            if sha256_file(path) != recorded:
+                return _run_error(
+                    "ARTIFACT_MODIFIED",
+                    f"'{chosen['path']}' changed after run '{run_id}' recorded it, so it is no longer that run's output.",
+                    "Re-run the tool, or push the edited file as a new layer.",
+                    run_id=run_id, artifact_id=chosen.get("artifact_id"))
+        try:
+            geojson = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            geojson = None
+        if not (isinstance(geojson, dict) and geojson.get("type") in _GEOJSON_TYPES):
+            return _run_error("ARTIFACT_NOT_GEOJSON", f"'{chosen['path']}' is not GeoJSON.",
+                              "Pass geojson_key=<artifact_id> to choose another artifact.",
+                              run_id=run_id, artifact_id=chosen.get("artifact_id"))
 
-        entry = run_log.get(run_id)
-        if not entry:
-            available = list(run_log.keys())[:10]
-            return {
-                "ok": False,
-                "message": f"run_id '{run_id}' not found. Recent runs: {available}",
-            }
-
-        key_outputs: dict[str, Any] = entry.get("key_outputs") or {}
-
-        # Find GeoJSON: prefer explicit key, then search for geojson-like values
-        geojson_str: str | None = None
-        chosen_key: str | None = None
-
-        if geojson_key and geojson_key in key_outputs:
-            val = key_outputs[geojson_key]
-            geojson_str = val if isinstance(val, str) else json.dumps(val)
-            chosen_key = geojson_key
-        else:
-            for k, v in key_outputs.items():
-                if k.startswith("_"):
-                    continue
-                if isinstance(v, dict) and v.get("type") in (
-                    "Feature", "FeatureCollection", "Point", "LineString",
-                    "Polygon", "MultiPolygon", "MultiPoint", "MultiLineString",
-                    "GeometryCollection",
-                ):
-                    geojson_str = json.dumps(v)
-                    chosen_key = k
-                    break
-                if isinstance(v, str):
-                    try:
-                        parsed = json.loads(v)
-                        if isinstance(parsed, dict) and parsed.get("type") in (
-                            "Feature", "FeatureCollection", "Point", "LineString",
-                            "Polygon", "MultiPolygon",
-                        ):
-                            geojson_str = v
-                            chosen_key = k
-                            break
-                    except Exception:
-                        continue
-
-        if not geojson_str:
-            return {
-                "ok": False,
-                "message": (
-                    f"No GeoJSON found in key_outputs for run '{run_id}'. "
-                    f"Available keys: {list(key_outputs.keys())}. "
-                    "Pass geojson_key=<key> to specify which field contains GeoJSON."
-                ),
-            }
-
-        tool_name: str = entry.get("tool_name", "unknown_tool")
+        tool_name = str(row.get("tool_name") or (row.get("record") or {}).get("tool") or "unknown_tool")
         name = layer_name or f"{tool_name} / {run_id[:12]}"
         lid = f"run_{run_id.replace('.', '_').replace('-', '_')[:32]}"
+        from ai_hydro.mcp.app import ACTIVE_CHAT_ID
 
+        provenance = {
+            "_run_id": run_id, "study_id": session_id, "tool": tool_name,
+            "source": f"aihydro:{tool_name}", "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if ACTIVE_CHAT_ID.get():
+            provenance["chat_id"] = ACTIVE_CHAT_ID.get()
         ok = push_add_layer_from_run(
             layer_id=lid,
             layer_name=name,
-            geojson=geojson_str,
+            geojson=json.dumps(geojson),
             run_id=run_id,
             session_id=session_id,
             auto_zoom=auto_zoom,
+            provenance=provenance,
         )
         return {
             "ok": ok,
             "layer_id": lid,
             "layer_name": name,
-            "geojson_key": chosen_key,
+            "artifact_id": chosen.get("artifact_id"),
             "run_id": run_id,
+            "provenance": provenance,
             "message": "Layer add command queued for map host" if ok else "Failed to queue add_layer_from_run",
         }
     except Exception as e:
         return _tool_error_to_dict(e)
-
-
-_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_ISO_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$")
-
-
-def _strict_iso(value: str, which: str) -> tuple[str, "datetime"]:
-    """``(normalised, instant)`` for a strict ISO-8601 date (``YYYY-MM-DD``) or date-time with
-    ``Z`` or a numeric offset. A date-time is normalised to UTC (``...Z``); a date is kept.
-    Raises ``ValueError`` naming the argument otherwise (no zone-less date-times, no free text)."""
-    from datetime import datetime, timezone
-
-    v = (value or "").strip()
-    if _ISO_DATE.match(v):
-        try:
-            return v, datetime.strptime(v, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        except ValueError:
-            raise ValueError(f"{which}={value!r} is not a valid calendar date") from None
-    if _ISO_DATETIME.match(v):
-        t = v.replace(" ", "T").replace("Z", "+00:00")
-        if re.search(r"[+-]\d{4}$", t):
-            t = t[:-2] + ":" + t[-2:]
-        try:
-            dt = datetime.fromisoformat(t).astimezone(timezone.utc)
-        except ValueError:
-            raise ValueError(f"{which}={value!r} is not a valid ISO-8601 date-time") from None
-        return dt.strftime("%Y-%m-%dT%H:%M:%SZ"), dt
-    raise ValueError(f"{which}={value!r} is not strict ISO-8601: use YYYY-MM-DD, or a date-time "
-                     "with a zone (2020-01-01T00:00:00Z or 2020-01-01T00:00:00+02:00)")
 
 
 @mcp.tool()

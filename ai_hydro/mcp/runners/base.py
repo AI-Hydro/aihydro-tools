@@ -154,6 +154,11 @@ class BaseJobRunner(ABC):
             })
             return
 
+        # The submitting call's context (chat_id, study_id, workspace) rides in the config, because a
+        # ContextVar does not cross into this process. It is echoed into every status written below.
+        if isinstance(cfg.get("context"), dict):
+            base["context"] = cfg["context"]
+
         # ── 3. Mark running ───────────────────────────────────────────────────
         self._write_status(artifact_dir, {**base, "status": "running", "updated_at": _now()})
         _log.info("Job %s starting with config: %s", base["job_id"], json.dumps(cfg)[:200])

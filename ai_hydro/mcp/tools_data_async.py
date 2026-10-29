@@ -50,8 +50,23 @@ def _artifact_dir(job_id: str) -> Path:
     return base / job_id
 
 
-def _pending_status(job_id: str, artifact_dir: Path, variable: str) -> dict:
+def _submit_context() -> dict:
+    """The call context captured at submit time.
+
+    A background job is a detached subprocess (``aihydro_core.jobs.start_job`` -> ``Popen``): it is
+    a different process, so no ContextVar of the submitting call (``ACTIVE_CHAT_ID`` and the rest)
+    reaches it. The job's config carries what it needs, and the runner echoes it into ``status.json``.
+    """
+    from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_STUDY_ID, ACTIVE_WORKSPACE
+
+    ctx = {"chat_id": ACTIVE_CHAT_ID.get(), "study_id": ACTIVE_STUDY_ID.get(),
+           "workspace": ACTIVE_WORKSPACE.get()}
+    return {k: v for k, v in ctx.items() if v}
+
+
+def _pending_status(job_id: str, artifact_dir: Path, variable: str, context: dict | None = None) -> dict:
     return {
+        "context":  context or {},
         "job_id":   job_id,
         "status":   "pending",
         "variable": variable,
@@ -136,6 +151,7 @@ def data_fetch_background(
                 return refusal
 
         job_id     = uuid.uuid4().hex[:12]
+        context    = _submit_context()      # captured here: the job runs in another process
         art_dir    = _artifact_dir(job_id)
         art_dir.mkdir(parents=True, exist_ok=True)
 
@@ -148,6 +164,7 @@ def data_fetch_background(
             "product":     product,
             "aggregation": aggregation,
             "gauge_id":    gauge_id,
+            "context":     context,
         }
 
         job = jobs.start_job(
@@ -156,7 +173,7 @@ def data_fetch_background(
             config=config,
             artifact_dir=art_dir,
             log_name="fetch.log",
-            status_seed=_pending_status(job_id, art_dir, variable),
+            status_seed=_pending_status(job_id, art_dir, variable, context),
         )
 
         return {
