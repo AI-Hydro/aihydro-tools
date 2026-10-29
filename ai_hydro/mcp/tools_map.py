@@ -442,7 +442,7 @@ _GEOMETRY_SUFFIXES = (".geojson", ".json")
 
 
 def _run_error(code: str, message: str, recovery: str, **extra: Any) -> dict:
-    return {"error": True, "code": code, "message": message, "recovery": recovery,
+    return {"ok": False, "error": True, "code": code, "message": message, "recovery": recovery,
             "next_tools": ["map_get_state", "map_list_layers"], **extra}
 
 
@@ -568,6 +568,35 @@ def map_add_layer_from_run(
         }
     except Exception as e:
         return _tool_error_to_dict(e)
+
+
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_ISO_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$")
+
+
+def _strict_iso(value: str, which: str) -> tuple[str, "datetime"]:
+    """``(normalised, instant)`` for a strict ISO-8601 date (``YYYY-MM-DD``) or date-time with
+    ``Z`` or a numeric offset. A date-time is normalised to UTC (``...Z``); a date is kept.
+    Raises ``ValueError`` naming the argument otherwise (no zone-less date-times, no free text)."""
+    from datetime import datetime, timezone
+
+    v = (value or "").strip()
+    if _ISO_DATE.match(v):
+        try:
+            return v, datetime.strptime(v, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise ValueError(f"{which}={value!r} is not a valid calendar date") from None
+    if _ISO_DATETIME.match(v):
+        t = v.replace(" ", "T").replace("Z", "+00:00")
+        if re.search(r"[+-]\d{4}$", t):
+            t = t[:-2] + ":" + t[-2:]
+        try:
+            dt = datetime.fromisoformat(t).astimezone(timezone.utc)
+        except ValueError:
+            raise ValueError(f"{which}={value!r} is not a valid ISO-8601 date-time") from None
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ"), dt
+    raise ValueError(f"{which}={value!r} is not strict ISO-8601: use YYYY-MM-DD, or a date-time "
+                     "with a zone (2020-01-01T00:00:00Z or 2020-01-01T00:00:00+02:00)")
 
 
 @mcp.tool()

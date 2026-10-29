@@ -308,7 +308,8 @@ def _retry_when_locked(fn, *, deadline: float | None = None):
 
 
 def _run_log_connect(session_id: str, *, deadline: float | None = None) -> sqlite3.Connection:
-    _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    if not _SESSIONS_DIR.is_dir():       # a read of an existing store makes no filesystem call that writes
+        _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     path = _run_log_db_path(session_id)
     contained = _contained_path(path)
     if contained is None:

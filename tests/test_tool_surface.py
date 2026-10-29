@@ -491,8 +491,13 @@ def test_ui_class_writes_only_command_files_at_runtime(tmp_path, monkeypatch):
     sessions = tmp_path / "sessions"
     sessions.mkdir()
     monkeypatch.setattr(_store, "_SESSIONS_DIR", sessions)
-    (sessions / "s1.json").write_text(json.dumps({"_run_log": {"run1": {
-        "tool_name": "demo", "key_outputs": {"basin": {"type": "Point", "coordinates": [0.0, 1.0]}}}}}))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "basin.geojson").write_text(json.dumps({"type": "Point", "coordinates": [0.0, 1.0]}))
+    (sessions / "s1.json").write_text(json.dumps({"session_id": "s1", "workspace_dir": str(ws), "artifact_manifest": {
+        "file:basin.geojson": {"artifact_id": "file:basin.geojson", "kind": "workspace_artifact",
+                               "type": "workspace_file", "path": "basin.geojson", "run_id": "run1", "sha256": None}}}))
+    _store._run_log_record("s1", "run1", {"tool_name": "demo"})   # the run row lives in the run store
     fc = {"type": "FeatureCollection", "features": [
         {"type": "Feature", "geometry": {"type": "Point", "coordinates": [0, 0]}, "properties": {"v": float(i)}}
         for i in range(10)]}
