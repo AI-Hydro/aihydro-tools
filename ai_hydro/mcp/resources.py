@@ -17,6 +17,7 @@ Serves two families of resources via the native MCP resource protocol:
   Project registry (host-facing):
     aihydro://project/by-dir{?path}      — the project of a directory
     aihydro://project/{project_id}       — one project with labelled studies
+    aihydro://project/{project_id}/context{?chat} — the chat's active-study digest plus profile
 
 CLI and cloud agents can read session resources with an explicit session_id
 without needing the VS Code extension or a chat binding.  The facade tools
@@ -427,3 +428,18 @@ def project_record(project_id: str) -> str:
     if rec is None:
         return json.dumps({"found": False, "project_id": project_id}, indent=2)
     return json.dumps({"found": True, **reg.view(rec)}, indent=2)
+
+
+@mcp.resource("aihydro://project/{project_id}/context{?chat}")
+def project_context(project_id: str, chat: str = "") -> str:
+    """The context section a host injects: the digest of the chat's active study plus the researcher profile.
+
+    ``chat`` is the chat ULID. Only the study bound to that chat (and belonging to this project) appears;
+    there is no default-study fallback, and other studies, projects and chats never do. Measured values are
+    read from the run log at call time and rendered as ``name = value [run:<id>#key_outputs.name]``; a line
+    carrying a number without a ``[run:]``/``[claim:]`` marker is withheld. Read-only: nothing is bound,
+    created or saved. The host injects ``text`` at task start and on change only, never per turn.
+    """
+    from ai_hydro.session.study_context import build_context
+
+    return json.dumps(build_context(project_id, chat or None), indent=2)

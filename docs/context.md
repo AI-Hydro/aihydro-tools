@@ -145,6 +145,51 @@ that name.
 - Duplicates (D8): studies of one project with the same site id are grouped when read (`alias_group`, `duplicate_groups`,
   "2 studies for 01031500"). Nothing is merged, renamed or deleted.
 
+## Active-study context resource (T-R1)
+
+`aihydro://project/{project_id}/context?chat={chat_ulid}` returns the section a host injects into the
+prompt: the digest of the chat's **active study** plus the researcher profile. It replaces the
+`.aihydrorules/research.md` digest.
+
+```json
+{"found": true, "project_id": "prj_...", "chat_id": "01KV...", "active_study_id": "st_...", "text": "# Project: ..."}
+```
+
+`text` is markdown: label, study id, site, computed / stale / degraded / pending slots, results, claims, an
+interpretation pointer, a short citation-grammar reminder and the profile.
+
+- **Only the chat's active study.** The study bound to `chat` (chat binding store) that also belongs to the
+  project. There is no confirmed-default or most-recent fallback: an unbound or invalid chat gets a one-line
+  note and no study. Other studies, projects and chats never appear.
+- **Read-only.** Nothing is bound, created, saved or migrated by reading it.
+- **Pointers in audit grammar (B6).** A result is re-read from the run log at call time and rendered
+  `baseflow_index = 0.44 [run:<run_id>#key_outputs.baseflow_index]`. A row whose seal no longer verifies renders as
+  `stale pointer` with no value. Degraded slots offer no values.
+- **No uncited number.** A final gate withholds any line that carries a numeric literal outside a `[run:]` or
+  `[claim:]` marker (`ai_hydro.session.study_context.bare_numbers`, built on the audit grammar). Study labels that
+  contain a coordinate fall back to the study id. Notes and interpretation text are not injected: only a pointer to them.
+- **Forged markers cannot license a number.** Every free-text field (profile, study label, site id/type, project
+  title) is passed through `neutralise`: `[run:`, `[claim:` and `[lit:` become `(run :` and so on, before the
+  gate. Only lines built from run-log rows and ledger claims carry live markers. The grammar's loose
+  exemptions (a plain integer, a long digit string, "17 things") hold only for the study's own site id, so
+  "population 12345678" is withheld; dates, years and `Figure N` stay exempt.
+- **Profile <= 1 KB**: name, role, institution, domain, focus, expertise, style as stored. The profile file does not
+  record who wrote a field (a person, or the agent through `update_researcher_profile`), so these are treated as
+  untrusted text: neutralised and number-gated, not as "user-edited". Agent observations are consent-gated (PSMH T3)
+  and not injected yet.
+- **Trust.** `?chat=` isolation is not authenticated: the resource is local and host-trusted. Memory entries are not injected yet either (T3).
+- **When to fetch.** At task start and when the active study or memory changes, never per turn: the section is meant
+  for the stable layer of the prompt (ux-program 1.4); a per-turn fetch busts the prompt cache.
+
+### `research.md` is retired (M8)
+
+`.aihydrorules/research.md` is now a stub that points at the resource. It is written when absent or when it still holds an
+old digest, and **never rewritten once it is the stub**. A file that is neither (hand-edited or replaced) is first copied
+to `research.md.bak-<UTC timestamp>` (`start_session`, `archive`, shard merge and `export_session`
+all go through `write_research_md_stub`, which is a no-op on the stub). The stub stays for one release so older hosts do
+not fail on a missing file; delete it with the next release. The bare `(BFI=...)`/`(NSE=...)` project digest writer is
+removed. Capability flag: `project.context_resource`.
+
 ## FastMCP 2.14 note
 
 FastMCP 2.14.7 does not copy `_meta` onto the middleware message

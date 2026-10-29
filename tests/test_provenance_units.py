@@ -395,7 +395,9 @@ def _research_md(ws):
     return rules_dir(str(ws)) / "research.md"
 
 
-def test_save_does_not_rewrite_research_md_but_task_boundaries_do(env):
+def test_research_md_is_written_once_as_a_stub_and_never_rewritten(env):
+    import os
+
     ws = env / "ws"
     ws.mkdir()
     session = HydroSession.load(SID)
@@ -405,30 +407,33 @@ def test_save_does_not_rewrite_research_md_but_task_boundaries_do(env):
 
     session.save(sync_context=True)
     md = _research_md(ws)
-    assert md.exists()
-    md.write_text("SENTINEL")
+    assert md.exists() and "no longer updated" in md.read_text()
+    os.utime(md, ns=(1_000_000_000, 1_000_000_000))        # a sentinel mtime: any rewrite changes it
+    before = (md.stat().st_mtime_ns, md.read_bytes())
     session.notes.append("a note")
     session.save()
     session.commit()
-    assert md.read_text() == "SENTINEL"
-
+    session.save(sync_context=True)
     session.archive()                                      # task end
-    assert md.read_text() != "SENTINEL"
+    assert (md.stat().st_mtime_ns, md.read_bytes()) == before
 
 
-def test_start_session_and_export_refresh_research_md(env):
+def test_start_session_and_export_leave_the_stub_alone(env):
+    import os
+
     from ai_hydro.mcp.tools_session import export_session, start_session
 
     ws = env / "ws2"
     ws.mkdir()
     start_session(session_id=SID, workspace_dir=str(ws))
     md = _research_md(ws)
-    assert md.exists()
-    md.write_text("SENTINEL")
+    assert md.exists() and "no longer updated" in md.read_text()
+    os.utime(md, ns=(1_000_000_000, 1_000_000_000))
+    before = (md.stat().st_mtime_ns, md.read_bytes())
     HydroSession.load(SID).save()
-    assert md.read_text() == "SENTINEL"
     export_session(session_id=SID, format="json")
-    assert md.read_text() != "SENTINEL"
+    start_session(session_id=SID)
+    assert (md.stat().st_mtime_ns, md.read_bytes()) == before
 
 
 # -------------------------------------------------------------- M4 payloads
