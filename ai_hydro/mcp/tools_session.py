@@ -542,7 +542,8 @@ async def list_available_tools(
     try:
         from ai_hydro.mcp.tools_discovery import _DOMAIN_PREFIXES
 
-        tools_raw = sorted(await mcp.list_tools(), key=lambda t: t.name)   # server loop; deterministic
+        from ai_hydro.mcp.tools_discovery import agent_visible
+        tools_raw = sorted(agent_visible(await mcp.list_tools()), key=lambda t: t.name)   # server loop; deterministic
         base: dict = {"n_tools": len(tools_raw)}
 
         if name:

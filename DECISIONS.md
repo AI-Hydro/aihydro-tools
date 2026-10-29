@@ -10,9 +10,16 @@
 3. Study labels are computed on read from the study index, not stored in `project.json`, so a rename of a site cannot leave a
    stale label. The file holds only the links (`study_id`, `added_by`, `added_at`).
 4. The audience flag is data: the server serves `aihydro/audience = host` and does not refuse agent-originated calls; the host
-   hides the five tools from the model and refuses them from it. `list_available_tools` / `aihydro_describe_capability` still
-   name them (the discovery contract test requires every tool to have a domain); filtering them is left to the host work.
-5. M3 cannot use a chat's cwd (the backend does not store it); bindings are matched through the study's `workspace_dir`.
+   hides the five tools from the model and refuses them from it. Until it does, an agent that knew the name could confirm its own
+   suggested default, so `list_available_tools` and `aihydro_describe_capability` filter on the flag (`agent_visible`, no tool
+   names) and the discovery contract test exempts host-audience rows. Server-side refusal of agent-originated calls is still
+   deferred to the host work; `describe_tool(name)` still resolves them.
+5. Directory keys (`dir_key`) are the realpath, case-folded on darwin and win32 where the filesystem usually is
+   case-insensitive. Trade-off: on a case-sensitive APFS volume two distinct directories differing only in case fold to one
+   key and would share a project. Accepted as rarer than the moved-or-retyped-path case it fixes; revisit if reported.
+6. The reserved `prj_` prefix is checked case-insensitively (a case-variant legacy name overwrote a registry file on APFS).
+   Project default resolution reads only the call's own `_meta` workspace, never the machine-global `active_workspace.json`.
+7. M3 cannot use a chat's cwd (the backend does not store it); bindings are matched through the study's `workspace_dir`.
 
 ## 2026-10-22 — Validators judge the series a computation used, bound by digest; the CAMELS reference is packaged (Science Wave 3, PR-4b, 2.8.0)
 

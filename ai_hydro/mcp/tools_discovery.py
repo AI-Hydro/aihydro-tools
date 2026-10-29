@@ -27,9 +27,7 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "session":     ("start_session", "get_session", "clear_session", "archive_session",
                     "merge_session", "add_note", "export_session",
                     "aihydro_rebind_chat", "aihydro_chat_status"),
-    "project":     ("start_project", "get_project", "add_session_to_project", "ensure_project",
-                    "rename_project", "set_project_default_study", "add_project_study",
-                    "remove_project_study"),    # last five: host-audience (tool_annotations.toml)
+    "project":     ("start_project", "get_project", "add_session_to_project"),
     "watershed":   ("delineate_watershed", "delineation_", "merit_", "extract_geomorphic",
                     "compute_twi", "create_cn_grid", "compute_soil_loss_rusle",
                     "fetch_soil_attributes_ssurgo",
@@ -91,6 +89,16 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
 }
 
 
+def agent_visible(tools):
+    """Tools an agent may be told about: those not marked ``aihydro/audience = host``.
+
+    Host-audience tools (the project-registry operations) can confirm a default study or edit a
+    project; until the host refuses agent-originated calls, the server's own listings do not
+    name them. Data-driven from ``_meta``; no tool name appears here.
+    """
+    return [t for t in tools if (getattr(t, "meta", None) or {}).get("aihydro/audience") != "host"]
+
+
 @mcp.tool()
 async def aihydro_describe_capability(domain: str | None = None) -> dict:
     """
@@ -114,7 +122,7 @@ async def aihydro_describe_capability(domain: str | None = None) -> dict:
     dict with `domain`, `tools` (list of {name, tier, summary}), and
     `count`. Or, if no domain given: `domains` (list of {name, tool_count}).
     """
-    tools = await mcp.list_tools()
+    tools = agent_visible(await mcp.list_tools())
     tool_index = {t.name: t for t in tools}
 
     if not domain:

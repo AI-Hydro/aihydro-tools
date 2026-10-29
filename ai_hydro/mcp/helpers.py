@@ -451,7 +451,7 @@ def _resolve_session_impl(
             from ai_hydro.mcp.app import ACTIVE_PROJECT_ID, ACTIVE_WORKSPACE
             from ai_hydro.session.project_registry import get_project_registry
 
-            ws4 = ACTIVE_WORKSPACE.get() or (_call_workspace() if read_only else None)
+            ws4 = ACTIVE_WORKSPACE.get()           # the call's own workspace only, never the machine-global file
             default = get_project_registry().confirmed_default(workspace=ws4, project_id=ACTIVE_PROJECT_ID.get())
             if default:
                 sid, _pid = default

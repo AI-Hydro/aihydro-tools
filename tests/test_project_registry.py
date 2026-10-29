@@ -591,3 +591,59 @@ def test_the_registry_never_touches_a_path_outside_the_scratch_home(ws, reg, tmp
     _ensure(ws)
     assert str(reg.projects_dir).startswith(str(aihydro_home()))
     assert str(aihydro_home()) != str(Path.home() / ".aihydro")
+
+
+# ---------------------------------------------------------------- review fixes
+
+def test_a_case_variant_of_the_reserved_prefix_cannot_overwrite_a_registry_project(ws):
+    from ai_hydro.session.project import ProjectSession
+
+    pid = _ensure(ws)["project_id"]
+    path = get_project_registry().project_file(pid)
+    before = path.read_bytes()
+    for variant in ("PRJ_" + pid[4:], "Prj_" + pid[4:], pid.upper(), "pRj_x"):
+        with pytest.raises(ValueError, match="reserved"):
+            ProjectSession(variant).save()
+        with pytest.raises(ValueError, match="reserved"):
+            ProjectSession.load(variant)
+    assert path.read_bytes() == before
+    assert get_project_registry().get(pid) is not None
+    assert ProjectSession.list_all() == []
+
+
+def test_host_audience_tools_are_not_named_to_the_agent(ws):
+    import asyncio
+
+    from ai_hydro.mcp.tools_discovery import aihydro_describe_capability
+    from ai_hydro.mcp.tools_session import list_available_tools
+
+    ops = {"ensure_project", "rename_project", "set_project_default_study", "add_project_study",
+           "remove_project_study"}
+    seen = set()
+    out = asyncio.run(list_available_tools())
+    pages = 0
+    while True:
+        seen |= {t["name"] if isinstance(t, dict) else t for t in out["tools"]}
+        pages += 1
+        if out.get("next_offset") is None or pages > 200:
+            break
+        out = asyncio.run(list_available_tools(offset=out["next_offset"]))
+    assert seen and not (seen & ops)
+    assert not (ops & {t["name"] for t in asyncio.run(list_available_tools(name="ensure_project")).get("tools", [])})
+    for domain in (None, "project", "session"):
+        res = asyncio.run(aihydro_describe_capability(domain=domain))
+        assert not (ops & {t["name"] for t in res.get("tools", [])}), domain
+    # still callable by name (the host calls them) and still registered
+    res, body = call("ensure_project", {"root_dir": str(ws)})
+    assert not body.get("error")
+
+
+def test_project_default_ignores_the_machine_global_workspace_file(ws):
+    pid = _two_studies_and_project(ws)
+    call("set_project_default_study", {"project_id": pid, "study_id": "s1"})
+    f = aihydro_home() / "active_workspace.json"
+    f.write_text(json.dumps({"workspace": str(ws)}))                 # whichever window was focused last
+    res, body = call("list_features", {})                            # read-only, no context of its own
+    assert body["code"] == "SESSION_RESOLUTION_FAILED"
+    res, body = call("list_features", {}, meta=ctx(CHAT_A, ws))      # the call's own workspace does resolve
+    assert body["session_id"] == "s1"
