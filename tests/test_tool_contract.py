@@ -372,8 +372,12 @@ class TestRule5Discoverable:
         from ai_hydro.mcp.tools_discovery import _DOMAIN_PREFIXES
         # Build a flat set of all prefix-matching tool names
         all_prefixes = [p for ps in _DOMAIN_PREFIXES.values() for p in ps]
+        from ai_hydro.mcp.tool_surface import load_annotation_rows
+        host_only = {n for n, r in load_annotation_rows().items() if r.get("audience") == "host"}
         orphans = []
         for name in TOOL_TIERS:
+            if name in host_only:       # deliberately undiscoverable by the agent (T-P1)
+                continue
             if not any(name.startswith(pfx) for pfx in all_prefixes):
                 orphans.append(name)
         assert not orphans, (

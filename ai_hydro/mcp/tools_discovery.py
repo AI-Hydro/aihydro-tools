@@ -89,6 +89,16 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
 }
 
 
+def agent_visible(tools):
+    """Tools an agent may be told about: those not marked ``aihydro/audience = host``.
+
+    Host-audience tools (the project-registry operations) can confirm a default study or edit a
+    project; until the host refuses agent-originated calls, the server's own listings do not
+    name them. Data-driven from ``_meta``; no tool name appears here.
+    """
+    return [t for t in tools if (getattr(t, "meta", None) or {}).get("aihydro/audience") != "host"]
+
+
 @mcp.tool()
 async def aihydro_describe_capability(domain: str | None = None) -> dict:
     """
@@ -112,7 +122,7 @@ async def aihydro_describe_capability(domain: str | None = None) -> dict:
     dict with `domain`, `tools` (list of {name, tier, summary}), and
     `count`. Or, if no domain given: `domains` (list of {name, tool_count}).
     """
-    tools = await mcp.list_tools()
+    tools = agent_visible(await mcp.list_tools())
     tool_index = {t.name: t for t in tools}
 
     if not domain:

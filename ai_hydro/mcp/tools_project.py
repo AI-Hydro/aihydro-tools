@@ -12,6 +12,10 @@ LITERATURE
   search_literature      — query the index; returns excerpts for agent synthesis
   add_journal_entry      — log a timestamped research note to the project journal
 
+PROJECT REGISTRY v2 (host audience; reads are aihydro://project/... resources)
+  ensure_project / rename_project / set_project_default_study /
+  add_project_study / remove_project_study
+
 RESEARCHER PROFILE
   get_researcher_profile     — return the persistent researcher persona
   update_researcher_profile  — update specific fields (agent or user driven)
@@ -177,6 +181,120 @@ def search_experiments(
     except Exception as e:
         log.error("search_experiments failed: %s", e)
         return _tool_error_to_dict(e)
+
+
+# ---------------------------------------------------------------------------
+# PROJECT REGISTRY v2 (T-P1) - host-audience operations
+#
+# `prj_<ULID>` projects, one per workspace directory. These five tools are for the host
+# application (`audience = "host"` in tool_annotations.toml), not for the agent: the person
+# renames a project, confirms its default study and edits its study list through the UI. The
+# server does not enforce the audience (it never branches on a tool name); the host does not list
+# them to the model and refuses agent-originated calls. Reads are the resources
+# `aihydro://project/by-dir` and `aihydro://project/{id}`.
+# ---------------------------------------------------------------------------
+
+
+def _registry_error(exc: Exception) -> dict:
+    """Structured error for a registry failure; a lost update carries the current project."""
+    from ai_hydro.session.project_registry import ProjectRegistryError, RevisionConflict, get_project_registry
+
+    if isinstance(exc, RevisionConflict):
+        return {
+            "error": True, "code": exc.code, "message": str(exc),
+            "recovery": "Re-read the project (aihydro://project/{id}) and repeat the change on its current revision.",
+            "current": get_project_registry().view(exc.current),
+        }
+    if isinstance(exc, ProjectRegistryError):
+        return {"error": True, "code": exc.code, "message": str(exc)}
+    log.error("project registry call failed: %s", exc)
+    return _tool_error_to_dict(exc)
+
+
+@mcp.tool()
+def ensure_project(root_dir: str, attach_to: str | None = None) -> dict:
+    """
+    Host operation. Return the project of a workspace directory, creating it when there is none
+    (the backend mints the `prj_<ULID>` id). Idempotent. A new project is filled with the studies whose
+    workspace_dir is this folder; its default study is only a suggestion until a person confirms it.
+    attach_to: an existing project id that moved here; its old folder is kept as a root_dir_alias.
+    """
+    try:
+        from ai_hydro.session.project_registry import get_project_registry
+
+        reg = get_project_registry()
+        rec, how = reg.ensure(root_dir, attach_to=attach_to)
+        return {"status": how, **reg.view(rec)}
+    except Exception as e:
+        return _registry_error(e)
+
+
+@mcp.tool()
+def rename_project(project_id: str, title: str, expected_revision: int | None = None) -> dict:
+    """
+    Host operation. Set a project's title (locks it: title_source becomes "user"). expected_revision:
+    the revision last read; a REVISION_CONFLICT error means another writer changed the project first.
+    """
+    try:
+        from ai_hydro.session.project_registry import get_project_registry
+
+        reg = get_project_registry()
+        return {"status": "renamed", **reg.view(reg.rename(project_id, title, expected_revision=expected_revision))}
+    except Exception as e:
+        return _registry_error(e)
+
+
+@mcp.tool()
+def set_project_default_study(
+    project_id: str,
+    study_id: str | None = None,
+    confirmed_by: str = "user",
+    expected_revision: int | None = None,
+) -> dict:
+    """
+    Host operation. Confirm a project's default study (confirmed_by: "user" or "host_launch"); study_id=None
+    clears it. Only a confirmed default is used to pick a study for a chat; a suggestion never is.
+    """
+    try:
+        from ai_hydro.session.project_registry import get_project_registry
+
+        reg = get_project_registry()
+        rec = reg.set_default(project_id, study_id, confirmed_by=confirmed_by, expected_revision=expected_revision)
+        return {"status": "default_set" if study_id else "default_cleared", **reg.view(rec)}
+    except Exception as e:
+        return _registry_error(e)
+
+
+@mcp.tool()
+def add_project_study(project_id: str, study_id: str, expected_revision: int | None = None) -> dict:
+    """
+    Host operation. Link an existing study to a project (added_by "user"). A study may belong to several
+    projects. Linking a duplicate of a study already listed does not merge them; they are shown grouped.
+    """
+    try:
+        from ai_hydro.session.project_registry import get_project_registry
+
+        reg = get_project_registry()
+        rec, added = reg.add_study(project_id, study_id, added_by="user", expected_revision=expected_revision)
+        return {"status": "added" if added else "already_member", **reg.view(rec)}
+    except Exception as e:
+        return _registry_error(e)
+
+
+@mcp.tool()
+def remove_project_study(project_id: str, study_id: str, expected_revision: int | None = None) -> dict:
+    """
+    Host operation. Unlink a study from a project. The study, its run log and claims are untouched;
+    if it was the default, the default (and its confirmation) is cleared.
+    """
+    try:
+        from ai_hydro.session.project_registry import get_project_registry
+
+        reg = get_project_registry()
+        rec, removed = reg.remove_study(project_id, study_id, expected_revision=expected_revision)
+        return {"status": "removed" if removed else "not_a_member", **reg.view(rec)}
+    except Exception as e:
+        return _registry_error(e)
 
 
 # ---------------------------------------------------------------------------
