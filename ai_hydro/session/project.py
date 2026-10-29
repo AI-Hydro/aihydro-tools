@@ -72,6 +72,11 @@ class ProjectSession:
     @classmethod
     def _validate_name(cls, name: str) -> str:
         """Raise ValueError if name contains path-traversal characters."""
+        if name.startswith("prj_"):
+            raise ValueError(
+                f"Invalid project name: {name!r}. The 'prj_' prefix is reserved for registry "
+                "projects (session/project_registry.py)."
+            )
         if not _VALID_PROJECT_NAME.match(name):
             raise ValueError(
                 f"Invalid project name: {name!r}. "
@@ -123,10 +128,10 @@ class ProjectSession:
 
     @classmethod
     def list_all(cls) -> list[str]:
-        """Return names of all existing projects."""
+        """Return names of all existing slug-keyed projects (registry ``prj_`` projects are not listed)."""
         if not _PROJECTS_DIR.exists():
             return []
-        return [d.name for d in _PROJECTS_DIR.iterdir() if d.is_dir()]
+        return [d.name for d in _PROJECTS_DIR.iterdir() if d.is_dir() and not d.name.startswith("prj_")]
 
     def _get_workspace_dir(self) -> str | None:
         """Return workspace_dir from the first associated session that has one."""

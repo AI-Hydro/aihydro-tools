@@ -64,6 +64,11 @@ ACTIVE_STUDY_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 ACTIVE_CONTEXT_SOURCE: contextvars.ContextVar[str] = contextvars.ContextVar(
     "ACTIVE_CONTEXT_SOURCE", default="none"
 )
+# ``_meta["aihydro/context"].project_id`` (``prj_...``): the chat's project, sent by the host once it
+# has called ensure_project. Without it the project is found from the workspace directory.
+ACTIVE_PROJECT_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ACTIVE_PROJECT_ID", default=None
+)
 ACTIVE_CONTEXT_CLIENT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "ACTIVE_CONTEXT_CLIENT", default=None
 )
@@ -220,6 +225,12 @@ TOOL_TIERS: dict[str, int] = {
     "get_workflow_manifest":            3,
     "gee.status":                       3,
     "start_project":                    3,
+    # ── Project registry v2 (T-P1; host audience) ─────────────────────────
+    "ensure_project":                   3,
+    "rename_project":                   3,
+    "set_project_default_study":        3,
+    "add_project_study":                3,
+    "remove_project_study":             3,
     "get_project_summary":              3,
     "add_session_to_project":           3,
     "get_researcher_profile":           3,
@@ -547,8 +558,9 @@ class _ContextInjectionMiddleware(Middleware):
         chat_id = _str_or_none(meta_ctx.get("chat_id"))
         workspace = _str_or_none(meta_ctx.get("workspace"))
         study_id = _str_or_none(meta_ctx.get("study_id"))
+        project_id = _str_or_none(meta_ctx.get("project_id"))
         client = _str_or_none(meta_ctx.get("client"))
-        used_meta = any((chat_id, workspace, study_id, client))
+        used_meta = any((chat_id, workspace, study_id, project_id, client))
         used_legacy = False
 
         message = context.message
@@ -580,6 +592,7 @@ class _ContextInjectionMiddleware(Middleware):
             (ACTIVE_CHAT_ID, ACTIVE_CHAT_ID.set(chat_id)),
             (ACTIVE_WORKSPACE, ACTIVE_WORKSPACE.set(workspace)),
             (ACTIVE_STUDY_ID, ACTIVE_STUDY_ID.set(study_id)),
+            (ACTIVE_PROJECT_ID, ACTIVE_PROJECT_ID.set(project_id)),
             (ACTIVE_CONTEXT_SOURCE, ACTIVE_CONTEXT_SOURCE.set(source)),
             (ACTIVE_CONTEXT_CLIENT, ACTIVE_CONTEXT_CLIENT.set(client)),
         )
@@ -618,6 +631,9 @@ class _SessionWarningMiddleware(Middleware):
         single = notes.get("workspace_single_study")
         if single:
             _inject_top_level(result, "session_note", WORKSPACE_SINGLE_STUDY_NOTE.format(**single))
+        pdefault = notes.get("project_default")
+        if pdefault:
+            _inject_top_level(result, "session_note", PROJECT_DEFAULT_NOTE.format(**pdefault))
         binding = notes.get("session_binding")
         if binding:
             from ai_hydro.mcp.helpers import _in_eval
@@ -821,6 +837,7 @@ def _inject_session_warning(tool_result, session_id: str, read_only: bool = Fals
 
 
 WORKSPACE_SINGLE_STUDY_NOTE = "Used the only study in this workspace: {label} ({study_id})."
+PROJECT_DEFAULT_NOTE = "Used the project's confirmed default study: {label} ({study_id})."
 
 
 def _inject_top_level(tool_result, key: str, value) -> None:

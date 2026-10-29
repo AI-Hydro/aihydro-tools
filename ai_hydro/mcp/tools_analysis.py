@@ -13,7 +13,7 @@ session_id : str | None  (optional from Wave 3)
     **Wave 3 behaviour**: ``session_id`` is now optional.  If omitted, tools
     automatically resolve the active study from the chat context (``_chat_id``
     injected by the extension).  Explicit ``session_id`` always takes priority.
-    Auto-generated "hydro-<8hex>" only as last resort for legacy callers.
+    A minted "st_<ULID>" id only as last resort for legacy callers.
 
 gauge_id : str  (USGS-specific data tools only)
     8-digit USGS station number, e.g. '01031500'. Only required by tools that

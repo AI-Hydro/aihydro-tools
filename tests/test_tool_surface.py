@@ -111,6 +111,8 @@ _WRITE_ATTRS = {
     "archive", "export_bibtex", "start_job", "submit_job", "submit", "cancel", "mkdir", "makedirs",
     "rmdir", "to_file", "to_json_file", "dump", "check_call", "check_output", "system", "popen",
     "run_cell", "exec_module",
+    # project registry writers (T-P1): methods of ProjectRegistry, which the helper scan does not follow
+    "ensure", "rename", "set_default", "add_study", "remove_study", "note_study_bound", "mutate",
 }
 # Helpers whose side effects are infrastructure by the rules in the annotations header: session
 # resolution bookkeeping (itself disabled for read-only calls at run time) and cache-root creation.
@@ -555,13 +557,16 @@ def test_map_add_layer_from_run_cannot_traverse_out_of_the_sessions_dir(tmp_path
     assert not (tmp_path / "map_commands").exists()
 
 
-def test_host_audience_is_a_mechanism_without_tools_yet():
-    """`audience = "host"` is defined (closed vocabulary, `_meta` key); no tool claims it yet, and
-    the mechanism serves it as it would any other key (no code branches on a tool name)."""
+def test_host_audience_is_served_for_the_project_registry_operations_only():
+    """`audience = "host"` is defined (closed vocabulary, `_meta` key). Only the T-P1 project-registry
+    operations claim it, and the mechanism serves it as it would any other key (no code branches on a tool name)."""
     from ai_hydro.mcp.tool_surface import META_KEYS, apply_tool_annotations
 
     assert META_KEYS["audience"] == "aihydro/audience"
-    assert _rows_with("audience", "host") == set()
+    assert _rows_with("audience", "host") == {
+        "ensure_project", "rename_project", "set_project_default_study", "add_project_study",
+        "remove_project_study",
+    }
 
     class _Comp:
         name, meta, annotations = "t", None, None

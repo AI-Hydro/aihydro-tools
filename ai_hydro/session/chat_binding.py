@@ -48,7 +48,6 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -211,19 +210,9 @@ class ChatBindingStore:
 
     @staticmethod
     def _atomic_write(path: Path, text: str, prefix: str) -> None:
-        fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=prefix)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(text)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        from ai_hydro.registry.locking import atomic_write_text
+
+        atomic_write_text(path, text, prefix)
 
     def _save(self, data: dict[str, Any]) -> None:
         """Atomic temp + fsync + rename (caller holds the lock); then the v1 projection."""

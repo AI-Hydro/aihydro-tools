@@ -28,6 +28,13 @@ study of the call's workspace, else an error that lists labelled candidates.
 - **Workspace.** The call's workspace is `_meta.workspace` (or the legacy `_workspace` argument).
   The machine-global `~/.aihydro/active_workspace.json` is read only when the call carries no
   context at all; with two VS Code windows it names whichever was focused last.
+- **Project default** (`project_default`, between auto-create and the single-study rule). The call's project is
+  `_meta.project_id`, else the project of the call's workspace. Its default study resolves **only when confirmed**
+  (`default_confirmed_by` is `user` or `host_launch`). A default nobody confirmed (set by the migration, or by an
+  auto-create into a project that had none) is a suggestion: it never resolves and appears only as the first candidate of
+  `SESSION_RESOLUTION_FAILED`, marked `suggested_default: true`. Same gating as the rule below: closed to the audit,
+  evaluation runs and state-changing admin tools. A read-only call does not bind; a writer does (`bound_by` =
+  `project_default`), and the result carries a `session_note`.
 - **One study in the workspace** (`workspace_single_study`). Exactly one visible study whose
   `workspace_dir` is that workspace resolves, with a top-level `session_note`. A read-only tool
   does not bind the chat; a writer does, and the result carries `session_binding`. It is an
@@ -65,7 +72,7 @@ Each run record's `extra` carries:
 - `context_source`: `meta` (any field came from `_meta`), `legacy_args`, or
   `none`.
 - `session_resolution`: the rule that selected the session: `explicit_arg`,
-  `meta`, `chat_binding`, `result`, `writer_row`, `auto_create`, `workspace_single_study`, or `recent_fallback`. `writer_row` means
+  `meta`, `chat_binding`, `result`, `writer_row`, `auto_create`, `project_default`, `workspace_single_study`, or `recent_fallback`. `writer_row` means
   the call wrote a run-log row into a session that matched neither the
   explicit argument nor the `_meta` study.
   A tool that calls `_resolve_session` reports the rule it used; otherwise the
@@ -113,6 +120,30 @@ files outside the study's workspace; files over 64 MB are listed with `hash_defe
 
 Study label (never a bare id): a user-set label, else the site name with its gauge alias ("Piscataquis River near
 Dover-Foxcroft, ME (USGS 01031500)"), else the outlet ("Basin at 24.20°N, 75.75°E"), else "<id> (unnamed study)".
+
+## Project registry (T-P1)
+
+A project is one workspace directory plus its studies: `~/.aihydro/projects/<prj_ULID>/project.json`, schema
+`aihydro.project/2` (slug-keyed legacy `ProjectSession` projects live beside them and are untouched; the `prj_` name prefix
+is reserved). The backend mints the id. A study created with no id gets `st_<ULID>`; a study named by a gauge or slug keeps
+that name.
+
+- Host-audience tools (`audience = "host"`; the server serves the flag, the host enforces it): `ensure_project(root_dir,
+  attach_to?)`, `rename_project`, `set_project_default_study`, `add_project_study`, `remove_project_study`.
+  Each change takes the project's cross-process lock and writes atomically; `revision` increases by one per write.
+  `expected_revision` makes a lost update detectable (`REVISION_CONFLICT`, with the current project); without it the lock
+  serialises writers and none is lost. An unreadable `project.json` is never overwritten (`PROJECT_UNREADABLE`).
+- Resources (read-only; reading never creates): `aihydro://project/by-dir{?path}` (realpath, case-normalised on macOS and
+  Windows; `root_dir_aliases` count; on a miss, `moved_candidates` for a vanished project of the same folder name or holding
+  a study that lives here) and `aihydro://project/{project_id}` (studies with labels, default study and whether it is
+  confirmed, `duplicate_groups`, `revision`). They read the study index, never a full session.
+- Linking: creating a project links the visible studies whose `workspace_dir` is the folder (`added_by: migration`, M4)
+  and suggests the most recently active as default (unconfirmed). M3 is the same set seen through chat bindings: the backend
+  does not know a chat's cwd, so a binding is matched via its study's `workspace_dir`; the extension (M1) links the rest with
+  `add_project_study`. Every later bind (auto-create, rebind, explicit id, project default) adds the study to the chat's
+  project (`added_by: auto`), creating the project for the call's own workspace if needed (never from `active_workspace.json`).
+- Duplicates (D8): studies of one project with the same site id are grouped when read (`alias_group`, `duplicate_groups`,
+  "2 studies for 01031500"). Nothing is merged, renamed or deleted.
 
 ## FastMCP 2.14 note
 

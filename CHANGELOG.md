@@ -6,6 +6,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased] (UX program Wave 1: project registry v2; T-P1)
+
+The package version is not bumped here; the lead releases (2.9.0).
+
+### Added
+
+- **Project registry v2** (`session/project_registry.py`): `prj_<ULID>` projects, one per workspace directory, at
+  `projects/<prj_id>/project.json` (schema `aihydro.project/2`, `root_dir_aliases`, `revision`). Atomic write (temp + fsync +
+  rename) under the project's cross-process lock, both reused from the binding store (`registry.locking.atomic_write_text`);
+  `expected_revision` detects a lost update. Slug-keyed `ProjectSession` projects are untouched; `prj_` is a reserved name prefix.
+- **Host-audience tools** (`audience = "host"`, the first tools to carry it): `ensure_project`, `rename_project`,
+  `set_project_default_study`, `add_project_study`, `remove_project_study`.
+- **Resources** `aihydro://project/by-dir{?path}` and `aihydro://project/{project_id}`: labelled studies, default study and its
+  confirmation, duplicate groups, `moved_candidates`.
+- **Resolver rule `project_default`** (chain step 4): the CONFIRMED default of the call's project (`_meta.project_id`, new
+  context field, else the workspace's project). An unconfirmed default never resolves; it is the first candidate of
+  `SESSION_RESOLUTION_FAILED` (`suggested_default: true`).
+- Every bind (auto-create, rebind, explicit id, project default) adds the study to the chat's project (`added_by: auto`).
+- Creating a project links the studies of its folder (M3/M4, `added_by: migration`) with an unconfirmed suggested default.
+  Duplicate studies of a project are alias-grouped on read (D8); nothing is merged.
+- Capabilities: `project.registry_v2`, `project.host_ops`, `project.revision_check`, `binding.project_default`,
+  `binding.meta_project_id`, `study.minted_ids`.
+
+### Changed
+
+- A study created with no id is minted `st_<ULID>` (was `hydro-<8hex>`). Named studies keep their ids.
+
+---
+
 ## [2.8.2] - 2026-10-28 (UX program Wave 0: study binding v2 and the study recorder; T-B1, T-B2)
 
 Fixes the 2026-10-28 owner failure: a chat launched from the map called the read-only `measure_feature` and

@@ -49,7 +49,9 @@
 #                          -> _meta["aihydro/requiresConsent"]
 #   audience = "host"      the tool is for the host application, not the agent; a host should not
 #                          list it to the model and should refuse agent-originated calls.
-#                          -> _meta["aihydro/audience"]. No tool has it yet.
+#                          -> _meta["aihydro/audience"]. The project-registry operations of T-P1 have it
+#                          (ensure_project, rename_project, set_project_default_study,
+#                          add_project_study, remove_project_study).
 # tests/test_tool_surface.py checks each class: `ui` tools only reach the map/preview command
 # writers (static scan plus an audit-hook run), and the vocabulary is closed.
 #
@@ -119,6 +121,51 @@ destructiveHint = false
 idempotentHint = true
 openWorldHint = false
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: bind]"
+
+["ensure_project"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+audience = "host"
+evidence = "creates or finds projects/<prj_id>/project.json (derived registry, no researcher-authored state); idempotent [calls: ensure]"
+
+["rename_project"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+audience = "host"
+evidence = "overwrites the project title (user-owned metadata of the registry, not a claim or result); same title is a no-op"
+
+["set_project_default_study"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+audience = "host"
+evidence = "sets or clears the project's default study and its confirmation; same arguments leave the same state"
+
+["add_project_study"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+audience = "host"
+evidence = "appends a study link to the project; a repeat is a no-op (already_member)"
+
+["remove_project_study"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+audience = "host"
+evidence = "removes a study link only; the study, run log and claims are untouched; a repeat is a no-op"
 
 ["archive_session"]
 source = "builtin"

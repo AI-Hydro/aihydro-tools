@@ -172,6 +172,9 @@ def _resolve_session(
        ``chat_bindings.v2.json``. Many chats may share one study.
     3. **Auto-create** (rule ``auto_create``) - if *auto_create_hint* is set (a gauge ID,
        lat/lon slug or explicit name) and *allow_auto_create* is True, create the study and bind it.
+    4. **Project default** (rule ``project_default``) - the CONFIRMED default study of the call's project
+       (``_meta.project_id``, else the project of the call's workspace). Same gating as step 5. A default
+       nobody confirmed (a suggestion) never resolves; it is only listed as a candidate in step 6.
     5. **Single study in the workspace** (rule ``workspace_single_study``) - exactly one visible
        study whose ``workspace_dir`` is this call's workspace. Inferred, so closed to the audit
        (``allow_recent_fallback=False``), to evaluation runs, and to state-changing admin tools
@@ -276,6 +279,47 @@ def _bind(store, chat_id: str, study_id: str, bound_by: str) -> None:
             log.warning("Chat binding skipped (%s): %s", bound_by, exc)
         else:
             log.debug("Could not persist chat binding (%s): %s", bound_by, exc)
+        return
+    _link_to_chat_project(study_id)
+
+
+def _link_to_chat_project(study_id: str) -> None:
+    """Add a study the chat was just bound to into the chat's project (T-P1). Never fails the call.
+
+    The project is the one named by ``_meta.project_id``, else the one of the call's own workspace
+    (created when there is none). The machine-global ``active_workspace.json`` is not used: it may
+    name another window's folder. Not done in an evaluation run.
+    """
+    try:
+        if _in_eval():
+            return
+        from ai_hydro.mcp.app import ACTIVE_PROJECT_ID, ACTIVE_WORKSPACE
+        from ai_hydro.session.project_registry import get_project_registry
+
+        ws, pid = ACTIVE_WORKSPACE.get(), ACTIVE_PROJECT_ID.get()
+        if not ws and not pid:
+            return
+        get_project_registry().note_study_bound(ws, study_id, pid)
+    except Exception as exc:
+        log.debug("Could not add study %s to the chat's project (non-fatal): %s", study_id, exc)
+
+
+def _with_suggested_default(cands: list[dict]) -> list[dict]:
+    """Put the project's UNCONFIRMED default first, marked ``suggested_default``, at most 5 rows in all.
+
+    A suggestion is only ever a candidate: nothing here (or anywhere in the chain) resolves it.
+    """
+    try:
+        from ai_hydro.mcp.app import ACTIVE_PROJECT_ID
+        from ai_hydro.session.project_registry import get_project_registry
+
+        sug = get_project_registry().suggested_default(workspace=_call_workspace(), project_id=ACTIVE_PROJECT_ID.get())
+    except Exception as exc:
+        log.debug("suggested default skipped: %s", exc)
+        return cands
+    if not sug:
+        return cands
+    return [sug] + [c for c in cands if c.get("study_id") != sug["study_id"]][:4]
 
 
 def _resolution_failure(chat_id: str | None) -> SessionResolutionError:
@@ -287,12 +331,15 @@ def _resolution_failure(chat_id: str | None) -> SessionResolutionError:
     except Exception as exc:
         log.debug("candidate listing failed: %s", exc)
         cands, scope = [], "none"
+    cands = _with_suggested_default(cands)
     where = "in this workspace" if scope == "workspace" else "recently active (other workspaces)"
     parts = ["Cannot determine which study to use: no session_id, no chat binding, "
              "and no unambiguous study for this call."]
     if cands:
         parts.append(f"Candidate studies {where}: "
-                     + "; ".join(f"{c['study_id']} = {c['label']}" for c in cands) + ".")
+                     + "; ".join(f"{c['study_id']} = {c['label']}" + (" (suggested default, not confirmed)"
+                                                                      if c.get("suggested_default") else "")
+                                 for c in cands) + ".")
     if chat_id:
         how = ("Pick one and call aihydro_rebind_chat(study_id=<id>) to bind this chat, "
                "or pass session_id=<id> to this call. ")
@@ -395,6 +442,36 @@ def _resolve_session_impl(
             _bind(store, chat_id, sid, "auto_create")
         return sid, "auto_create"
 
+    # 4. The project's CONFIRMED default study (B4). Scoped to this call's project (`_meta.project_id`, else the
+    # project of the call's own workspace), deterministic, and a declared scope rather than a guess: allowed for
+    # read-only calls (which do not bind). Closed to the audit, evaluation runs and state-changing admin tools,
+    # like step 5. An UNCONFIRMED default never resolves here; it is only offered as a candidate in step 6.
+    if allow_recent_fallback and (allow_auto_create or read_only) and not _in_eval():
+        try:
+            from ai_hydro.mcp.app import ACTIVE_PROJECT_ID, ACTIVE_WORKSPACE
+            from ai_hydro.session.project_registry import get_project_registry
+
+            ws4 = ACTIVE_WORKSPACE.get() or (_call_workspace() if read_only else None)
+            default = get_project_registry().confirmed_default(workspace=ws4, project_id=ACTIVE_PROJECT_ID.get())
+            if default:
+                sid, _pid = default
+                if chat_id and not read_only:
+                    _bind(store, chat_id, sid, "project_default")
+                if not read_only:
+                    try:
+                        from ai_hydro.session import HydroSession
+                        _maybe_set_workspace(HydroSession.load(sid))
+                    except Exception:
+                        pass
+                notes = ACTIVE_CALL_NOTES.get()
+                if notes is not None:
+                    from ai_hydro.session.study_index import label_of
+
+                    notes["project_default"] = {"study_id": sid, "label": label_of(sid)}
+                return sid, "project_default"
+        except Exception as exc:
+            log.debug("Project-default resolution skipped: %s", exc)
+
     # 5. Exactly one study in this call's workspace. Inferred, so it is closed to the audit
     # (allow_recent_fallback=False), to evaluation runs, and to admin tools that change state
     # (they pass allow_auto_create=False and are not readOnlyHint): those need a named or bound study.
@@ -474,12 +551,12 @@ def _normalize_session_id(session_id: str | None) -> str:
     Accept any string as a session identifier.
 
     - Non-empty string → returned as-is (slugs, UUIDs, gauge IDs all valid)
-    - None / empty → auto-generate "hydro-<8hex>" UUID
+    - None / empty → a minted ``st_<ULID>`` id (the study's label comes from its site, never the id)
     """
     if session_id and str(session_id).strip():
         return str(session_id).strip()
-    import uuid
-    return f"hydro-{uuid.uuid4().hex[:8]}"
+    from ai_hydro.registry.ids import mint_study_id
+    return mint_study_id()
 
 
 def _validate_usgs_gauge_id(gauge_id: str) -> str:

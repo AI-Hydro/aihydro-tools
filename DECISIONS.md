@@ -1,5 +1,19 @@
 # Decisions
 
+## 2026-10-29 — Project registry v2: confirmed default only, read-side duplicate grouping (UX Wave 1, T-P1)
+
+1. A project default resolves a study only when a person confirmed it (`default_confirmed_by` = `user` | `host_launch`).
+   The migration and an auto-create into a project with no default write a suggestion, which is offered as a candidate and
+   never resolved (B4); otherwise the removed "most recent study" guess would return, scoped to a project.
+2. Duplicate studies (same site id) are grouped when read and never merged: run logs are append-only, and merging is a
+   decision for the owner (D8). Studies with no site id are not grouped.
+3. Study labels are computed on read from the study index, not stored in `project.json`, so a rename of a site cannot leave a
+   stale label. The file holds only the links (`study_id`, `added_by`, `added_at`).
+4. The audience flag is data: the server serves `aihydro/audience = host` and does not refuse agent-originated calls; the host
+   hides the five tools from the model and refuses them from it. `list_available_tools` / `aihydro_describe_capability` still
+   name them (the discovery contract test requires every tool to have a domain); filtering them is left to the host work.
+5. M3 cannot use a chat's cwd (the backend does not store it); bindings are matched through the study's `workspace_dir`.
+
 ## 2026-10-22 — Validators judge the series a computation used, bound by digest; the CAMELS reference is packaged (Science Wave 3, PR-4b, 2.8.0)
 
 **Context.** Before 2.8.0 every streamflow validator read the session `streamflow` slot, which need not be the series

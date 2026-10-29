@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Iterator
 
@@ -55,3 +56,25 @@ def file_lock(lock_path: Path) -> Iterator[None]:
                 _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
     finally:
         os.close(fd)
+
+
+def atomic_write_text(path: Path, text: str, prefix: str = ".tmp_") -> None:
+    """Write ``text`` to ``path`` atomically: temp file in the same directory, fsync, ``os.replace``.
+
+    A reader sees the old file or the new one, never a half-written file. The caller holds
+    ``file_lock`` when the write is the end of a read-modify-write.
+    """
+    path = Path(path)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=prefix)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise

@@ -21,4 +21,11 @@ CAPABILITIES: tuple[str, ...] = (
     "study.list",                       # aihydro://study/list
     "study.by_artifact",                # aihydro://study/by-artifact
     "artifact.recorder",                # artifact_manifest records every workspace file / pushed layer
+    # project registry v2 (T-P1)
+    "project.registry_v2",              # prj_ ids; aihydro://project/by-dir and aihydro://project/{id}
+    "project.host_ops",                 # ensure/rename/set-default/add/remove tools, audience = "host"
+    "project.revision_check",           # expected_revision on the host operations (REVISION_CONFLICT)
+    "binding.project_default",          # resolver rule project_default: a CONFIRMED default only
+    "binding.meta_project_id",          # _meta["aihydro/context"].project_id is read
+    "study.minted_ids",                 # a study created with no id gets st_<ULID>
 )
