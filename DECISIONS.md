@@ -453,3 +453,39 @@ are hidden, never deleted. Duplicates are not auto-detected: a duplicate is hidd
 6. **`aihydro_chat_status` keeps its exact output keys** (the answer audit and the header read them); candidate studies for an
    unbound chat go in `message` and in the `aihydro://study/list` resource, not in new keys.
 7. **Capability flags are a resource** (`aihydro://capabilities`), not a line in the server instructions, so the prompt does not grow.
+
+## 2026-10-30: every tool runs off the event loop; sessions merge on save; long fetches are chunked and bounded (T1-R)
+
+Trigger: the owner's installed build (tools 2.8.4, PID 38234) hung for over an hour. A `sample` of the process showed the asyncio
+thread inside `_pydantic_core` -> `rlock_acquire` (FastMCP 2.14 `FunctionTool.run` calls the tool via
+`type_adapter.validate_python`, so a sync `def` tool runs on the loop) while a `to_thread` worker of a 35-year
+`fetch_forcing_data` slept and waited on locks with an open connection to the data host. Every later call hit the ~10 minute client
+timeout and the final-answer audit timed out at 15 s.
+
+1. **One rule, at registration, for the class.** `app.py` wraps `mcp.tool` / `mcp.resource` (the same place that keeps decorated
+   functions callable) so a sync function is registered as an async wrapper that runs it in a dedicated pool with
+   `contextvars.copy_context()`. Not middleware: FastMCP validates and runs the function after the middleware chain, so only the
+   registered callable can be moved off the loop; and nothing in FastMCP is patched after construction (see the 2026-06-13
+   `_call_tool_mcp` outage). The decorated name in the module is still the plain function. `tests/test_loop_responsiveness.py`
+   walks every registered tool and resource and fails if one would run on the loop, and compares every offloaded tool's schema
+   with the plain function's.
+2. **Which lock?** The sample has native frames only, so the lock is not named by it. What is established: the loop was waiting on
+   an `RLock` another thread owned, inside a sync tool. In-process `RLock`s reachable from a tool are `chat_binding._LOCK` (held with
+   the binding flock) and the logging handler locks, and third-party ones (aihydro-data's requests-cache SQLite layer uses an
+   `RLock`); the repository's session store itself takes no in-process lock. The fix does not depend on the answer: no tool waits on
+   the loop. The reproduction (`test_sync_tool_waiting_on_a_held_lock_does_not_stall_the_server`) holds an `RLock` in a worker
+   thread, fails on the base (a cheap call took 1.6 s) and passes now.
+3. **No lock across network or compute.** The session was already lock-free (load, mutate, atomic replace), which made a long call a
+   lost-update risk once calls overlap. `save()` now merges (base = the text loaded, ours, theirs = disk) leaf-wise to depth 3 (slot ->
+   feature -> params), appends to lists, lets the later save win only on a leaf both changed, and honours deletions. The guard around
+   compare-merge-write is bounded and returns `SESSION_BUSY` (retryable) rather than waiting. A freshly built (not loaded) session
+   keeps its old "first save is authoritative" meaning.
+4. **Cancel is cooperative.** A thread cannot be killed. A client `notifications/cancelled` (the TS client sends it on its own
+   timeout; the Python client does not) cancels the handler task, which sets the worker's flag; chunked work checks it between chunks.
+   For clients that never cancel, the request budget is the backstop, and `run_bounded` makes each upstream call bounded. One
+   abandoned daemon thread can outlive a call by at most the remaining time of its single blocking read.
+5. **Not done here (sibling packages are out of scope):** socket-level timeouts and retry totals inside aihydro-data / pygridmet /
+   aihydro-watershed (`call_with_retry` is 3 attempts, 1.5 s doubling, but each attempt's read timeout is the library's). Bounding is
+   enforced from the tools layer instead. The forcing request is chunked inline rather than run as a detached job, so a 35-year call
+   can still exceed a client timeout of a few minutes; it reports progress and stops on a cancel. Moving it to a job
+   (`data_fetch_background` + `wait_for_job`) changes the result envelope and is left to a decision.

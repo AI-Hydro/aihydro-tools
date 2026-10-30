@@ -115,15 +115,18 @@ def _digest_of_file(path: str) -> Optional[str]:
     except OSError:
         return None
     key = (path, st.st_mtime_ns, st.st_size)
-    if key not in _FILE_DIGESTS:
-        if len(_FILE_DIGESTS) > 256:
-            _FILE_DIGESTS.clear()
-        try:
-            with open(path) as f:
-                _FILE_DIGESTS[key] = geometry_digest(json.load(f))
-        except (OSError, ValueError):
-            return None
-    return _FILE_DIGESTS[key]
+    hit = _FILE_DIGESTS.get(key)          # tools run in threads: never read back what another thread may clear
+    if hit is not None:
+        return hit
+    try:
+        with open(path) as f:
+            digest = geometry_digest(json.load(f))
+    except (OSError, ValueError):
+        return None
+    if len(_FILE_DIGESTS) > 256:
+        _FILE_DIGESTS.clear()
+    _FILE_DIGESTS[key] = digest
+    return digest
 
 
 def watershed_slot_digest(ws: Any) -> Optional[str]:

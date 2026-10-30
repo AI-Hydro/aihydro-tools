@@ -84,6 +84,12 @@ ACTIVE_CALL_NOTES: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "ACTIVE_CALL_NOTES", default=None
 )
 
+# Name of the tool being called (set by _ContextInjectionMiddleware). The offload wrapper and the
+# SESSION_BUSY result use it to say which tool is running.
+ACTIVE_TOOL_NAME: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ACTIVE_TOOL_NAME", default=None
+)
+
 # ---------------------------------------------------------------------------
 # Tier registry — single source of truth for all tool tier assignments.
 # When a new @mcp.tool() is added, add its name here.
@@ -436,6 +442,15 @@ mcp = FastMCP(
 )
 
 
+def _register_form(function):
+    """What FastMCP registers for ``function``: a sync tool becomes an async wrapper that runs the
+    original in a worker thread (``ai_hydro.mcp.offload``), so no tool or resource can block the
+    event loop. Async functions pass through unchanged."""
+    from ai_hydro.mcp.offload import offload_sync
+
+    return offload_sync(function)
+
+
 def _preserve_callable_registration(method):
     """Register FastMCP components but leave ordinary callables in modules.
 
@@ -446,13 +461,13 @@ def _preserve_callable_registration(method):
     def decorator_factory(*args, **kwargs):
         if len(args) == 1 and callable(args[0]) and not kwargs:
             function = args[0]
-            method(function)
+            method(_register_form(function))
             return function
 
         register = method(*args, **kwargs)
 
         def decorate(function):
-            register(function)
+            register(_register_form(function))
             return function
 
         return decorate
@@ -596,6 +611,7 @@ class _ContextInjectionMiddleware(Middleware):
             (ACTIVE_PROJECT_ID, ACTIVE_PROJECT_ID.set(project_id)),
             (ACTIVE_CONTEXT_SOURCE, ACTIVE_CONTEXT_SOURCE.set(source)),
             (ACTIVE_CONTEXT_CLIENT, ACTIVE_CONTEXT_CLIENT.set(client)),
+            (ACTIVE_TOOL_NAME, ACTIVE_TOOL_NAME.set(getattr(message, "name", None) or None)),
         )
         try:
             return await call_next(context)
@@ -938,7 +954,12 @@ class RunRecordMiddleware(Middleware):
                     size = len(_json.dumps(result_dict, default=str))
                 else:
                     result_dict = {"error": True, "message": f"{type(failure).__name__}: {failure}"}
-            outcome = run_records.record_call(
+            # Sealing writes the run log (SQLite, up to a 30 s lock wait) and digests files: never
+            # on the event loop, or one contended study stalls every call.
+            from ai_hydro.mcp.offload import run_off_loop
+
+            outcome = await run_off_loop(
+                run_records.record_call,
                 tool=tool,
                 arguments=arguments,
                 result=result_dict,
@@ -950,6 +971,7 @@ class RunRecordMiddleware(Middleware):
                 mcp_client=_mcp_client_label(context),
                 output_bytes=size,
                 context=run_context,
+                _track=False,
             )
             record_error = outcome.record_error
             if (failure is None and tool_result is not None and outcome.call_run_id

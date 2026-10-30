@@ -8,6 +8,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (T1-R: the server stays responsive while a tool runs)
+
+- **No tool can block the event loop any more.** FastMCP 2.14 runs a plain `def` tool inline on the asyncio loop
+  (`FunctionTool.run` -> `type_adapter.validate_python`). In tools 2.8.4 one sync tool waited on a lock that a worker thread of a
+  35-year `fetch_forcing_data` held, the loop stood still for over an hour, every later call hit the client timeout and the
+  final-answer audit never ran ("Audit not run"). Registration now turns every sync tool and resource function into an `async`
+  wrapper that runs it in a dedicated worker pool (`AIHYDRO_TOOL_THREADS`, default 64) with the caller's contextvars
+  (`_chat_id` / `_workspace` / study context, run-record capture, call notes), the original signature and docstring (the published
+  tool schema is unchanged; checked tool by tool), and a cooperative cancel flag. One mechanism in `ai_hydro/mcp/offload.py`,
+  applied where `mcp.tool` / `mcp.resource` are wrapped in `app.py`; no FastMCP internals are patched. The `async` tools' own
+  `asyncio.to_thread` calls use the same pool and cancel flag. Sealing the run record (SQLite, up to a 30 s lock wait) also runs
+  off the loop. A watchdog logs the blocking frame if the loop ever stalls again (`AIHYDRO_LOOP_STALL_WARN_S`, default 3 s).
+  `wait_for_job` no longer sleeps on the loop.
+- **Concurrent calls on one study no longer overwrite each other.** `HydroSession.save()` now three-way merges against what the
+  object loaded when another call saved in between (a note written while a long fetch ran survives the fetch's later save),
+  under a short, bounded write guard (in-process lock plus a sidecar `flock`) held only around compare-merge-write, never across a
+  tool's network or compute. If the guard cannot be taken in `AIHYDRO_SESSION_WRITE_WAIT_S` (default 10 s; 0.25 s on the loop
+  thread) the call returns a structured, retryable `SESSION_BUSY` naming the holder and the running tools, not a hang.
+- **Forcing fetches are chunked, bounded and cancellable.** `fetch_forcing_data_routed` fetches `AIHYDRO_FORCING_CHUNK_YEARS`
+  (default 5) at a time; between chunks it honours a client cancel and the request budget `AIHYDRO_FORCING_BUDGET_S` (default
+  1500 s, then a retryable `TIME_BUDGET_EXCEEDED`; completed chunks are in aihydro-data's cache so a retry resumes); every upstream
+  call is bounded by `AIHYDRO_FETCH_CHUNK_TIMEOUT_S` (default 300 s) and reports MCP progress per chunk. The first chunk's product is
+  pinned for the rest so the series is one product's; if a pinned chunk cannot be served the variable is fetched as one range, as
+  before. Returned values and the result envelope are unchanged (tested against a single-call reference).
+  `extract_hydrological_signatures` (which fetches streamflow and, for `precipitation="auto"`, precipitation) is bounded by
+  `AIHYDRO_SIGNATURES_BUDGET_S` (default 1200 s) and stops waiting on a client cancel.
+- Race fix: the file-digest caches in `session/store.py` and `session/basin_identity.py` returned a key another thread could have
+  cleared between the store and the read.
+
 ### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
 
 - **A new basin in a used session is no longer answered with the old basin's numbers.** Every basin-dependent session result

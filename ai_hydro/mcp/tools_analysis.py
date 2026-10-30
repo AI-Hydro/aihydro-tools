@@ -44,6 +44,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 from ai_hydro.mcp.app import mcp, Context
+from ai_hydro.mcp.offload import progress_sink_for, run_off_loop, set_progress_sink
 from ai_hydro.mcp.enforcement import post_run as _post_run
 from ai_hydro.mcp.helpers import (
     SessionResolutionError,
@@ -1244,6 +1245,14 @@ def _resolve_session_geometry(
     return _get_session_geometry(session_id)
 
 
+def _env_seconds(name: str, default: float) -> float:
+    try:
+        v = float(os.environ.get(name, default))
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
 @mcp.tool()
 def extract_hydrological_signatures(
     session_id: str | None = None,
@@ -1548,15 +1557,28 @@ def extract_hydrological_signatures(
                 if len(_q_dates) != len(_q_cms) else "the slot's dates could not be parsed")
 
         from ai_hydro.analysis.signatures import extract_hydrological_signatures as _fn
-        result = _fn(
-            gauge_id=usgs_gauge_id,
-            watershed_geojson=watershed_geojson,
-            area_km2=area_km2,
-            start_date=start_date,
-            end_date=end_date,
-            q_cms_series=_q_arg,
-            **({"precipitation": precipitation} if precipitation != "auto" else {}),
-        )
+        # The function fetches streamflow (NWIS) and, for precipitation="auto", the basin precipitation
+        # through code that has no deadline of its own. Bound the call and let a client cancel stop the wait.
+        from ai_hydro.core.cancel import ToolDeadlineExceeded, budget, run_bounded
+        _sig_budget = _env_seconds("AIHYDRO_SIGNATURES_BUDGET_S", 1200.0)
+        try:
+            with budget(_sig_budget):
+                result = run_bounded(
+                    _fn,
+                    gauge_id=usgs_gauge_id,
+                    watershed_geojson=watershed_geojson,
+                    area_km2=area_km2,
+                    start_date=start_date,
+                    end_date=end_date,
+                    q_cms_series=_q_arg,
+                    **({"precipitation": precipitation} if precipitation != "auto" else {}),
+                    timeout=_sig_budget,
+                    label="extract_hydrological_signatures",
+                )
+        except TimeoutError as _te:
+            if isinstance(_te, ToolDeadlineExceeded):
+                raise
+            raise ToolDeadlineExceeded(str(_te)) from _te
         d = _result_to_dict(result)
         # Acquisitions made inside the signatures function are declared, never
         # silent. aihydro-watershed reports the precipitation it received in
@@ -1995,7 +2017,7 @@ async def compute_twi(
                 from ai_hydro.analysis.twi import compute_twi as _fn_full
 
                 twi_prefix = _canonical_prefix(session_id, "twi")
-                result = await asyncio.to_thread(
+                result = await run_off_loop(
                     _fn_full,
                     watershed_shapely,
                     resolution=resolution,
@@ -2084,7 +2106,7 @@ async def compute_twi(
         # Fallback: statistics only (workspace missing, create_map=False,
         # or full computation raised a fatal error)
         from ai_hydro.analysis.twi import compute_twi_result as _fn
-        result = await asyncio.to_thread(
+        result = await run_off_loop(
             _fn, watershed_geojson=watershed_geojson, resolution=resolution
         )
         d = _result_to_dict(result)
@@ -2255,12 +2277,12 @@ async def map_flood_inundation(
             prepare_hand_stack,
         )
 
-        stack = await asyncio.to_thread(
+        stack = await run_off_loop(
             prepare_hand_stack,
             watershed_geom,
             resolution=resolution,
         )
-        result = await asyncio.to_thread(
+        result = await run_off_loop(
             compute_inundation_from_stack,
             stack,
             float(q),
@@ -2620,7 +2642,7 @@ async def map_flood_inundation_hydrograph(
         from ai_hydro.analysis.inundation import INUNDATION_CAVEAT, INUNDATION_SCOPE
         from ai_hydro.analysis.inundation_hydrograph import compute_inundation_hydrograph_frames
 
-        frames, stack = await asyncio.to_thread(
+        frames, stack = await run_off_loop(
             compute_inundation_hydrograph_frames,
             watershed_geom,
             time_hr,
@@ -2921,7 +2943,7 @@ async def create_cn_grid(
         cn_folder = cn_prefix.replace("cn_", "cn_grid_", 1)
         output_dir = str(Path(workspace) / cn_folder)
 
-        result = await asyncio.to_thread(
+        result = await run_off_loop(
             _fn,
             geometry=watershed_shapely,
             year=year,
@@ -3122,8 +3144,9 @@ async def fetch_forcing_data(
             # Phase B: @feature_tool handles resolve → cache → store → commit
             if ctx:
                 await ctx.report_progress(progress=0, total=2)
+                set_progress_sink(progress_sink_for(ctx))     # per-chunk progress from the worker
 
-            result_envelope: dict = await asyncio.to_thread(
+            result_envelope: dict = await run_off_loop(
                 _fk,
                 store=session,
                 feature=_feature_arg,
@@ -3202,7 +3225,9 @@ async def fetch_forcing_data(
                 await ctx.report_progress(progress=0, total=2)
 
             from ai_hydro.data.forcing import fetch_forcing_data_routed as _fn
-            result = await asyncio.to_thread(
+            if ctx:
+                set_progress_sink(progress_sink_for(ctx))
+            result = await run_off_loop(
                 _fn, watershed_geojson=watershed_geojson,
                 start_date=start_date, end_date=end_date,
                 variables=variables, product=product,
@@ -4085,7 +4110,7 @@ async def fetch_soil_attributes_ssurgo(
                 "next_tools": ["data_fetch"],
             }
 
-        res = await asyncio.to_thread(ssurgo_catchment_attributes, geom)
+        res = await run_off_loop(ssurgo_catchment_attributes, geom)
         summary = res["summary"]
         data = {k: v for k, v in summary.items() if k not in ("product", "source")}
         d = {
