@@ -1,0 +1,162 @@
+"""Citation lookup integrity (R-05, R-32). Offline: the single HTTP seam ``_http_fetch`` is replaced.
+
+The contract these tests hold: a DOI is resolved at the DOI endpoint and the returned DOI must equal the
+one asked for; a weak free-text hit is a candidate, never a citation; and a provider that could not be
+reached is reported as ``unavailable``, never as ``not_found``.
+"""
+from __future__ import annotations
+
+import pytest
+
+from ai_hydro.mcp import tools_citations as tc
+
+REAL = "10.1061/(asce)0733-9496(1994)120:4(485)"
+
+
+@pytest.fixture(autouse=True)
+def isolated(tmp_path, monkeypatch):
+    monkeypatch.setattr(tc, "_CACHE_DIR", tmp_path / "citations")
+
+
+class Net:
+    """Scripted network: ``routes`` maps a URL substring to ("ok", body) | "404" | "down"; first match wins."""
+
+    def __init__(self, routes):
+        self.routes, self.urls = routes, []
+
+    def __call__(self, url):
+        self.urls.append(url)
+        for frag, resp in self.routes:
+            if frag in url:
+                if resp == "404":
+                    return tc.NOT_FOUND, None
+                if resp == "down":
+                    return tc.UNAVAILABLE, None
+                return "ok", resp
+        return tc.UNAVAILABLE, None
+
+
+def crossref_item(doi, title="Flow-duration curves I: review and use"):
+    return {"message": {"DOI": doi.upper(), "title": [title], "author": [{"family": "Vogel", "given": "R"}],
+                        "issued": {"date-parts": [[1994]]}, "container-title": ["J. Water Resour. Plann. Manage."],
+                        "volume": "120", "page": "485-504"}}
+
+
+def test_a_doi_that_does_not_exist_is_not_found_at_the_doi_endpoint_not_by_search(monkeypatch):
+    net = Net([("api.crossref.org/works/10.9999", "404"), ("api.datacite.org/dois/10.9999", "404"),
+               ("semanticscholar.org/graph/v1/paper/DOI:10.9999", "404"),
+               # the old behaviour: a free-text search that would return an unrelated paper
+               ("api.crossref.org/works?query=", {"message": {"items": [
+                   {"DOI": "10.1016/j.real.2001.01.001", "title": ["Unrelated paper about soil microbes"]}]}})])
+    monkeypatch.setattr(tc, "_http_fetch", net)
+    out = tc.get_citation_by_doi("10.9999/this.doi.does.not.exist")
+    assert out.get("not_found") is True and "doi" not in out
+    assert not out.get("unavailable")
+    assert all("?query=" not in u for u in net.urls), net.urls
+    assert any("/works/10.9999/this.doi.does.not.exist" in u for u in net.urls)
+
+
+def test_a_different_doi_in_the_response_is_never_returned(monkeypatch):
+    monkeypatch.setattr(tc, "_http_fetch", Net([
+        ("api.crossref.org/works/10.1000", crossref_item("10.5555/another.paper")),
+        ("api.datacite.org", "404"), ("semanticscholar", "404")]))
+    out = tc.get_citation_by_doi("10.1000/wanted")
+    assert out.get("not_found") is True and "doi" not in out
+
+
+def test_a_matching_doi_is_returned_cached_and_case_insensitive(monkeypatch):
+    net = Net([("api.crossref.org/works/", crossref_item(REAL))])
+    monkeypatch.setattr(tc, "_http_fetch", net)
+    out = tc.get_citation_by_doi("https://doi.org/" + REAL.upper())
+    assert out["doi"] == REAL and out["confidence"] == "high" and out["from_cache"] is False
+    assert "Vogel" in out["formatted_apa"]
+    n = len(net.urls)
+    again = tc.get_citation_by_doi(REAL)
+    assert again["from_cache"] is True and again["doi"] == REAL and len(net.urls) == n
+
+
+def test_network_failure_is_unavailable_never_not_found_for_a_doi(monkeypatch):
+    monkeypatch.setattr(tc, "_http_fetch", Net([]))                   # every call "down"
+    out = tc.get_citation_by_doi(REAL)
+    assert out["unavailable"] is True and out["not_found"] is False and out["code"] == "CITATION_LOOKUP_UNAVAILABLE"
+    assert "does NOT mean no citation exists" in out["message"] and "not_found" not in out.get("_note", "")
+    assert set(out["providers"].values()) == {tc.UNAVAILABLE}
+
+
+def test_network_failure_is_unavailable_never_not_found_for_free_text(monkeypatch):
+    monkeypatch.setattr(tc, "_http_fetch", Net([]))
+    out = tc.lookup_citation("Vogel Fennessey flow duration curves review")
+    assert out["unavailable"] is True and out["not_found"] is False
+
+
+def test_one_provider_down_and_the_rest_not_found_is_still_unavailable(monkeypatch):
+    monkeypatch.setattr(tc, "_http_fetch", Net([
+        ("api.crossref.org", "404"), ("api.datacite.org", "down"), ("semanticscholar", "404")]))
+    out = tc.get_citation_by_doi("10.9999/x.y")
+    assert out["unavailable"] is True and out["providers"]["datacite"] == tc.UNAVAILABLE
+
+
+def test_a_provider_that_finds_it_wins_even_if_another_is_down(monkeypatch):
+    monkeypatch.setattr(tc, "_http_fetch", Net([("api.crossref.org/works/", "down"),
+                                                  ("api.datacite.org", "down"),
+                                                  ("semanticscholar.org/graph/v1/paper/DOI:", {
+                                                      "title": "Flow-duration curves", "year": 1994,
+                                                      "externalIds": {"DOI": REAL}, "authors": [{"name": "R Vogel"}],
+                                                      "journal": None})]))
+    out = tc.get_citation_by_doi(REAL)
+    assert out["doi"] == REAL and out["source"] == "semantic-scholar"      # no journal: no crash (R-32)
+
+
+def test_free_text_below_the_title_threshold_is_not_a_citation(monkeypatch):
+    unrelated = {"message": {"items": [{"DOI": "10.1016/j.real.2001.01.001",
+                                       "title": ["Unrelated paper about soil microbes"]}]}}
+    s2 = {"data": [{"title": "Totally different paper", "externalIds": {"DOI": "10.2222/other"}, "authors": []}]}
+    monkeypatch.setattr(tc, "_http_fetch", Net([("api.crossref.org/works?query=", unrelated),
+                                                  ("semanticscholar.org/graph/v1/paper/search", s2),
+                                                  ("api.datacite.org/dois?query=", {"data": []})]))
+    out = tc.lookup_citation("Madeup Author 2031 quantum baseflow of martian catchments")
+    assert out.get("not_found") is True and "doi" not in out
+    assert {c["doi"] for c in out["candidates"]} == {"10.1016/j.real.2001.01.001", "10.2222/other"}
+    assert "do not cite them" in out["_note"]
+
+
+def test_free_text_with_a_good_title_match_is_found(monkeypatch):
+    body = {"message": {"items": [{"DOI": REAL, "title": ["Flow-duration curves I: review and use"],
+                                   "container-title": []}]}}                       # empty journal list: no crash
+    monkeypatch.setattr(tc, "_http_fetch", Net([("api.crossref.org/works?query=", body)]))
+    out = tc.lookup_citation("flow duration curves review")
+    assert out["doi"] == REAL and out["confidence"] == "high"
+
+
+def test_semantic_scholar_hit_without_a_journal_does_not_crash(monkeypatch):
+    s2 = {"data": [{"title": "Flow duration curves review", "year": 1994, "journal": None,
+                    "externalIds": {"DOI": REAL}, "authors": [{"name": "R Vogel"}]}]}
+    monkeypatch.setattr(tc, "_http_fetch", Net([("api.crossref.org", "404"),
+                                                  ("semanticscholar.org/graph/v1/paper/search", s2)]))
+    out = tc.lookup_citation("flow duration curves review")
+    assert out["doi"] == REAL and out["source"] == "semantic-scholar"
+
+
+def test_render_apa_tolerates_empty_csl_lists():
+    assert tc._render_apa({"title": [], "container-title": [], "author": [], "DOI": "10.1/x"}).startswith("Unknown")
+
+
+def test_unsupported_source_hint_is_refused_not_ignored(monkeypatch):
+    monkeypatch.setattr(tc, "_http_fetch", Net([]))
+    out = tc.lookup_citation("flow duration curves", source_hint="pubmed")
+    assert out["code"] == "INVALID_ARGUMENT"
+
+
+def test_source_hint_restricts_the_providers(monkeypatch):
+    net = Net([("api.datacite.org/dois/", "404")])
+    monkeypatch.setattr(tc, "_http_fetch", net)
+    out = tc.lookup_citation("10.5281/zenodo.1", source_hint="datacite")
+    assert out.get("not_found") is True and list(out["providers"]) == ["datacite"]
+    assert all("crossref" not in u for u in net.urls)
+
+
+@pytest.mark.parametrize("bad", ["not a doi", "10.12/short", "", "https://example.org/x"])
+def test_a_string_that_is_not_a_doi_is_refused_by_get_citation_by_doi(bad, monkeypatch):
+    monkeypatch.setattr(tc, "_http_fetch", Net([]))
+    out = tc.get_citation_by_doi(bad)
+    assert out["code"] == "INVALID_ARGUMENT"
