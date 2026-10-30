@@ -33,6 +33,32 @@ returned a number for a quantity the record did not support (SPI-1 -3.09, Q100 +
 **Not done / open.** The `latest` SPI value is the last COMPLETE month; the tool does not extrapolate. SPI minimum calibration
 length (D27) and `_temporal_coverage` NaN counting (D18) are separate findings. The shared slot loader is not built here
 (another workstream owns study integrity); the daily guard is one function called by three tools.
+## 2026-10-30 - Basin identity is a stamp on the result, checked by the one session loader (tool integrity T1-B)
+
+**Context.** Audit D01-D05/D33: the result cache key held no geometry for the session basin, a watershed change invalidated
+nothing, and `site_id` plus the streamflow slot survived it, so a second delineation in a used session was answered with the
+first basin's TWI, gauge and flow. `feature=` was resolved leniently (unknown ids fell back to the session basin).
+
+**Decisions.**
+1. **Stamp the result, not the key.** Each basin-dependent result carries `meta.basin_identity = {geometry_digest, gauge_id}`;
+   the digest is `content_hash` of the bare geometry, the one the registered-feature keys already used (`_feature_geom_key` now
+   delegates to it, so existing keys do not change). A key-only fix would leave `get(slot)` consumers (streamflow, forcing,
+   geomorphic ...) unprotected; one stamp is checked by `get_result` (cache) and `get` (slots).
+2. **The loader is `HydroSession`, not a per-tool helper.** `put_result` stamps, `get_result` serves verified only, `get` skips
+   stale. A scan test fails if any module reads `_slots` around it or writes an unclassified slot. T1-P's `load_series` can sit on
+   top of it.
+3. **Unstamped means unverified, not wrong.** Cache lookups miss (recompute); slot reads still work and are flagged
+   (`summary()["basin_identity"]`, tool results, `meta.basin_identity_inputs_unverified` on anything derived from them, so a stamp
+   is never laundered). Refusing them would break every session on disk; trusting them is the bug.
+4. **A watershed change is the invalidation event.** Replacing the session watershed with a different digest drops the
+   `__legacy__` results of every dependent slot, clears `site_id`/`site_type`/`site_name` unless the new watershed names the same
+   gauge, and appends to `extra["basin_changes"]`. Run-log rows (sealed evidence) are not touched. `camels` and `model` are exempt:
+   multi-basin by design.
+5. **`feature=` is strict everywhere** via `_feature_cache_resolve` -> `_resolve_registered_feature`; raw GeoJSON strings are no
+   longer registered on the fly by these tools (use `register_feature`). A raw `geometry_geojson` that is not the session basin has
+   no gauge, area or flow: signatures refuse it rather than borrow the session's (D05).
+6. **Out of scope, not changed:** the geometry validator and `data_fetch` gauge handling (`vision2040/geometry-gauge-first`);
+   period statistics and `load_series` (T1-P).
 
 ## 2026-10-30 - Data codes are exempt by keyword, not by shape (answer audit)
 

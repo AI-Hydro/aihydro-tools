@@ -127,6 +127,11 @@ schema-rich self-help payload if the call still fails. To make it work for you:
   param is a synonym of one of these, **rename it to the canonical** so existing
   aliases route to it. If you introduce a genuinely new param that the model
   will mis-name, add an alias to `_GLOBAL_ALIASES`.
+- **Put the unit in the name** (`area_km2`, `rainfall_mm`, `tc_hr`, `discharge_m3s`). Repair never
+  renames across units, bounds (`min`/`max`), sides (`start`/`end`, `a`/`b`) or axes (`lat`/`lon`):
+  a near-miss such as `area_m2` for `area_km2` is refused with `ARG_UNIT_MISMATCH` and the value is
+  never rescaled. Every repair it does apply is returned to the caller as `_arg_repairs` and sealed in
+  the run record, so an alias must mean exactly the same quantity as its target.
 - **Always add type hints** (`str`, `int`, `float`, `bool`, `list[str]`). They
   become the JSON schema `type` that drives coercion (`"28.2"`→`28.2`,
   `"B4"`→`["B4"]`) and the self-help schema shown on failure.
