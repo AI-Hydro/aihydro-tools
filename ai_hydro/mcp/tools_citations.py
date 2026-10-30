@@ -160,14 +160,46 @@ MIN_TITLE_SCORE = 0.6
 HIGH_TITLE_SCORE = 0.8
 
 
-def _title_match_score(titles: list[str] | str | Any, query: str) -> float:
+_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def _stem(w: str) -> str:
+    return w[:-1] if len(w) > 4 and w.endswith("s") else w
+
+
+def _score_detail(titles: list[str] | str | Any, query: str) -> tuple[float, int]:
+    """``(score, n_content_words)``: share of the query's content words found as whole words in the title.
+
+    Years are dropped, and so is a capitalised word absent from the title (an author's name: titles do not carry
+    them), so "Vogel Fennessey 1994 flow duration curves" is judged on "flow duration curves". Matching is on
+    whole words ("flow" does not match "overflow"). Fewer than two content words can never reach the match
+    threshold: one keyword identifies nothing.
+    """
     if not titles:
-        return 0.0
-    title = (titles[0] if isinstance(titles, list) else str(titles)).lower()
-    words = [w for w in query.lower().split() if len(w) > 3]
-    if not words:
-        return 0.0
-    return sum(1 for w in words if w in title) / len(words)
+        return 0.0, 0
+    title = (titles[0] if isinstance(titles, list) else str(titles))
+    title_words = {_stem(w.lower()) for w in _WORD_RE.findall(title)}
+    content = []
+    for w in _WORD_RE.findall(query):
+        if len(w) <= 3 or w.isdigit():
+            continue
+        if w[0].isupper() and _stem(w.lower()) not in title_words:
+            continue
+        content.append(_stem(w.lower()))
+    if not content:
+        return 0.0, 0
+    score = sum(1 for w in content if w in title_words) / len(content)
+    if len(content) < 2:
+        score = min(score, MIN_TITLE_SCORE - 0.1)
+    return score, len(content)
+
+
+def _title_match_score(titles: list[str] | str | Any, query: str) -> float:
+    return _score_detail(titles, query)[0]
+
+
+def _n_content(query: str) -> int:
+    return len([w for w in _WORD_RE.findall(query) if len(w) > 3 and not w.isdigit()])
 
 
 def _entry(doi: str, csl: dict[str, Any], source: str, confidence: str) -> dict[str, Any]:
@@ -254,7 +286,7 @@ def _search_crossref(query: str) -> tuple[str, dict[str, Any] | None, list[dict]
         doi = _normalize_doi(it.get("DOI", ""))
         if doi:
             cands.append((_title_match_score(it.get("title"), query), doi, it))
-    return _pick(query, cands, "crossref", lambda sc: "high" if sc >= HIGH_TITLE_SCORE else "medium",
+    return _pick(query, cands, "crossref", lambda sc: "high" if sc >= HIGH_TITLE_SCORE and _n_content(query) >= 3 else "medium",
                  lambda it, doi: it)
 
 
@@ -325,20 +357,27 @@ def _unavailable(query: str, providers: dict[str, str]) -> dict[str, Any]:
 
 
 def _not_found(query: str, providers: dict[str, str], candidates: list[dict] | None = None) -> dict[str, Any]:
-    out: dict[str, Any] = {
+    if candidates:
+        return {
+            "not_confirmed": True,
+            "not_found": False,
+            "query": query,
+            "providers": providers,
+            "candidates": candidates[:5],
+            "_note": (
+                "Not confirmed: no hit matched the query well enough to cite. `candidates` are the closest "
+                "unverified hits; check them (or refine the query with title words), and cite one only after "
+                "lookup_citation/get_citation_by_doi verifies it. This does NOT show that no citation exists, "
+                "so do not write 'No peer-reviewed citation found' on this basis. Never invent a citation."),
+        }
+    return {
         "not_found": True,
         "query": query,
         "providers": providers,
         "_note": (
-            "Every provider answered and none returned a verified match. "
-            "NEVER invent a citation — write 'No peer-reviewed citation found' in the module."
-        ),
+            "Every provider answered and returned nothing for this query. "
+            "NEVER invent a citation: write 'No peer-reviewed citation found' in the module."),
     }
-    if candidates:
-        out["candidates"] = candidates[:5]
-        out["_note"] += (" `candidates` are the closest unverified hits (title overlap below the match "
-                         "threshold); do not cite them.")
-    return out
 
 
 def _resolve_exact_doi(doi: str, hint: str) -> dict[str, Any]:

@@ -1325,7 +1325,7 @@ def register_feature(
         Basin outlet for geomorphic parameters (centroid when omitted).
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         from aihydro_core.features.registry import FeatureRegistry
         session = HydroSession.load(session_id)
@@ -1376,7 +1376,7 @@ def list_features(session_id: str | None = None) -> dict:
     session_id : str | None — session to inspect. Auto-resolved when omitted.
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         feats = session.list_features()
@@ -1422,7 +1422,7 @@ def set_active_feature(
         Session to update. Auto-resolved when omitted.
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         from aihydro_core.features.registry import FeatureRegistry
         session = HydroSession.load(session_id)
@@ -1463,7 +1463,7 @@ def bind_map_to_claim(
         Session to update. Auto-resolved when omitted.
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         # Validate that the claim exists in this session
@@ -1513,7 +1513,7 @@ def bind_claim_to_item(
     such layer and the map holds none).
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         from ai_hydro.mcp.map_items import add_link
         from ai_hydro.mcp.map_layer_catalog import find_catalog_layer

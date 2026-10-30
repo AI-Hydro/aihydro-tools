@@ -5,6 +5,9 @@
 * a claim's ``prereg_id`` must name THIS study's locked plan (``plan_for_prereg``);
 * a planned analysis counts as executed only if a run of that exact tool (or a slot of that exact
   name) happened AFTER ``locked_at`` (``analysis_status``);
+* a claim is confirmatory only if every ``run`` span it cites was recorded strictly AFTER ``locked_at``
+  (``runs_not_after_lock``); this holds even when a planned analysis is a free-text description that names
+  no tool ("baseflow analysis"), where name matching cannot see that it already ran;
 * a plan locked after a planned analysis had already run is ``post_hoc``: its claims are not
   confirmatory (``is_post_hoc``). Setup runs that the plan does not name (delineation, data fetch)
   do not make a plan post hoc.
@@ -44,8 +47,28 @@ def plan_for_prereg(session: Any, prereg_id: str | None) -> dict | None:
     return plan if plan and prereg_id and plan.get("prereg_id") == prereg_id else None
 
 
+def known_names() -> set[str]:
+    """Normalised names of registered tools and common slots: what a planned analysis can resolve to."""
+    names: set[str] = set()
+    try:
+        from ai_hydro.mcp.tools_docs import _list_tools_sync
+        names |= {norm(t.name) for t in _list_tools_sync()}
+    except Exception:
+        pass
+    try:
+        from ai_hydro.session.store import _COMMON_SLOTS
+        names |= {norm(x) for x in _COMMON_SLOTS}
+    except Exception:
+        pass
+    return names
+
+
 def analysis_status(session: Any, plan: dict) -> list[dict]:
-    """Per planned analysis: ``{analysis, ran_after_lock, ran_before_lock}``."""
+    """Per planned analysis: ``{analysis, ran_after_lock, ran_before_lock, unmatched}``.
+
+    ``unmatched``: the entry is neither a registered tool/slot name nor the name of any run in the log, so
+    "not yet run" would be a guess; it is reported as unmatched instead.
+    """
     locked_at = parse_ts(plan.get("locked_at"))
     run_log = session.get("_run_log") or {}
     events: dict[str, list[datetime | None]] = {}
@@ -55,13 +78,32 @@ def analysis_status(session: Any, plan: dict) -> list[dict]:
     for slot in session.computed_healthy():
         meta = (session.get(slot) or {}).get("meta") or {}
         events.setdefault(norm(slot), []).append(parse_ts(meta.get("computed_at")))
+    known = known_names() | set(events)
     out = []
     for pa in plan.get("planned_analyses", []):
         times = events.get(norm(pa), [])
         after = bool(locked_at) and any(t is not None and t > locked_at for t in times)
         before = (not locked_at) or any(t is None or t <= locked_at for t in times)
-        out.append({"analysis": pa, "ran_after_lock": after, "ran_before_lock": bool(times) and before})
+        out.append({"analysis": pa, "ran_after_lock": after, "ran_before_lock": bool(times) and before,
+                    "unmatched": norm(pa) not in known})
     return out
+
+
+def runs_not_after_lock(session: Any, plan: dict, claim: dict) -> list[str]:
+    """Cited ``run`` source ids not timestamped strictly after the plan's lock (missing/unreadable = not after)."""
+    locked_at = parse_ts(plan.get("locked_at"))
+    run_log = session.get("_run_log") or {}
+    bad = []
+    for sp in claim.get("evidence_spans") or []:
+        if not isinstance(sp, dict) or sp.get("source_type") != "run":
+            continue
+        rid = str(sp.get("source_id"))
+        row = run_log.get(rid)
+        t = parse_ts(row.get("timestamp")) if isinstance(row, dict) else None
+        if locked_at is None or t is None or t <= locked_at:
+            if rid not in bad:
+                bad.append(rid)
+    return bad
 
 
 def is_post_hoc(session: Any, plan: dict) -> bool:
@@ -72,8 +114,7 @@ def is_post_hoc(session: Any, plan: dict) -> bool:
 
 
 def is_confirmatory(session: Any, claim: dict) -> bool:
-    plan = plan_for_prereg(session, claim.get("prereg_id"))
-    return bool(plan) and not is_post_hoc(session, plan)
+    return prereg_label(session, claim) == "confirmatory"
 
 
 def prereg_label(session: Any, claim: dict) -> str:
@@ -84,4 +125,6 @@ def prereg_label(session: Any, claim: dict) -> str:
     plan = plan_for_prereg(session, pid)
     if plan is None:
         return "unverified_prereg_id"
-    return "post_hoc_plan" if is_post_hoc(session, plan) else "confirmatory"
+    if is_post_hoc(session, plan) or runs_not_after_lock(session, plan, claim):
+        return "post_hoc_plan"
+    return "confirmatory"

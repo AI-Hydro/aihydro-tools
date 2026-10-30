@@ -344,13 +344,18 @@ def _prereg_refusal(session, session_id: str, claim_id: str, claim_dict: dict, s
         prereg_id=prereg_id, study_plan_prereg_id=have)
 
 
-def _post_hoc_warning(plan: dict) -> dict:
+def _post_hoc_warning(plan: dict, late_runs: list[str] | None = None, plan_post_hoc: bool = False) -> dict:
+    why = []
+    if plan_post_hoc:
+        why.append("the plan was locked after planned analyses had already run")
+    if late_runs:
+        why.append("the claim cites run(s) recorded before the plan was locked: " + ", ".join(late_runs))
     return {
         "code": "PREREG_POST_HOC", "severity": "warning", "blocking": False,
-        "message": ("The plan was locked after planned analyses had already run, so this claim is NOT "
-                    "confirmatory: the defensibility report lists it as 'post_hoc_plan'."),
+        "message": ("This claim is NOT confirmatory (" + "; ".join(why or ["its evidence predates the plan"])
+                    + "): the defensibility report lists it as 'post_hoc_plan'."),
         "how_to_fix": ("Treat it as exploratory. For a confirmatory test, register the plan before running "
-                       "the analyses, in a new study."),
+                       "the analyses and cite only runs made after the lock."),
         "prereg_id": plan.get("prereg_id"),
     }
 
@@ -410,6 +415,8 @@ def add_claim(
         `evidence` (untyped dicts) is auto-migrated. Pass one of the two.
     prereg_id: this study's register_research_plan id (else `prereg_gate`); confirmatory.
 
+    status="retracted" also retracts the global registry row; that cannot be undone.
+
     Metric-scoped status="supported" is refused (`uncertainty_gate`): record another status, then
     update_claim_status(uncertainty_verified=True). `evidence_gate` (supported with no evidence
     span) and `forcing_scope_gate` refuse too.
@@ -418,8 +425,7 @@ def add_claim(
     rationale and limitations become <workspace>, <aihydro-home>, <home>, <tmp> (`paths_scrubbed`).
     Text still looking like a local path (evidence source_id included) is refused with
     LOCAL_PATH_IN_TEXT and nothing is recorded: write "HDF streamflow files", not
-    "HDF /var/streamflow", or cite the file via evidence_spans. Only "~/" and "$HOME" count as
-    home ("~mm/day" is fine). Fix a stored claim by calling add_claim again.
+    "HDF /var/streamflow". Fix a stored claim by calling add_claim again.
 
     Returns `promotion_check`: the violations (`code`, `message`, `family`, `blocking`)
     promote_claim_to_registry would raise. Advisory; the human approval step is separate.
@@ -465,8 +471,9 @@ def add_claim(
             plan = _prereg.plan_for_prereg(session, prereg_id)
             if plan is None:
                 return _prereg_refusal(session, session_id, claim_id, claim_dict, status, prereg_id)
-            if _prereg.is_post_hoc(session, plan):
-                prereg_warning = _post_hoc_warning(plan)
+            if _prereg.prereg_label(session, {**claim_dict, "prereg_id": prereg_id}) == "post_hoc_plan":
+                prereg_warning = _post_hoc_warning(
+                    plan, _prereg.runs_not_after_lock(session, plan, claim_dict), _prereg.is_post_hoc(session, plan))
         if prereg_id:
             claim_dict["prereg_id"] = prereg_id
         if records:
@@ -542,6 +549,7 @@ def update_claim_status(
 ) -> dict:
     """
     Update the status and confidence of an existing claim.
+    status="retracted" also retracts the claim's global registry row; that cannot be undone.
 
     uncertainty_verified : set True to confirm that the metric estimate in an
         empirical claim has an associated uncertainty estimate. Required when
@@ -1279,9 +1287,24 @@ def register_research_plan(
         from ai_hydro.claims import prereg as _prereg
         ran_before = [a["analysis"] for a in _prereg.analysis_status(session, plan) if a["ran_before_lock"]]
         plan["planned_ran_before_lock"] = ran_before
+        unmatched = [a["analysis"] for a in _prereg.analysis_status(session, plan) if a["unmatched"]]
+        plan["planned_unmatched"] = unmatched
         plan["post_hoc"] = bool(ran_before)
         session.set("_research_plan", plan)
         session.save()
+
+        if ran_before:
+            note = (f"Plan locked AFTER these planned analyses had already run: {', '.join(ran_before)}. "
+                    "It is recorded as post_hoc, and claims filed with this prereg_id are not confirmatory; "
+                    "the defensibility report says so.")
+        else:
+            note = (f"Plan locked. Pass prereg_id='{prereg_id}' to add_claim for any "
+                    "claims that directly test this hypothesis. Claims without a "
+                    "prereg_id will be labelled exploratory in the defensibility report.")
+        if unmatched:
+            note += (f" Unmatched (not a tool or slot name, so 'not yet run' cannot be judged by name): "
+                     f"{', '.join(unmatched)}. A claim is confirmatory only if every run it cites was made "
+                     "after the lock.")
 
         return {
             "prereg_id": prereg_id,
@@ -1291,15 +1314,8 @@ def register_research_plan(
             "n_planned": len(plan["planned_analyses"]),
             "post_hoc": plan["post_hoc"],
             "planned_ran_before_lock": ran_before,
-            "note": (
-                f"Plan locked. Pass prereg_id='{prereg_id}' to add_claim for any "
-                "claims that directly test this hypothesis. Claims without a "
-                "prereg_id will be labelled exploratory in the defensibility report."
-            ) if not ran_before else (
-                f"Plan locked AFTER these planned analyses had already run: {', '.join(ran_before)}. "
-                "It is recorded as post_hoc, and claims filed with this prereg_id are not confirmatory; "
-                "the defensibility report says so."
-            ),
+            "planned_unmatched": unmatched,
+            "note": note,
         }
     except Exception as exc:
         return _tool_error_to_dict(exc)

@@ -115,9 +115,9 @@ def test_free_text_below_the_title_threshold_is_not_a_citation(monkeypatch):
                                                   ("semanticscholar.org/graph/v1/paper/search", s2),
                                                   ("api.datacite.org/dois?query=", {"data": []})]))
     out = tc.lookup_citation("Madeup Author 2031 quantum baseflow of martian catchments")
-    assert out.get("not_found") is True and "doi" not in out
+    assert out.get("not_confirmed") is True and out["not_found"] is False and "doi" not in out
     assert {c["doi"] for c in out["candidates"]} == {"10.1016/j.real.2001.01.001", "10.2222/other"}
-    assert "do not cite them" in out["_note"]
+    assert "does NOT show that no citation exists" in out["_note"]
 
 
 def test_free_text_with_a_good_title_match_is_found(monkeypatch):
@@ -160,3 +160,27 @@ def test_a_string_that_is_not_a_doi_is_refused_by_get_citation_by_doi(bad, monke
     monkeypatch.setattr(tc, "_http_fetch", Net([]))
     out = tc.get_citation_by_doi(bad)
     assert out["code"] == "INVALID_ARGUMENT"
+
+
+def test_author_and_year_words_do_not_sink_a_correct_title_match(monkeypatch):
+    body = {"message": {"items": [{"DOI": REAL, "title": ["Flow-duration curves I: review and use"]}]}}
+    monkeypatch.setattr(tc, "_http_fetch", Net([("api.crossref.org/works?query=", body)]))
+    out = tc.lookup_citation("Vogel Fennessey 1994 flow duration curves")
+    assert out["doi"] == REAL and out["confidence"] == "high"
+
+
+def test_a_single_keyword_never_matches_and_matching_is_on_whole_words(monkeypatch):
+    items = {"message": {"items": [{"DOI": "10.1234/overflow", "title": ["Overflow of dams in arid regions"]}]}}
+    monkeypatch.setattr(tc, "_http_fetch", Net([("api.crossref.org/works?query=", items),
+                                                  ("semanticscholar", {"data": []}), ("datacite", {"data": []})]))
+    one = tc.lookup_citation("flow")
+    assert one.get("not_confirmed") is True and "doi" not in one
+    assert tc._title_match_score("Overflow of dams", "flow regime shifts") == 0.0
+    assert tc._title_match_score("Flow regime shifts", "flow") < tc.MIN_TITLE_SCORE
+
+
+def test_nothing_returned_by_any_provider_is_the_only_plain_not_found(monkeypatch):
+    monkeypatch.setattr(tc, "_http_fetch", Net([("api.crossref.org/works?query=", {"message": {"items": []}}),
+                                                  ("semanticscholar", {"data": []}), ("datacite", {"data": []})]))
+    out = tc.lookup_citation("a thoroughly nonexistent monograph title")
+    assert out["not_found"] is True and "No peer-reviewed citation found" in out["_note"]

@@ -469,6 +469,8 @@ def build_defensibility_report(
                 tick = "✅"
             elif st["ran_before_lock"]:
                 tick = "○ ran before the lock (not counted)"
+            elif st.get("unmatched"):
+                tick = "○ unmatched (names no tool or slot; judged by the runs each claim cites)"
             else:
                 tick = "○ not yet run"
             lines.append(f"| {i} | {st['analysis']} | {tick} |")

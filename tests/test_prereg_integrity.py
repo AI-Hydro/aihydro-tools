@@ -138,3 +138,39 @@ def test_a_plan_on_disk_without_the_stamp_is_judged_from_its_timestamps():
     seed(("r1", "extract_hydrological_signatures", ts(-30)))
     md, summary = report()
     assert "Post-hoc plan" in md and summary["n_executed_planned"] == 0
+
+
+# ---- a free-text plan cannot hide that the analysis already ran (review B1)
+
+SPAN_R1 = [{"source_type": "run", "source_id": "r1", "metric_ref": "baseflow_index"}]
+
+
+def test_a_free_text_plan_locked_after_the_run_is_not_confirmatory_for_a_claim_citing_that_run():
+    HydroSession(SID).save()
+    seed(("r1", "separate_baseflow", ts(-60)))                       # ran before the plan
+    plan = register_research_plan(SID, "BFI exceeds 0.4", ["baseflow analysis"])
+    assert plan["post_hoc"] is False                                 # name matching cannot see it ...
+    assert plan["planned_unmatched"] == ["baseflow analysis"]        # ... and the plan says so
+    assert "Unmatched" in plan["note"]
+    res = claim(prereg_id=plan["prereg_id"], evidence_spans=SPAN_R1)
+    assert res["status"] == "recorded" and res["prereg"] == "post_hoc_plan"
+    w = [x for x in res["warnings"] if x["code"] == "PREREG_POST_HOC"]
+    assert w and "r1" in w[0]["message"]
+    md, summary = report()
+    assert summary["n_confirmatory_claims"] == 0 and "✅ confirmatory" not in md
+    assert "unmatched" in md and "not yet run" not in md
+
+
+def test_the_same_plan_is_confirmatory_for_a_claim_citing_a_run_made_after_the_lock():
+    HydroSession(SID).save()
+    seed(("r1", "separate_baseflow", ts(-60)))
+    plan = register_research_plan(SID, "BFI exceeds 0.4", ["baseflow analysis"])
+    seed(("r1", "separate_baseflow", ts(-60)), ("r2", "separate_baseflow", ts(+5)))
+    res = claim(prereg_id=plan["prereg_id"],
+                evidence_spans=[{"source_type": "run", "source_id": "r2", "metric_ref": "baseflow_index"}])
+    assert res["prereg"] == "confirmatory" and "warnings" not in res
+    assert report()[1]["n_confirmatory_claims"] == 1
+    # citing both the old and the new run is not confirmatory
+    both = claim(claim_id="c2", prereg_id=plan["prereg_id"], evidence_spans=SPAN_R1 + [
+        {"source_type": "run", "source_id": "r2", "metric_ref": "baseflow_index"}])
+    assert both["prereg"] == "post_hoc_plan"

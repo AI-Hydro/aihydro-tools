@@ -56,6 +56,10 @@ _LOCKED_PLAN = {
     "locked": True,
 }
 
+# R-04: a confirmatory claim must cite a run recorded after the plan was locked
+_RUN_AFTER_LOCK = {"sigs.run.001": {"tool_name": "extract_hydrological_signatures",
+                                    "timestamp": "2026-06-10T01:00:00+00:00", "key_outputs": {"baseflow_index": 0.62}}}
+
 _CONFIRMATORY_CLAIM = {
     "id": "claim-001",
     "claim": "Baseflow index is 0.62, confirming the pre-registered hypothesis.",
@@ -357,6 +361,7 @@ class TestConfirmatoryVsExploratory:
         session = _make_session(
             "test-rep-conf-001", monkeypatch, tmp_path,
             claims={"claim-001": _CONFIRMATORY_CLAIM},
+            run_log=_RUN_AFTER_LOCK,
             research_plan=_LOCKED_PLAN,
         )
         md, summary = build_defensibility_report(session, "test-rep-conf-001", "2026-06-10")
@@ -379,6 +384,7 @@ class TestConfirmatoryVsExploratory:
                 "claim-001": _CONFIRMATORY_CLAIM,
                 "claim-002": _EXPLORATORY_CLAIM,
             },
+            run_log=_RUN_AFTER_LOCK,
             research_plan=_LOCKED_PLAN,
         )
         md, summary = build_defensibility_report(session, "test-rep-conf-003", "2026-06-10")

@@ -33,20 +33,15 @@ _BARRING = ("stale", "retracted")
 
 
 def registry_rows(session_id: str, claim_id: str, claim_dict: dict | None = None) -> list[dict]:
-    """Registry rows of this session's claim: its linked ``registry_id`` plus any other row for the pair."""
-    try:
-        from ai_hydro.registry.store import find_by_session
-        rows = [r for r in find_by_session(session_id) if r.get("claim_id") == claim_id]
-    except Exception as exc:          # an unreadable registry must not break a status write
-        log.warning("registry rows unavailable for %s/%s: %s", session_id, claim_id, exc)
-        return []
+    """Registry rows of this session's claim: its linked ``registry_id`` plus any other row for the pair.
+
+    Raises when the registry cannot be read: "no rows" and "unreadable" must never look the same.
+    """
+    from ai_hydro.registry.store import all_entries, find_by_session
+    rows = [r for r in find_by_session(session_id) if r.get("claim_id") == claim_id]
     rid = (claim_dict or {}).get("registry_id")
     if rid and not any(r.get("registry_id") == rid for r in rows):
-        try:
-            from ai_hydro.registry.store import all_entries
-            rows += [r for r in all_entries() if r.get("registry_id") == rid]
-        except Exception:
-            pass
+        rows += [r for r in all_entries() if r.get("registry_id") == rid]
     return rows
 
 
@@ -63,7 +58,15 @@ def reinstatement_gate(session_id: str, claim_id: str, previous: dict | None, ca
     """Refusal when ``status`` would reinstate a claim the registry or the staleness check withdrew."""
     if status not in EVIDENCE_STATUSES or not previous:
         return None
-    rows = registry_rows(session_id, claim_id, previous)
+    try:
+        rows = registry_rows(session_id, claim_id, previous)
+    except Exception as exc:       # fail closed: an unreadable registry cannot clear a reinstatement
+        return _refusal(
+            "REGISTRY_UNREADABLE", claim_id, candidate, status, "registry_must_be_readable_to_assert",
+            f"The global registry could not be read ({type(exc).__name__}), so it cannot be checked whether "
+            f"claim '{claim_id}' was retracted or went stale. Nothing was changed.",
+            "Fix or restore the registry file, then repeat the call. Recording the claim as 'tested' or "
+            "'inconclusive' does not need the registry.")
     if any(r.get("status") == "promoted" for r in rows):
         return None            # re-promoted under a fresh human approval: the registry row is live again
     retracted = [r for r in rows if r.get("status") == "retracted"]
@@ -107,7 +110,7 @@ def propagate_retraction(session_id: str, claim_id: str, claim_dict: dict, reaso
     changed: list[str] = []
     for row in registry_rows(session_id, claim_id, claim_dict):
         if row.get("status") in ("promoted", "stale") and row.get("registry_id"):
-            if mark_retracted(row["registry_id"], reason=(reason or "")[:500]):
+            if mark_retracted(row["registry_id"], reason=(reason or "")[:500], retracted_by="agent"):
                 changed.append(row["registry_id"])
     return changed
 

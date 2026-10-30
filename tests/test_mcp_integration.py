@@ -342,6 +342,8 @@ class TestToolSmoke:
         from ai_hydro.mcp.tools_modelling import get_model_results
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            from ai_hydro.session.store import HydroSession
+            HydroSession("01031500").save()      # R-01: the study must exist
             result = get_model_results("01031500")
             assert result["model_trained"] is False
 

@@ -745,7 +745,7 @@ def get_model_results(session_id: str | None = None, job_id: str | None = None) 
     session_id : str | None (optional from Wave 3) — auto-resolved from chat context.
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=not job_id)
 
         # If job_id provided, try to read from artifact dir first
         if job_id:

@@ -76,6 +76,12 @@ ARGS: dict[str, dict] = {
     "add_note": dict(note="hello"),
     "write_research_interpretation": dict(interpretation="text"),
     "export_session": {},
+    # review B2: these used a plain _resolve_session and created the study on a save
+    "register_feature": dict(geojson='{"type": "Point", "coordinates": [-100.0, 40.0]}'),
+    "list_features": {},
+    "set_active_feature": dict(feature_id="f1"),
+    "get_model_results": {},
+    "audit_interpretation": dict(prose="Baseflow index is 0.4 [claim:c1]."),
 }
 LIST_TOOLS = {"list_claims": {}, "list_assumptions": {}}
 
@@ -177,6 +183,15 @@ ALLOWED = {
     "add_session_to_project": "links an id that need not exist yet (pre-registration)",
     "map_add_layer_from_run": "checks run_records._session_exists itself and returns STUDY_NOT_FOUND",
     "map_get_state": "read-only snapshot: loads but never saves, so it cannot create a study",
+    # compute tools: first use of a gauge/point opens its study (auto_create_hint). An unknown EXPLICIT id still
+    # creates one here; tightening that touches the basin-identity and modelling lanes and is deferred (PR body).
+    **{n: "compute tool that opens its study on first use; explicit unknown id deferred" for n in (
+        "compute_design_hydrograph", "compute_drought_index", "compute_flood_frequency",
+        "compute_flow_duration_curve", "compute_soil_loss_rusle", "extract_geomorphic_parameters",
+        "extract_hydrological_signatures", "fetch_camels_us", "fetch_streamflow_data", "separate_baseflow",
+        "train_hydro_model", "propose_and_train", "run_autoresearch", "run_inundation_physics_validation",
+        "train_inundation_surrogate")},
+    "measure_feature": "series helper resolving with allow_auto_create=False; unknown-id check deferred",
     # not a study record: filters or external services
     "list_registry_claims": "global registry filter; session_id only narrows the listing",
     "gee_preview_layer": "optional label passed to Earth Engine",
@@ -184,7 +199,9 @@ ALLOWED = {
 }
 #: Resolved through another helper that itself resolves (the scan below checks these exist).
 HELPER_RESOLVED = {"summarize_series", "detect_threshold_runs", "compare_series", "bootstrap_statistic"}
-RESOLVERS = ("resolve_existing_study", "_resolve_session", "_load_session_or_raise")
+#: A plain ``_resolve_session(...)`` does NOT count: its default lets an unknown explicit id through
+#: (and ``HydroSession.load`` + ``save`` then creates the study). Only the strict forms count.
+RESOLVERS = ("resolve_existing_study", "_load_session_or_raise", "must_exist=True", "must_exist=not")
 
 MCP_DIR = pathlib.Path(__file__).resolve().parent.parent / "ai_hydro" / "mcp"
 
@@ -219,8 +236,7 @@ def test_the_ledger_experiment_skeptic_and_validator_tools_use_the_existing_stud
                         "archive_session", "add_note", "write_research_interpretation", "export_session"}
     must |= set(LIST_TOOLS)
     tools = _tools_with_session_id()
-    missing = sorted(n for n in must if n not in tools or not ("resolve_existing_study" in tools[n][1]
-                                                              or "_load_session_or_raise" in tools[n][1]))
+    missing = sorted(n for n in must if n not in tools or not any(r in tools[n][1] for r in RESOLVERS))
     assert not missing, missing
 
 

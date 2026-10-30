@@ -255,3 +255,37 @@ def test_a_claim_that_was_never_promoted_is_unaffected(promoted):
     assert r["status"] == "recorded"
     assert update_claim_status("plain", "p1", "retracted", "low", "Withdrawn before ever being promoted.") \
         .get("registry_retracted") is None
+
+
+# ---- an unreadable registry is neither "no rows" nor a pass (review B3)
+
+def test_an_unreadable_registry_refuses_a_reinstatement_instead_of_clearing_it(promoted, monkeypatch):
+    update_claim_status(SID, "c1", "tested", "low", "Downgraded while the evidence is re-examined.")
+
+    def boom(_sid):
+        raise OSError("registry unreadable")
+    monkeypatch.setattr(registry, "find_by_session", boom)
+    res = update_claim_status(SID, "c1", "supported", "medium", "Back to supported after review.",
+                              uncertainty_verified=True)
+    assert res["error"] == "REGISTRY_UNREADABLE"
+    assert HydroSession.load(SID).claims["c1"]["status"] == "tested"
+    # a status that needs no registry check still goes through
+    assert update_claim_status(SID, "c1", "inconclusive", "low", "Still being re-examined.")["status"] == "updated"
+
+
+def test_a_failed_registry_retraction_is_reported_and_the_study_retraction_stands(promoted, monkeypatch):
+    def boom(_sid):
+        raise OSError("registry unreadable")
+    real = registry.find_by_session
+    monkeypatch.setattr(registry, "find_by_session", boom)
+    res = update_claim_status(SID, "c1", "retracted", "low", "Withdrawn: the source series was wrong.")
+    assert res["status"] == "updated" and "registry_retraction_failed" in res and "registry_retracted" not in res
+    assert HydroSession.load(SID).claims["c1"]["status"] == "retracted"
+    monkeypatch.setattr(registry, "find_by_session", real)
+    out = check_registry_staleness(SID)                          # the repair path propagates it later
+    assert out["n_retracted"] == 1 and list(rows().values()) == ["retracted"]
+
+
+def test_registry_retraction_records_who_retracted(promoted):
+    update_claim_status(SID, "c1", "retracted", "low", "Withdrawn: the source series was wrong.")
+    assert registry.all_entries()[0]["retracted_by"] == "agent"
