@@ -97,7 +97,8 @@ watershed 0.3.0). CI is red until both are on PyPI.
   variable: product, source, units, coverage_complete, missing ranges, notes). `mean_annual_precip_mm` / `mean_annual_pet_mm`
   are the sum over the 12 calendar months of (mean of the finite days in the month x days in the month): a missing day is not zero
   (3 mm/day with every other day NaN read 543, now 1095.75) and a missing season does not re-weight the year. None with a
-  `..._reason` when a calendar month has no data; `aridity_index` is computed on that same basis for P and PET (None + reason
+  `..._reason` when a calendar month has data in under 80% of the record's years (WMO-No. 1203 s4.4.2, defined for climate normals, applied
+  here by analogy); mean annual temperature and `calculate_water_balance_metrics` use the same basis; `aridity_index` is computed on that same basis for P and PET (None + reason
   otherwise). `forcing_complete` is False when any column has NaN cells (`variables_with_missing_days`).
 - **D12 sub-daily data in daily tools.** `separate_baseflow`, `compute_flow_duration_curve` and `compute_flood_frequency`
   refuse, through one shared loader (`_load_daily_streamflow`), and `extract_hydrological_signatures` applies the same guard (`STREAMFLOW_NOT_DAILY`) to a streamflow slot whose `interval` is not `daily` or whose dates are spaced under a day,
