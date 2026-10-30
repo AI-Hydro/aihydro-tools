@@ -88,12 +88,13 @@ def _pending_status(job_id: str, artifact_dir: Path, variable: str, context: dic
 @mcp.tool()
 def data_fetch_background(
     variable: str,
-    geometry: Any,
     start: str,
     end: str,
+    geometry: Any = None,
     product: str | None = None,
     aggregation: str = "basin_mean",
     gauge_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     """
     Kick off a data fetch as a background job and return a job_id immediately.
@@ -107,13 +108,13 @@ def data_fetch_background(
     ----------
     variable : str
         Canonical variable name — same as data_fetch. 'streamflow', 'precipitation', etc.
-    geometry : any JSON-serialisable form
-        (lat, lon) list, [minx, miny, maxx, maxy] bbox, GeoJSON dict, WKT string,
-        or a USGS gauge-ID string. Must be JSON-serialisable (no shapely objects).
     start : str
         ISO-8601 start date, e.g. '2000-01-01'.
     end : str
         ISO-8601 end date (inclusive).
+    geometry : any JSON-serialisable form (optional with gauge_id)
+        {"lat": 47.24, "lon": -68.58}, GeoJSON, bbox or WKT. A bare [a, b] pair is
+        REFUSED (GEOMETRY_AXIS_AMBIGUOUS). Optional for streamflow with gauge_id.
     product : str | None
         Pin a specific product ID (e.g. 'GLOFAS_STREAMFLOW'). None = auto-route.
     aggregation : str
@@ -140,17 +141,45 @@ def data_fetch_background(
                 "code": "GEOMETRY_NOT_SERIALISABLE",
                 "message": (
                     f"geometry must be JSON-serialisable for background dispatch: {exc}. "
-                    "Pass a (lat, lon) list, a bbox list, a GeoJSON dict, or a WKT string."
+                    "Pass {\"lat\":..,\"lon\":..}, a bbox list, a GeoJSON dict, or a WKT string."
                 ),
-                "recovery": "Convert geometry to a GeoJSON dict or (lat, lon) list first.",
+                "recovery": "Convert geometry to a GeoJSON dict or {\"lat\":..,\"lon\":..} first.",
                 "next_tools": ["data_validate_request"],
             }
 
-        if gauge_id is not None:
-            from ai_hydro.mcp.gauge_identity import identity_refusal
-            refusal = identity_refusal(variable, geometry, product, "data_fetch_background")
-            if refusal:
-                return refusal
+        from ai_hydro.mcp.geometry_boundary import check_geometry_arg
+
+        bad = check_geometry_arg(geometry, "data_fetch_background")
+        if bad:
+            return bad
+
+        # Gauge-first, resolved HERE (the runner is a detached process): the job config carries the
+        # place the gauge resolved to, and a refusal never starts a job.
+        from ai_hydro.mcp.gauge_identity import resolve_request
+
+        sid = None
+        try:
+            from ai_hydro.mcp.helpers import _resolve_session
+
+            sid = _resolve_session(session_id, None, allow_auto_create=False)
+        except Exception as exc:
+            log.debug("data_fetch_background: no session resolved (%s)", exc)
+        resolved = resolve_request(variable, geometry, product, gauge_id, sid, "data_fetch_background")
+        if "refusal" in resolved:
+            return resolved["refusal"]
+        geometry = resolved["geometry"]
+        gauge_id = resolved["gauge_id"] or gauge_id
+        if resolved["basin_ref"] is not None and gauge_id is None:
+            # the runner pins by gauge id only: the session BasinRef's single verified usgs: alias is that id
+            from ai_hydro.identity import usgs_ids_of_ref
+
+            ids = usgs_ids_of_ref(resolved["basin_ref"])
+            if len(ids) != 1:
+                return {"error": True, "code": "GAUGE_AMBIGUOUS", "terminal": True,
+                        "message": f"the session BasinRef names {len(ids)} USGS gauges ({sorted(ids)}); a background "
+                                   "observation job needs exactly one.",
+                        "recovery": "Pass gauge_id explicitly.", "next_tools": ["data_fetch_background"]}
+            gauge_id = next(iter(ids))
 
         job_id     = uuid.uuid4().hex[:12]
         context    = _submit_context()      # captured here: the job runs in another process

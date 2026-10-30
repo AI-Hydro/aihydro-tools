@@ -6,6 +6,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+Owner feedback on the installed 0.4.3 build: `data_fetch(variable="streamflow", geometry=[-68.5828, 47.2375], ..., gauge_id="01013500")`
+was refused with "geometry is in region 'global'" (the pair is GeoJSON order, read as lat,lon it is in the Southern Ocean), and the
+agent then fell back to the deprecated tool and tripped on `start_date` / `end_date`. Without `gauge_id` the same call raised no
+refusal and was routed to modelled products for the wrong place.
+
+### Fixed
+
+- **A bare coordinate pair is refused, never guessed (one boundary for every tool).** `ai_hydro/mcp/geometry_boundary.py`
+  (`GeometryBoundaryMiddleware`, plus the same check inside `data_fetch` / `data_fetch_background` for direct calls) holds every tool
+  argument named `geometry` or `geometries` to one rule: `[a, b]`, `(a, b)`, `"a,b"` and `"[a, b]"` return a retryable structured error.
+  `GEOMETRY_AXIS_AMBIGUOUS` (both values within +/-90) shows both readings and the exact `{"lat":..,"lon":..}` fix;
+  `GEOMETRY_AXIS_SWAPPED` (one value cannot be a latitude) states the only possible reading and still refuses. `{"lat","lon"}`, GeoJSON,
+  a 4-number bbox (range and order checked: `GEOMETRY_BBOX_INVALID`), WKT and a gauge id pass. The tool schemas now tell the agent to use
+  the dict form.
+- **`data_fetch` and `data_fetch_background` need no geometry when a gauge names the place.** `gauge_id` (or a session BasinRef with a
+  verified `usgs:` alias, or a session whose `site_id` is a USGS gauge) locates the request: the point comes from the USGS Water Data API
+  monitoring-location record and is reported as `resolved_location` and recorded in the call's inputs. The request is still pinned to
+  `NWIS_STREAMFLOW` with no fallback (ADR-003 A2 unchanged). With neither: `GEOMETRY_REQUIRED` (retryable).
+- **A gauge and a place that disagree are refused by name.** More than 5 km (aihydro-data's pre-registered gauge-to-outlet distance) between
+  `gauge_id` and the geometry returns `GAUGE_LOCATION_MISMATCH` with both locations and the distance, instead of the misleading
+  "region 'global'" text. If the gauge lookup cannot be made the old region rule still applies.
+- **Deprecated `fetch_streamflow_data` accepts `start` / `end`** (arg-repair aliases to `start_date` / `end_date` when the tool has no
+  `start` / `end` of its own). The tool stays deprecated; no parameter was added.
+
+### Changed
+
+- `data_fetch(variable, start, end, geometry=None, ...)` and `data_fetch_background(variable, start, end, geometry=None, ...)`: `geometry`
+  moved after `start` / `end` and is optional (Python positional callers; MCP calls are by name). `data_fetch_background` also takes `session_id`.
+- Tests that passed a bare `[lat, lon]` pair or a point several km from the gauge were changed to `{"lat","lon"}` at the gauge's recorded
+  location (`tests/test_usgs_u3.py`, `test_series_tools.py`, `test_map_provenance.py`).
+
+---
+
 ## [2.8.4] - 2026-10-30 (answer audit: USGS data codes)
 
 ### Fixed

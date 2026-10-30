@@ -1,5 +1,33 @@
 # Decisions
 
+## 2026-10-30 - A coordinate pair has no axis order: refuse it at one boundary; the gauge locates itself
+
+Owner evidence: `geometry=[-68.5828, 47.2375]` (lon, lat; USGS 01013500, northern Maine) was read by aihydro-data as (lat, lon), a point
+in the Southern Ocean. With `gauge_id` the call was refused as "region 'global'"; without it nothing refused and the router served CHIRPS /
+ERA5-Land / GEOGLOWS for the wrong place, real-looking numbers for the wrong location. That second case is the defect that matters.
+
+1. **Refuse, do not normalise (even when only one reading is possible).** When both values are within +/-90 the pair is genuinely
+   ambiguous (`GEOMETRY_AXIS_AMBIGUOUS`: both readings and the exact fix are returned, nothing is guessed). When one value exceeds 90
+   only one reading is valid (`GEOMETRY_AXIS_SWAPPED`). Normalising that case would have been correct, but it makes the accepted
+   inputs depend on the data, so the same call shape works for Seattle and silently fails for Maine. One rule is easier for a weak model
+   to learn: bare pairs are never accepted; send `{"lat":..,"lon":..}`. The error is retryable (`terminal: false`) and its `recovery`
+   text is the corrected argument. The refusal costs one turn; a wrong-place fetch costs a wrong result.
+2. **One boundary, not per-tool logic.** `GeometryBoundaryMiddleware` checks any call that supplies `geometry` / `geometries`, so tools
+   registered by other packages (`data_validate_request`, `data_batch_fetch`) are covered with no change there; the retaining
+   `data_fetch` and `data_fetch_background` run the same `check_geometry_arg` for direct Python calls. A scan test lists the live tool
+   schemas and fails if any geometry-taking tool is not behind it. Out of scope, and still bare-pair readers: aihydro-data's
+   `outlet=(lat, lon)` parameter and the `*_geojson` string parameters (GeoJSON is unambiguous).
+3. **Gauge first.** A USGS site number determines a place. `geometry` is optional when `gauge_id` (or a verified session BasinRef alias,
+   or a session USGS `site_id`) names it; the point is the Water Data API monitoring-location record. ADR-003 A2 is untouched:
+   a gauge request is still `mode="manual"`, `product="NWIS_STREAMFLOW"`, `fallback=[]`; nothing here can send it to a modelled
+   product. A geometry given with the gauge must be within 5 km of it (the A2 `max_distance_m` pre-registered threshold, read from
+   aihydro-data, not a new number); otherwise `GAUGE_LOCATION_MISMATCH` names both places. If the location lookup fails, only that
+   check is skipped (the pinned fetch cannot return another place's data); a gauge-only call whose lookup fails returns a transient error.
+4. **Deprecated tool.** `fetch_streamflow_data` takes `start_date`/`end_date`. Rather than adding parameters, the existing arg-repair
+   alias table gets the reverse pair (`start`->`start_date`, `end`->`end_date`), which applies only when the tool has no `start`/`end`.
+
+Consequence for callers: `data_fetch(variable, start, end, geometry=None, ...)` reordered its Python signature; MCP callers are unaffected.
+
 ## 2026-10-30 - Data codes are exempt by keyword, not by shape (answer audit)
 
 Owner evidence: an answer was audited at "0/13 numbers traced", and two of the hard findings were the USGS parameter code `00060` and

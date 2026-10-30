@@ -263,9 +263,9 @@ def _streamflow_flags(session_id: str) -> list:
 
 def data_fetch(
     variable: str,
-    geometry: Any,
     start: str,
     end: str,
+    geometry: Any = None,
     mode: str = "auto",
     product: str | None = None,
     aggregation: str = "basin_mean",
@@ -279,25 +279,25 @@ def data_fetch(
 
     Args:
         variable:    Canonical name ('precipitation', 'tmax', 'et', ...); see data_list_products().
-        geometry:    (lat, lon) tuple, [minx, miny, maxx, maxy] bbox, GeoJSON dict or WKT string.
         start:       ISO-8601 start date, e.g. '2015-01-01'.
         end:         ISO-8601 end date (inclusive).
-        mode:        'auto' (router picks the product for the region) or 'manual' (needs product=).
-        product:     Product ID, e.g. 'CHIRPS', 'GRIDMET_PRECIP'. Required for mode='manual'.
-        aggregation: 'basin_mean' (default, 1-D series) or 'raw_raster' (clipped DataArray).
-        cache:       True (default) uses the disk cache and retains the series; False retains none.
-        session_id:  Session to record the call in; auto-resolved from the chat when omitted.
-        gauge_id:    streamflow only. USGS site number ('01013500' or 'USGS-01013500'); outranks a
-                     BasinRef alias and an outlet. A polygon with no identity -> GAUGE_REQUIRED,
-                     an ambiguous outlet -> GAUGE_AMBIGUOUS; refusals are final.
+        geometry:    {"lat": 47.24, "lon": -68.58}, GeoJSON, [west, south, east, north] bbox or WKT. A bare
+                     [a, b] pair is REFUSED (GEOMETRY_AXIS_AMBIGUOUS). Optional for streamflow with gauge_id.
+        mode:        'auto' (router picks the product) or 'manual' (needs product=).
+        product:     Product ID, e.g. 'CHIRPS'. Required for mode='manual'.
+        aggregation: 'basin_mean' (default, 1-D series) or 'raw_raster'.
+        cache:       True (default) uses the disk cache and retains the series.
+        session_id:  Session to record the call in; auto-resolved when omitted.
+        gauge_id:    streamflow only. USGS site number ('01013500'); outranks a BasinRef alias and an outlet.
+                     A geometry given must be within 5 km (GAUGE_LOCATION_MISMATCH). Polygon with no identity
+                     -> GAUGE_REQUIRED, ambiguous outlet -> GAUGE_AMBIGUOUS; refusals are final.
 
     Returns:
-        Success: variable, product, source, cache_hit, data (head + shape; data.retained_series),
-        license, citation, next_steps and `_run_id`, the `series` argument of summarize_series,
-        detect_threshold_runs, compare_series and bootstrap_statistic. Failure: error envelope
-        with recovery hints.
+        Success: variable, product, source, data (head + shape), license, citation, next_steps, `_run_id` (the
+        `series` argument of summarize_series, detect_threshold_runs, compare_series, bootstrap_statistic).
+        Failure: error envelope.
 
-    Queued backends (GloFAS / HPC) raise USE_ASYNC_TOOL (next_tools=['data_fetch_background']).
+    Queued backends (GloFAS / HPC) raise USE_ASYNC_TOOL (use data_fetch_background).
     """
     sid = None
     try:
@@ -308,17 +308,17 @@ def data_fetch(
         log.debug("data_fetch: no session resolved, call is not recorded (%s)", exc)
 
     from ai_hydro.mcp import gauge_identity as gi
+    from ai_hydro.mcp.geometry_boundary import check_geometry_arg
 
-    hint = None
-    basin_ref = None
-    if gauge_id is not None:
-        refusal = gi.identity_refusal(variable, geometry, product, "data_fetch")
-        if refusal:
-            return refusal
-    elif sid and variable == "streamflow" and product in (None, gi.NWIS_PRODUCT):
-        basin_ref, hint = gi.session_basin_ref(sid, geometry)
-        if basin_ref is not None and gi.identity_refusal(variable, geometry, product, "data_fetch"):
-            basin_ref = None                     # a session ref never forces a refusal on the request
+    bad = check_geometry_arg(geometry, "data_fetch")
+    if bad:
+        return bad
+
+    resolved = gi.resolve_request(variable, geometry, product, gauge_id, sid, "data_fetch")
+    if "refusal" in resolved:
+        return resolved["refusal"]
+    geometry, gauge_id = resolved["geometry"], resolved["gauge_id"] or gauge_id
+    basin_ref, hint, notes = resolved["basin_ref"], resolved["hint"], resolved["notes"]
 
     if gauge_id is not None or basin_ref is not None:
         result = _fetch_with_identity(
@@ -335,6 +335,8 @@ def data_fetch(
         ))
     if hint and isinstance(result, dict):
         result["basin_ref_hint"] = hint
+    if notes and isinstance(result, dict):
+        result.update(notes)        # resolved_location / location_source / gauge_source: how the place was fixed
     # ``redirect`` is only returned by older aihydro-data (before U4 the queued redirect was a
     # success-shaped dict); current aihydro-data raises an MCP error instead.
     if not isinstance(result, dict) or result.get("error") or result.get("redirect"):
@@ -378,6 +380,8 @@ def data_fetch(
         inputs["gauge_id"] = gauge_id
     if isinstance(geometry, str):
         inputs["geometry"] = geometry
+    elif notes.get("resolved_location"):
+        inputs["geometry"] = notes["resolved_location"]       # the place the gauge resolved to is part of the record
     out = post_run("data_fetch", sid, result, inputs=inputs)
     if out.get("validators_not_run") and not out.get("quality_flags"):
         out.pop("quality_flags", None)        # an empty list would read as "validators ran and found nothing"
