@@ -486,20 +486,24 @@ def test_a_different_gauge_still_drops_streamflow():
     assert s.get("streamflow") is None and s.site_id == ""
 
 
-def test_a_recompute_in_a_legacy_session_does_not_leave_the_session_unverified():
+def test_a_recompute_is_not_noted_unverified_but_what_was_derived_from_the_legacy_read_stays_unverified():
+    """Read legacy streamflow, put a fresh streamflow, put signatures: the fresh streamflow is verified and
+    not in the note, but signatures was computed after an unverified read, so it stays unverified."""
     from ai_hydro.session import HydroSession
 
     sid = _new_session(site_id="01013500", site_type="usgs_gauge")
     s = HydroSession.load(sid)
-    # a legacy (unstamped) streamflow slot, as an old session file holds it
     s._slots.setdefault("streamflow", {}).setdefault("__legacy__", {})[""] = {
         "data": {"q_cms": [1.0]}, "meta": {"computed_at": "2025-01-01T00:00:00+00:00"}}
     assert s.get("streamflow") is not None and "streamflow" in s._unverified_reads
+    assert s.identity_note()["basin_identity"]["slots"] == ["streamflow"]
     s.put_result("streamflow", "__legacy__", "", {"data": {"q_cms": [2.0]}, "meta": {}})   # fresh recompute
-    assert "streamflow" not in s._unverified_reads and s.identity_note() == {}
+    assert s.identity_note() == {}, "the recomputed slot is no longer reported"
+    assert "streamflow" in s._unverified_reads, "the full inheritance set is unchanged"
+    assert "basin_identity" in s._slots["streamflow"]["__legacy__"][""]["meta"]            # stamped
     s.put_result("signatures", "__legacy__", "k", {"data": {"q_mean": 1.0}, "meta": {}})
-    assert "basin_identity_inputs_unverified" not in s._slots["signatures"]["__legacy__"]["k"]["meta"]
-    assert s.unverified_slots() == []
+    meta = s._slots["signatures"]["__legacy__"]["k"]["meta"]
+    assert meta["basin_identity_inputs_unverified"] == ["streamflow"]
 
 
 def test_an_override_geometry_with_no_session_watershed_is_a_structured_refusal(ta):

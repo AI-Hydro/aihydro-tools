@@ -329,8 +329,8 @@ def outlet_pair(value: Any) -> Any:
 
 def antimeridian_refusal(exc: Exception, tool: str = "") -> dict:
     span = getattr(exc, "span", None)
-    if span and span[0] <= -179.9 and span[1] >= 179.9:
-        # A box running from the western to the eastern limit (-180 .. 180) is not a basin and does not "cross" anything: there is no
+    if span and span[0] <= -179.9 and span[1] >= 179.9 and getattr(exc, "fill", 0.0) >= 0.9:
+        # A box (the geometry fills >= 90% of its bounding box) running from the western to the eastern limit (-180 .. 180) is not a basin and does not "cross" anything: there is no
         # distance from it to an outlet or gauge worth checking.
         return _envelope(
             "GEOMETRY_ANTIMERIDIAN_UNSUPPORTED",

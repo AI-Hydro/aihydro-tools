@@ -917,6 +917,10 @@ class HydroSession:
         self._site_name_history: list[dict] = []
         # Basin-dependent slots served unstamped by get() on this instance (see basin_identity).
         self._unverified_reads: set[str] = set()
+        # Slots recomputed (put) during this call. Used ONLY to leave a recomputed slot out of ``identity_note``;
+        # ``put_result`` keeps inheriting from the full ``_unverified_reads`` set, so a product derived after the
+        # recompute from an input that was read unverified is still carried as unverified.
+        self._recomputed_this_call: set[str] = set()
 
     # ------------------------------------------------------------------
     # Backward-compat: gauge_id → site_id
@@ -1142,9 +1146,10 @@ class HydroSession:
     def identity_note(self) -> dict:
         """``{"basin_identity": {...}}`` when this call read a basin-dependent slot that carries
         no basin stamp, else ``{}``; consuming tools merge it into their result."""
-        if not self._unverified_reads:
+        pending = self._unverified_reads - self._recomputed_this_call
+        if not pending:
             return {}
-        return {"basin_identity": _bi.unverified_note(self._unverified_reads)}
+        return {"basin_identity": _bi.unverified_note(pending)}
 
     def unverified_slots(self) -> list[str]:
         """Basin-dependent slots served by ``get`` that carry no basin stamp (sessions written
@@ -1391,9 +1396,8 @@ class HydroSession:
             else:
                 _bi.stamp(value, self._expected_identity(feature_id))
         self._slots.setdefault(product, {}).setdefault(feature_id, {})[params_key] = value
-        # A slot just recomputed (and stamped, or carried as unverified above) no longer stands for the
-        # unstamped copy read earlier in this call: later products must not inherit that stale state.
-        self._unverified_reads.discard(product)
+        if product in _bi.BASIN_DEPENDENT_SLOTS:
+            self._recomputed_this_call.add(product)     # note only; inheritance still uses _unverified_reads
         self._record_put_result_run(product, value)
 
     def get_result(

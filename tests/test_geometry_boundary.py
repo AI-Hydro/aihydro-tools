@@ -535,3 +535,15 @@ def test_boundary_checked_is_set_only_when_an_outlet_was_converted():
     seen.clear()
     asyncio.run(go({}))
     assert seen["flag"] is False
+
+
+def test_only_a_box_shaped_world_geometry_gets_the_world_wide_wording():
+    from ai_hydro.mcp.geometry_boundary import check_outlet_matches_geometry as chk
+    # fills its bounding box -> world-wide box
+    world = {"type": "Polygon", "coordinates": [[[-180, -60], [180, -60], [180, 80], [-180, 80], [-180, -60]]]}
+    assert "world-wide" in chk(world, [45.0, -69.0], "t")["message"]
+    # reaches -180 and 180 but is a thin sliver (a basin outline written across the line): crossing wording + split recovery
+    sliver = {"type": "Polygon", "coordinates": [[[-180, 60], [180, 60.1], [180, 60], [-180, 60]]]}
+    e = chk(sliver, [60.0, 0.0], "t")
+    assert "world-wide" not in e["message"] and "crosses the antimeridian" in e["message"]
+    assert "Split the geometry" in e["recovery"]

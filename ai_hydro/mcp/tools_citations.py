@@ -203,17 +203,16 @@ def _assess(query: str, title: Any, families: list[set[str]] | None, year: Any) 
 
     * Content words are the query words that count toward the title match: more than 3 letters, not a number.
       Matching is on whole, accent-folded words ("flow" is not "overflow", "Muller" is "Müller").
-    * A capitalised query word absent from the title is an AUTHOR NAME only if it is a family name in the hit's author
-      list or it opens the query ("Vogel Fennessey 1994 ..."); elsewhere it is a topic word ("Mississippi River flood
-      frequency") and is scored like one. An author name MUST be among the hit's family names; a four-digit query
-      year MUST be within ``YEAR_TOLERANCE`` of the record's year. A mismatch rejects the hit (listed as an unverified
-      candidate, never returned as the citation). A provider that gives no authors/year leaves the check unverified:
-      the hit may be returned but not as `high`.
+    * A capitalised query word absent from the title is accepted only as a CONFIRMED family name of the hit. Any other
+      such word, anywhere in the query ("flow duration curves Vogel Fennessey"), rejects the hit: a surname and a
+      place name ("Mississippi River") cannot be told apart cheaply, and a wrong DOI is worse than a missed match, so
+      the hit is listed as an unverified candidate. A four-digit query year MUST be within ``YEAR_TOLERANCE`` of the
+      record's year; a provider that gives no year leaves it unverified (returned, never `high`).
     * Fewer than two scored content words never reach the match threshold; ``n_scored`` counts the words actually
       scored.
     * `high` needs: title score >= HIGH_TITLE_SCORE, 3+ scored words, authors and year verified where the query gave
       them, and, when the query gave neither, a near-full-title match (the query covers >= 0.8 of the title's
-      content words), so a short topic phrase is never `high`.
+      content words AND the title has at least 5), so a short topic phrase is never `high`.
     """
     t = title[0] if isinstance(title, list) and title else (title if isinstance(title, str) else "")
     t = _fold(t)
@@ -221,14 +220,16 @@ def _assess(query: str, title: Any, families: list[set[str]] | None, year: Any) 
     title_words = {_stem(w.lower()) for w in _WORD_RE.findall(t)}
     title_content = {_stem(w.lower()) for w in _WORD_RE.findall(t) if len(w) > 3 and not w.isdigit()}
     fam_all: set[str] = set().union(*families) if families else set()
-    content, names, years = [], [], []
-    for idx, w in enumerate(_WORD_RE.findall(query)):
+    content, names, years, foreign = [], [], [], []
+    for w in _WORD_RE.findall(query):
         if _YEAR_RE.match(w):
             years.append(int(w))
         elif len(w) <= 3 or w.isdigit():
             continue
-        elif w[0].isupper() and _stem(w.lower()) not in title_words and (w.lower() in fam_all or idx == 0):
-            names.append(w.lower())
+        elif w[0].isupper() and _stem(w.lower()) not in title_words:
+            # A capitalised word that is not in the title is a surname or a place/proper noun we cannot tell apart
+            # cheaply. It counts only as a confirmed family name of the hit; anything else rejects the hit.
+            (names if w.lower() in fam_all else foreign).append(w.lower())
         else:
             content.append(_stem(w.lower()))
     matched = [w for w in content if w in title_words]
@@ -236,11 +237,9 @@ def _assess(query: str, title: Any, families: list[set[str]] | None, year: Any) 
     if len(content) < 2:
         score = min(score, MIN_TITLE_SCORE - 0.1)
     out: dict[str, Any] = {"score": score, "n_scored": len(content), "reject": None, "unverified": []}
-    if names:
-        if not fam_all:
-            out["unverified"].append("the provider gave no authors to check the author name(s) against")
-        elif not all(n in fam_all for n in names):
-            out["reject"] = f"author(s) {', '.join(names)} not among the record's authors"
+    if foreign:
+        out["reject"] = (f"{', '.join(foreign)} is neither in the title nor a family name among the record's "
+                         + ("authors" if fam_all else "authors (the provider gave none)"))
     if years and not out["reject"]:
         try:
             ry = int(year) if year not in (None, "") else None
@@ -253,7 +252,7 @@ def _assess(query: str, title: Any, families: list[set[str]] | None, year: Any) 
     covers = len(set(matched) & title_content) / len(title_content) if title_content else 0.0
     out["high"] = bool(
         not out["reject"] and not out["unverified"] and score >= HIGH_TITLE_SCORE and len(content) >= 3
-        and (bool(names) or bool(years) or covers >= 0.8))
+        and (bool(names) or bool(years) or (covers >= 0.8 and len(title_content) >= 5)))
     return out
 
 

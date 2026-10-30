@@ -125,8 +125,8 @@ def test_free_text_with_a_good_title_match_is_found(monkeypatch):
                                    "container-title": []}]}}                       # empty journal list: no crash
     monkeypatch.setattr(tc, "_http_fetch", Net([("api.crossref.org/works?query=", body)]))
     out = tc.lookup_citation("flow duration curves review")
-    # this record's whole title is four content words and the query covers all of them: a near-full-title match
-    assert out["doi"] == REAL and out["confidence"] == "high"
+    # the whole title is only four content words: a topic phrase of that size is never `high`
+    assert out["doi"] == REAL and out["confidence"] == "medium"
     body2 = {"message": {"items": [{"DOI": REAL, "title": ["Flow-duration curves I: review and use of statistics for hydrologic design"]}]}}
     monkeypatch.setattr(tc, "_http_fetch", Net([("api.crossref.org/works?query=", body2)]))
     out2 = tc.lookup_citation("flow duration curves review")           # a topic phrase, not the title
@@ -190,7 +190,7 @@ def test_row1_same_topic_different_authors_is_not_returned(monkeypatch):
     search(monkeypatch, [cr("10.5555/brazil", "Flow duration curves for ungauged basins in Brazil", ["Silva"], 2015)])
     out = tc.lookup_citation("Vogel Fennessey 1994 flow duration curves")
     assert "doi" not in out and out["not_confirmed"] is True
-    assert "not among the record's authors" in out["candidates"][0]["rejected"]
+    assert "neither in the title nor a family name" in out["candidates"][0]["rejected"]
 
 
 def test_row2_right_topic_wrong_year_is_not_returned(monkeypatch):
@@ -217,12 +217,12 @@ def test_row4_extra_names_that_are_not_authors_cannot_reach_high(monkeypatch):
     assert "doi" not in out and out["not_confirmed"] is True        # the extra names score as topic words: 3/6
 
 
-def test_a_hit_with_no_authors_from_the_provider_is_capped_at_medium_with_the_reason(monkeypatch):
+def test_a_hit_with_no_authors_from_the_provider_cannot_confirm_a_surname_so_it_is_a_candidate(monkeypatch):
     search(monkeypatch, [{"DOI": REAL, "title": ["Flow-duration curves. I: New interpretation and confidence intervals"],
                           "issued": {"date-parts": [[1994]]}}])
     out = tc.lookup_citation("Vogel Fennessey 1994 flow duration curves")
-    assert out["doi"] == REAL and out["confidence"] == "medium"
-    assert "gave no authors" in out["match_note"]
+    assert "doi" not in out and out["not_confirmed"] is True
+    assert "the provider gave none" in out["candidates"][0]["rejected"]
 
 
 def test_a_hit_with_no_year_is_capped_at_medium(monkeypatch):
@@ -289,7 +289,7 @@ def test_capitalised_topic_words_are_scored_as_topic_not_dropped_as_authors(monk
     # a paper that merely shares the lower-case topic words does not get a free pass on the capitalised ones
     b = tc._assess("flood frequency Mississippi River", "Flood frequency analysis in alpine catchments",
                    [{"smith"}], None)
-    assert b["reject"] is None and b["score"] < tc.MIN_TITLE_SCORE
+    assert "mississippi, river" in b["reject"]       # not in the title, not an author: a candidate, not a citation
     # "Hydrological Modelling Using Deep Learning": capitalised words in the title are title words
     c = tc._assess("Hydrological Modelling Using Deep Learning", "Hydrological modelling using deep learning",
                    [{"kratzert"}], None)
@@ -299,7 +299,7 @@ def test_capitalised_topic_words_are_scored_as_topic_not_dropped_as_authors(monk
 def test_a_leading_capitalised_word_missing_from_the_title_is_still_an_author_check(monkeypatch):
     search(monkeypatch, [cr("10.5555/a", "Flow duration curves for ungauged basins", ["Silva"], 2015)])
     out = tc.lookup_citation("Vogel flow duration curves ungauged basins")
-    assert "doi" not in out and "not among the record's authors" in out["candidates"][0]["rejected"]
+    assert "doi" not in out and "neither in the title nor a family name" in out["candidates"][0]["rejected"]
 
 
 def test_an_exact_full_title_with_no_author_reaches_high_but_a_topic_phrase_does_not(monkeypatch):
@@ -310,3 +310,44 @@ def test_an_exact_full_title_with_no_author_reaches_high_but_a_topic_phrase_does
     assert tc.lookup_citation("flow duration curves")["confidence"] == "medium"
     search(monkeypatch, [cr(REAL, title, ["Vogel", "Fennessey"], 1994)])
     assert tc.lookup_citation("flow duration curves new interpretation")["confidence"] == "medium"
+
+
+# ---- review round 3: every ordering of surname and year, with and without the year
+
+BRAZIL = cr("10.5555/brazil", "Flow duration curves for ungauged basins in Brazil", ["Silva", "Costa"], 2015)
+
+
+@pytest.mark.parametrize("query", [
+    "flow duration curves Vogel Fennessey",             # surnames last, no year
+    "flow duration curves Vogel Fennessey 1994",        # surnames then year, last
+    "flow duration curves 1994 Vogel Fennessey",        # year between
+    "1994 Vogel Fennessey flow duration curves",        # year first
+    "Vogel 1994 Fennessey flow duration curves",
+    "Vogel Fennessey flow duration curves",             # no year
+    "flow duration curves, Vogel and Fennessey (1994)",
+])
+def test_a_wrong_paper_on_the_same_topic_is_never_found_whatever_the_order(monkeypatch, query):
+    search(monkeypatch, [BRAZIL])
+    out = tc.lookup_citation(query)
+    assert "doi" not in out and out["not_confirmed"] is True, query
+    assert "neither in the title nor a family name" in out["candidates"][0]["rejected"]
+    assert "does NOT show that no citation exists" in out["_note"]
+
+
+@pytest.mark.parametrize("query", [
+    "flow duration curves Vogel Fennessey 1994", "1994 Vogel Fennessey flow duration curves",
+    "Vogel Fennessey flow duration curves"])
+def test_the_true_record_is_found_in_the_same_orderings(monkeypatch, query):
+    search(monkeypatch, [TRUE_RECORD])
+    out = tc.lookup_citation(query)
+    assert out["doi"] == REAL
+    assert out["confidence"] == "high"          # title, both authors (and the year, when given) all verified
+
+
+def test_short_generic_titles_never_reach_high_on_a_topic_phrase(monkeypatch):
+    search(monkeypatch, [cr("10.5555/rev", "Flow duration curves: a review", ["Lee"], 2012)])
+    out = tc.lookup_citation("flow duration curves review")
+    assert out["doi"] == "10.5555/rev" and out["confidence"] == "medium"
+    # a title of 5+ content words fully covered by the query can
+    search(monkeypatch, [cr("10.5555/long", "Flow duration curves for ungauged basins", ["Lee"], 2012)])
+    assert tc.lookup_citation("flow duration curves for ungauged basins")["confidence"] == "high"
