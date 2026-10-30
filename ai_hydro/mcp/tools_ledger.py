@@ -408,9 +408,7 @@ def add_claim(
         promotion: BASIN_REF_REQUIRED.
     evidence_spans: [{"source_type": "run", "source_id": "<run_id>", "metric_ref": "kge"}]; legacy
         `evidence` (untyped dicts) is auto-migrated. Pass one of the two.
-    prereg_id: the prereg_id register_research_plan returned for THIS study; marks the claim confirmatory.
-        Any other value is refused (`prereg_gate`). A plan locked after its analyses had run is
-        post_hoc: the claim is recorded with a `PREREG_POST_HOC` warning and is not confirmatory.
+    prereg_id: this study's register_research_plan id (else `prereg_gate`); confirmatory.
 
     Metric-scoped status="supported" is refused (`uncertainty_gate`): record another status, then
     update_claim_status(uncertainty_verified=True). `evidence_gate` (supported with no evidence
