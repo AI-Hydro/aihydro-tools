@@ -6,6 +6,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Argument repair no longer changes what a call means (tool-integrity T1-A; audit D06, F20).** `area_m2=2.5e9` used to become
+  `area_km2=2.5e9` with the value unchanged (peak 5,349,166,650 m3/s instead of 5,349); `rainfall_m` to `rainfall_mm`,
+  `expected_area_m2`, `slope_length_mm` and `mode` to `model` behaved the same way. A rename is now applied only when the parsed
+  semantic tokens of the two names are identical: units (`m`, `mm`, `km2`, `m3s`, `hr`, ...), bounds and axes (`min`/`max`,
+  `start`/`end`, `lat`/`lon`), sides (`a`/`b`, `train`/`val`/`test`), single letters and anything with a digit. The rule is on tokens, not
+  tool names, so it covers every tool. Beyond that, fuzzy renames now allow only a case or separator change or one typo inside a word of
+  six letters or more, never a singular/plural change (`metrics`/`metric`, `gauge_ids`/`gauge_id`), never an added or dropped word
+  (`feature_id`/`feature`, `dem_resolution`/`resolution`), and never a list or object pushed into a scalar parameter.
+- A near-miss across units is refused with a structured `ARG_UNIT_MISMATCH` error naming the supplied and expected parameter and the
+  expected unit (`rescaled: false`); the tool does not run and no value is rescaled. A bare name never picks a unit (`discharge` is not
+  `discharge_m3s`).
+- **Every applied repair is in the result.** Renames and type coercions are returned as `_arg_repairs` (a list of
+  `{kind, from, to, rule}`), also on error results and on the self-help error. A tool that returns a list gets one extra text block.
+- **The sealed run records the arguments that ran.** `RunRecordMiddleware` wraps `ArgRepairMiddleware`, so repair now hands the
+  post-repair arguments to the capture: `input_digest` and session resolution use them (`sid=` now resolves as `session_id=`), and the
+  record gains `extra.arg_repairs` and `extra.supplied_input_digest` (the digest of what the caller sent). `_arg_repairs` is a transport key,
+  excluded from the output digest.
+- `"nan"`, `"inf"` and `"Infinity"` strings are no longer coerced to numbers.
+
+### Removed
+
+- Alias `site` and `site_id` to `gauge_id`: a site is not always a stream gauge. They now go through the teach path with `did_you_mean`.
+- Fuzzy renames that were applied before and are now refused (39 distinct in the F20 sweep over all tool schemas), among them
+  `mode` to `model` (`train_hydro_model`), `model` to `mode` (`data_fetch`), `series_a`/`series_b` to `series`, `series` to `series_b`,
+  `gauge_ids` to `gauge_id`, `metric` and `metrics`, `variable` and `variables`, `feature_id`/`features` to `feature`,
+  `dem_resolution` and `resolution`, `interpretation` and `interpretation_text`.
+
+---
+
 ## [2.8.4] - 2026-10-30 (answer audit: USGS data codes)
 
 ### Fixed
