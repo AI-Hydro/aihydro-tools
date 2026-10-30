@@ -156,7 +156,10 @@ def fetch_streamflow_data(
     end_date : str
         End date in YYYY-MM-DD format
     interval : str, optional
-        "daily" (default) or "hourly" (instantaneous values, UTC)
+        "daily" (default) or "hourly". "hourly" returns the gauge's INSTANTANEOUS values at their
+        native step (typically 15 minutes, UTC), not hourly means; ``median_step_s`` in the result
+        gives the step. Any other value is refused. Only ``interval="daily"`` data may be used by
+        the daily analysis tools (baseflow, flow-duration, flood frequency, 7Q10).
 
     Returns
     -------
@@ -172,6 +175,14 @@ def fetch_streamflow_data(
         identity/integrity refusals: GAUGE_NOT_FOUND, USGS_NO_DATA, USGS_MULTIPLE_SERIES,
         ...; False for transport failures such as USGS_RATE_LIMITED); NO_VALID_DATA
     """
+    if interval not in ("daily", "hourly"):
+        raise ToolError(
+            code="INVALID_INTERVAL",
+            message=f"interval={interval!r} is not supported; use 'daily' or 'hourly'. "
+                    "There is no monthly or other aggregated interval.",
+            tool=_TOOL_PATH_STREAMFLOW,
+            recovery="Fetch interval='daily' and aggregate explicitly.",
+        )
     try:
         from aihydro_data.exceptions import AihydroDataError
         from aihydro_data.sources import usgs_waterdata as uw
@@ -254,6 +265,8 @@ def fetch_streamflow_data(
             "start_date": start_date,
             "end_date": end_date,
             "interval": interval,
+            "median_step_s": (float(pd.Series(times).diff().dropna().dt.total_seconds().median())
+                              if len(times) > 1 else None),
             "source_units": units_native,
             "_aihydro_data_product": "NWIS_STREAMFLOW",
             "_aihydro_data_source": "direct_api",

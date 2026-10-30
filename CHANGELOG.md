@@ -100,6 +100,54 @@ Tool integrity Wave T1 (audit findings `tool-audit-{data,record,misc}-2026-10-30
   `CITATION_LOOKUP_UNAVAILABLE` (`unavailable: true`, `not_found: false`), never `not_found`; `not_found` is returned only when every provider
   answered. An unsupported `source_hint` is refused; `_render_apa` no longer crashes on an empty `container-title`.
 
+#### Lane T1-P: period and statistics correctness
+
+##### Fixed (tool audit T1-P, D07-D12)
+
+Requires `aihydro-data>=0.2.6` and `aihydro-watershed>=0.3,<0.4` (pins changed; the SPI, annual-maxima and 7Q10 values change in
+watershed 0.3.0). CI is red until both are on PyPI.
+
+- **D07 `compute_spectral_index` trend.** `trend_slope_per_year` was the slope per time STEP (a monthly series rising 0.12/yr
+  reported 0.01, a 12x error), fitted with failed months spliced out, and silently became an OLS slope with `p_value` None when
+  `pymannkendall` was missing. A plain Mann-Kendall over a monthly series is also wrong in kind: the annual cycle is larger than
+  any trend. Now, for `frequency="monthly"`, the seasonal Kendall test and seasonal Sen slope (Hirsch, Slack & Smith 1982; season =
+  calendar month), abscissa in decimal years, so a failed month is a missing value in its own season. Theil-Sen plus Mann-Kendall
+  (scipy `kendalltau`: exact p for small samples without ties, tie-corrected normal approximation otherwise) remains for `yearly`
+  only. `trend_slope_per_year` and `p_value` are None with a `reason` when the series is under 2 full cycles or fewer than 6 calendar months have 2 or more values. With fewer than 3 years shared by some pair of used months the Hirsch & Slack covariance is undefined: `p_value` is None (reason given) and the slope is kept, rather than a p-value that ignores year effects. Records under about 5 years: the p-value is conservative in simulation (size 0.000 to 0.002 at 3-4 years). The p-value includes the Hirsch & Slack (1984) between-season covariance (size near nominal in simulation under AR(1) and year effects;
+  the covariance form was validated by simulation, not checked against the paper's text); long-term persistence and short records are not
+  handled, and the `trend` block says so. Months with 2 or more values are used (`seasons_used`, `seasons_dropped`); refused only if fewer than 6
+  remain. A yearly series drops years clipped by `start`/`end` (`periods_dropped`); none left is `NO_COMPLETE_YEAR`. New: `n_periods_requested`, `n_periods_served`, `periods_failed`. `pymannkendall` is no longer used.
+- **D08 `compute_drought_index`.** Passes `min_month_fraction`; reports `months_excluded`, `n_months_complete`,
+  `month_convention`. A record ending on the 3rd of a month no longer reports that month as the `latest` extreme (SPI-1 -3.09 on
+  the audit series); a gap is NaN months, not zeros (2010-07 -1.83 -> None). Behaviour comes from aihydro-watershed. The tool passes `calendar='no_leap_dec31'` when a forcing product never holds 31 Dec of a
+  leap year (GridMET, Daymet), so leap Decembers are kept (SPEI only when BOTH precipitation and PET come from such products; CHIRPS plus GridMET PET gets none); the result reports `source_calendar`, `months_calendar_adjusted`,
+  `n_months_in_span`, `n_per_calendar_month`.
+- **D09 `compute_flood_frequency`.** New `year_type` (default `water_year`) and `min_year_fraction`; result states
+  `statistic` ("annual maximum of daily mean discharge"), `year_convention`, `years`, `excluded_years`. The locked fixture
+  `tests/test_period_integrity.py::test_locked_q100_fixture_...` (recipe in the test) gives Q100 988.1 -> 688.2 m3/s and Q2 292.5 -> 335.5
+  once the partial first and last years are excluded. `lp3` is described accurately: method of moments on the logs, NOT Bulletin
+  17C (no EMA, regional skew or PILF screening). The refusal for too few years points to `min_year_fraction` as well as a longer record.
+  `map_flood_inundation` records `discharge_statistic` so a daily-mean Q100 is not labelled a peak; `_design_rainfall_from_record`
+  now uses complete water-year maxima (disclosed in the design-hydrograph notes; its depth can differ from earlier releases).
+- **D26 (part) `compute_flow_duration_curve`.** 7Q10 uses the climatic year and never windows across a missing day; result
+  carries `low_flow_year_type`, `low_flow_years`, `low_flow_excluded_years`, `low_flow_windows_per_year`, `year_start_month` (also on `compute_flood_frequency`), and the convention is stored in
+  `session.flow_duration` meta. A year also needs 95% of its 7-day windows evaluable (see aihydro-watershed 0.3.0).
+- **D10 tool-side GEE extraction** (`ai_hydro/gee/timeseries.py`, `map_layers.py`): the same inclusive-end fix as aihydro-data.
+- **D11 `fetch_forcing_data`.** `_strip_forcing_arrays` kept only numeric summaries and deleted every list, including
+  `_warnings` and `variables` (the response said "0 variables" and no failure). It now keeps lists of strings/records, adds
+  `variable_coverage` (finite days per variable), and the response carries top-level `_warnings`, `variables_failed`,
+  `forcing_complete`. The forcing data gains `variables_requested`, `variables_failed`, `variable_provenance` (per
+  variable: product, source, units, coverage_complete, missing ranges, notes). `mean_annual_precip_mm` / `mean_annual_pet_mm`
+  are the sum over the 12 calendar months of (mean of the finite days in the month x days in the month): a missing day is not zero
+  (3 mm/day with every fifth day NaN read 876 under the old rule, now 1095.75; with every other day NaN the old rule read 543 and the result is now None with a reason) and a missing season does not re-weight the year. None with a
+  `..._reason` when a calendar month lacks a valid monthly mean in at least 80% of the record's years. The estimator is a monthly mean: a
+  year-month is valid with at most 10 missing days and no run of 5 or more (WMO-No. 1203 s4.4.1(a), the sourced definition for a mean
+  parameter; run test implemented as longest run < 5); the 80% of years is s4.4.2, defined for climate normals and applied by analogy; mean annual temperature and `calculate_water_balance_metrics` use the same basis, as does `wet_day_frequency` (a ratio per month, s4.4.1(d); None + `wet_day_reason` when unusable); `aridity_index` is computed on that same basis for P and PET (None + reason
+  otherwise). `forcing_complete` is False when any column has NaN cells (`variables_with_missing_days`).
+- **D12 sub-daily data in daily tools.** `separate_baseflow`, `compute_flow_duration_curve` and `compute_flood_frequency`
+  refuse, through one shared loader (`_load_daily_streamflow`), and `extract_hydrological_signatures` applies the same guard (`STREAMFLOW_NOT_DAILY`) to a streamflow slot whose `interval` is not `daily` or whose dates are spaced under a day,
+  whatever its label. `fetch_streamflow_data` refuses an `interval` other than `daily`/`hourly` (`interval="monthly"` used to
+  return 15-minute data labelled monthly) and reports `median_step_s`; "hourly" is documented as instantaneous values at the gauge's step.
 **T1 review follow-ups**
 
 - **Citation matching (`ai_hydro/mcp/tools_citations.py`).** Words are accent-folded before matching ("Müller" matches "Muller"); a hyphenated or particle surname matches on any part (`Smith-Jones` is `smith`, `jones`, `smithjones`). A capitalised query word absent from the title counts only as a confirmed family name of the hit; any other (a surname the hit does not have, or a place name such as "Mississippi River" missing from the title) makes the hit an unverified candidate, wherever it sits in the query, because a wrong DOI is worse than a missed match. A near-full-title match with no author or year can reach `high` only when the title has at least five content words; a short topic phrase never does.

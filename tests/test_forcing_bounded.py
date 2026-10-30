@@ -21,6 +21,9 @@ def _series(adata_var: str, start: str, end: str) -> pd.DataFrame:
 class _Res:
     def __init__(self, df, product="FAKE_" , source="fake-src"):
         self.data, self.product, self.source = df, product, source
+        self.units, self.coverage_complete = "mm", True
+        self.days_missing_head = self.days_missing_tail = self.days_missing_internal = 0
+        self.missing_ranges, self.notes = [], ["fake note"]
 
 
 @pytest.fixture

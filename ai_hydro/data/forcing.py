@@ -76,6 +76,38 @@ def _chunk_windows(start_date: str, end_date: str, years: int) -> list[tuple[str
     return out
 
 
+def _merge_chunk_provenance(parts: list) -> dict:
+    """Per-variable coverage facts of a chunked fetch, as one call over the whole window would report.
+
+    Head comes from the first chunk, tail from the last, interior chunk edges count as internal gaps;
+    ranges are concatenated (a gap that spans a chunk boundary is reported as two adjacent ranges).
+    """
+    g = lambda r, k: getattr(r, k, None)          # noqa: E731
+    internal = None
+    if all(g(r, "days_missing_internal") is not None for r in parts):
+        internal = sum(g(r, "days_missing_internal") for r in parts)
+        internal += sum((g(r, "days_missing_head") or 0) for r in parts[1:])
+        internal += sum((g(r, "days_missing_tail") or 0) for r in parts[:-1])
+    flags = [g(r, "coverage_complete") for r in parts]
+    notes: list = []
+    for r in parts:
+        for note in (g(r, "notes") or []):
+            if note not in notes:
+                notes.append(note)
+    ranges: list = []
+    for r in parts:
+        ranges += list(g(r, "missing_ranges") or [])
+    return {
+        "units": g(parts[0], "units"),
+        "coverage_complete": None if all(f is None for f in flags) else all(bool(f) for f in flags if f is not None),
+        "days_missing_head": g(parts[0], "days_missing_head"),
+        "days_missing_tail": g(parts[-1], "days_missing_tail"),
+        "days_missing_internal": internal,
+        "missing_ranges": ranges,
+        "notes": notes,
+    }
+
+
 def _fetch_variable_chunked(adata_fetch, adata_var, geom, start_date, end_date, fetch_kwargs):
     """``aihydro_data.fetch`` for one variable, chunked, bounded and cancellable.
 
@@ -102,7 +134,7 @@ def _fetch_variable_chunked(adata_fetch, adata_var, geom, start_date, end_date, 
         chunk_done()
         return res1
 
-    frames, first = [], None
+    frames, parts, first = [], [], None
     for i, (s, e) in enumerate(windows):
         check_cancelled_or_expired()
         report_progress(i, len(windows), f"{adata_var} {s}..{e}")
@@ -119,13 +151,14 @@ def _fetch_variable_chunked(adata_fetch, adata_var, geom, start_date, end_date, 
             # A pinned chunk the product cannot serve: answer exactly as a single call would.
             return one(start_date, end_date, fetch_kwargs)
         first = first or res
+        parts.append(res)
         frames.append(res.data)
         chunk_done()
     report_progress(len(windows), len(windows), adata_var)
     df = pd.concat(frames, ignore_index=True)
     if "date" in df.columns:
         df = df.drop_duplicates(subset="date", keep="first").sort_values("date").reset_index(drop=True)
-    return SimpleNamespace(data=df, product=first.product, source=first.source)
+    return SimpleNamespace(data=df, product=first.product, source=first.source, **_merge_chunk_provenance(parts))
 
 
 def fetch_forcing_data(
@@ -307,23 +340,41 @@ def calculate_water_balance_metrics(df: pd.DataFrame) -> Dict[str, float]:
             print("  Warning: Missing prcp_mm or pet_mm, cannot compute water balance")
             return stats
         
-        # Annual totals
-        n_years = len(df) / 365.25
-        stats['mean_annual_precip_mm'] = df['prcp_mm'].sum() / n_years
-        stats['mean_annual_pet_mm'] = df['pet_mm'].sum() / n_years
-        
-        # Aridity index
-        stats['aridity_index'] = stats['mean_annual_pet_mm'] / stats['mean_annual_precip_mm']
-        
+        # Annual totals on the monthly-climatology basis (a missing day is not a dry day, and a missing season
+        # does not re-weight the year); None + a reason when a calendar month is not usable.
+        dates = _dates_of(df)
+        stats['mean_annual_precip_mm'], p_why = _mean_annual_total(dates, df['prcp_mm'])
+        stats['mean_annual_pet_mm'], e_why = _mean_annual_total(dates, df['pet_mm'])
+        if p_why:
+            stats['mean_annual_precip_reason'] = p_why
+        if e_why:
+            stats['mean_annual_pet_reason'] = e_why
+
+        # Aridity index, from those same two totals
+        if (stats['mean_annual_precip_mm'] or 0) > 0 and stats['mean_annual_pet_mm'] is not None:
+            stats['aridity_index'] = stats['mean_annual_pet_mm'] / stats['mean_annual_precip_mm']
+        else:
+            stats['aridity_index'] = None
+
         # Temperature statistics
         if 'tavg_C' in df.columns:
-            stats['mean_annual_temp_C'] = df['tavg_C'].mean()
-        
-        # Precipitation characteristics
-        wet_days = (df['prcp_mm'] > 1.0).sum()
-        stats['wet_days_per_year'] = wet_days / n_years
-        stats['wet_day_frequency'] = wet_days / len(df)
-        
+            stats['mean_annual_temp_C'], t_why = _mean_annual_temp(dates, df['tavg_C'])
+            if t_why:
+                stats['mean_annual_temp_reason'] = t_why
+
+        # Precipitation characteristics, over the days that have a value
+        # Wet-day indicator (1 mm threshold), NaN where precipitation is NaN, as a ratio per calendar month on the
+        # same monthly basis (WMO-No. 1203 s4.4.1(d)); None + reason when a month is not usable.
+        wet = (df['prcp_mm'] > 1.0).astype(float).where(df['prcp_mm'].notna())
+        clim, w_why = _monthly_climatology(dates, wet)
+        if clim is None:
+            stats['wet_day_frequency'] = None
+            stats['wet_days_per_year'] = None
+            stats['wet_day_reason'] = w_why
+        else:
+            stats['wet_day_frequency'] = float(sum(clim[m] * _MONTH_DAYS[m - 1] for m in range(1, 13)) / 365.25)
+            stats['wet_days_per_year'] = stats['wet_day_frequency'] * 365.25
+
         # Snow fraction (approximate: precip when temp <= 0°C)
         if 'tavg_C' in df.columns:
             snow_days = (df['tavg_C'] <= 0) & (df['prcp_mm'] > 0)
@@ -560,17 +611,17 @@ def generate_forcing_summary(
     summary += f"Variables: {', '.join([c for c in df.columns if c != 'date'])}\n\n"
     
     summary += "WATER BALANCE:\n"
-    if 'mean_annual_precip_mm' in stats:
+    if stats.get('mean_annual_precip_mm') is not None:
         summary += f"  Mean Annual Precipitation: {stats['mean_annual_precip_mm']:.1f} mm/year\n"
-    if 'mean_annual_pet_mm' in stats:
+    if stats.get('mean_annual_pet_mm') is not None:
         summary += f"  Mean Annual PET: {stats['mean_annual_pet_mm']:.1f} mm/year\n"
-    if 'aridity_index' in stats:
+    if stats.get('aridity_index') is not None:
         summary += f"  Aridity Index: {stats['aridity_index']:.2f}\n"
-    if 'mean_annual_temp_C' in stats:
+    if stats.get('mean_annual_temp_C') is not None:
         summary += f"  Mean Annual Temperature: {stats['mean_annual_temp_C']:.1f} °C\n\n"
     
     summary += "PRECIPITATION CHARACTERISTICS:\n"
-    if 'wet_days_per_year' in stats:
+    if stats.get('wet_days_per_year') is not None:
         summary += f"  Wet Days per Year: {stats['wet_days_per_year']:.0f}\n"
     if 'snow_fraction' in stats:
         summary += f"  Snow Fraction: {stats['snow_fraction']:.2f}\n\n"
@@ -578,6 +629,108 @@ def generate_forcing_summary(
     summary += "="*60 + "\n"
 
     return summary
+
+
+#: Mean days of each calendar month (February 28.25): twelve of them sum to 365.25.
+_MONTH_DAYS = (31.0, 28.25, 31.0, 30.0, 31.0, 30.0, 31.0, 31.0, 30.0, 31.0, 30.0, 31.0)
+
+
+#: A calendar month enters the annual basis only if at least this fraction of the years in the record have a VALID
+#: monthly value in it. WMO-No. 1203 s4.4.2 gives 80% for climate NORMALS; it is applied here by analogy (a record
+#: of a few years is not a normal), so treat it as a guard on top of the sourced validity rule below.
+_MIN_YEARS_WITH_DATA_PER_MONTH = 0.80
+
+#: A year-month is a valid monthly MEAN when it has at most this many missing days and fewer than
+#: ``_MAX_CONSECUTIVE_MISSING`` of them in a row: the sourced definition for a mean parameter, WMO-No. 1203 (2017)
+#: s4.4.1(a) (10 or fewer missing days; run test as implemented here: longest missing run < 5 days).
+_MAX_MISSING_DAYS_PER_MONTH = 10
+_MAX_CONSECUTIVE_MISSING = 5
+
+
+def _valid_monthly_means(series: "pd.Series") -> "pd.Series":
+    """Mean of the finite days of every year-month that is a valid monthly mean (WMO-No. 1203 s4.4.1(a)).
+
+    Indexed by (year, month). The calendar days of the month are the denominator of the missing count, so a
+    record that starts or stops inside a month leaves that month short and, usually, invalid.
+    """
+    out = {}
+    for (yr, mo), g in series.groupby([series.index.year, series.index.month]):
+        n_days = pd.Period(year=int(yr), month=int(mo), freq="M").days_in_month
+        present = pd.Series(False, index=pd.date_range(f"{yr}-{mo:02d}-01", periods=n_days, freq="D"))
+        fin = g[np.isfinite(g)]
+        present.loc[fin.index.normalize().intersection(present.index)] = True
+        missing = ~present.values
+        if missing.sum() > _MAX_MISSING_DAYS_PER_MONTH:
+            continue
+        run = longest = 0
+        for m_ in missing:
+            run = run + 1 if m_ else 0
+            longest = max(longest, run)
+        if longest >= _MAX_CONSECUTIVE_MISSING:
+            continue
+        if len(fin):
+            out[(int(yr), int(mo))] = float(fin.mean())
+    return pd.Series(out, dtype=float)
+
+
+def _monthly_climatology(dates, series) -> tuple:
+    """``(monthly mean per calendar month as a Series indexed 1..12 | None, reason | None)``.
+
+    The estimator is a MONTHLY MEAN: each year-month that is valid (WMO-No. 1203 s4.4.1(a): at most 10 missing
+    days, and no run of 5 or more) contributes the mean of its finite days; a calendar month's value is the mean of
+    those monthly means. A calendar month is usable when at least 80% of the years in which it occurs in the record
+    have a valid monthly value (WMO-No. 1203 s4.4.2, by analogy to normals; see ``_MIN_YEARS_WITH_DATA_PER_MONTH``).
+    """
+    d = pd.DatetimeIndex(pd.to_datetime(list(dates)))
+    v = pd.to_numeric(pd.Series(np.asarray(series), index=d), errors="coerce")
+    if len(d) == 0:
+        return None, "empty record"
+    if not np.isfinite(v).any():
+        return None, "no finite day"
+    span = pd.date_range(d.min().normalize(), d.max().normalize(), freq="D")
+    occurs = pd.Series(1, index=pd.MultiIndex.from_arrays([span.year, span.month])).groupby(level=[0, 1]).sum()
+    n_years = occurs.groupby(level=1).size()                       # years in which each month occurs in the span
+    monthly = _valid_monthly_means(v)
+    have = monthly.groupby(level=1).size() if len(monthly) else pd.Series(dtype=int)
+    bad = []
+    for m in range(1, 13):
+        n_occ = int(n_years.get(m, 0))
+        n_have = int(have.get(m, 0))
+        if n_occ == 0 or n_have == 0 or n_have < _MIN_YEARS_WITH_DATA_PER_MONTH * n_occ - 1e-9:
+            bad.append(m)
+    if bad:
+        return None, (f"calendar month(s) {bad} lack a valid monthly mean (at most 10 missing days and no run of 5 or "
+                      f"more, WMO-No. 1203 s4.4.1(a)) in at least {_MIN_YEARS_WITH_DATA_PER_MONTH:.0%} of the years of "
+                      "the record (80%: s4.4.2 for normals, applied by analogy)")
+    return monthly.groupby(level=1).mean(), None
+
+
+def _mean_annual_total(dates, series) -> tuple:
+    """Mean annual total of a daily flux (mm/day -> mm/yr): ``(value | None, reason | None)``.
+
+    Sum over the 12 calendar months of (mean of the finite days in that month) x (days in the month). A
+    missing (NaN) day is neither a zero-flux day (the old ``sum / record length`` read 543 mm for 3 mm/day with
+    half the days missing) nor, as a plain mean over the finite days would be, a license to over-weight the
+    observed season: with a missing dry season the plain mean read +48%, with a missing wet season -48% in the
+    methods review's test. The monthly climatology weights each calendar month by its length whatever the gaps
+    are. ``(None, reason)`` when a calendar month is not usable (see :func:`_monthly_climatology`).
+    """
+    clim, why = _monthly_climatology(dates, series)
+    if clim is None:
+        return None, why
+    return float(sum(clim[m] * _MONTH_DAYS[m - 1] for m in range(1, 13))), None
+
+
+def _mean_annual_temp(dates, series) -> tuple:
+    """Mean annual temperature on the same monthly basis: ``(value | None, reason | None)``."""
+    clim, why = _monthly_climatology(dates, series)
+    if clim is None:
+        return None, why
+    return float(sum(clim[m] * _MONTH_DAYS[m - 1] for m in range(1, 13)) / 365.25), None
+
+
+def _dates_of(df: "pd.DataFrame"):
+    return df["date"] if "date" in df.columns else df.index
 
 
 def fetch_forcing_data_result(
@@ -676,18 +829,25 @@ def fetch_forcing_data_result(
         tmmx_col = "tmmx" if "tmmx" in var_cols else None
 
         if pr_col:
-            annual_pr = float(df[pr_col].sum() / (len(df) / 365.25))
-            clean["mean_annual_precip_mm"] = round(annual_pr, 2)
+            annual_pr, why = _mean_annual_total(_dates_of(df), df[pr_col])
+            clean["mean_annual_precip_mm"] = round(annual_pr, 2) if annual_pr is not None else None
+            if why:
+                clean["mean_annual_precip_reason"] = why
         if pet_col:
-            annual_pet = float(df[pet_col].sum() / (len(df) / 365.25))
-            clean["mean_annual_pet_mm"] = round(annual_pet, 2)
-        if pr_col and pet_col and clean.get("mean_annual_precip_mm", 0) > 0:
+            annual_pet, why = _mean_annual_total(_dates_of(df), df[pet_col])
+            clean["mean_annual_pet_mm"] = round(annual_pet, 2) if annual_pet is not None else None
+            if why:
+                clean["mean_annual_pet_reason"] = why
+        if pr_col and pet_col and (clean.get("mean_annual_precip_mm") or 0) > 0 \
+                and clean.get("mean_annual_pet_mm") is not None:
             clean["aridity_index"] = round(
                 clean["mean_annual_pet_mm"] / clean["mean_annual_precip_mm"], 3
             )
         if tmmn_col and tmmx_col:
-            mean_k = float((df[tmmn_col].mean() + df[tmmx_col].mean()) / 2)
-            clean["mean_annual_temp_C"] = round(mean_k - 273.15, 2)
+            mean_k, why = _mean_annual_temp(_dates_of(df), (df[tmmn_col] + df[tmmx_col]) / 2)
+            clean["mean_annual_temp_C"] = round(mean_k - 273.15, 2) if mean_k is not None else None
+            if why:
+                clean["mean_annual_temp_reason"] = why
 
         return HydroResult(
             data=clean,
@@ -873,6 +1033,8 @@ def fetch_forcing_data_routed(
     products_used: list[str] = []
     sources_used: list[str] = []
     warnings_list: list[str] = []
+    variables_failed: list[dict] = []
+    variable_provenance: dict[str, dict] = {}
 
     for var in requested:
         if var not in _ADATA_ROUTES:
@@ -893,6 +1055,8 @@ def fetch_forcing_data_routed(
             val_col = next((c for c in df_var.columns if c != "date"), None)
             if val_col is None:
                 warnings_list.append(f"{var}: empty DataFrame returned")
+                variables_failed.append({"variable": var, "output": out_col,
+                                         "reason": "empty DataFrame returned"})
                 continue
             df_var = df_var.rename(columns={val_col: out_col})
             df_var["date"] = pd.to_datetime(df_var["date"])
@@ -913,10 +1077,26 @@ def fetch_forcing_data_routed(
             frames.append(df_var)
             products_used.append(result.product)
             sources_used.append(str(result.source))
+            # Per-variable provenance: which product served it, in what units, and whether the
+            # requested window was covered (the merged frame cannot tell variables apart).
+            variable_provenance[out_col] = {
+                "variable": adata_var,
+                "product": result.product,
+                "source": str(result.source),
+                "units": getattr(result, "units", "") or None,
+                "coverage_complete": getattr(result, "coverage_complete", None),
+                "days_missing_head": getattr(result, "days_missing_head", None),
+                "days_missing_tail": getattr(result, "days_missing_tail", None),
+                "days_missing_internal": getattr(result, "days_missing_internal", None),
+                "missing_ranges": list(getattr(result, "missing_ranges", []) or [])[:20],
+                "notes": [str(n) for n in (getattr(result, "notes", []) or [])][:10],
+            }
         except (ToolCancelled, ToolDeadlineExceeded):
             raise                       # stop the whole request: a cancel or an exhausted budget is not a warning
         except Exception as exc:
             warnings_list.append(f"{adata_var}: {exc}")
+            variables_failed.append({"variable": var, "output": out_col,
+                                     "product": pinned, "reason": str(exc)[:300]})
 
     # ── Supplement: CONUS-only GridMET vars (srad, vs, sph, …) ────────────
     conus_only_requested = [v for v in requested if v in _GRIDMET_ONLY_VARS]
@@ -946,10 +1126,14 @@ def fetch_forcing_data_routed(
                 warnings_list.append(
                     f"CONUS-only variables skipped for non-CONUS basin: {conus_only_requested}"
                 )
+                variables_failed += [{"variable": v, "reason": "CONUS-only variable, basin outside CONUS"}
+                                     for v in conus_only_requested]
         except (ToolCancelled, ToolDeadlineExceeded):
             raise
         except Exception as exc:
             warnings_list.append(f"CONUS-only fetch failed: {exc}")
+            variables_failed += [{"variable": v, "reason": f"CONUS-only fetch failed: {exc}"[:300]}
+                                 for v in conus_only_requested]
 
     # ── Guard ───────────────────────────────────────────────────────────────
     if not frames:
@@ -996,22 +1180,48 @@ def fetch_forcing_data_routed(
     clean["source"]  = " | ".join(dict.fromkeys(sources_used))
     if warnings_list:
         clean["_warnings"] = warnings_list
+    # Asked-for versus served, by name. A variable that failed leaves a record, not a silent hole.
+    clean["variables_requested"] = [v for v in requested]
+    clean["variables_failed"] = variables_failed
+    clean["variable_provenance"] = variable_provenance
+    # Days with no value, per served variable column (a NaN cell is a missing value however the provider
+    # reported its coverage).
+    nan_cells = {c: int(df[c].isna().sum()) for c in df.columns
+                 if c not in ("date", "tavg_C") and int(df[c].isna().sum()) > 0}
+    clean["variables_with_missing_days"] = nan_cells
+    clean["forcing_complete"] = bool(
+        not variables_failed
+        and not nan_cells
+        and all(p.get("coverage_complete") is not False for p in variable_provenance.values())
+    )
 
-    # Summary stats
-    if "prcp_mm" in df.columns:
-        clean["mean_annual_precip_mm"] = round(
-            float(df["prcp_mm"].sum() / (len(df) / 365.25)), 2
-        )
-    if "pet_mm" in df.columns:
-        clean["mean_annual_pet_mm"] = round(
-            float(df["pet_mm"].sum() / (len(df) / 365.25)), 2
-        )
-    if clean.get("mean_annual_precip_mm", 0) > 0 and "mean_annual_pet_mm" in clean:
-        clean["aridity_index"] = round(
-            clean["mean_annual_pet_mm"] / clean["mean_annual_precip_mm"], 3
-        )
+    # Summary stats - means over the days that have a value (a NaN day is not a zero day).
+    for col, key in (("prcp_mm", "precip"), ("pet_mm", "pet")):
+        if col in df.columns:
+            n_fin = int(np.isfinite(pd.to_numeric(df[col], errors="coerce")).sum())
+            clean[f"{key}_n_finite_days"] = n_fin
+            clean[f"{key}_n_missing_days"] = int(len(df) - n_fin)
+    for col, name in (("prcp_mm", "precip"), ("pet_mm", "pet")):
+        if col in df.columns:
+            v, why = _mean_annual_total(df["date"], df[col])
+            clean[f"mean_annual_{name}_mm"] = round(v, 2) if v is not None else None
+            if why:
+                clean[f"mean_annual_{name}_reason"] = why
+    # Aridity on the SAME basis for both: both are monthly-climatology totals, never one of those and one
+    # sum over different day sets.
+    if "prcp_mm" in df.columns and "pet_mm" in df.columns:
+        if (clean.get("mean_annual_precip_mm") or 0) > 0 and clean.get("mean_annual_pet_mm") is not None:
+            clean["aridity_index"] = round(clean["mean_annual_pet_mm"] / clean["mean_annual_precip_mm"], 3)
+        else:
+            clean["aridity_index"] = None
+            clean["aridity_index_reason"] = (clean.get("mean_annual_precip_reason")
+                                             or clean.get("mean_annual_pet_reason")
+                                             or "precipitation total is not positive")
     if "tavg_C" in df.columns:
-        clean["mean_annual_temp_C"] = round(float(df["tavg_C"].mean()), 2)
+        v, why = _mean_annual_temp(df["date"], df["tavg_C"])
+        clean["mean_annual_temp_C"] = round(v, 2) if v is not None else None
+        if why:
+            clean["mean_annual_temp_reason"] = why
 
     from ai_hydro import __version__
     return HydroResult(

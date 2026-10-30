@@ -1,5 +1,71 @@
 # Decisions
 
+## 2026-10-30 - One period-completeness rule for period statistics (tool audit T1-P)
+
+**Context.** SPI over a partial month, annual maxima over partial years and a 7-day low flow spliced across a gap each
+returned a number for a quantity the record did not support (SPI-1 -3.09, Q100 +44%). Each tool had its own grouping.
+
+**Decisions.**
+1. **One helper, in aihydro-watershed** (`signatures.periods.complete_periods`), used by SPI/SPEI, annual maxima and 7Q10. It
+   returns the complete periods, the excluded ones with observed/expected days, and a mask. The tools report the excluded periods.
+   It lives in aihydro-watershed because the kernels do and the dependency direction is downward; aihydro-core would have
+   forced a core release first. It closes the calendar-year and spliced-window parts of D26 in the kernel (the tools expose `year_start_month`); the baseflow splice remains open in D26. It does not touch D18 (`_temporal_coverage` counting NaN values) or D27.
+2. **Thresholds.** Months: every day present (1.0) is SOURCED: WMO-No. 1203 (2017) s4.4.1(c), p.7: "A monthly value for a sum parameter
+   (for example, total precipitation) can only be calculated if there are complete data over the month" (exceptions: estimated or
+   accumulated data within the 11-day and 5-consecutive-day limits); WMO-TD 341 (1989), PDF p.6: "Monthly totals should be based on a
+   full month's data". The SPI User Guide (WMO-No. 1090) marks missing months -99 (PDF p.16), asks for "at least 20-30 years" (PDF p.9),
+   has no within-month rule, and calls tolerance "a subjective decision" (PDF p.9). Years: 0.95 of days is an ENGINEERING CHOICE, not
+   sourced (the package's water-balance fraction); the 7Q10 window fraction (0.95), the 6-season minimum for the seasonal trend and the
+   stricter SPEI calendar rule are engineering choices too, signed off by the coordinator and labelled as such. Bulletin 17C treats
+   missing years as broken or incomplete records (pp.11-12) and represents them with flow intervals and perception thresholds in EMA
+   (Appendix 3); it states no daily-coverage threshold. All thresholds are arguments and are echoed in the results.
+3. **Conventions, verified.** Water year 1 Oct-30 Sep labelled by the year it ends: Bulletin 17C (TM 4-B5) Appendix 10, p. 104. Climatic
+   year 1 Apr-31 Mar: USGS SIR 2006-5035 ("designated by the calendar year in which it begins"); SIR 2008-5126 section 3 uses April 1 to
+   March 31 for 7-day minimums. Bulletin 17C defines the annual flood series
+   from the INSTANTANEOUS peak and allows the maximum daily mean as an alternative; the tool says its series is the daily-mean
+   maximum, and `map_flood_inundation` carries that statistic with the discharge. `lp3` here is Pearson III on the logs by moments, not the
+   Bulletin 17C procedure.
+4. **Excluded, not imputed.** An incomplete period is dropped and named. Missing precipitation is never zero. An accumulation
+   window containing an excluded month is NaN.
+5. **Trend (D07):** sub-annual series use the seasonal Kendall test and seasonal Sen slope (Hirsch, Slack & Smith 1982), season = calendar
+   month; Theil-Sen + Mann-Kendall is for yearly series only. Unsupported series (a season with < 2 values, < 2 cycles) return
+   None + reason, not a number. Months with at least 2 values are used (`seasons_used`); the test is refused if fewer than 6 remain (an
+   engineering choice, flagged). The p-value includes the Hirsch & Slack (1984) between-season covariance, with the form
+   sigma_gh = (K_gh + 4*sum(R_ig*R_ih) - n*(n+1)^2)/3 over years present in both seasons; it was validated by SIMULATION (a test: size near
+   nominal under AR(1) 0.6 and a shared year effect, where the independent-seasons test is 0.30 and 0.43) and NOT checked against the paper's
+   text, which I could not read. Long-term persistence and short records are not handled. A yearly series that is clipped at either end is
+   dropped (reported). A missing optional package must not change the statistic; `pymannkendall` is dropped.
+   With a used season pair sharing fewer than 3 years, or fewer than 3 years in all, `p_value` is None with a reason; the slope stays.
+5b. **Mean annual totals (D11):** the sum over the 12 calendar months of (mean of finite days x days in month); None + reason if a
+   month has no data; aridity on the same basis for P and PET. A plain mean over the finite days was +48% (dry season missing) or -48%
+   (wet season missing) in the review's test. The estimator is a MONTHLY MEAN: a year-month is a valid monthly
+   mean when it has at most 10 missing days and no run of 5 or more (WMO-No. 1203 s4.4.1(a), the sourced definition for a mean parameter; the
+   run test is implemented as longest run < 5); a calendar month's value is the mean of its valid monthly means, and it must be valid in at
+   least 80% of the record's years (s4.4.2, defined for climate normals, applied here by analogy; disclosed). The wet-day frequency uses the
+   same basis as a ratio per month (s4.4.1(d)). Mean annual temperature and `calculate_water_balance_metrics`
+   use the same basis.
+5c. **Days a source never holds:** GridMET (pygridmet) and Daymet have no 31 Dec in leap years; the kernel takes them out of expected
+   days (`calendar`) and reports it, so 100% for months does not drop every leap December. Real gaps still exclude. The tool applies the
+   calendar only when EVERY column the statistic uses (precipitation for SPI; precipitation and PET for SPEI) comes from such a product,
+   read from `variable_provenance`; CHIRPS precipitation with GridMET PET gets no calendar, so a real CHIRPS gap is not forgiven. No product
+   key, no calendar.
+6. **Inclusive end (D10):** `filterDate` end is exclusive; one helper `filter_end` adds a day at every call, in aihydro-data and in
+   the tools repo's own copy of the GEE code (a test keeps them in step). Daily-product edge tolerance is 0 (a pygridmet or Daymet
+   31 Dec leap-day absence stays disclosed-only).
+7. **Sub-daily (D12) is refused, not resampled.** Resampling would be a silent choice of aggregation; the error says how to fetch daily.
+   The guard also checks the date spacing, because the slot's `interval` label was itself wrong. It now lives in one loader used
+   by baseflow, FDC and flood frequency; `extract_hydrological_signatures` applies the same guard to the slot it consumes.
+
+**Left for Wave T2 (for the coordinator to move into `docs/vision-2040/plans/tool-integrity-2026-10.md`):** partial-year maxima as
+censored bounds (rather than excluded); a flood-season span rule (a year can be 95% complete and miss its flood season); the USGS
+peak-flow file as the Bulletin 17C input (instantaneous peaks, EMA); accumulation-flag (approval/qualifier) handling in the annual
+statistics; the long-scale SPI trade-off (SPI-12/24 under a 100% month rule loses windows to every gap); flag a year whose minimum
+7-day window abuts an unevaluable window, since that minimum is an upper bound.
+
+**Not done / open.** The `latest` SPI value is the last COMPLETE month; the tool does not extrapolate. SPI minimum calibration
+length (D27) and `_temporal_coverage` NaN counting (D18) are separate findings. The streamflow loader
+(`_load_daily_streamflow`) is shared by baseflow, FDC and flood frequency, and the signatures tool applies the same guard; a general
+study-level series loader remains with the study-integrity workstream.
 ## 2026-10-30 - Same-gauge re-delineation keeps the gauge record (T1 review follow-up, basin identity)
 
 A new outline of the same gauge dropped the gauge's streamflow, because the stored stamp carried the old polygon digest. Two options were on the table: keep streamflow when the gauge is unchanged, or normalise the geometry digest (round to about 1e-6, canonical ring start). **Chosen: judge streamflow on the gauge alone.** The digest is the key every existing stamp and registered-feature cache entry was computed with; normalising it would change that identity and turn every stored stamp into a mismatch or an unverified read. Streamflow is an observation at a station, so the gauge is its true identity; everything computed from the polygon (geomorphic, forcing, TWI, ...) is still dropped. A stamp with no gauge is still judged on the geometry. The other option stays open if polygon-derived slots should survive sub-metre redraws.

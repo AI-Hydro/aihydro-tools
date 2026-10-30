@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 
 from .auth import _import_ee
+from .dates import filter_end
 
 
 def _aggregate_rows(rows: list[dict[str, Any]], temporal_aggregation: str) -> list[dict[str, Any]]:
@@ -84,7 +85,7 @@ def extract_timeseries(
 
         roi = ee.Geometry(roi_geojson)
         reducer = _reducer(ee, spatial_reducer)
-        collection = ee.ImageCollection(dataset_id).filterDate(start_date, end_date).select(band)
+        collection = ee.ImageCollection(dataset_id).filterDate(start_date, filter_end(end_date)).select(band)
 
         def _image_to_feature(image: Any) -> Any:
             stats = image.reduceRegion(
