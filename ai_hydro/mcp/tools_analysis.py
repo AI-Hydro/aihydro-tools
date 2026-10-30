@@ -1360,7 +1360,8 @@ def extract_hydrological_signatures(
                           else geometry_geojson)
             except Exception:
                 _ov = None      # unreadable JSON: the geometry resolver below reports it
-            if _ov and _ov != session.basin_identity().get("geometry_digest"):
+            _sess_d = session.basin_identity().get("geometry_digest")
+            if _ov and _sess_d and _ov != _sess_d:      # no known session geometry: nothing to contradict
                 return {
                     "error": True, "code": "GEOMETRY_OVERRIDE_NOT_SESSION_BASIN",
                     "message": (
