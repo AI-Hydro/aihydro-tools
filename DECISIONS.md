@@ -58,6 +58,10 @@ statistics; the long-scale SPI trade-off (SPI-12/24 under a 100% month rule lose
 length (D27) and `_temporal_coverage` NaN counting (D18) are separate findings. The streamflow loader
 (`_load_daily_streamflow`) is shared by baseflow, FDC and flood frequency, and the signatures tool applies the same guard; a general
 study-level series loader remains with the study-integrity workstream.
+## 2026-10-30 - Same-gauge re-delineation keeps the gauge record (T1 review follow-up, basin identity)
+
+A new outline of the same gauge dropped the gauge's streamflow, because the stored stamp carried the old polygon digest. Two options were on the table: keep streamflow when the gauge is unchanged, or normalise the geometry digest (round to about 1e-6, canonical ring start). **Chosen: judge streamflow on the gauge alone.** The digest is the key every existing stamp and registered-feature cache entry was computed with; normalising it would change that identity and turn every stored stamp into a mismatch or an unverified read. Streamflow is an observation at a station, so the gauge is its true identity; everything computed from the polygon (geomorphic, forcing, TWI, ...) is still dropped. A stamp with no gauge is still judged on the geometry. The other option stays open if polygon-derived slots should survive sub-metre redraws.
+
 ## 2026-10-30 - One study resolver, one claim lifecycle, earned pre-registration (tool integrity T1-S)
 
 Source: the record audit (`docs/vision-2040/findings/tool-audit-record-2026-10-30.md`), R-01..R-07, R-29, R-32.

@@ -917,6 +917,10 @@ class HydroSession:
         self._site_name_history: list[dict] = []
         # Basin-dependent slots served unstamped by get() on this instance (see basin_identity).
         self._unverified_reads: set[str] = set()
+        # Slots recomputed (put) during this call. Used ONLY to leave a recomputed slot out of ``identity_note``;
+        # ``put_result`` keeps inheriting from the full ``_unverified_reads`` set, so a product derived after the
+        # recompute from an input that was read unverified is still carried as unverified.
+        self._recomputed_this_call: set[str] = set()
 
     # ------------------------------------------------------------------
     # Backward-compat: gauge_id → site_id
@@ -1097,7 +1101,7 @@ class HydroSession:
             if result is None:
                 continue
             if gated:
-                verdict = _bi.judge(result, self._expected_identity(fid))
+                verdict = _bi.judge(result, self._expected_for(slot, fid, result))
                 if verdict == _bi.STALE:
                     continue
                 if verdict == _bi.UNVERIFIED and track:
@@ -1126,6 +1130,15 @@ class HydroSession:
         gauge = (d.get("metadata") or {}).get("gauge_id")
         return _bi.make_identity(_bi.geometry_digest(d.get("geojson")), gauge)
 
+    def _expected_for(self, slot: str, feature_id: str, result: Any = None) -> dict:
+        """``_expected_identity``, except that streamflow (observed at a gauge) is judged on the gauge alone
+        when both the reader and the stored stamp name one, so a re-delineated outline of the same gauge keeps
+        serving its record. A stamp with no gauge is still judged on the geometry."""
+        exp = self._expected_identity(feature_id)
+        if slot == "streamflow" and exp.get("gauge_id") and (_bi.identity_of(result) or {}).get("gauge_id"):
+            return {"gauge_id": exp["gauge_id"]}
+        return exp
+
     def drop_slot(self, slot: str) -> bool:
         """Remove a whole product slot (every feature); True if it held anything."""
         return bool(self._slots.pop(slot, None))
@@ -1133,9 +1146,10 @@ class HydroSession:
     def identity_note(self) -> dict:
         """``{"basin_identity": {...}}`` when this call read a basin-dependent slot that carries
         no basin stamp, else ``{}``; consuming tools merge it into their result."""
-        if not self._unverified_reads:
+        pending = self._unverified_reads - self._recomputed_this_call
+        if not pending:
             return {}
-        return {"basin_identity": _bi.unverified_note(self._unverified_reads)}
+        return {"basin_identity": _bi.unverified_note(pending)}
 
     def unverified_slots(self) -> list[str]:
         """Basin-dependent slots served by ``get`` that carry no basin stamp (sessions written
@@ -1144,7 +1158,7 @@ class HydroSession:
         out = []
         for slot in sorted(_bi.BASIN_DEPENDENT_SLOTS & set(self._slots)):
             fid, res = self._resolve_slot(slot, self._slots[slot], track=False)
-            if res is not None and _bi.judge(res, self._expected_identity(fid)) == _bi.UNVERIFIED:
+            if res is not None and _bi.judge(res, self._expected_for(slot, fid, res)) == _bi.UNVERIFIED:
                 out.append(slot)
         return out
 
@@ -1161,8 +1175,15 @@ class HydroSession:
         _bi.stamp(new_value, _bi.make_identity(new_digest, data.get("gauge_id")))
         changed = bool(prev_digest and new_digest and prev_digest != new_digest)
         expected = _bi.make_identity(new_digest, None)
+        # Streamflow is observed AT a gauge, not computed from the polygon: re-delineating the same gauge
+        # (a different outline, same station) keeps it. The alternative, normalising the geometry digest, would
+        # change the identity every existing stamp and registered-feature cache key was computed with.
+        same_gauge = bool(_bi.norm_gauge(self.site_id)
+                          and _bi.norm_gauge(self.site_id) == _bi.norm_gauge(data.get("gauge_id")))
         dropped: list[str] = []
         for slot in _bi.BASIN_DEPENDENT_SLOTS & set(self._slots):
+            if slot == "streamflow" and same_gauge:
+                continue
             by_key = self._slots[slot].get(_LEGACY_FEATURE_ID)
             if not by_key:
                 continue
@@ -1375,6 +1396,8 @@ class HydroSession:
             else:
                 _bi.stamp(value, self._expected_identity(feature_id))
         self._slots.setdefault(product, {}).setdefault(feature_id, {})[params_key] = value
+        if product in _bi.BASIN_DEPENDENT_SLOTS:
+            self._recomputed_this_call.add(product)     # note only; inheritance still uses _unverified_reads
         self._record_put_result_run(product, value)
 
     def get_result(
@@ -1391,7 +1414,7 @@ class HydroSession:
         """
         res = self._slots.get(product, {}).get(feature_id, {}).get(params_key)
         if res is not None and product in _bi.BASIN_DEPENDENT_SLOTS \
-                and _bi.judge(res, self._expected_identity(feature_id)) != _bi.VERIFIED:
+                and _bi.judge(res, self._expected_for(product, feature_id, res)) != _bi.VERIFIED:
             return None
         return res
 

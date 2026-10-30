@@ -114,9 +114,14 @@ def _distance_m(geometry: Any, lat: float, lon: float) -> float:
         raise ValueError("geometry has no bounds")
     minx, _, maxx, _ = g.bounds
     if maxx - minx > 180:
-        raise AntimeridianGeometry(
+        exc = AntimeridianGeometry(
             f"the geometry spans longitudes {minx:g} to {maxx:g}, so it crosses the antimeridian (or is not a basin); "
             "distances to it cannot be computed on lon/lat.")
+        exc.span = (minx, maxx)         # lets the refusal tell a crossing from a world-wide box
+        _, miny, _, maxy = g.bounds
+        box_area = (maxx - minx) * (maxy - miny)
+        exc.fill = (g.area / box_area) if box_area > 0 else 0.0     # share of its bounding box the geometry fills
+        raise exc
     mid = (minx + maxx) / 2
     while lon - mid > 180:
         lon -= 360

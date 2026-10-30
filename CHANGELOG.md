@@ -8,11 +8,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Tool integrity Wave T1-S: study and claim integrity (below), then T1-A / T1-B entries.
-
-Source: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`. No version bump.
+Tool integrity Wave T1 (audit findings `tool-audit-{data,record,misc}-2026-10-30`; no version bump), grouped by lane: T1-S study and claim integrity, T1-G geometry boundary and gauge-first `data_fetch`, T1-A argument repair, T1-B basin identity, plus review follow-ups. Source for T1-S: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`.
 
 ### Fixed
+
+**T1-S: study and claim integrity**
 
 - **`data_fetch` and `data_fetch_background` refuse a mistyped `session_id`** with `STUDY_NOT_FOUND` instead of running as an unrecorded call. The session stays optional: with no id, the call runs as before.
 - **R-06 The knowledge and workflow data files now ship in the wheel.** `pyproject.toml` package-data omitted `knowledge/*.yaml`, the
@@ -104,13 +104,18 @@ watershed 0.3.0). CI is red until both are on PyPI.
   refuse, through one shared loader (`_load_daily_streamflow`), and `extract_hydrological_signatures` applies the same guard (`STREAMFLOW_NOT_DAILY`) to a streamflow slot whose `interval` is not `daily` or whose dates are spaced under a day,
   whatever its label. `fetch_streamflow_data` refuses an `interval` other than `daily`/`hourly` (`interval="monthly"` used to
   return 15-minute data labelled monthly) and reports `median_step_s`; "hourly" is documented as instantaneous values at the gauge's step.
+**T1 review follow-ups**
+
+- **Citation matching (`ai_hydro/mcp/tools_citations.py`).** Words are accent-folded before matching ("Müller" matches "Muller"); a hyphenated or particle surname matches on any part (`Smith-Jones` is `smith`, `jones`, `smithjones`). A capitalised query word absent from the title counts only as a confirmed family name of the hit; any other (a surname the hit does not have, or a place name such as "Mississippi River" missing from the title) makes the hit an unverified candidate, wherever it sits in the query, because a wrong DOI is worse than a missed match. A near-full-title match with no author or year can reach `high` only when the title has at least five content words; a short topic phrase never does.
+- **A same-gauge re-delineation keeps the gauge's streamflow record** (T1-B). Streamflow is observed at the gauge, so it is judged on the gauge alone when the stored stamp names one; slots computed from the polygon are still dropped. A slot recomputed in a legacy session is no longer listed in the unverified note (a product derived after reading the unverified copy still carries `basin_identity_inputs_unverified`). An override geometry in a study with no delineated watershed returns `NO_SESSION_BASIN` (was `UNEXPECTED_ERROR: 'NoneType' object is not subscriptable`).
+- **Geometry boundary (T1-G).** `BOUNDARY_CHECKED` is set only when an `{"lat","lon"}` outlet was converted. A box-shaped world-wide geometry (-180 to 180, filling >= 90% of its bounding box) with an outlet or gauge is refused as "not a basin", not described as an antimeridian crossing.
+
+**T1-G: geometry boundary and gauge-first `data_fetch`**
 
 Owner feedback on the installed 0.4.3 build: `data_fetch(variable="streamflow", geometry=[-68.5828, 47.2375], ..., gauge_id="01013500")`
 was refused with "geometry is in region 'global'" (the pair is GeoJSON order, read as lat,lon it is in the Southern Ocean), and the
 agent then fell back to the deprecated tool and tripped on `start_date` / `end_date`. Without `gauge_id` the same call raised no
 refusal and was routed to modelled products for the wrong place.
-
-### Fixed
 
 - **A bare coordinate pair is refused, never guessed (one boundary for every tool).** `ai_hydro/mcp/geometry_boundary.py`
   (`GeometryBoundaryMiddleware`, plus the same check inside `data_fetch` / `data_fetch_background` for direct calls) holds every tool
@@ -143,16 +148,7 @@ refusal and was routed to modelled products for the wrong place.
 - **Deprecated `fetch_streamflow_data` accepts `start` / `end`** (arg-repair aliases to `start_date` / `end_date` when the tool has no
   `start` / `end` of its own). The tool stays deprecated; no parameter was added.
 
-### Changed
-
-- `data_fetch(variable, start, end, geometry=None, ...)` and `data_fetch_background(variable, start, end, geometry=None, ...)`: `geometry`
-  moved after `start` / `end` and is optional (Python positional callers; MCP calls are by name). `data_fetch_background` also takes `session_id`.
-- Tests that passed a bare `[lat, lon]` pair or a point several km from the gauge were changed to `{"lat","lon"}` at the gauge's recorded
-  location (`tests/test_usgs_u3.py`, `test_series_tools.py`, `test_map_provenance.py`).
-
-### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
-
-### Fixed
+**T1-A: argument repair (D06, F20)**
 
 - **Argument repair no longer changes what a call means (tool-integrity T1-A; audit D06, F20).** `area_m2=2.5e9` used to become
   `area_km2=2.5e9` with the value unchanged (peak 5,349,166,650 m3/s instead of 5,349); `rainfall_m` to `rainfall_mm`,
@@ -174,15 +170,8 @@ refusal and was routed to modelled products for the wrong place.
 - A tool's own structured refusal (for example `SESSION_RESOLUTION_FAILED`) now carries `_arg_repairs` when a repair was applied.
 - `"nan"`, `"inf"` and `"Infinity"` strings are no longer coerced to numbers.
 
-### Removed
+**T1-B: basin identity (audit findings D01-D05, D33, D46)**
 
-- Alias `site` and `site_id` to `gauge_id`: a site is not always a stream gauge. They now go through the teach path with `did_you_mean`.
-- Fuzzy renames that were applied before and are now refused (39 distinct in the F20 sweep over all tool schemas), among them
-  `mode` to `model` (`train_hydro_model`), `model` to `mode` (`data_fetch`), `series_a`/`series_b` to `series`, `series` to `series_b`,
-  `gauge_ids` to `gauge_id`, `metric` and `metrics`, `variable` and `variables`, `feature_id`/`features` to `feature`,
-  `dem_resolution` and `resolution`, `interpretation` and `interpretation_text`.
-
-### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
 - **A new basin in a used session is no longer answered with the old basin's numbers.** Every basin-dependent session result
   (`streamflow`, `signatures`, `geomorphic`, `forcing`, `twi`, `cn`, `soil`, `ssurgo`, `baseflow`, `flow_duration`,
   `flood_frequency`, `drought`, `design_hydrograph`, `soil_loss`, `inundation*`) is stamped `meta.basin_identity`
@@ -205,13 +194,34 @@ refusal and was routed to modelled products for the wrong place.
   share a session or file name (D46). Points with both coordinates >= 0 keep their earlier name; an auto-created session for a
   southern or western point is named differently from before.
 
+### Changed
+
+**T1-G**
+
+- `data_fetch(variable, start, end, geometry=None, ...)` and `data_fetch_background(variable, start, end, geometry=None, ...)`: `geometry`
+  moved after `start` / `end` and is optional (Python positional callers; MCP calls are by name). `data_fetch_background` also takes `session_id`.
+- Tests that passed a bare `[lat, lon]` pair or a point several km from the gauge were changed to `{"lat","lon"}` at the gauge's recorded
+  location (`tests/test_usgs_u3.py`, `test_series_tools.py`, `test_map_provenance.py`).
+
+### Removed
+
+**T1-A**
+
+- Alias `site` and `site_id` to `gauge_id`: a site is not always a stream gauge. They now go through the teach path with `did_you_mean`.
+- Fuzzy renames that were applied before and are now refused (39 distinct in the F20 sweep over all tool schemas), among them
+  `mode` to `model` (`train_hydro_model`), `model` to `mode` (`data_fetch`), `series_a`/`series_b` to `series`, `series` to `series_b`,
+  `gauge_ids` to `gauge_id`, `metric` and `metrics`, `variable` and `variables`, `feature_id`/`features` to `feature`,
+  `dem_resolution` and `resolution`, `interpretation` and `interpretation_text`.
+
 ### Existing sessions
+
+**T1-B**
+
 A slot or cache entry written before this release has no stamp. It is **unverified**, never silently trusted and never a crash:
 cache lookups treat it as a miss (the tool recomputes and stamps), slot consumers still read it, `session.summary()` lists it under
 `basin_identity`, the consuming tools (`separate_baseflow`, `compute_flow_duration_curve`, `compute_flood_frequency`,
 `compute_drought_index`) return a `basin_identity` block, and a result derived from it stays unverified
 (`meta.basin_identity_inputs_unverified`). Sealed run records and the run log are untouched.
-
 
 ---
 
