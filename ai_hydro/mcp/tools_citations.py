@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -171,40 +172,64 @@ def _stem(w: str) -> str:
     return w[:-1] if len(w) > 4 and w.endswith("s") else w
 
 
-def _family(name: str) -> str:
-    """Lower-case family name from "Vogel, Richard", "Richard M. Vogel" or "Vogel"."""
-    name = (name or "").strip()
-    if "," in name:
-        name = name.split(",", 1)[0]
-    parts = _WORD_RE.findall(name)
-    return parts[-1].lower() if parts else ""
+_SPECIAL = str.maketrans({"ø": "o", "Ø": "O", "ß": "ss", "đ": "d", "Đ": "D", "ł": "l", "Ł": "L", "æ": "ae", "Æ": "AE"})
 
 
-def _assess(query: str, title: Any, families: list[str] | None, year: Any) -> dict[str, Any]:
+def _fold(text: str) -> str:
+    """Accent-free text: "Müller" -> "Muller", "Åström" -> "Astrom", so a name matches however it is typed."""
+    text = unicodedata.normalize("NFKD", str(text or "")).translate(_SPECIAL)
+    return "".join(c for c in text if not unicodedata.combining(c))
+
+
+def _family(name: str, is_family_field: bool = False) -> set[str]:
+    """Lower-case surname tokens of one author. Every part counts: "Smith-Jones" gives smith, jones and
+    smithjones; "van der Waal" gives van, der, waal. For a "Given Family" or "Family, Given" string only the family
+    part is used (the last words, or the words before the comma)."""
+    name = _fold(name).strip()
+    if not is_family_field:
+        if "," in name:
+            name = name.split(",", 1)[0]
+        else:
+            name = name.rsplit(None, 1)[-1] if name.split() else ""
+    parts = [p.lower() for p in _WORD_RE.findall(name)]
+    out = set(parts)
+    if len(parts) > 1:
+        out.add("".join(parts))
+    return out
+
+
+def _assess(query: str, title: Any, families: list[set[str]] | None, year: Any) -> dict[str, Any]:
     """Judge one provider hit against a free-text query.
 
-    * Content words are the query words that count toward the title match: more than 3 letters, not a number, and
-      not a capitalised word missing from the title. Matching is on whole words ("flow" is not "overflow").
-    * A capitalised query word missing from the title is treated as an author name and MUST be a family name in
-      the hit's author list; a four-digit query year MUST be within ``YEAR_TOLERANCE`` of the record's year.
-      A mismatch rejects the hit (it is listed as an unverified candidate, never returned as the citation).
-      A provider that gives no authors/year leaves the check unverified: the hit may be returned but not as `high`.
+    * Content words are the query words that count toward the title match: more than 3 letters, not a number.
+      Matching is on whole, accent-folded words ("flow" is not "overflow", "Muller" is "Müller").
+    * A capitalised query word absent from the title is accepted only as a CONFIRMED family name of the hit. Any other
+      such word, anywhere in the query ("flow duration curves Vogel Fennessey"), rejects the hit: a surname and a
+      place name ("Mississippi River") cannot be told apart cheaply, and a wrong DOI is worse than a missed match, so
+      the hit is listed as an unverified candidate. A four-digit query year MUST be within ``YEAR_TOLERANCE`` of the
+      record's year; a provider that gives no year leaves it unverified (returned, never `high`).
     * Fewer than two scored content words never reach the match threshold; ``n_scored`` counts the words actually
-      scored, not the ones discarded.
-    * `high` needs: title score >= HIGH_TITLE_SCORE, 3+ scored words, authors and year verified where the query
-      gave them, and, when the query gave neither, a near-full-title match (the query covers >= 0.8 of the title's
-      words), so a short topic phrase is never `high`.
+      scored.
+    * `high` needs: title score >= HIGH_TITLE_SCORE, 3+ scored words, authors and year verified where the query gave
+      them, and, when the query gave neither, a near-full-title match (the query covers >= 0.8 of the title's
+      content words AND the title has at least 5), so a short topic phrase is never `high`.
     """
     t = title[0] if isinstance(title, list) and title else (title if isinstance(title, str) else "")
+    t = _fold(t)
+    query = _fold(query)
     title_words = {_stem(w.lower()) for w in _WORD_RE.findall(t)}
-    content, names, years = [], [], []
+    title_content = {_stem(w.lower()) for w in _WORD_RE.findall(t) if len(w) > 3 and not w.isdigit()}
+    fam_all: set[str] = set().union(*families) if families else set()
+    content, names, years, foreign = [], [], [], []
     for w in _WORD_RE.findall(query):
         if _YEAR_RE.match(w):
             years.append(int(w))
         elif len(w) <= 3 or w.isdigit():
             continue
         elif w[0].isupper() and _stem(w.lower()) not in title_words:
-            names.append(w.lower())
+            # A capitalised word that is not in the title is a surname or a place/proper noun we cannot tell apart
+            # cheaply. It counts only as a confirmed family name of the hit; anything else rejects the hit.
+            (names if w.lower() in fam_all else foreign).append(w.lower())
         else:
             content.append(_stem(w.lower()))
     matched = [w for w in content if w in title_words]
@@ -212,12 +237,9 @@ def _assess(query: str, title: Any, families: list[str] | None, year: Any) -> di
     if len(content) < 2:
         score = min(score, MIN_TITLE_SCORE - 0.1)
     out: dict[str, Any] = {"score": score, "n_scored": len(content), "reject": None, "unverified": []}
-    fams = {f for f in (families or []) if f}
-    if names:
-        if not fams:
-            out["unverified"].append("the provider gave no authors to check the author name(s) against")
-        elif not all(n in fams for n in names):
-            out["reject"] = f"author(s) {', '.join(names)} not among the record's authors"
+    if foreign:
+        out["reject"] = (f"{', '.join(foreign)} is neither in the title nor a family name among the record's "
+                         + ("authors" if fam_all else "authors (the provider gave none)"))
     if years and not out["reject"]:
         try:
             ry = int(year) if year not in (None, "") else None
@@ -227,10 +249,10 @@ def _assess(query: str, title: Any, families: list[str] | None, year: Any) -> di
             out["unverified"].append("the provider gave no year to check the query year against")
         elif any(abs(y - ry) > YEAR_TOLERANCE for y in years):
             out["reject"] = f"year {', '.join(map(str, years))} differs from the record's year {ry}"
-    covers = len(set(matched)) / len(title_words) if title_words else 0.0
+    covers = len(set(matched) & title_content) / len(title_content) if title_content else 0.0
     out["high"] = bool(
         not out["reject"] and not out["unverified"] and score >= HIGH_TITLE_SCORE and len(content) >= 3
-        and (bool(names) or bool(years) or covers >= 0.8))
+        and (bool(names) or bool(years) or (covers >= 0.8 and len(title_content) >= 5)))
     return out
 
 
@@ -330,8 +352,8 @@ def _search_crossref(query: str) -> tuple[str, dict[str, Any] | None, list[dict]
     for it in ((data or {}).get("message") or {}).get("items") or []:
         doi = _normalize_doi(it.get("DOI", ""))
         if doi:
-            fams = [_family(a.get("family") or a.get("name") or "") for a in it.get("author") or []
-                    if isinstance(a, dict)]
+            fams = [_family(a["family"], True) if a.get("family") else _family(a.get("name") or "")
+                    for a in it.get("author") or [] if isinstance(a, dict)]
             cands.append((_assess(query, it.get("title"), fams, _crossref_year(it)), doi, it))
     return _pick(cands, "crossref", True, lambda it, doi: it)
 
@@ -361,8 +383,8 @@ def _search_datacite(query: str) -> tuple[str, dict[str, Any] | None, list[dict]
         doi = _normalize_doi(attrs.get("doi") or it.get("id") or "")
         titles = attrs.get("titles") or []
         if doi:
-            fams = [_family(c.get("familyName") or c.get("name") or "") for c in attrs.get("creators") or []
-                    if isinstance(c, dict)]
+            fams = [_family(c["familyName"], True) if c.get("familyName") else _family(c.get("name") or "")
+                    for c in attrs.get("creators") or [] if isinstance(c, dict)]
             cands.append((_assess(query, [titles[0].get("title", "")] if titles else [], fams,
                                   attrs.get("publicationYear")), doi, attrs))
     return _pick(cands, "datacite", False, _datacite_csl, base="low")

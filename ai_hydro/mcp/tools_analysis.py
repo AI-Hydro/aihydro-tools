@@ -1387,6 +1387,18 @@ def extract_hydrological_signatures(
                         "name=<id>, gauge_id=<USGS gauge id>), then extract_hydrological_signatures(feature=<id>)."),
                 }
 
+        # Without a registered feature the area comes from the session watershed. None yet (an override
+        # geometry in a study that was never delineated) is a refusal with a recovery, not a TypeError below.
+        if _scoped is None and not ((session.watershed or {}).get("data") or {}).get("area_km2"):
+            return {
+                "error": True, "code": "NO_SESSION_BASIN",
+                "message": ("This study has no delineated watershed, and a raw geometry carries no area, "
+                            "gauge or streamflow of its own, so signatures cannot be computed for it."),
+                "recovery": ("Delineate the basin first (delineate_watershed / delineate_watershed_from_point), "
+                             "or register it with its gauge: register_feature(geojson=<basin>, name=<id>, "
+                             "gauge_id=<USGS gauge id>), then extract_hydrological_signatures(feature=<id>)."),
+                "next_tools": ["delineate_watershed", "delineate_watershed_from_point", "register_feature"],
+            }
         # Non-default only for the precipitation switch, so a "skip" result is never
         # served for an "auto" request. The gauge (and, for a registered feature, its
         # geometry and area) are part of the key: a cached signature set belongs to one
