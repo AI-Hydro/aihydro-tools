@@ -6,7 +6,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] (tool integrity Wave T1-S: study and claim integrity)
+## [Unreleased]
+
+Tool integrity Wave T1-S: study and claim integrity (below), then T1-A / T1-B entries.
 
 Source: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`. No version bump.
 
@@ -53,6 +55,67 @@ Source: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`. No version 
   title-word overlap of at least 0.6 (all providers); closer misses come back as unverified `candidates`. A provider that cannot be reached is
   `CITATION_LOOKUP_UNAVAILABLE` (`unavailable: true`, `not_found: false`), never `not_found`; `not_found` is returned only when every provider
   answered. An unsupported `source_hint` is refused; `_render_apa` no longer crashes on an empty `container-title`.
+
+### Fixed
+
+- **Argument repair no longer changes what a call means (tool-integrity T1-A; audit D06, F20).** `area_m2=2.5e9` used to become
+  `area_km2=2.5e9` with the value unchanged (peak 5,349,166,650 m3/s instead of 5,349); `rainfall_m` to `rainfall_mm`,
+  `expected_area_m2`, `slope_length_mm` and `mode` to `model` behaved the same way. A rename is now applied only when the parsed
+  semantic tokens of the two names are identical: units (`m`, `mm`, `km2`, `m3s`, `hr`, ...), bounds and axes (`min`/`max`,
+  `start`/`end`, `lat`/`lon`), sides (`a`/`b`, `train`/`val`/`test`), single letters and anything with a digit. The rule is on tokens, not
+  tool names, so it covers every tool. Beyond that, fuzzy renames now allow only a case or separator change or one typo inside a word of
+  six letters or more, never a singular/plural change (`metrics`/`metric`, `gauge_ids`/`gauge_id`), never an added or dropped word
+  (`feature_id`/`feature`, `dem_resolution`/`resolution`), and never a list or object pushed into a scalar parameter.
+- A near-miss across units is refused with a structured `ARG_UNIT_MISMATCH` error naming the supplied and expected parameter and the
+  expected unit (`rescaled: false`); the tool does not run and no value is rescaled. A bare name never picks a unit (`discharge` is not
+  `discharge_m3s`).
+- **Every applied repair is in the result.** Renames and type coercions are returned as `_arg_repairs` (a list of
+  `{kind, from, to, rule}`), also on error results and on the self-help error. A tool that returns a list gets one extra text block.
+- **The sealed run records the arguments that ran.** `RunRecordMiddleware` wraps `ArgRepairMiddleware`, so repair now hands the
+  post-repair arguments to the capture: `input_digest` and session resolution use them (`sid=` now resolves as `session_id=`), and the
+  record gains `extra.arg_repairs` and `extra.supplied_input_digest` (the digest of what the caller sent). `_arg_repairs` is a transport key,
+  excluded from the output digest.
+- A tool's own structured refusal (for example `SESSION_RESOLUTION_FAILED`) now carries `_arg_repairs` when a repair was applied.
+- `"nan"`, `"inf"` and `"Infinity"` strings are no longer coerced to numbers.
+
+### Removed
+
+- Alias `site` and `site_id` to `gauge_id`: a site is not always a stream gauge. They now go through the teach path with `did_you_mean`.
+- Fuzzy renames that were applied before and are now refused (39 distinct in the F20 sweep over all tool schemas), among them
+  `mode` to `model` (`train_hydro_model`), `model` to `mode` (`data_fetch`), `series_a`/`series_b` to `series`, `series` to `series_b`,
+  `gauge_ids` to `gauge_id`, `metric` and `metrics`, `variable` and `variables`, `feature_id`/`features` to `feature`,
+  `dem_resolution` and `resolution`, `interpretation` and `interpretation_text`.
+
+### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
+- **A new basin in a used session is no longer answered with the old basin's numbers.** Every basin-dependent session result
+  (`streamflow`, `signatures`, `geomorphic`, `forcing`, `twi`, `cn`, `soil`, `ssurgo`, `baseflow`, `flow_duration`,
+  `flood_frequency`, `drought`, `design_hydrograph`, `soil_loss`, `inundation*`) is stamped `meta.basin_identity`
+  (`geometry_digest` + `gauge_id`). The session serves a cached result only when the stamp matches the basin it is asked about
+  (`get_result`), and a slot only when it is not stamped for another basin (`get`). Replacing the session watershed with a
+  different geometry drops every result held for the old basin, clears `site_id`/`site_type`/`site_name` (unless the new
+  watershed names the same gauge) and logs the change in `session.extra["basin_changes"]` (D01, D02: `compute_twi` returned the
+  old TWI as a cache hit; the signature kernel got the old gauge with the new area; flood frequency used the old gauge's flow).
+  `camels` and `model` are multi-basin by design and are not dropped.
+- **`feature=` binds or refuses.** `_feature_cache_resolve` now resolves through `_resolve_registered_feature`, so
+  `compute_twi`, `create_cn_grid`, `fetch_soil_attributes_ssurgo` and `fetch_forcing_data` refuse an unregistered id (or a raw
+  GeoJSON string) with `FEATURE_NOT_RESOLVED` instead of computing on the session basin (D03). `map_flood_inundation` maps the
+  registered feature's geometry; a feature that is not the session basin needs an explicit `discharge_m3s`
+  (`FEATURE_DISCHARGE_REQUIRED`) because the session's flow slots belong to the session basin (D04).
+- `extract_hydrological_signatures(geometry_geojson=<another basin>)` is refused (`GEOMETRY_OVERRIDE_NOT_SESSION_BASIN`): the
+  kernel used to get that geometry's forcing with the session basin's gauge, area and flow (D05). Register the basin with its
+  gauge and pass `feature=`.
+- `fetch_soil_attributes_ssurgo` writes the session `soil` slot (read by RUSLE) only for the session basin (D33).
+- `delineate_watershed_from_point` slugs carry the sign of each coordinate (`basin_47p237_m68p583`), so mirrored points no longer
+  share a session or file name (D46). Points with both coordinates >= 0 keep their earlier name; an auto-created session for a
+  southern or western point is named differently from before.
+
+### Existing sessions
+A slot or cache entry written before this release has no stamp. It is **unverified**, never silently trusted and never a crash:
+cache lookups treat it as a miss (the tool recomputes and stamps), slot consumers still read it, `session.summary()` lists it under
+`basin_identity`, the consuming tools (`separate_baseflow`, `compute_flow_duration_curve`, `compute_flood_frequency`,
+`compute_drought_index`) return a `basin_identity` block, and a result derived from it stays unverified
+(`meta.basin_identity_inputs_unverified`). Sealed run records and the run log are untouched.
+
 
 ---
 

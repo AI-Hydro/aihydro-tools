@@ -30,9 +30,12 @@ Limits of the seal (read before relying on a record):
   on the next recorded call of the session and by ``export_session`` (see
   "Lazy re-seal" below), only while its body is unchanged. Otherwise it is
   marked ``record_status: unsealable``. The retry set is process-local.
-- ``input_digest`` covers the arguments as received, not the effective
-  parameters after defaults, so a call that omits a default and one that
-  passes it explicitly digest differently.
+- ``input_digest`` covers the arguments the tool received after argument
+  repair (``ArgRepairMiddleware``), not the effective parameters after
+  defaults, so a call that omits a default and one that passes it explicitly
+  digest differently. When repair changed the call, ``extra.arg_repairs`` lists
+  each repair and ``extra.supplied_input_digest`` digests the arguments as
+  the caller sent them.
 - ``output_digest`` covers what the caller received (``result["data"]``), not
   arrays a tool read from or wrote to disk.
 
@@ -76,7 +79,7 @@ SECRET_INPUT_KEY_PATTERN = re.compile(
 _NON_INPUT_KEYS = frozenset({"ctx", "session", "session_id"})
 
 # Added by post_run and by the recording middleware, not produced by the tool.
-TRANSPORT_KEYS = frozenset({"_run_id", "_record_error", "quality_flags", "next_steps"})
+TRANSPORT_KEYS = frozenset({"_run_id", "_record_error", "_arg_repairs", "quality_flags", "next_steps"})
 
 #: Tool dependencies whose installed versions go into the environment digest.
 ENV_DISTRIBUTIONS = (
@@ -428,6 +431,30 @@ def begin_capture(**call: Any) -> Tuple[CallCapture, "contextvars.Token"]:
 
 def end_capture(token: "contextvars.Token") -> None:
     _CAPTURE.reset(token)
+
+
+def note_effective_arguments(supplied: Any, effective: Any, repairs: Iterable[Dict[str, Any]]) -> None:
+    """Record that argument repair changed the call, so the seal describes what ran.
+
+    The run record digests ``effective`` (the arguments the tool received), not what the caller
+    sent; ``extra.arg_repairs`` names every repair and ``extra.supplied_input_digest`` digests
+    the original. No-op outside a recorded call.
+    """
+    capture = _CAPTURE.get()
+    if capture is None:
+        return
+    from ai_hydro.session.refs import scrub_value
+
+    capture.call["effective_arguments"] = effective
+    capture.call["arguments"] = effective
+    capture.notes.update(scrub_value({
+        "arg_repairs": [{k: v for k, v in r.items() if k != "note"} for r in repairs]}))
+    try:
+        digest, _err = digest_or_error(scrub_arguments(supplied or {}))
+        if digest:
+            capture.notes["supplied_input_digest"] = digest
+    except Exception as exc:   # the repair list still seals
+        log.debug("supplied_input_digest skipped: %s", exc)
 
 
 def note_row_written(session_id: str, run_id: str, writer: str) -> None:
@@ -1001,6 +1028,8 @@ def record_call(
     Never raises. ``result`` is the tool's result as a dict (or ``None``);
     ``failure`` is the exception the tool raised, if any.
     """
+    # Argument repair runs inside the recorded call: seal the arguments that actually ran.
+    arguments = capture.call.get("effective_arguments", arguments)
     try:
         return _record_call(
             tool=tool, arguments=arguments, result=result, failure=failure,
