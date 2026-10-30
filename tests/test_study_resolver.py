@@ -201,7 +201,7 @@ ALLOWED = {
 HELPER_RESOLVED = {"summarize_series", "detect_threshold_runs", "compare_series", "bootstrap_statistic"}
 #: A plain ``_resolve_session(...)`` does NOT count: its default lets an unknown explicit id through
 #: (and ``HydroSession.load`` + ``save`` then creates the study). Only the strict forms count.
-RESOLVERS = ("resolve_existing_study", "_load_session_or_raise", "must_exist=True", "must_exist=not")
+RESOLVERS = ("resolve_existing_study", "_load_session_or_raise", "must_exist=True", "must_exist=not", "must_exist=bool(")
 
 MCP_DIR = pathlib.Path(__file__).resolve().parent.parent / "ai_hydro" / "mcp"
 
@@ -228,6 +228,16 @@ def test_every_tool_with_a_session_id_goes_through_a_resolver():
         if not any(r in seg for r in RESOLVERS) and n not in ALLOWED and n not in HELPER_RESOLVED
     )
     assert not bypass, f"tools that take session_id and bypass the study resolver: {bypass}"
+
+
+@pytest.mark.parametrize("tool", ["data_fetch", "data_fetch_background"])
+def test_a_mistyped_id_on_a_data_fetch_is_refused_and_writes_nothing(sessions, tool):
+    """The session is optional, but a named one must exist: a typo must not become an unrecorded call."""
+    b = body(call(tool, {"variable": "precipitation", "geometry": "POINT (-70 45)",
+                         "start": "2020-01-01", "end": "2020-01-31", "session_id": "ghost"}))
+    assert b.get("code") == "STUDY_NOT_FOUND", b
+    assert not HydroSession.exists("ghost")
+    assert not list(sessions.glob("ghost*"))
 
 
 def test_the_ledger_experiment_skeptic_and_validator_tools_use_the_existing_study_resolver():

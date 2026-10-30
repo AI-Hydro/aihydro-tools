@@ -14,6 +14,7 @@ Source: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`. No version 
 
 ### Fixed
 
+- **`data_fetch` and `data_fetch_background` refuse a mistyped `session_id`** with `STUDY_NOT_FOUND` instead of running as an unrecorded call. The session stays optional: with no id, the call runs as before.
 - **R-06 The knowledge and workflow data files now ship in the wheel.** `pyproject.toml` package-data omitted `knowledge/*.yaml`, the
   bundled concept JSON and `workflows/*.workflow.yaml`, so in an installed build `get_variable_definition`, `list_known_variables`,
   `get_metric_definition`, `list_known_metrics`, `get_dataset_info`, `list_known_datasets`, `list_available_workflows` and

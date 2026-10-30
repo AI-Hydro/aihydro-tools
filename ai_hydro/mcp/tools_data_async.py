@@ -164,11 +164,13 @@ def data_fetch_background(
         # place the gauge resolved to, and a refusal never starts a job.
         from ai_hydro.mcp.gauge_identity import resolve_request
 
+        from ai_hydro.mcp.helpers import StudyNotFoundError, _resolve_session
+
         sid = None
         try:
-            from ai_hydro.mcp.helpers import _resolve_session
-
-            sid = _resolve_session(session_id, None, allow_auto_create=False)
+            sid = _resolve_session(session_id, None, allow_auto_create=False, must_exist=bool(session_id))
+        except StudyNotFoundError as exc:
+            return exc.to_dict()  # a mistyped id is refused, never turned into an unrecorded call
         except Exception as exc:
             log.debug("data_fetch_background: no session resolved (%s)", exc)
         resolved = resolve_request(variable, geometry, product, gauge_id, sid, "data_fetch_background")
