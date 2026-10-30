@@ -252,6 +252,16 @@ def offload_sync(fn: Callable[..., Any]) -> Callable[..., Any]:
                                         _entry.__closure__)
         _offloaded.__kwdefaults__ = _entry.__kwdefaults__
     functools.update_wrapper(_offloaded, fn)
+    # Python 3.10's ``typing.get_type_hints`` wraps a parameter whose default is None in ``Optional`` by
+    # reading ``__defaults__`` of the callable it is given; the wrapper has none, so a ``geometry: Any = None``
+    # parameter was published differently from the plain function. Publish the annotations as the plain
+    # function resolves them (identical on 3.11+).
+    try:
+        import typing
+
+        _offloaded.__annotations__ = typing.get_type_hints(fn, include_extras=True)
+    except Exception:
+        pass
     setattr(_offloaded, _MARK, True)
     _offloaded.__sync_origin__ = fn      # type: ignore[attr-defined]
     return _offloaded
