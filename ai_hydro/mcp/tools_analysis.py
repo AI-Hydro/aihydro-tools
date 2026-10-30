@@ -1487,6 +1487,13 @@ def extract_hydrological_signatures(
             if _digest_problem == "retained_series_digest_mismatch":
                 _q_cms = None          # never consume a series that changed after fetch
             _unresolved = _slot_mismatch or _digest_problem
+            if _q_cms:
+                # Same refusal as the other daily-series tools (D12): a sub-daily slot is not a daily series.
+                _not_daily = _daily_streamflow_problem(
+                    {"dates": _q_dates, "interval": _sf_data.get("interval")}, session.streamflow,
+                    "extract_hydrological_signatures")
+                if _not_daily:
+                    return _not_daily
 
         _internal: list[dict] = []
         if _q_cms and not _unresolved:
@@ -2236,6 +2243,11 @@ async def map_flood_inundation(
         )
         if discharge_err:
             return discharge_err
+        # A return-period discharge is a level of the flood-frequency statistic (daily mean, water
+        # year), not necessarily an instantaneous peak: say so wherever the discharge is recorded.
+        from ai_hydro.analysis.inundation_drivers import flood_frequency_statistic
+        discharge_statistic = (flood_frequency_statistic(session)
+                               if str(discharge_source or "").startswith("return_period_") else {})
 
         from shapely.geometry import shape
 
@@ -2363,6 +2375,7 @@ async def map_flood_inundation(
                 "params": {
                     "discharge_m3s": float(q),
                     "discharge_source": discharge_source,
+                    "discharge_statistic": discharge_statistic,
                     "return_period": return_period,
                     "use_design_peak": use_design_peak,
                     "use_session_peak": use_session_peak,
@@ -2395,6 +2408,7 @@ async def map_flood_inundation(
                     "caveat": caveat,
                     "discharge_m3s": str(float(q)),
                     "discharge_source": discharge_source or "explicit",
+                    "discharge_statistic_json": json.dumps(discharge_statistic),
                     "stage_m": str(likely.stage_m),
                     "stage_lookup_json": json.dumps(result.stage_lookup),
                     "summary_card_json": json.dumps(summary_card),
@@ -3252,6 +3266,15 @@ async def fetch_forcing_data(
                 "— load from _data_file when needed."
             ),
         }
+        # Substitution/failure record at the top of the response (D11): a variable that was asked
+        # for and not served, and any provider warning, must not be recoverable only from the file.
+        if d_data.get("_warnings"):
+            resp["_warnings"] = d_data["_warnings"]
+        if d_data.get("variables_failed"):
+            resp["variables_failed"] = d_data["variables_failed"]
+            resp["forcing_complete"] = False
+        elif "forcing_complete" in d_data:
+            resp["forcing_complete"] = d_data["forcing_complete"]
         reminder = _sync_reminder(session_id)
         if reminder:
             resp["_sync_required"] = reminder
@@ -3461,6 +3484,116 @@ def fetch_camels_us(
 # ============================================================================
 
 
+def _daily_streamflow_problem(data, slot, tool: str):
+    """Refuse a streamflow slot that is not a daily series (tool audit D12).
+
+    The baseflow filter, flow-duration curve, annual maxima and 7Q10 are daily-series statistics:
+    run on 15-minute samples they return a number (BFI 0.99) that means nothing. A slot is refused
+    when it declares ``interval`` other than "daily", or - whatever it declares - when the median
+    spacing of its dates is below one day. Returns an error dict, or None when the series is daily
+    (or carries nothing to check).
+    """
+    declared = None
+    for src in (data, slot, slot.get("data") if isinstance(slot, dict) else None):
+        if isinstance(src, dict) and src.get("interval") is not None:
+            declared = src.get("interval")
+            break
+    step_s = None
+    dates = data.get("dates") if isinstance(data, dict) else None
+    if isinstance(dates, (list, tuple)) and len(dates) > 2:
+        try:
+            import numpy as _np
+            import pandas as _pd
+            t = _pd.to_datetime(_pd.Series(list(dates[:5000])), errors="coerce").dropna()
+            if len(t) > 2:
+                step_s = float(_np.median(_np.diff(t.values).astype("timedelta64[s]").astype(float)))
+        except Exception:
+            step_s = None
+    sub_daily = step_s is not None and 0 < step_s < 20 * 3600
+    if (declared is not None and declared != "daily") or sub_daily:
+        return {
+            "error": True,
+            "code": "STREAMFLOW_NOT_DAILY",
+            "message": (f"{tool} works on a daily series, but the streamflow in this session is "
+                        f"interval={declared!r} with a median step of "
+                        f"{'unknown' if step_s is None else f'{step_s:.0f} s'}. Running it would apply a "
+                        "daily-calibrated method to sub-daily samples and return a number that looks valid."),
+            "recovery": "fetch_streamflow_data(..., interval='daily') (USGS daily mean values), "
+                        "or aggregate to daily means explicitly before analysis.",
+            "next_tools": ["fetch_streamflow_data"],
+            "interval": declared,
+            "median_step_s": step_s,
+        }
+    return None
+
+
+def _load_daily_streamflow(session, tool: str, *, min_len: int = 2, scan_fallback: bool = False):
+    """The ONE place a daily-series statistic reads the session's streamflow (tool audit D12).
+
+    Returns ``(q, data, error)``: ``q`` the float array, ``data`` the slot's data dict (arrays reloaded
+    from ``_data_file`` when the session shed them), ``error`` a structured refusal dict or None:
+    ``MISSING_PREREQUISITES`` (no slot), ``INVALID_STREAMFLOW`` (no usable array) or
+    ``STREAMFLOW_NOT_DAILY`` (sub-daily, see :func:`_daily_streamflow_problem`). Used by
+    separate_baseflow, compute_flow_duration_curve and compute_flood_frequency;
+    extract_hydrological_signatures applies the same guard to the series it consumes.
+    """
+    import numpy as np
+    if not session.streamflow:
+        return None, None, {
+            "error": True, "code": "MISSING_PREREQUISITES",
+            "message": "No streamflow data in session. Run fetch_streamflow_data first.",
+            "recovery": "fetch_streamflow_data(session_id, gauge_id)",
+            "next_tools": ["fetch_streamflow_data", "data_fetch"],
+        }
+    sf = session.streamflow
+    data = sf.get("data", sf) if isinstance(sf, dict) else sf
+    # The session strips arrays >50 elements; the real array lives in the file `_data_file` points at.
+    if isinstance(data, dict) and "q_cms" not in data:
+        data_file = (data.get("_data_file")
+                     or (sf.get("_data_file") if isinstance(sf, dict) else None)
+                     or (sf.get("data", {}) if isinstance(sf, dict) else {}).get("_data_file"))
+        if data_file:
+            try:
+                import json as _json
+                with open(data_file) as _f:
+                    data = _json.load(_f)
+            except Exception as _exc:
+                log.warning("Failed to reload streamflow from %s: %s", data_file, _exc)
+    q = None
+    # q_cms FIRST (the canonical key); all are arrays of floats, never a string that masquerades as one.
+    FLOW_KEYS = ("q_cms", "discharge_cms", "flow_cms", "streamflow", "q")
+    for key in FLOW_KEYS:
+        v = data.get(key) if isinstance(data, dict) else None
+        if isinstance(v, (list, tuple)) and len(v) > 1:
+            try:
+                q = np.asarray(v, dtype=float)
+                break
+            except (TypeError, ValueError):
+                continue
+    if q is None and scan_fallback:
+        for k, v in (data.items() if isinstance(data, dict) else []):
+            if isinstance(v, (str, bytes, dict)) or not isinstance(v, (list, tuple)) or len(v) < 10:
+                continue
+            try:
+                q = np.asarray(v, dtype=float)
+                log.info("%s: using fallback key %r as flow array", tool, k)
+                break
+            except (TypeError, ValueError):
+                continue
+    if q is None or len(q) < min_len:
+        return None, data, {
+            "error": True, "code": "INVALID_STREAMFLOW",
+            "message": (f"Could not extract a usable flow array from session.streamflow. Looked for keys "
+                        f"{FLOW_KEYS}; found {sorted(data.keys()) if isinstance(data, dict) else type(data).__name__}."),
+            "recovery": "Re-run fetch_streamflow_data and confirm a 'q_cms' array is present.",
+            "next_tools": ["fetch_streamflow_data"],
+        }
+    not_daily = _daily_streamflow_problem(data, sf, tool)
+    if not_daily:
+        return None, data, not_daily
+    return q, data, None
+
+
 @mcp.tool()
 def separate_baseflow(
     session_id: str | None = None,
@@ -3497,78 +3630,9 @@ def separate_baseflow(
 
         session_id = _resolve_session(session_id, None)
         session = HydroSession.load(session_id)
-        if not session.streamflow:
-            return {
-                "error": True,
-                "code": "MISSING_PREREQUISITES",
-                "message": "No streamflow data in session. Run fetch_streamflow_data first.",
-                "recovery": "fetch_streamflow_data(session_id, gauge_id)",
-            }
-
-        # Extract streamflow array from session. The canonical key written by
-        # fetch_streamflow_data is `q_cms`; other names are legacy / defensive.
-        sf = session.streamflow
-        data = sf.get("data", sf) if isinstance(sf, dict) else sf
-
-        # ── Cache miss because raw arrays got stripped to disk? ────────
-        # The session strips arrays >50 elements; the real array lives in
-        # the file pointed at by `_data_file`. Reload it transparently.
-        if isinstance(data, dict) and "q_cms" not in data:
-            data_file = (data.get("_data_file")
-                         or sf.get("_data_file")
-                         or sf.get("data", {}).get("_data_file"))
-            if data_file:
-                try:
-                    import json as _json
-                    with open(data_file) as _f:
-                        data = _json.load(_f)
-                except Exception as _exc:
-                    log.warning("Failed to reload streamflow from %s: %s",
-                                data_file, _exc)
-
-        q = None
-        # Prioritised lookup, q_cms FIRST (the canonical key from
-        # fetch_streamflow_data). All keys here are arrays of floats; never
-        # a string that masquerades as one.
-        FLOW_KEYS = ("q_cms", "discharge_cms", "flow_cms", "streamflow", "q")
-        for key in FLOW_KEYS:
-            v = data.get(key) if isinstance(data, dict) else None
-            if isinstance(v, (list, tuple)) and len(v) > 1:
-                try:
-                    q = np.asarray(v, dtype=float)
-                    break
-                except (TypeError, ValueError):
-                    continue
-
-        if q is None:
-            # Hardened fallback: scan dict values but SKIP strings, dicts,
-            # and anything that can't cast to float64. The old fallback hit
-            # the units string ("m^3/s") because str has __len__ > 1.
-            for k, v in (data.items() if isinstance(data, dict) else []):
-                if isinstance(v, (str, bytes, dict)):
-                    continue
-                if not isinstance(v, (list, tuple)):
-                    continue
-                if len(v) < 10:
-                    continue
-                try:
-                    q = np.asarray(v, dtype=float)
-                    log.info("separate_baseflow: using fallback key %r as flow array", k)
-                    break
-                except (TypeError, ValueError):
-                    continue
-
-        if q is None or len(q) < 10:
-            return {
-                "error": True,
-                "code": "INVALID_STREAMFLOW",
-                "message": (
-                    f"Could not extract a flow array from session.streamflow. "
-                    f"Looked for keys {FLOW_KEYS}; found "
-                    f"{sorted(data.keys()) if isinstance(data, dict) else type(data).__name__}."
-                ),
-                "recovery": "Re-run fetch_streamflow_data and confirm it returns a 'q_cms' array.",
-            }
+        q, data, _err = _load_daily_streamflow(session, "separate_baseflow", min_len=10, scan_fallback=True)
+        if _err:
+            return _err
 
         method = method.lower()
         warmup_bias = None
@@ -3657,7 +3721,7 @@ def separate_baseflow(
 
 
 @mcp.tool()
-def compute_flow_duration_curve(session_id: str | None = None) -> dict:
+def compute_flow_duration_curve(session_id: str | None = None, year_start_month: int | None = None) -> dict:
     """
     Compute the flow-duration curve, standard percentile flows, and the 7Q10
     design low flow from streamflow in the session. Writes session.flow_duration.
@@ -3673,6 +3737,9 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
     ----------
     session_id : str | None (optional)
         Research session identifier. Auto-resolved from chat context when omitted.
+    year_start_month : int | None
+        None (default): the 7Q10 uses the USGS climatic year (1 Apr-31 Mar). 1-12: a year starting that
+        month, labelled by the year it begins (Southern Hemisphere, monsoon regimes).
     """
     try:
         from ai_hydro.session import HydroSession
@@ -3681,55 +3748,15 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
 
         session_id = _resolve_session(session_id, None)
         session = HydroSession.load(session_id)
-        if not session.streamflow:
-            return {
-                "error": True,
-                "code": "MISSING_PREREQUISITES",
-                "message": "No streamflow data in session. Run fetch_streamflow_data first.",
-                "recovery": "fetch_streamflow_data(session_id, gauge_id)",
-                "next_tools": ["fetch_streamflow_data", "data_fetch"],
-            }
-
-        sf = session.streamflow
-        data = sf.get("data", sf) if isinstance(sf, dict) else sf
-
-        # Reload stripped arrays from disk if the session shed them (>50 elems).
-        if isinstance(data, dict) and "q_cms" not in data:
-            data_file = (data.get("_data_file")
-                         or sf.get("_data_file")
-                         or (sf.get("data", {}) if isinstance(sf, dict) else {}).get("_data_file"))
-            if data_file:
-                try:
-                    import json as _json
-                    with open(data_file) as _f:
-                        data = _json.load(_f)
-                except Exception as _exc:
-                    log.warning("Failed to reload streamflow from %s: %s", data_file, _exc)
-
-        q = None
-        FLOW_KEYS = ("q_cms", "discharge_cms", "flow_cms", "streamflow", "q")
-        for key in FLOW_KEYS:
-            v = data.get(key) if isinstance(data, dict) else None
-            if isinstance(v, (list, tuple)) and len(v) > 1:
-                try:
-                    q = np.asarray(v, dtype=float)
-                    break
-                except (TypeError, ValueError):
-                    continue
-
-        if q is None or len(q) < 2:
-            return {
-                "error": True,
-                "code": "INVALID_STREAMFLOW",
-                "message": "Could not extract a usable flow array from session.streamflow.",
-                "recovery": "Re-run fetch_streamflow_data and confirm a 'q_cms' array is present.",
-                "next_tools": ["fetch_streamflow_data"],
-            }
+        q, data, _err = _load_daily_streamflow(session, "compute_flow_duration_curve")
+        if _err:
+            return _err
 
         dates = data.get("dates") if isinstance(data, dict) else None
 
         fdc = flow_duration_curve(q)
-        low = seven_q10(q, dates=dates)
+        low = (seven_q10(q, dates=dates, year_type="custom_year", year_start_month=year_start_month)
+               if year_start_month is not None else seven_q10(q, dates=dates))
 
         # Persist full curve + summary to the session; return a compact summary.
         session.set("flow_duration", {
@@ -3744,7 +3771,13 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
             },
             "meta": {"tool": "compute_flow_duration_curve",
                      "low_flow_method": low["method"],
-                     "n_years": low["n_years"]},
+                     "n_years": low["n_years"],
+                     "low_flow_year_type": low.get("year_type"),
+                     "low_flow_year_convention": low.get("year_convention"),
+                     "low_flow_years": low.get("years"),
+                     "low_flow_excluded_years": low.get("excluded_years", []),
+                     "min_year_fraction": low.get("min_fraction"),
+                     "min_window_fraction": low.get("min_window_fraction")},
         })
         session.save()
 
@@ -3756,6 +3789,11 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
             "n_days": fdc["n_days"],
             "n_years_for_7q10": low["n_years"],
             "low_flow_note": low["note"],
+            "low_flow_year_type": low.get("year_type"),
+            "low_flow_year_convention": low.get("year_convention"),
+            "low_flow_years": low.get("years"),
+            "low_flow_excluded_years": low.get("excluded_years", []),
+            "low_flow_windows_per_year": low.get("windows_per_year"),
             "_note": "Full FDC (exceedance_prob + sorted_flows) stored in session.flow_duration.",
             "next_steps": [
                 {"tool": "compute_flood_frequency",
@@ -3775,6 +3813,9 @@ def compute_flood_frequency(
     session_id: str | None = None,
     distribution: str = "gumbel",
     method: str = "mle",
+    year_type: str = "water_year",
+    min_year_fraction: float | None = None,
+    year_start_month: int | None = None,
 ) -> dict:
     """
     Estimate design floods (return periods) from streamflow in the session via
@@ -3783,17 +3824,29 @@ def compute_flood_frequency(
     Writes session.flood_frequency. Requires fetch_streamflow_data first and
     ≥10 years of daily data for a meaningful fit.
 
+    The series is the annual maximum of DAILY MEAN discharge, not the instantaneous
+    peak of Bulletin 17C, so levels are daily-mean levels. Years are water years
+    (1 Oct-30 Sep); a year with under 95% of its days observed (engineering default)
+    is excluded and listed in ``excluded_years``.
+
     Parameters
     ----------
     session_id : str | None (optional)
         Research session identifier. Auto-resolved from chat context when omitted.
     distribution : str
         'gumbel' (default, classic EV1 for annual-max floods) | 'gev'
-        (Generalised Extreme Value) | 'lp3' (Log-Pearson III, US Bulletin 17C
-        federal standard).
+        (Generalised Extreme Value) | 'lp3' (Log-Pearson III by method of moments on
+        the logs; NOT Bulletin 17C: no EMA, regional skew or low-outlier screening).
     method : str
         'mle' (default; maximum likelihood) | 'mom' (method of moments).
         Ignored for lp3 (always method-of-moments on logs).
+    year_type : str
+        'water_year' (default) | 'calendar_year'.
+    min_year_fraction : float | None
+        Smallest observed fraction of a year's days for the year to count
+        (default 0.95).
+    year_start_month : int | None
+        1-12: a year starting that month (label = start year); overrides year_type.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -3802,56 +3855,28 @@ def compute_flood_frequency(
 
         session_id = _resolve_session(session_id, None)
         session = HydroSession.load(session_id)
-        if not session.streamflow:
-            return {
-                "error": True,
-                "code": "MISSING_PREREQUISITES",
-                "message": "No streamflow data in session. Run fetch_streamflow_data first.",
-                "recovery": "fetch_streamflow_data(session_id, gauge_id)",
-                "next_tools": ["fetch_streamflow_data", "data_fetch"],
-            }
-
-        sf = session.streamflow
-        data = sf.get("data", sf) if isinstance(sf, dict) else sf
-        if isinstance(data, dict) and "q_cms" not in data:
-            data_file = (data.get("_data_file")
-                         or sf.get("_data_file")
-                         or (sf.get("data", {}) if isinstance(sf, dict) else {}).get("_data_file"))
-            if data_file:
-                try:
-                    import json as _json
-                    with open(data_file) as _f:
-                        data = _json.load(_f)
-                except Exception as _exc:
-                    log.warning("Failed to reload streamflow from %s: %s", data_file, _exc)
-
-        q = None
-        FLOW_KEYS = ("q_cms", "discharge_cms", "flow_cms", "streamflow", "q")
-        for key in FLOW_KEYS:
-            v = data.get(key) if isinstance(data, dict) else None
-            if isinstance(v, (list, tuple)) and len(v) > 1:
-                try:
-                    q = np.asarray(v, dtype=float)
-                    break
-                except (TypeError, ValueError):
-                    continue
-        if q is None or len(q) < 2:
-            return {
-                "error": True,
-                "code": "INVALID_STREAMFLOW",
-                "message": "Could not extract a usable flow array from session.streamflow.",
-                "recovery": "Re-run fetch_streamflow_data and confirm a 'q_cms' array is present.",
-                "next_tools": ["fetch_streamflow_data"],
-            }
+        q, data, _err = _load_daily_streamflow(session, "compute_flood_frequency")
+        if _err:
+            return _err
 
         dates = data.get("dates") if isinstance(data, dict) else None
-        am = annual_maxima(q, dates=dates)
+        if year_start_month is not None:
+            year_type = "custom_year"
+        am = annual_maxima(q, dates=dates, year_type=year_type, min_fraction=min_year_fraction,
+                           year_start_month=year_start_month,
+                           window=(data.get("start_date"), data.get("end_date"))
+                           if isinstance(data, dict) else None)
         if am["n_years"] < 5:
             return {
                 "error": True,
                 "code": "INSUFFICIENT_RECORD",
-                "message": f"Only {am['n_years']} years of annual maxima; need ≥5 (≥10 recommended).",
-                "recovery": "Fetch a longer streamflow record (≥10 years) before flood frequency analysis.",
+                "message": f"Only {am['n_years']} complete {am['year_type']}s of annual maxima; need ≥5 (≥10 recommended). "
+                           f"{len(am['excluded_years'])} year(s) were excluded as incomplete.",
+                "excluded_years": am["excluded_years"],
+                "recovery": "Fetch a longer streamflow record (≥10 years) before flood frequency analysis"
+                            + (", or, if the excluded years are only slightly incomplete, lower min_year_fraction "
+                               "(default 0.95; a year with a missing flood season understates its maximum)."
+                               if am["excluded_years"] else "."),
                 "next_tools": ["fetch_streamflow_data"],
             }
 
@@ -3867,7 +3892,10 @@ def compute_flood_frequency(
             },
             "meta": {"tool": "compute_flood_frequency",
                      "dist": ffa["dist"], "method": ffa["method"],
-                     "n_years": ffa["n_years"]},
+                     "n_years": ffa["n_years"],
+                     "year_type": am["year_type"], "year_convention": am["year_convention"],
+                     "statistic": am["statistic"], "min_year_fraction": am["min_fraction"],
+                     "excluded_years": am["excluded_years"]},
         })
         session.save()
 
@@ -3880,6 +3908,12 @@ def compute_flood_frequency(
             "distribution": ffa["dist"],
             "method": ffa["method"],
             "n_years": ffa["n_years"],
+            "years": am["years"],
+            "year_type": am["year_type"],
+            "year_convention": am["year_convention"],
+            "statistic": am["statistic"],
+            "min_year_fraction": am["min_fraction"],
+            "excluded_years": am["excluded_years"],
             "headline_return_levels_cms": headline,
             "params": ffa["params"],
             "return_levels": ffa["return_levels"],
@@ -3898,11 +3932,50 @@ def compute_flood_frequency(
         return _tool_error_to_dict(e)
 
 
+def _product_skips_leap_dec31(name: str) -> bool:
+    """True when the registry says product ``name`` never holds 31 Dec of a leap year (HyRiver GridMET/Daymet)."""
+    try:
+        from aihydro_data.products import get_product
+        spec = get_product(name)
+        cfg = getattr(spec, "backend_config", None) or {}
+        return getattr(spec, "source", "") == "hyriver" and ("pygridmet_variable" in cfg or "pydaymet_variable" in cfg)
+    except Exception:
+        return False
+
+
+def _source_calendar(data, columns=("prcp_mm",)) -> str | None:
+    """``"no_leap_dec31"`` only when EVERY column the statistic uses comes from a product that never holds
+    31 Dec of a leap year (GridMET via pygridmet, Daymet).
+
+    The day is absent from the balance if any input lacks it, but it is a forgivable absence only when
+    the product that lacks it is the one that CANNOT hold it: a real CHIRPS gap on that day must stay a gap.
+    So the calendar applies only if all of the statistic's columns (precipitation for SPI; precipitation and
+    PET for SPEI) share it. The product of each column is read from ``variable_provenance``; the forcing's
+    top-level ``product`` is used only if it names a single product. No product, no calendar (the safe direction:
+    the day counts as missing).
+    """
+    if not isinstance(data, dict):
+        return None
+    prov = data.get("variable_provenance") or {}
+    top = [p.strip() for p in str(data.get("product") or "").split("|") if p.strip()]
+    names = []
+    for col in columns:
+        entry = prov.get(col)
+        name = entry.get("product") if isinstance(entry, dict) else None
+        if not name and len(top) == 1:
+            name = top[0]
+        if not name:
+            return None
+        names.append(str(name))
+    return "no_leap_dec31" if names and all(_product_skips_leap_dec31(n) for n in names) else None
+
+
 @mcp.tool()
 def compute_drought_index(
     session_id: str | None = None,
     index: str = "spi",
     scale_months: int = 3,
+    min_month_fraction: float | None = None,
 ) -> dict:
     """
     Compute a standardised drought index (SPI or SPEI) from forcing data in the
@@ -3920,6 +3993,12 @@ def compute_drought_index(
         the forcing data).
     scale_months : int
         Accumulation window in months (1, 3, 6, 12). Default 3.
+    min_month_fraction : float | None
+        Smallest observed fraction of a month's days for the month to be used.
+        Default 1.0 (every day; an engineering choice). A month below it - a
+        record that stops mid-month, a gap, a NaN day - is EXCLUDED, listed in
+        ``months_excluded``, and any accumulation window containing it is not
+        evaluated. Missing precipitation is never treated as 0.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -3969,6 +4048,7 @@ def compute_drought_index(
             }
 
         index = index.lower()
+        _cal = _source_calendar(data, (("prcp_mm", "pet_mm") if index == "spei" else ("prcp_mm",)))
         if index == "spei":
             pet = _col(data, ("pet_mm", "pet", "pet_hargreaves_mm", "potential_evapotranspiration"))
             if pet is None:
@@ -3979,9 +4059,11 @@ def compute_drought_index(
                     "recovery": "Fetch forcing with PET (fetch_forcing_data includes GRIDMET/ERA5L PET), or use index='spi'.",
                     "next_tools": ["fetch_forcing_data"],
                 }
-            result = spei(precip, pet, dates, scale_months=scale_months)
+            result = spei(precip, pet, dates, scale_months=scale_months,
+                          min_month_fraction=min_month_fraction, calendar=_cal)
         elif index == "spi":
-            result = spi(precip, dates, scale_months=scale_months)
+            result = spi(precip, dates, scale_months=scale_months,
+                         min_month_fraction=min_month_fraction, calendar=_cal)
         else:
             return {
                 "error": True,
@@ -4001,7 +4083,9 @@ def compute_drought_index(
             "meta": {"tool": "compute_drought_index",
                      "index": result["index_name"],
                      "scale_months": result["scale_months"],
-                     "mean": result["mean"], "std": result["std"]},
+                     "mean": result["mean"], "std": result["std"],
+                     "months_excluded": result.get("months_excluded", []),
+                     "min_month_fraction": result.get("min_month_fraction")},
         })
         session.save()
 
@@ -4023,6 +4107,14 @@ def compute_drought_index(
             "index_name": result["index_name"],
             "scale_months": result["scale_months"],
             "n_months": result["n_months"],
+            "n_months_in_span": result.get("n_months_in_span"),
+            "n_months_complete": result.get("n_months_complete"),
+            "n_per_calendar_month": result.get("n_per_calendar_month"),
+            "months_calendar_adjusted": result.get("months_calendar_adjusted", []),
+            "months_excluded": result.get("months_excluded", []),
+            "min_month_fraction": result.get("min_month_fraction"),
+            "source_calendar": _cal,
+            "month_convention": result.get("month_convention"),
             "calibration_mean": result["mean"],
             "calibration_std": result["std"],
             "latest": latest,
@@ -4484,10 +4576,10 @@ def compute_design_hydrograph(
         # ── Design rainfall ─────────────────────────────────────────────────
         P = rainfall_mm
         if P is None:
-            P = _design_rainfall_from_record(session, return_period)
+            P, _p_basis = _design_rainfall_from_record(session, return_period)
             if P is not None:
                 notes.append(f"Design rainfall {P:.1f} mm derived from precip FFA "
-                             f"(Gumbel, T={return_period} yr).")
+                             f"(Gumbel, T={return_period} yr; {_p_basis}).")
 
         missing = [n for n, v in (("area_km2", A), ("curve_number", CN),
                                   ("tc_hr", Tc), ("rainfall_mm", P)) if v is None]
@@ -4620,15 +4712,20 @@ def _geomorphic_length_slope(session) -> dict | None:
         return None
 
 
-def _design_rainfall_from_record(session, return_period: int) -> float | None:
-    """Design daily-rainfall depth (mm) at `return_period` via Gumbel FFA on the
-    annual-maximum daily precipitation in session.forcing."""
+def _design_rainfall_from_record(session, return_period: int) -> tuple:
+    """``(depth_mm | None, basis)``: design daily-rainfall depth at `return_period` via Gumbel FFA on the
+    annual-maximum daily precipitation in session.forcing.
+
+    Since T1-P the maxima are taken over complete WATER years (1 Oct-30 Sep, >= 95% of days; partial
+    years are excluded), not calendar years including partial ones; the design depth from a given
+    record can therefore differ from earlier releases. ``basis`` names the years used and excluded.
+    """
     try:
         import numpy as np
         from ai_hydro.analysis.flood_frequency import annual_maxima, flood_frequency
         fc = session.forcing
         if not fc:
-            return None
+            return None, ""
         data = fc.get("data", fc) if isinstance(fc, dict) else fc
         dates = data.get("dates") if isinstance(data, dict) else None
         precip = None
@@ -4638,16 +4735,18 @@ def _design_rainfall_from_record(session, return_period: int) -> float | None:
                 precip = np.asarray([x if x is not None else np.nan for x in v], dtype=float)
                 break
         if dates is None or precip is None:
-            return None
+            return None, ""
         am = annual_maxima(precip, dates=dates)
         if am["n_years"] < 5:
-            return None
+            return None, ""
         ffa = flood_frequency(am["annual_max"], dist="gumbel", return_periods=[return_period],
                               n_bootstrap=0)
-        return float(ffa["return_levels"][0]["value"])
+        basis = (f"{am['n_years']} complete water-year daily maxima"
+                 + (f", {len(am['excluded_years'])} incomplete year(s) excluded" if am["excluded_years"] else ""))
+        return float(ffa["return_levels"][0]["value"]), basis
     except Exception as exc:
         log.debug("design rainfall from record unavailable: %s", exc)
-        return None
+        return None, ""
 
 
 @mcp.tool()
