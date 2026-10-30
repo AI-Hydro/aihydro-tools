@@ -35,6 +35,7 @@ import logging
 import os
 import threading
 import time
+import types
 from typing import Any, Callable
 
 log = logging.getLogger("ai_hydro.mcp.offload")
@@ -223,8 +224,7 @@ def offload_sync(fn: Callable[..., Any]) -> Callable[..., Any]:
     if inspect.iscoroutinefunction(fn) or getattr(fn, _MARK, False):
         return fn
 
-    @functools.wraps(fn)
-    async def _offloaded(*args: Any, **kwargs: Any) -> Any:
+    async def _dispatch(*args: Any, **kwargs: Any) -> Any:
         from ai_hydro.mcp.app import ACTIVE_TOOL_NAME
 
         name = ACTIVE_TOOL_NAME.get() or fn.__name__
@@ -239,6 +239,19 @@ def offload_sync(fn: Callable[..., Any]) -> Callable[..., Any]:
             if cls is not None:
                 _CLASS_ACTIVE[cls] -= 1
 
+    async def _entry(*args: Any, **kwargs: Any) -> Any:
+        return await _dispatch(*args, **kwargs)
+
+    # The wrapper must resolve string annotations exactly as the tool function does. Pydantic reads
+    # ``__globals__`` of the callable on Python 3.10, and this module's globals lack the tool module's
+    # names (``Any``, aliases), which silently turned parameters into ``Any`` in the published schema.
+    # Rebuild the entry point with the tool's own globals; its only free variable is ``_dispatch``.
+    _offloaded = _entry
+    if hasattr(fn, "__globals__"):
+        _offloaded = types.FunctionType(_entry.__code__, fn.__globals__, fn.__name__, _entry.__defaults__,
+                                        _entry.__closure__)
+        _offloaded.__kwdefaults__ = _entry.__kwdefaults__
+    functools.update_wrapper(_offloaded, fn)
     setattr(_offloaded, _MARK, True)
     _offloaded.__sync_origin__ = fn      # type: ignore[attr-defined]
     return _offloaded

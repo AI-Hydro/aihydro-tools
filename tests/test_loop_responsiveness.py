@@ -274,3 +274,20 @@ def test_loop_watchdog_reports_what_blocked_the_loop():
     asyncio.run(scenario())
     assert got.get("lag", 0) > 0.5
     assert "blocking_function_under_test" in got["stack"]
+
+
+def test_offloaded_wrapper_resolves_annotations_in_the_tools_own_namespace():
+    """Python 3.10 pydantic reads the callable's ``__globals__``; a wrapper from another module turned
+    ``Any``-annotated parameters (data_fetch's geometry) into a different schema in CI."""
+    import ai_hydro.mcp  # noqa: F401
+    from ai_hydro.mcp.app import mcp
+    from ai_hydro.mcp.tool_surface import _components
+
+    checked = 0
+    for comp in _components(mcp).values():
+        fn = getattr(comp, "fn", None)
+        origin = getattr(fn, "__sync_origin__", None)
+        if origin is not None and hasattr(origin, "__globals__"):
+            checked += 1
+            assert fn.__globals__ is origin.__globals__, comp.name
+    assert checked > 100
