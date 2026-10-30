@@ -13,7 +13,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **Answer audit: USGS parameter and statistic codes are no longer flagged as uncited quantities.** "parameter 00060, statistic 00003
   (daily mean)" produced two hard `uncited_number` findings. A 5-digit zero-padded number is now exempt (reason `data_code`) only
   when a code keyword (`parameter`, `param`, `pcode`, `parameter code`, `parameterCd`, `parm_cd`; `statistic`, `stat`, `statCd`,
-  `stat_cd`) sits directly before it, or directly after it. A unit, sign, decimal, percent or a metric word in that slot ("discharge
+  `stat_cd`) sits directly before it, or the full word `parameter`/`statistic` directly after it in a sentence that names no metric. A metric word qualifying the keyword ("peak statistic 01234") blocks the exemption. A unit, sign, decimal, percent or a metric word in that slot ("discharge
   00060 cfs") still leaves it a quantity. HUC, EPSG, FIPS and NLCD codes were already exempt and now have tests. No other
   classification changes.
 

@@ -703,9 +703,20 @@ def test_usgs_data_codes_exempt(txt, raw):
     "parameter 10060",                  # not zero-padded
     "parameter 00060%",                 # percent
     "peak flow 00003 m3/s",
+    "the peak statistic 01234",         # laundering edge: metric word qualifies the keyword
+    "mean flow 01234 stat",
+    "peak flow 01234 stat of the basin",
+    "flow was 01234 parameter",
+    "Peak flow 01234 statistic of the basin",
 ])
 def test_data_code_not_exempt_when_quantity_shaped(txt):
     assert not any(c.reason == "data_code" for c in classify_numerics(txt)), txt
+
+
+def test_laundering_cases_stay_quantity():
+    for txt in ("the peak statistic 01234", "mean flow 01234 stat", "peak flow 01234 stat of the basin",
+                "flow was 01234 parameter", "Peak flow 01234 statistic of the basin"):
+        assert ("01234", "quantity", "") in _cats(txt), txt
 
 
 def test_data_code_does_not_launder_neighbours():
