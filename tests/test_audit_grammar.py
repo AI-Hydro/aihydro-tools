@@ -644,3 +644,85 @@ class TestCoverageGaps:
     def test_power_form_is_one_number(self):
         assert [n.raw for n in extract_numerics("Value is 10^3 m.")] == ["10^3"]
         assert _cats("Value is 10^3 m.")[0][1] == "quantity"
+
+
+# --------------------------------------------------------------------------- #
+# Data codes (USGS parameter / statistic, HUC, EPSG) are labels, not quantities
+# --------------------------------------------------------------------------- #
+
+_NWIS_ANSWER = (
+    "Fetched hydrological data for the USGS basin in the working directory — "
+    "**USGS 01031500, Piscataquis River near Dover-Foxcroft, Maine** (drainage area 774.15 km²; "
+    "delineation run `watershed.0b124654840f`). ## Streamflow (observed, NWIS daily) - Product: "
+    "`NWIS_STREAMFLOW`, USGS Water Data APIs, parameter 00060, statistic 00003 (daily mean) - "
+    "Period: 1989-10-01 → 2009-09-30 - Records: 7,305 daily values, 0 missing, units m³/s"
+)
+
+
+def test_nwis_answer_exact_classification():
+    got = _cats(_NWIS_ANSWER)
+    assert got == [
+        ("01031500", "exempt", "identifier"),
+        ("774.15", "quantity", ""),            # genuinely uncited
+        ("00060", "exempt", "data_code"),
+        ("00003", "exempt", "data_code"),
+        ("1989", "exempt", "date"),            # one mask per ISO date
+        ("2009", "exempt", "date"),
+        ("7,305", "exempt", "bare_integer"),   # "daily values" is not in the sample-noun list (see DECISIONS)
+        ("0", "exempt", "bare_integer"),
+    ]
+    # the run id and the product name never surface as numerics at all
+    assert not any("0b124654840f" in raw or "NWIS" in raw for raw, _, _ in got)
+
+
+@pytest.mark.parametrize("txt,raw", [
+    ("parameter 00060", "00060"),
+    ("Parameter: 00060", "00060"),
+    ("parameterCd=00060", "00060"),
+    ("parameter code 00065", "00065"),
+    ("param=00010", "00010"),
+    ("pcode 00060", "00060"),
+    ("parm_cd 00060", "00060"),
+    ("statistic 00003", "00003"),
+    ("statCd=00003", "00003"),
+    ("stat_cd: 00001", "00001"),
+    ("00060 parameter", "00060"),
+])
+def test_usgs_data_codes_exempt(txt, raw):
+    assert (raw, "exempt", "data_code") in _cats(txt)
+
+
+@pytest.mark.parametrize("txt", [
+    "discharge 00060 cfs",              # malformed, carries a unit
+    "discharge 00060",                  # value of a metric, no code keyword
+    "streamflow of 00060",
+    "parameter 00060 cfs",              # unit
+    "parameter 00060.5",                # decimal
+    "parameter -00060",                 # sign
+    "parameter 60",                     # not 5-digit padded
+    "parameter 10060",                  # not zero-padded
+    "parameter 00060%",                 # percent
+    "peak flow 00003 m3/s",
+])
+def test_data_code_not_exempt_when_quantity_shaped(txt):
+    assert not any(c.reason == "data_code" for c in classify_numerics(txt)), txt
+
+
+def test_data_code_does_not_launder_neighbours():
+    got = _cats("parameter 00060 peaked at 412 m³/s")
+    assert ("00060", "exempt", "data_code") in got
+    assert ("412", "quantity", "") in got
+
+
+@pytest.mark.parametrize("txt,raw", [
+    ("HUC 01020004 basin", "01020004"),
+    ("HUC8 01020004", "01020004"),
+    ("HUC-12: 010200040101", "12"),      # one mask covers the level and the code
+    ("EPSG:5070 grid", "5070"),
+    ("CRS EPSG 4326", "4326"),
+    ("FIPS 23021", "23021"),
+    ("state FIPS code 23", "23"),
+    ("NLCD 2019", "2019"),
+])
+def test_huc_epsg_fips_nlcd_codes_exempt(txt, raw):
+    assert (raw, "exempt", "code_label") in _cats(txt)
