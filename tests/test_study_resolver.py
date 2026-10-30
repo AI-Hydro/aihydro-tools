@@ -201,7 +201,7 @@ ALLOWED = {
 HELPER_RESOLVED = {"summarize_series", "detect_threshold_runs", "compare_series", "bootstrap_statistic"}
 #: A plain ``_resolve_session(...)`` does NOT count: its default lets an unknown explicit id through
 #: (and ``HydroSession.load`` + ``save`` then creates the study). Only the strict forms count.
-RESOLVERS = ("resolve_existing_study", "_load_session_or_raise", "must_exist=True", "must_exist=not", "must_exist=bool(")
+RESOLVERS = ("resolve_existing_study", "_load_session_or_raise", "must_exist=True", "must_exist=not", "must_exist=bool(session_id)")
 
 MCP_DIR = pathlib.Path(__file__).resolve().parent.parent / "ai_hydro" / "mcp"
 

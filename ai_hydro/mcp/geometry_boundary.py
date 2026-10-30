@@ -35,9 +35,9 @@ from ai_hydro.mcp.gauge_identity import AntimeridianGeometry, _distance_m
 
 GEOMETRY_PARAMS = ("geometry", "geometries")
 
-#: True while a call that already went through ``check_arguments`` (the middleware) runs. The middleware is where an
-#: ``{"lat","lon"}`` outlet becomes the ``[lat, lon]`` list the tool signature takes, so a tool that sees a pair
-#: while this is set is looking at the converted value, not a caller's bare pair. A direct Python call has it unset and the
+#: True while a call runs in which the middleware CONVERTED an ``{"lat","lon"}`` outlet to the ``[lat, lon]`` list the
+#: tool signature takes (it is not set merely because the middleware ran). A tool that sees a pair while this is set is
+#: looking at that converted value, not a caller's bare pair. A direct Python call has it unset and the
 #: wrapper validates and converts itself with the same functions.
 BOUNDARY_CHECKED: contextvars.ContextVar[bool] = contextvars.ContextVar("aihydro_boundary_checked", default=False)
 
@@ -328,6 +328,17 @@ def outlet_pair(value: Any) -> Any:
 
 
 def antimeridian_refusal(exc: Exception, tool: str = "") -> dict:
+    span = getattr(exc, "span", None)
+    if span and span[0] <= -179.9 and span[1] >= 179.9:
+        # A box running from the western to the eastern limit (-180 .. 180) is not a basin and does not "cross" anything: there is no
+        # distance from it to an outlet or gauge worth checking.
+        return _envelope(
+            "GEOMETRY_ANTIMERIDIAN_UNSUPPORTED",
+            f"The geometry spans longitudes {span[0]:g} to {span[1]:g}, nearly the whole globe. That is a world-wide "
+            "box, not a basin, so it cannot be compared with an outlet or gauge.",
+            "Pass the basin's own geometry, or drop the geometry and give only the gauge or outlet so the place is "
+            "resolved from it.",
+            tool)
     return _envelope(
         "GEOMETRY_ANTIMERIDIAN_UNSUPPORTED", str(exc),
         "Split the geometry at +/-180 and make one call per side, or pass a geometry that does not cross the antimeridian.",
@@ -343,8 +354,10 @@ def _tolerance_m() -> float:
 def check_outlet_matches_geometry(geometry: Any, outlet: Any, tool: str = "") -> Optional[dict]:
     """``GEOMETRY_OUTLET_MISMATCH`` when ``outlet`` ([lat, lon]) is farther than the A2 5 km tolerance from ``geometry``
     (0 m when inside a polygon). The outlet drives GEOGLOWS / Open-Meteo snapping ahead of the polygon, so an outlet that is
-    a different place from the geometry would fetch modelled flow for it.of geometries is not compared. A station-id string is not compared either: it routes to an observation product, not to
-    outlet snapping. Anything that cannot be coerced is left to the fetch's own error."""
+    a different place from the geometry would fetch modelled flow for it.
+
+    Not compared: a per-label mapping of geometries, and a station-id string (it routes to an observation product, not to
+    outlet snapping). Anything that cannot be coerced is left to the fetch's own error."""
     if geometry is None or outlet is None:
         return None
     if isinstance(geometry, str) and not geometry.strip().upper().startswith(("POINT", "POLY", "MULTI", "LINE", "GEOMETRYC")):
@@ -414,11 +427,14 @@ class GeometryBoundaryMiddleware(Middleware):
                 raise StructuredToolError(err)
             if fixed != args:
                 msg.arguments = fixed
-            token = BOUNDARY_CHECKED.set(True)
-            try:
-                return await call_next(context)
-            finally:
-                BOUNDARY_CHECKED.reset(token)
+            converted = any(param_kind(k) == "outlet" and v is not None and fixed.get(k) != v
+                            for k, v in args.items())
+            if converted:
+                token = BOUNDARY_CHECKED.set(True)
+                try:
+                    return await call_next(context)
+                finally:
+                    BOUNDARY_CHECKED.reset(token)
         return await call_next(context)
 
 

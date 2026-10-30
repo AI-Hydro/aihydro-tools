@@ -495,3 +495,43 @@ def test_every_tool_with_a_coordinate_or_geometry_parameter_goes_through_the_val
             err, body, _ = call_tool(name, {p: value})
             assert err and isinstance(body, dict) and str(body.get("code", "")).startswith("GEOMETRY_"), (name, p, body)
             assert body["retryable"] is True and body["next_tools"] == [name]
+
+
+# ── Review follow-ups (#21) ────────────────────────────────────────────────────────────────
+
+def test_a_world_wide_box_with_an_outlet_gets_an_honest_message_not_an_antimeridian_one():
+    from ai_hydro.mcp.geometry_boundary import check_outlet_matches_geometry as chk
+    world = {"type": "Polygon", "coordinates": [[[-180, -60], [180, -60], [180, 80], [-180, 80], [-180, -60]]]}
+    e = chk(world, [45.0, -69.0], "t")
+    assert e["code"] == "GEOMETRY_ANTIMERIDIAN_UNSUPPORTED"
+    assert "world-wide" in e["message"] and "not a basin" in e["message"] and "crosses" not in e["message"]
+    assert "gauge or outlet" in e["recovery"]
+    crossing = {"type": "Polygon", "coordinates": [[[179.5, 60], [-179.5, 60], [-179.5, 60.5], [179.5, 60.5], [179.5, 60]]]}
+    assert "crosses the antimeridian" in chk(crossing, [60.2, 0.0], "t")["message"]
+
+
+def test_boundary_checked_is_set_only_when_an_outlet_was_converted():
+    import asyncio
+    from fastmcp import Client, FastMCP
+    from ai_hydro.mcp.geometry_boundary import BOUNDARY_CHECKED, install_geometry_boundary
+
+    srv = FastMCP("t")
+    seen = {}
+
+    @srv.tool()
+    def probe(outlet: list[float] | dict | None = None, geometry: dict | None = None) -> dict:
+        seen["flag"] = BOUNDARY_CHECKED.get()
+        seen["outlet"] = outlet
+        return {"ok": True}
+
+    install_geometry_boundary(srv)
+
+    async def go(args):
+        async with Client(srv) as c:
+            return await c.call_tool("probe", args, raise_on_error=False)
+
+    asyncio.run(go({"outlet": {"lat": 45.0, "lon": -69.0}}))
+    assert seen["flag"] is True and seen["outlet"] == [45.0, -69.0]
+    seen.clear()
+    asyncio.run(go({}))
+    assert seen["flag"] is False

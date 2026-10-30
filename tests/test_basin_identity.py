@@ -380,15 +380,30 @@ def _py_files():
         yield p, str(p.relative_to(REPO))
 
 
+#: ``getattr(session, "_slots", ...)`` reads that are allowed, with the reason. ``identity.py`` collects the
+#: verified ``BasinRef`` of every retained watershed result (all features, not just the one ``get`` serves) for
+#: claim scoping; it reads the ``watershed`` slot only, which is the identity SOURCE and is not basin-dependent.
+_SLOTS_GETATTR_ALLOWED = {"ai_hydro/identity.py": "retained BasinRefs of the watershed slot (identity source)"}
+
+
 def test_scan_no_module_reads_slots_around_the_loader():
     offenders = []
     for p, rel in _py_files():
-        if rel in _SLOTS_ACCESS_ALLOWED:
-            continue
         for node in ast.walk(ast.parse(p.read_text())):
-            if isinstance(node, ast.Attribute) and node.attr == "_slots":
+            if rel not in _SLOTS_ACCESS_ALLOWED and isinstance(node, ast.Attribute) and node.attr == "_slots":
                 offenders.append(f"{rel}:{node.lineno}")
+            # the same bypass spelled getattr(obj, "_slots", ...)
+            if (isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("getattr", "hasattr")
+                    and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
+                    and node.args[1].value == "_slots"
+                    and rel not in _SLOTS_ACCESS_ALLOWED and rel not in _SLOTS_GETATTR_ALLOWED):
+                offenders.append(f"{rel}:{node.lineno} (getattr)")
     assert not offenders, f"read session slots around HydroSession.get/get_result: {offenders}"
+
+
+def test_scan_getattr_slots_allow_list_has_no_stale_entries():
+    for rel in _SLOTS_GETATTR_ALLOWED:
+        assert '"_slots"' in (REPO / rel).read_text(), f"{rel} no longer reads _slots: drop it from the allow-list"
 
 
 def test_scan_series_binding_reads_signatures_through_the_loader_contract():
@@ -437,3 +452,60 @@ def test_scan_feature_aware_tools_use_the_shared_resolver():
             if "_feature_cache_resolve(" not in body and "_resolve_registered_feature(" not in body:
                 missing.append(node.name)
     assert not missing, f"feature= tools not using the shared resolver: {missing}"
+
+
+# ── Review follow-ups (#22): same-gauge re-delineation, unverified carry-over, override without a basin ──
+
+PA_SHIFTED = {"type": "Polygon", "coordinates": [[[-69, 46], [-68, 46], [-68, 47.0000004], [-69, 47], [-69, 46]]]}
+
+
+def test_a_same_gauge_redelineation_keeps_the_gauge_record_and_drops_polygon_derived_slots():
+    from ai_hydro.session import HydroSession
+
+    sid = _new_session(site_id="01013500", site_type="usgs_gauge")
+    _put_streamflow(sid)
+    s = HydroSession.load(sid)
+    s.set("geomorphic", {"data": {"DA_km2": 1000.0}, "meta": {}})
+    s.save()
+    s = HydroSession.load(sid)
+    s.set("watershed", {"data": {"area_km2": 1000.0, "gauge_id": "01013500", "geometry_geojson": PA_SHIFTED},
+                        "meta": {}})
+    assert s.site_id == "01013500"
+    assert s.get("streamflow") is not None, "the gauge's own record must survive a new outline of the same gauge"
+    assert s.get("geomorphic") is None, "a result computed from the old polygon must not"
+    assert "streamflow" not in s.extra["basin_changes"][-1]["dropped_slots"]
+
+
+def test_a_different_gauge_still_drops_streamflow():
+    from ai_hydro.session import HydroSession
+
+    sid = _new_session(site_id="01013500", site_type="usgs_gauge")
+    _put_streamflow(sid)
+    s = HydroSession.load(sid)
+    s.set("watershed", {"data": {"area_km2": 5.0, "gauge_id": "09999999", "geometry_geojson": PB}, "meta": {}})
+    assert s.get("streamflow") is None and s.site_id == ""
+
+
+def test_a_recompute_in_a_legacy_session_does_not_leave_the_session_unverified():
+    from ai_hydro.session import HydroSession
+
+    sid = _new_session(site_id="01013500", site_type="usgs_gauge")
+    s = HydroSession.load(sid)
+    # a legacy (unstamped) streamflow slot, as an old session file holds it
+    s._slots.setdefault("streamflow", {}).setdefault("__legacy__", {})[""] = {
+        "data": {"q_cms": [1.0]}, "meta": {"computed_at": "2025-01-01T00:00:00+00:00"}}
+    assert s.get("streamflow") is not None and "streamflow" in s._unverified_reads
+    s.put_result("streamflow", "__legacy__", "", {"data": {"q_cms": [2.0]}, "meta": {}})   # fresh recompute
+    assert "streamflow" not in s._unverified_reads and s.identity_note() == {}
+    s.put_result("signatures", "__legacy__", "k", {"data": {"q_mean": 1.0}, "meta": {}})
+    assert "basin_identity_inputs_unverified" not in s._slots["signatures"]["__legacy__"]["k"]["meta"]
+    assert s.unverified_slots() == []
+
+
+def test_an_override_geometry_with_no_session_watershed_is_a_structured_refusal(ta):
+    from ai_hydro.session import HydroSession
+
+    HydroSession("no-basin").save()
+    r = _call(ta.extract_hydrological_signatures, session_id="no-basin", geometry_geojson=json.dumps(PA))
+    assert r["error"] is True and r["code"] == "NO_SESSION_BASIN" and r["recovery"]
+    assert "NoneType" not in json.dumps(r)
