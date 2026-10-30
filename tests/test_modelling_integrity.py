@@ -16,10 +16,9 @@ from ai_hydro.session import chat_binding, store
 from ai_hydro.session.chat_binding import ChatBindingStore
 from ai_hydro.session.store import HydroSession
 
-needs_modelling = pytest.mark.skipif(
-    importlib.util.find_spec("aihydro_modelling") is None,
-    reason="needs the optional aihydro-modelling package",
-)
+from _modelling_marks import modelling_mark
+
+needs_modelling = modelling_mark()
 
 
 def _spec_has_forbid() -> bool:
@@ -29,9 +28,9 @@ def _spec_has_forbid() -> bool:
     return ModelSpec.model_config.get("extra") == "forbid"
 
 
-needs_new_modelling = pytest.mark.skipif(
-    not _spec_has_forbid(),
-    reason="needs aihydro-modelling >= 0.6.2 (the integrity fixes: extra=forbid, backend defaults)",
+needs_new_modelling = modelling_mark(
+    _spec_has_forbid,
+    "needs aihydro-modelling >= 0.6.2 (the integrity fixes: extra=forbid, backend defaults)",
 )
 
 SID = "audit-job"
@@ -465,3 +464,15 @@ def test_t7_gauge_id_formats_do_not_raise_false_mismatch(home):
     assert basin_consistency_error(s, "01031500") is None
     s.forcing["data"]["gauge_id"] = "1031501"
     assert basin_consistency_error(s, "01031500")["code"] == "BASIN_MISMATCH"
+
+
+def test_n1_legacy_job_found_by_path_fallback_is_not_reported_missing(home):
+    """A job not in the registry (pre-registry runs under ~/.aihydro/models/runs) still resolves."""
+    d = home / "home" / ".aihydro" / "models" / "runs" / "legacyjob"
+    d.mkdir(parents=True)
+    (d / "status.json").write_text(json.dumps({
+        "job_id": "legacyjob", "status": "complete", "log_path": str(d / "train.log"),
+        "partial_results": {"nse": 0.62}}))
+    (d / "job_config.json").write_text(json.dumps({"session_id": SID, "framework": "hbv"}))
+    r = _gmr(job_id="legacyjob")
+    assert r["model_trained"] is True and r["nse"] == 0.62 and r["session_id"] == SID

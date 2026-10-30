@@ -98,6 +98,8 @@ def train_hydro_model(
         # modelling package the gate is deferred: the other refusals still apply first.
         try:
             spec, bad = gate_spec(raw)
+            if bad and bad.get("code") == "MODELLING_TOO_OLD":
+                spec, bad = None, None      # deferred like an absent package: the later gate refuses
             if bad:
                 return bad
         except ModuleNotFoundError:
@@ -834,6 +836,12 @@ def _job_model_results(job_id: str, session_id: str | None) -> dict:
     except Exception:
         entry = {}
     adir = entry.get("artifact_dir") or status.get("artifact_dir")
+    if not adir and status.get("log_path"):
+        # A legacy job (not in the registry; found by get_job_status through its path fallback)
+        # does not expose its artifact dir, but its status.json names its log inside it.
+        cand = Path(str(status["log_path"])).parent
+        if (cand / "status.json").exists():
+            adir = str(cand)
     if not adir:
         # No artifact dir: never fall back to Path("") (the working directory).
         return _job_error(
