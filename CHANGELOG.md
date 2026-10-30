@@ -70,7 +70,7 @@ watershed 0.3.0). CI is red until both are on PyPI.
   any trend. Now, for `frequency="monthly"`, the seasonal Kendall test and seasonal Sen slope (Hirsch, Slack & Smith 1982; season =
   calendar month), abscissa in decimal years, so a failed month is a missing value in its own season. Theil-Sen plus Mann-Kendall
   (scipy `kendalltau`: exact p for small samples without ties, tie-corrected normal approximation otherwise) remains for `yearly`
-  only. `trend_slope_per_year` and `p_value` are None with a `reason` when the series is under 2 full cycles or fewer than 6 calendar months have 2 or more values. The p-value includes the Hirsch & Slack (1984) between-season covariance (size near nominal in simulation under AR(1) and year effects;
+  only. `trend_slope_per_year` and `p_value` are None with a `reason` when the series is under 2 full cycles or fewer than 6 calendar months have 2 or more values. With fewer than 3 years shared by some pair of used months the Hirsch & Slack covariance is undefined: `p_value` is None (reason given) and the slope is kept, rather than a p-value that ignores year effects. Records under about 5 years: the p-value is conservative in simulation (size 0.000 to 0.002 at 3-4 years). The p-value includes the Hirsch & Slack (1984) between-season covariance (size near nominal in simulation under AR(1) and year effects;
   the covariance form was validated by simulation, not checked against the paper's text); long-term persistence and short records are not
   handled, and the `trend` block says so. Months with 2 or more values are used (`seasons_used`, `seasons_dropped`); refused only if fewer than 6
   remain. A yearly series drops years clipped by `start`/`end` (`periods_dropped`); none left is `NO_COMPLETE_YEAR`. New: `n_periods_requested`, `n_periods_served`, `periods_failed`. `pymannkendall` is no longer used.
@@ -97,8 +97,9 @@ watershed 0.3.0). CI is red until both are on PyPI.
   variable: product, source, units, coverage_complete, missing ranges, notes). `mean_annual_precip_mm` / `mean_annual_pet_mm`
   are the sum over the 12 calendar months of (mean of the finite days in the month x days in the month): a missing day is not zero
   (3 mm/day with every other day NaN read 543, now 1095.75) and a missing season does not re-weight the year. None with a
-  `..._reason` when a calendar month has data in under 80% of the record's years (WMO-No. 1203 s4.4.2, defined for climate normals, applied
-  here by analogy); mean annual temperature and `calculate_water_balance_metrics` use the same basis; `aridity_index` is computed on that same basis for P and PET (None + reason
+  `..._reason` when a calendar month lacks a valid monthly mean in at least 80% of the record's years. The estimator is a monthly mean: a
+  year-month is valid with at most 10 missing days and no run of 5 or more (WMO-No. 1203 s4.4.1(a), the sourced definition for a mean
+  parameter; run test implemented as longest run < 5); the 80% of years is s4.4.2, defined for climate normals and applied by analogy; mean annual temperature and `calculate_water_balance_metrics` use the same basis, as does `wet_day_frequency` (a ratio per month, s4.4.1(d); None + `wet_day_reason` when unusable); `aridity_index` is computed on that same basis for P and PET (None + reason
   otherwise). `forcing_complete` is False when any column has NaN cells (`variables_with_missing_days`).
 - **D12 sub-daily data in daily tools.** `separate_baseflow`, `compute_flow_duration_curve` and `compute_flood_frequency`
   refuse, through one shared loader (`_load_daily_streamflow`), and `extract_hydrological_signatures` applies the same guard (`STREAMFLOW_NOT_DAILY`) to a streamflow slot whose `interval` is not `daily` or whose dates are spaced under a day,

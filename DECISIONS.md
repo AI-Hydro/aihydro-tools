@@ -10,14 +10,18 @@ returned a number for a quantity the record did not support (SPI-1 -3.09, Q100 +
    returns the complete periods, the excluded ones with observed/expected days, and a mask. The tools report the excluded periods.
    It lives in aihydro-watershed because the kernels do and the dependency direction is downward; aihydro-core would have
    forced a core release first. It closes the calendar-year and spliced-window parts of D26 in the kernel (the tools expose `year_start_month`); the baseflow splice remains open in D26. It does not touch D18 (`_temporal_coverage` counting NaN values) or D27.
-2. **Thresholds.** Months: every day present (1.0) is SOURCED: WMO-No. 1203 (2017) s4.4.1(c) ("can only be calculated if there are
-   complete data over the month") and WMO-TD 341, as cited by the methods review. The SPI User Guide (WMO-No. 1090) marks missing -99,
-   asks for 20-30 years and has no within-month rule. Years: 0.95 of days is NOT sourced (the package's water-balance fraction) and the
-   7Q10 window fraction (0.95) is an engineering choice too; Bulletin 17C states no daily-coverage threshold (it censors missing
-   years, EMA). All are arguments and are echoed in the results. Flagged for the lead.
+2. **Thresholds.** Months: every day present (1.0) is SOURCED: WMO-No. 1203 (2017) s4.4.1(c), p.7: "A monthly value for a sum parameter
+   (for example, total precipitation) can only be calculated if there are complete data over the month" (exceptions: estimated or
+   accumulated data within the 11-day and 5-consecutive-day limits); WMO-TD 341 (1989), PDF p.6: "Monthly totals should be based on a
+   full month's data". The SPI User Guide (WMO-No. 1090) marks missing months -99 (PDF p.16), asks for "at least 20-30 years" (PDF p.9),
+   has no within-month rule, and calls tolerance "a subjective decision" (PDF p.9). Years: 0.95 of days is an ENGINEERING CHOICE, not
+   sourced (the package's water-balance fraction); the 7Q10 window fraction (0.95), the 6-season minimum for the seasonal trend and the
+   stricter SPEI calendar rule are engineering choices too, signed off by the coordinator and labelled as such. Bulletin 17C treats
+   missing years as broken or incomplete records (pp.11-12) and represents them with flow intervals and perception thresholds in EMA
+   (Appendix 3); it states no daily-coverage threshold. All thresholds are arguments and are echoed in the results.
 3. **Conventions, verified.** Water year 1 Oct-30 Sep labelled by the year it ends: Bulletin 17C (TM 4-B5) Appendix 10, p. 104. Climatic
-   year 1 Apr-31 Mar for annual low flows: USGS SIR 2008-5126 and SIR 2006-5035 section 3; the begin-year label is the methods
-   review's citation of SIR 2006-5035 (the section-3 page I read gives the dates only). Bulletin 17C defines the annual flood series
+   year 1 Apr-31 Mar: USGS SIR 2006-5035 ("designated by the calendar year in which it begins"); SIR 2008-5126 section 3 uses April 1 to
+   March 31 for 7-day minimums. Bulletin 17C defines the annual flood series
    from the INSTANTANEOUS peak and allows the maximum daily mean as an alternative; the tool says its series is the daily-mean
    maximum, and `map_flood_inundation` carries that statistic with the discharge. `lp3` here is Pearson III on the logs by moments, not the
    Bulletin 17C procedure.
@@ -33,8 +37,11 @@ returned a number for a quantity the record did not support (SPI-1 -3.09, Q100 +
    dropped (reported). A missing optional package must not change the statistic; `pymannkendall` is dropped.
 5b. **Mean annual totals (D11):** the sum over the 12 calendar months of (mean of finite days x days in month); None + reason if a
    month has no data; aridity on the same basis for P and PET. A plain mean over the finite days was +48% (dry season missing) or -48%
-   (wet season missing) in the review's test. A calendar month must have data in at least 80% of the years of the record (WMO-No. 1203
-   s4.4.2: defined for climate normals, applied here by analogy; disclosed). Mean annual temperature and `calculate_water_balance_metrics`
+   (wet season missing) in the review's test. The estimator is a MONTHLY MEAN: a year-month is a valid monthly
+   mean when it has at most 10 missing days and no run of 5 or more (WMO-No. 1203 s4.4.1(a), the sourced definition for a mean parameter; the
+   run test is implemented as longest run < 5); a calendar month's value is the mean of its valid monthly means, and it must be valid in at
+   least 80% of the record's years (s4.4.2, defined for climate normals, applied here by analogy; disclosed). The wet-day frequency uses the
+   same basis as a ratio per month (s4.4.1(d)). Mean annual temperature and `calculate_water_balance_metrics`
    use the same basis.
 5c. **Days a source never holds:** GridMET (pygridmet) and Daymet have no 31 Dec in leap years; the kernel takes them out of expected
    days (`calendar`) and reports it, so 100% for months does not drop every leap December. Real gaps still exclude. The tool applies the

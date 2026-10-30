@@ -229,16 +229,16 @@ def test_forcing_failed_variables_leave_a_record_and_nan_days_are_not_zero(monke
     from ai_hydro.data import forcing as fo
     import aihydro_data
     d = pd.date_range("2020-01-01", "2020-12-31", freq="D")
-    pr = np.full(d.size, 3.0); pr[::2] = np.nan                              # every other day missing
+    pr = np.full(d.size, 3.0); pr[::5] = np.nan                              # every fifth day missing (about 6 a month)
     fetch = _fetch_stub({"precipitation": pd.DataFrame({"date": d, "precipitation": pr})})
     monkeypatch.setattr(fo, "_adata_fetch", fetch, raising=False)
     monkeypatch.setattr(aihydro_data, "fetch", fetch)
     res = fo.fetch_forcing_data_routed(GEOM, "2020-01-01", "2020-12-31", variables=["pr", "pet"])
     d_ = res.data
     assert d_["mean_annual_precip_mm"] == pytest.approx(3.0 * 365.25, abs=0.01)   # old rule: about half
-    assert d_["precip_n_missing_days"] == 183 and d_["precip_n_finite_days"] == 183
+    assert d_["precip_n_missing_days"] == 74 and d_["precip_n_finite_days"] == 292
     assert {f["variable"] for f in d_["variables_failed"]} == {"pet"}
-    assert d_["forcing_complete"] is False and d_["variables_with_missing_days"] == {"prcp_mm": 183}
+    assert d_["forcing_complete"] is False and d_["variables_with_missing_days"] == {"prcp_mm": 74}
     prov = d_["variable_provenance"]["prcp_mm"]
     assert prov["product"] == "CHIRPS" and prov["coverage_complete"] is False and prov["units"] == "mm/day"
     assert d_["_warnings"]
@@ -272,8 +272,8 @@ def test_mean_annual_total_is_not_biased_by_a_missing_season():
     true = float(s.sum() / (len(d) / 365.25))
     full, why = _mean_annual_total(d, s)
     assert why is None and full == pytest.approx(true, rel=2e-3)             # monthly climatology of a complete record
-    # a random 30% of days missing: unbiased (each calendar month keeps its own mean)
-    gap = s.copy(); gap[np.random.default_rng(1).random(d.size) < 0.3] = np.nan
+    # a random 15% of days missing (valid months: at most 10 missing, no run of 5): unbiased (each calendar month keeps its own mean)
+    gap = s.copy(); gap[np.random.default_rng(1).random(d.size) < 0.15] = np.nan
     v, why = _mean_annual_total(d, gap)
     assert why is None and v == pytest.approx(true, rel=0.01)
     # every day of June-September missing: no honest annual total, not a number from the wet months
@@ -477,3 +477,32 @@ def test_year_start_month_is_exposed_on_the_flood_and_low_flow_tools():
     assert r["year_type"] == "custom_year" and r["years"] == list(range(1999, 2012)) and r["excluded_years"] == []
     f = compute_flow_duration_curve(SID, year_start_month=7)
     assert f["low_flow_year_type"] == "custom_year" and f["low_flow_years"] == list(range(1999, 2012))
+
+
+def test_a_month_with_more_than_ten_missing_days_is_not_a_valid_monthly_mean():
+    """WMO-No. 1203 s4.4.1(a): 10 or fewer missing days (and here, no run of 5 or more) for a monthly mean."""
+    from ai_hydro.data.forcing import _mean_annual_total
+    d = pd.date_range("2001-01-01", "2010-12-31")
+    base = pd.Series(3.0, index=d)
+    ok = base.copy(); ok[(d.month == 7) & (d.day <= 10)] = np.nan             # 10 missing, but a run of 10
+    assert _mean_annual_total(d, ok)[0] is None                                # run >= 5 -> invalid every July
+    ok2 = base.copy(); ok2[(d.month == 7) & (d.day % 3 == 0)] = np.nan         # 10 missing, runs of 1
+    assert _mean_annual_total(d, ok2)[0] == pytest.approx(3.0 * 365.25, rel=1e-9)
+    bad = base.copy(); bad[(d.month == 7) & (d.day % 3 != 1)] = np.nan          # 20 missing
+    v, why = _mean_annual_total(d, bad)
+    assert v is None and "[7]" in why and "s4.4.1(a)" in why
+
+
+def test_wet_day_frequency_is_on_the_monthly_basis(monkeypatch):
+    from ai_hydro.data.forcing import calculate_water_balance_metrics
+    d = pd.date_range("2001-01-01", "2010-12-31")
+    wet_season = d.month.isin([10, 11, 12, 1, 2, 3])
+    pr = np.where(wet_season, 2.0, 0.0)                                        # wet every day Oct-Mar, never Apr-Sep
+    full = pd.DataFrame({"date": d, "prcp_mm": pr, "pet_mm": 1.0})
+    f = calculate_water_balance_metrics(full)["wet_day_frequency"]
+    assert f == pytest.approx(float(wet_season.mean()), abs=0.01)
+    gap = full.copy(); gap.loc[(~wet_season) & (d.year > 2002), "prcp_mm"] = np.nan   # dry season missing after 2002
+    r = calculate_water_balance_metrics(gap)
+    assert r["wet_day_frequency"] is None and "wet_day_reason" in r
+    # the pre-fix ratio over the days that had a value would have read 0.97, not 0.5
+    assert float((gap["prcp_mm"] > 1.0).sum() / gap["prcp_mm"].notna().sum()) > 0.8

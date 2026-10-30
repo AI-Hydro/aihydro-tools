@@ -647,6 +647,7 @@ def _trend_per_year(period_stats: list[dict], frequency: str | None = None) -> d
     Long-term persistence and short records remain unhandled (stated in ``caveat``).
 
     Returns a dict that always has ``slope_per_year`` and ``p_value``; both are None with a ``reason``
+    (for a sub-annual series with fewer than 3 years shared by some pair of used months, only ``p_value`` is None)
     when the series cannot support the estimate: fewer than 4 periods (yearly); for a sub-annual
     series, fewer than 2 full seasonal cycles or fewer than ``_MIN_SEASONS`` months with 2 or more values.
     """
@@ -714,17 +715,34 @@ def _trend_per_year(period_stats: list[dict], frequency: str | None = None) -> d
         var += (n * (n - 1) * (2 * n + 5) - float(np.sum(tcounts * (tcounts - 1) * (2 * tcounts + 5)))) / 18.0
     # Between-season covariance (Hirsch & Slack 1984): years in which both seasons have a value.
     cov = 0.0
+    thin_pairs = 0
     for gi, g in enumerate(used):
         for h in used[gi + 1:]:
             ok = np.isfinite(X[:, g - 1]) & np.isfinite(X[:, h - 1])
             k = int(ok.sum())
             if k < 3:
+                thin_pairs += 1                      # the covariance is undefined here: do NOT drop it silently
                 continue
             a_, b_ = X[ok, g - 1], X[ok, h - 1]
             iu = np.triu_indices(k, 1)
             kgh = float((np.sign(a_[None, :] - a_[:, None])[iu] * np.sign(b_[None, :] - b_[:, None])[iu]).sum())
             cov += 2.0 * (kgh + 4.0 * float((_st.rankdata(a_) * _st.rankdata(b_)).sum()) - k * (k + 1) ** 2) / 3.0
     var_total = var + cov
+    if var > 0 and (thin_pairs or len(years) < 3):
+        # The slope stands (it needs no variance); the p-value would silently equal the independent-seasons one,
+        # which is wildly anti-conservative with a shared year effect (size 0.50 at 24 months), so it is withheld.
+        return {**base, "slope_per_year": float(np.median(slopes)), "p_value": None,
+                "p_value_assuming_independent_seasons": float(2.0 * _st.norm.sf(abs(
+                    0.0 if S == 0 else (S - np.sign(S)) / np.sqrt(var)))),
+                "n_periods_used": int(sum(counts[m] for m in used)),
+                "estimator": "seasonal Sen slope (Hirsch, Slack & Smith 1982): median of within-calendar-month pairwise slopes, "
+                             "period midpoints in decimal years",
+                "test": None, "seasonality_removed": True,
+                "season_counts": counts, "seasons_used": used, "seasons_dropped": dropped,
+                "reason": (f"p-value withheld: {thin_pairs} pair(s) of used calendar months share fewer than 3 years, so the "
+                           "between-season covariance of Hirsch & Slack (1984) is undefined; without it the p-value ignores "
+                           "year effects and persistence. The slope is returned. Needs at least 3 years with data in each pair "
+                           "of used months.")}
     if var <= 0 or var_total <= 0:
         return {**base, "estimator": None, "test": None, "season_counts": counts,
                 "seasons_used": used, "seasons_dropped": dropped,
@@ -744,5 +762,6 @@ def _trend_per_year(period_stats: list[dict], frequency: str | None = None) -> d
             "season_counts": counts, "seasons_used": used, "seasons_dropped": dropped,
             "caveat": "The between-season covariance form (sigma_gh = (K_gh + 4*sum(R_ig*R_ih) - n*(n+1)^2)/3 over years present in "
                       "both seasons) was validated by simulation (size near nominal for AR(1) and year-effect series), NOT checked "
-                      "against the text of Hirsch & Slack (1984). Not handled: long-term persistence, and records short enough "
-                      "(under about 8-10 years) that the normal approximation is poor."}
+                      "against the text of Hirsch & Slack (1984). Not handled: long-term persistence, and records under about 5 "
+                      "years, where the p-value is conservative in simulation (size 0.000 to 0.002 at 3-4 years) and 2 years "
+                      "are refused (no p-value)."}

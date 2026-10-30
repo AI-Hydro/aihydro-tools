@@ -236,10 +236,17 @@ def calculate_water_balance_metrics(df: pd.DataFrame) -> Dict[str, float]:
                 stats['mean_annual_temp_reason'] = t_why
 
         # Precipitation characteristics, over the days that have a value
-        n_valid = int(df['prcp_mm'].notna().sum())
-        wet_days = (df['prcp_mm'] > 1.0).sum()
-        stats['wet_day_frequency'] = wet_days / n_valid if n_valid else None
-        stats['wet_days_per_year'] = stats['wet_day_frequency'] * 365.25 if n_valid else None
+        # Wet-day indicator (1 mm threshold), NaN where precipitation is NaN, as a ratio per calendar month on the
+        # same monthly basis (WMO-No. 1203 s4.4.1(d)); None + reason when a month is not usable.
+        wet = (df['prcp_mm'] > 1.0).astype(float).where(df['prcp_mm'].notna())
+        clim, w_why = _monthly_climatology(dates, wet)
+        if clim is None:
+            stats['wet_day_frequency'] = None
+            stats['wet_days_per_year'] = None
+            stats['wet_day_reason'] = w_why
+        else:
+            stats['wet_day_frequency'] = float(sum(clim[m] * _MONTH_DAYS[m - 1] for m in range(1, 13)) / 365.25)
+            stats['wet_days_per_year'] = stats['wet_day_frequency'] * 365.25
 
         # Snow fraction (approximate: precip when temp <= 0°C)
         if 'tavg_C' in df.columns:
@@ -501,29 +508,63 @@ def generate_forcing_summary(
 _MONTH_DAYS = (31.0, 28.25, 31.0, 30.0, 31.0, 30.0, 31.0, 31.0, 30.0, 31.0, 30.0, 31.0)
 
 
-#: A calendar month enters the annual basis only if at least this fraction of the years in the record have
-#: some data in it. WMO-No. 1203 s4.4.2 gives 80% for climate NORMALS; it is applied here by analogy (a
-#: record of a few years is not a normal), so treat it as a guard, not as a sourced rule for this quantity.
+#: A calendar month enters the annual basis only if at least this fraction of the years in the record have a VALID
+#: monthly value in it. WMO-No. 1203 s4.4.2 gives 80% for climate NORMALS; it is applied here by analogy (a record
+#: of a few years is not a normal), so treat it as a guard on top of the sourced validity rule below.
 _MIN_YEARS_WITH_DATA_PER_MONTH = 0.80
+
+#: A year-month is a valid monthly MEAN when it has at most this many missing days and fewer than
+#: ``_MAX_CONSECUTIVE_MISSING`` of them in a row: the sourced definition for a mean parameter, WMO-No. 1203 (2017)
+#: s4.4.1(a) (10 or fewer missing days; run test as implemented here: longest missing run < 5 days).
+_MAX_MISSING_DAYS_PER_MONTH = 10
+_MAX_CONSECUTIVE_MISSING = 5
+
+
+def _valid_monthly_means(series: "pd.Series") -> "pd.Series":
+    """Mean of the finite days of every year-month that is a valid monthly mean (WMO-No. 1203 s4.4.1(a)).
+
+    Indexed by (year, month). The calendar days of the month are the denominator of the missing count, so a
+    record that starts or stops inside a month leaves that month short and, usually, invalid.
+    """
+    out = {}
+    for (yr, mo), g in series.groupby([series.index.year, series.index.month]):
+        n_days = pd.Period(year=int(yr), month=int(mo), freq="M").days_in_month
+        present = pd.Series(False, index=pd.date_range(f"{yr}-{mo:02d}-01", periods=n_days, freq="D"))
+        fin = g[np.isfinite(g)]
+        present.loc[fin.index.normalize().intersection(present.index)] = True
+        missing = ~present.values
+        if missing.sum() > _MAX_MISSING_DAYS_PER_MONTH:
+            continue
+        run = longest = 0
+        for m_ in missing:
+            run = run + 1 if m_ else 0
+            longest = max(longest, run)
+        if longest >= _MAX_CONSECUTIVE_MISSING:
+            continue
+        if len(fin):
+            out[(int(yr), int(mo))] = float(fin.mean())
+    return pd.Series(out, dtype=float)
 
 
 def _monthly_climatology(dates, series) -> tuple:
-    """``(mean of finite days per calendar month as a Series indexed 1..12 | None, reason | None)``.
+    """``(monthly mean per calendar month as a Series indexed 1..12 | None, reason | None)``.
 
-    A month is usable when at least 80% of the years in which it occurs in the record have a finite day in it
-    (WMO-No. 1203 s4.4.2, by analogy; see ``_MIN_YEARS_WITH_DATA_PER_MONTH``).
+    The estimator is a MONTHLY MEAN: each year-month that is valid (WMO-No. 1203 s4.4.1(a): at most 10 missing
+    days, and no run of 5 or more) contributes the mean of its finite days; a calendar month's value is the mean of
+    those monthly means. A calendar month is usable when at least 80% of the years in which it occurs in the record
+    have a valid monthly value (WMO-No. 1203 s4.4.2, by analogy to normals; see ``_MIN_YEARS_WITH_DATA_PER_MONTH``).
     """
     d = pd.DatetimeIndex(pd.to_datetime(list(dates)))
     v = pd.to_numeric(pd.Series(np.asarray(series), index=d), errors="coerce")
     if len(d) == 0:
         return None, "empty record"
-    finite = v[np.isfinite(v)]
-    if finite.empty:
+    if not np.isfinite(v).any():
         return None, "no finite day"
     span = pd.date_range(d.min().normalize(), d.max().normalize(), freq="D")
     occurs = pd.Series(1, index=pd.MultiIndex.from_arrays([span.year, span.month])).groupby(level=[0, 1]).sum()
     n_years = occurs.groupby(level=1).size()                       # years in which each month occurs in the span
-    have = finite.groupby([finite.index.year, finite.index.month]).size().groupby(level=1).size()
+    monthly = _valid_monthly_means(v)
+    have = monthly.groupby(level=1).size() if len(monthly) else pd.Series(dtype=int)
     bad = []
     for m in range(1, 13):
         n_occ = int(n_years.get(m, 0))
@@ -531,9 +572,10 @@ def _monthly_climatology(dates, series) -> tuple:
         if n_occ == 0 or n_have == 0 or n_have < _MIN_YEARS_WITH_DATA_PER_MONTH * n_occ - 1e-9:
             bad.append(m)
     if bad:
-        return None, (f"calendar month(s) {bad} have data in fewer than {_MIN_YEARS_WITH_DATA_PER_MONTH:.0%} of the "
-                      "years of the record (threshold from WMO-No. 1203 s4.4.2 for normals, applied by analogy)")
-    return finite.groupby(finite.index.month).mean(), None
+        return None, (f"calendar month(s) {bad} lack a valid monthly mean (at most 10 missing days and no run of 5 or "
+                      f"more, WMO-No. 1203 s4.4.1(a)) in at least {_MIN_YEARS_WITH_DATA_PER_MONTH:.0%} of the years of "
+                      "the record (80%: s4.4.2 for normals, applied by analogy)")
+    return monthly.groupby(level=1).mean(), None
 
 
 def _mean_annual_total(dates, series) -> tuple:

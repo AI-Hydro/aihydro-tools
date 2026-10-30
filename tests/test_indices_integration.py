@@ -393,8 +393,28 @@ class TestTrendPerYear:
         from ai_hydro.mcp.tools_indices import _trend_per_year
         t = _trend_per_year(_monthly_stats(lambda m, mo: 0.12 * m), "monthly")
         assert t["slope_per_year"] == pytest.approx(0.12, rel=1e-9)     # a per-month slope would be 0.01
-        assert t["unit"] == "index units per year" and t["n_periods_used"] == 24 and t["p_value"] < 0.01
+        assert t["unit"] == "index units per year" and t["n_periods_used"] == 24
         assert "Hirsch, Slack & Smith 1982" in t["estimator"] and t["seasonality_removed"] is True
+        # two cycles: every pair of months shares 2 years, so the Hirsch & Slack covariance is undefined and the
+        # p-value is withheld (it would silently equal the independent-seasons one) while the slope stands
+        assert t["p_value"] is None and "fewer than 3 years" in t["reason"]
+
+    def test_three_cycles_have_a_serial_dependence_corrected_p_value(self):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        t = _trend_per_year(_monthly_stats(lambda m, mo: 0.12 * m, "2021-01-01", "2023-12-31"), "monthly")
+        assert t["slope_per_year"] == pytest.approx(0.12, rel=1e-9) and t["p_value"] is not None
+
+    def test_two_cycles_with_a_year_effect_never_return_the_anticonservative_p(self):
+        """Review: size 0.50 at 24 months with a shared year effect when the covariance was silently skipped."""
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        rng = np.random.default_rng(5)
+        for _ in range(40):
+            X = rng.normal(0, .03, (2, 12)) + rng.normal(0, .03, (2, 1))
+            stats = _monthly_stats(lambda m, mo: 0.0, "2021-01-01", "2022-12-31")
+            for k, r in enumerate(stats):
+                r["mean"] = float(X[k // 12, k % 12])
+            t = _trend_per_year(stats, "monthly")
+            assert t["p_value"] is None and t["slope_per_year"] is not None
 
     def test_seasonal_cycle_plus_trend_recovers_the_trend(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year
@@ -475,7 +495,7 @@ class TestTrendPerYear:
     def test_works_without_pymannkendall_and_names_the_serial_dependence_limit(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year
         with patch.dict("sys.modules", {"pymannkendall": None}):
-            t = _trend_per_year(_monthly_stats(lambda m, mo: 0.1 * m), "monthly")
+            t = _trend_per_year(_monthly_stats(lambda m, mo: 0.1 * m, "2021-01-01", "2023-12-31"), "monthly")
         assert "NOT checked against the text" in t["caveat"] and "long-term persistence" in t["caveat"]
 
     @staticmethod
