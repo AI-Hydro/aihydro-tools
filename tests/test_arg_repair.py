@@ -543,3 +543,77 @@ class TestEverySchema:
                         assert not [r for r in out.repairs if r["kind"] == "rename" and r["to"] == p], (
                             tool, variant, p)
         assert n > 50
+
+
+class TestStructuredRefusalCarriesRepairs:
+    def test_repairs_merged_into_envelope(self):
+        mw = _hmw()
+
+        async def call_next(c):
+            raise StructuredToolError({"error": True, "code": "SESSION_RESOLUTION_FAILED", "message": "m"})
+
+        with pytest.raises(StructuredToolError) as ei:
+            _run(mw.on_call_tool(_ctx("compute_design_hydrograph", {"gauge": "xyz"}), call_next))
+        env = ei.value.envelope
+        assert env["code"] == "SESSION_RESOLUTION_FAILED"
+        assert env["_arg_repairs"] == [{"kind": "rename", "from": "gauge", "to": "gauge_id", "rule": "alias"}]
+        assert json.loads(str(ei.value)) == env
+
+    def test_no_repair_re_raises_same_error(self):
+        mw = _hmw()
+        err = StructuredToolError({"error": True, "code": "X"})
+
+        async def call_next(c):
+            raise err
+
+        with pytest.raises(StructuredToolError) as ei:
+            _run(mw.on_call_tool(_ctx("compute_design_hydrograph", {"gauge_id": "x"}), call_next))
+        assert ei.value is err
+
+    def test_through_the_real_fastmcp_client(self):
+        from fastmcp import Client, FastMCP
+        from fastmcp.exceptions import ToolError
+
+        app = FastMCP("t")
+
+        @app.tool()
+        def fetch_streamflow(gauge_id: str, start_date: str = "") -> dict:
+            """Refuses with a structured envelope."""
+            raise StructuredToolError({"error": True, "code": "SESSION_RESOLUTION_FAILED", "message": "no"})
+
+        async def _list_tools():          # the real app installs this shim on its FastMCP too
+            return list((await app.get_tools()).values())
+
+        app.list_tools = _list_tools
+        app.add_middleware(ArgRepairMiddleware(app))
+
+        async def go():
+            async with Client(app) as c:
+                with pytest.raises(ToolError) as ei:
+                    await c.call_tool("fetch_streamflow", {"gauge": "xyz"})
+                return str(ei.value)
+
+        text = _run(go())
+        env = json.loads(text[text.index("{"):])
+        assert env["code"] == "SESSION_RESOLUTION_FAILED"
+        assert env["_arg_repairs"][0]["from"] == "gauge" and env["_arg_repairs"][0]["to"] == "gauge_id"
+
+
+class TestGeometryPrAliasesStillApply:
+    """tools#21 adds start->start_date and end->end_date; they must pass the rule in alias mode."""
+
+    def test_judge_allows_them(self):
+        assert judge_rename("start", "start_date", alias=True).ok
+        assert judge_rename("end", "end_date", alias=True).ok
+        assert not judge_rename("start", "end_date", alias=True).ok
+
+    def test_rename_applies_when_tool_has_only_date_params(self, monkeypatch):
+        from ai_hydro.mcp import arg_repair
+
+        monkeypatch.setitem(arg_repair._GLOBAL_ALIASES, "start", "start_date")
+        monkeypatch.setitem(arg_repair._GLOBAL_ALIASES, "end", "end_date")
+        props = {"gauge_id", "start_date", "end_date"}
+        types = {"gauge_id": "string", "start_date": "string", "end_date": "string"}
+        out = repair_arguments_detailed({"start": "2020-01-01", "end": "2020-12-31"}, props, types)
+        assert out.arguments == {"start_date": "2020-01-01", "end_date": "2020-12-31"}
+        assert not out.unit_conflicts

@@ -27,6 +27,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   post-repair arguments to the capture: `input_digest` and session resolution use them (`sid=` now resolves as `session_id=`), and the
   record gains `extra.arg_repairs` and `extra.supplied_input_digest` (the digest of what the caller sent). `_arg_repairs` is a transport key,
   excluded from the output digest.
+- A tool's own structured refusal (for example `SESSION_RESOLUTION_FAILED`) now carries `_arg_repairs` when a repair was applied.
 - `"nan"`, `"inf"` and `"Infinity"` strings are no longer coerced to numbers.
 
 ### Removed

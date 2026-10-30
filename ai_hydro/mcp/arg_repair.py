@@ -614,7 +614,14 @@ class ArgRepairMiddleware(Middleware):
             if not info:
                 raise  # unknown tool / third-party server — don't interfere
             if _is_structured_refusal(e):
-                raise  # the tool already produced a structured error envelope
+                # The tool already produced a structured error envelope. Keep it, but a repair
+                # that was applied must still reach the agent, so merge it in before re-raising.
+                if repairs:
+                    from ai_hydro.mcp.errors import envelope_from_exception
+                    merged = dict(envelope_from_exception(e) or {})
+                    merged.setdefault("_arg_repairs", [{k: v for k, v in r.items() if k != "note"} for r in repairs])
+                    raise StructuredToolError(merged) from e
+                raise
             count = self._failures.get(key, 0) + 1
             self._failures[key] = count
             help_payload = self._build_help(name, info, args, str(e), repeated=count >= 2)
