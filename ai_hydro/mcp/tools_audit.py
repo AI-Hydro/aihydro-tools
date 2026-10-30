@@ -49,7 +49,7 @@ def audit_interpretation(
     try:
         # An audit judges one study's prose: never guess the study ("most recent on disk").
         session_id = _resolve_session(
-            session_id, None, allow_auto_create=False, allow_recent_fallback=False
+            session_id, None, allow_auto_create=False, allow_recent_fallback=False, must_exist=True
         )
 
         if not prose or not prose.strip():

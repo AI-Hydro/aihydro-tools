@@ -89,7 +89,7 @@ def _pyproject_text():
 
 
 def test_package_data_ships_the_reference_directory():
-    assert '"ai_hydro.knowledge" = ["library_refs/*.json", "reference/camels_us_v1_2/*"]' in _pyproject_text()
+    assert '"ai_hydro.knowledge" = ["*.yaml", "*.json", "library_refs/*.json", "reference/camels_us_v1_2/*"]' in _pyproject_text()
 
 
 # ------------------------------------------------------------------ pins

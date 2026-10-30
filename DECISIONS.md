@@ -1,5 +1,34 @@
 # Decisions
 
+## 2026-10-30 - One study resolver, one claim lifecycle, earned pre-registration (tool integrity T1-S)
+
+Source: the record audit (`docs/vision-2040/findings/tool-audit-record-2026-10-30.md`), R-01..R-07, R-29, R-32.
+
+1. **Only explicit tools create a study.** `HydroSession.load` still returns an empty session for an unknown id (callers that create
+   rely on it), so the guard is at the tool boundary: `resolve_existing_study` / `_resolve_session(..., must_exist=True)`. It is a separate
+   flag, not implied by `allow_auto_create=False`, so the data-fetch and series tools (other lanes) are untouched. `session_id` stays a required
+   argument on the ledger tools; making it optional (R-36) is a schema change left for its own PR. The GeoWorkspace map tools
+   (`map_set_roi`, `map_set_working_geometry`, `map_save_roi`) deliberately open a study from a drawn region and are allow-listed in the scan test.
+2. **One code.** The existence refusal is `STUDY_NOT_FOUND` everywhere, including `list_claims`/`list_assumptions` (was `SESSION_NOT_FOUND`).
+3. **Retraction propagates without an approval record.** Retracting narrows what the registry asserts; it grants nothing. Everything that
+   widens it (a `promoted` row, including the return from `stale`) still needs the human `aihydro-approve` record and
+   `promote_claim_to_registry`. A retracted registry row is never reopened: a re-promotion writes a new row, and the study claim cannot return to
+   a supporting status (`retracted_claim_gate`). A human-only retract CLI (audit R-03) is not added: it would only reach what the author's own
+   status change now reaches.
+4. **Leaving `stale` requires re-bound evidence, not a rationale.** The gate compares the sources recorded at detection (`stale_sources`, on
+   the claim and in the registry row) with the evidence the claim now cites. A claim stale without recorded sources falls back to its previous
+   spans. The gate is on `supported`/`weakly_supported`; downgrades are always allowed.
+5. **Study claims keep their registry link across a redefinition** (`promoted`, `registry_id`, `promoted_at`, `staleness_detected_at`,
+   `stale_sources`). These keys are outside the revision digest and the approval record, so keeping them grants nothing.
+6. **Post-hoc is judged on the planned analyses only.** The audit proposed counting all runs existing at lock; that would label nearly
+   every real study post hoc (delineation and data fetch always precede the plan). A plan is `post_hoc` when a run or slot named EXACTLY by a
+   planned analysis predates `locked_at`. Matching is by normalised exact name; descriptions that are not tool names never match. Plans
+   already on disk without the stamp are judged from their timestamps at report time.
+7. **Citation not-found requires every provider to answer.** A DOI is `not_found` only if CrossRef, DataCite and Semantic Scholar all
+   answered without a record whose DOI matches; any unreachable provider makes the answer `unavailable`. The free-text threshold (0.6, 0.8 for
+   high confidence) is a heuristic on title words, not a verification; a hit above it is still a lookup result for the agent to cite verbatim.
+8. **Deferred:** `equations.yaml` content (R-06), optional `session_id`/`study_id` alias (R-36), `session_note` when an explicit id differs from
+   the bound study, the remaining non-atomic writes (R-18/R-41, T2), three-state check results (T2).
 ## 2026-10-30 - A coordinate pair has no axis order: refuse it at one boundary; the gauge locates itself
 
 Owner evidence: `geometry=[-68.5828, 47.2375]` (lon, lat; USGS 01013500, northern Maine) was read by aihydro-data as (lat, lon), a point

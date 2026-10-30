@@ -8,6 +8,54 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Tool integrity Wave T1-S: study and claim integrity (below), then T1-A / T1-B entries.
+
+Source: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`. No version bump.
+
+### Fixed
+
+- **`data_fetch` and `data_fetch_background` refuse a mistyped `session_id`** with `STUDY_NOT_FOUND` instead of running as an unrecorded call. The session stays optional: with no id, the call runs as before.
+- **R-06 The knowledge and workflow data files now ship in the wheel.** `pyproject.toml` package-data omitted `knowledge/*.yaml`, the
+  bundled concept JSON and `workflows/*.workflow.yaml`, so in an installed build `get_variable_definition`, `list_known_variables`,
+  `get_metric_definition`, `list_known_metrics`, `get_dataset_info`, `list_known_datasets`, `list_available_workflows` and
+  `get_workflow_manifest` returned nothing (and "not found" for every id). `tests/test_wheel_packaging.py` builds the wheel from a clean
+  tree, asserts every git-tracked non-Python file under `ai_hydro/` is in it, installs it and checks the registries and one tool of each kind
+  from the installed copy. **`get_equation_definition` still returns "not found" for every id**: the loader reads `knowledge/equations.yaml`
+  (schema `EquationDefinition`) and no such file has ever existed in the repository. That is missing content, not packaging; none was invented.
+  `get_equation_definition` now says plainly that no equations are bundled. `get_metric_definition` accepts an id without the `metric.` prefix (`kge`).
+- **R-02 `add_claim` runs the comparison gates it documents.** `comparison_ref` was copied into the claim after the status gate ran, so a
+  comparison claim the producer said could not be claimed (`comparison_gate`) or whose CI excludes the forcing product
+  (`forcing_scope_gate`) was recorded as `supported`/`weakly_supported`. It is now part of the claim before the gate.
+- **R-01 / R-29 One study resolver: writing to an unknown study is a refusal.** `HydroSession.load` returns an empty session for an unknown
+  id and `save()` made it real, so `add_claim(session_id="typoX")` silently created a study. New `resolve_existing_study` (and
+  `HydroSession.exists`) is used by `add_claim`, `update_claim_status`, `add_assumption`, `list_claims`, `list_assumptions`,
+  `promote_claim_to_registry`, `check_registry_staleness`, `draft_claim_from_run`, `register_research_plan`, `run_skeptic`, the 7
+  validators, `define_experiment`, `run_experiment`, `get_experiment_table`, and the session tools `get_session_summary`,
+  `get_session_health`, `get_session_raw_state`, `clear_session`, `add_note`, `archive_session`, `merge_session_shards`,
+  `write_research_interpretation`, `export_session`, `register_feature`, `list_features`, `set_active_feature`, `bind_map_to_claim`, `bind_claim_to_item`, `audit_interpretation`, and `get_model_results` (without `job_id`). An id that names no saved study returns `STUDY_NOT_FOUND` with candidates and creates
+  nothing. `start_session`, the delineation tools and the GeoWorkspace map tools still create; the compute tools (`fetch_*`, `extract_*`, `compute_*`, `separate_baseflow`, training tools) still open a study for an unknown explicit id (deferred, listed in the scan test). A scan test fails if a tool that takes
+  `session_id` bypasses a resolver. **Behaviour change:** `list_claims` / `list_assumptions` report an unknown study as `STUDY_NOT_FOUND`
+  (was `SESSION_NOT_FOUND`).
+- **R-03 Retraction propagates to the registry.** `update_claim_status` / `add_claim` with `status="retracted"` retract the claim's
+  registry row (`registry_retracted` in the result; the row records `retracted_by`, and an unreadable registry is reported as `registry_retraction_failed`, or refuses a reinstatement with `REGISTRY_UNREADABLE`); `check_registry_staleness` finds retractions made elsewhere, propagates them and
+  reports `retracted_claims`; its note no longer says "All checked claims have current evidence" over a retraction. A retracted claim cannot be
+  set back to `supported`/`weakly_supported` (`retracted_claim_gate`). `add_claim` on an existing claim keeps its `registry_id` and
+  `promoted` link instead of dropping them.
+- **R-07 A stale claim is not reinstated by a sentence.** From `stale`, `supported`/`weakly_supported` is refused (`stale_claim_gate`) while
+  the claim still cites any source that changed; it is allowed once the evidence is re-bound to a different run, and the registry row stays
+  `stale` until a human re-approves (`aihydro-approve`, then `promote_claim_to_registry`). Nothing here can promote. The skeptic's
+  `registry_conflict` check, `check_registry_staleness` (`status_conflicts`) and `start_session` (`claim_flags`) now compare the study status
+  with the registry row.
+- **R-04 "Confirmatory" has to be earned.** `add_claim(prereg_id=...)` must name the study's own locked plan (`prereg_gate`). A claim is confirmatory only if it cites at least one run and every cited run is provably (timezone-aware timestamp) recorded after the lock, otherwise `post_hoc_plan` or `unverified_order` (so a free-text plan such as "baseflow analysis" cannot hide that the run came first), and plan entries that name no tool or slot are reported as unmatched. A plan locked
+  after a planned analysis had already run is stamped `post_hoc`: claims on it are not confirmatory (`PREREG_POST_HOC` warning) and the
+  defensibility report says so. The report counts a planned analysis as executed only when a run of that exact tool name happened after
+  `locked_at` (substring matching removed). Plans and claims already on disk keep working: the report judges them from their timestamps and
+  shows an unverified `prereg_id` as exploratory.
+- **R-05 / R-32 Citation lookup is verified and honest about failure.** `get_citation_by_doi` resolves at the DOI endpoint (CrossRef, DataCite,
+  Semantic Scholar) and returns only a record whose DOI equals the one asked for; a string that is not a DOI is refused. Free-text hits need
+  title-word overlap of at least 0.6 on whole words (author names and years are not counted against a title, and fewer than two content words can never match); a capitalised query word absent from the title must be a family name in the hit's author list and a query year must be within one year of the record's (online-first dates), else the hit is only an unverified candidate; `high` needs title, authors and year to match, or a near-full-title match when the query has neither; weak hits come back as `not_confirmed` with unverified `candidates`, never as "no citation exists". A provider that cannot be reached is
+  `CITATION_LOOKUP_UNAVAILABLE` (`unavailable: true`, `not_found: false`), never `not_found`; `not_found` is returned only when every provider
+  answered. An unsupported `source_hint` is refused; `_render_apa` no longer crashes on an empty `container-title`.
 Owner feedback on the installed 0.4.3 build: `data_fetch(variable="streamflow", geometry=[-68.5828, 47.2375], ..., gauge_id="01013500")`
 was refused with "geometry is in region 'global'" (the pair is GeoJSON order, read as lat,lon it is in the Southern Ocean), and the
 agent then fell back to the deprecated tool and tripped on `start_date` / `end_date`. Without `gauge_id` the same call raised no

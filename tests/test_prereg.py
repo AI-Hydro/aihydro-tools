@@ -56,6 +56,10 @@ _LOCKED_PLAN = {
     "locked": True,
 }
 
+# R-04: a confirmatory claim must cite a run recorded after the plan was locked
+_RUN_AFTER_LOCK = {"sigs.run.001": {"tool_name": "extract_hydrological_signatures",
+                                    "timestamp": "2026-06-10T01:00:00+00:00", "key_outputs": {"baseflow_index": 0.62}}}
+
 _CONFIRMATORY_CLAIM = {
     "id": "claim-001",
     "claim": "Baseflow index is 0.62, confirming the pre-registered hypothesis.",
@@ -249,6 +253,9 @@ class TestAddClaimPreregId:
         monkeypatch.setattr(_store, "SESSIONS_DIR", tmp_path)
         monkeypatch.setattr(_store, "_SESSIONS_DIR", tmp_path)
         HydroSession("test-claim-prereg-001").save()
+        from ai_hydro.mcp.tools_ledger import register_research_plan
+        prereg_id = register_research_plan(
+            "test-claim-prereg-001", "Baseflow index exceeds 0.5.", ["extract_hydrological_signatures"])["prereg_id"]
 
         result = add_claim(
             session_id="test-claim-prereg-001",
@@ -260,12 +267,12 @@ class TestAddClaimPreregId:
             confidence_rationale="Based on bootstrap CI from signature analysis.",
             basins=["01031500"],
             period="1990-2020",
-            prereg_id="prereg.testtest.20260610.ab12",
+            prereg_id=prereg_id,       # R-04: must name the study's own locked plan
         )
         assert result["status"] == "recorded"
 
         session = HydroSession.load("test-claim-prereg-001")
-        assert session.claims["claim-001"]["prereg_id"] == "prereg.testtest.20260610.ab12"
+        assert session.claims["claim-001"]["prereg_id"] == prereg_id
 
     def test_no_prereg_id_omitted(self, monkeypatch, tmp_path):
         import ai_hydro.session.store as _store
@@ -354,6 +361,7 @@ class TestConfirmatoryVsExploratory:
         session = _make_session(
             "test-rep-conf-001", monkeypatch, tmp_path,
             claims={"claim-001": _CONFIRMATORY_CLAIM},
+            run_log=_RUN_AFTER_LOCK,
             research_plan=_LOCKED_PLAN,
         )
         md, summary = build_defensibility_report(session, "test-rep-conf-001", "2026-06-10")
@@ -376,6 +384,7 @@ class TestConfirmatoryVsExploratory:
                 "claim-001": _CONFIRMATORY_CLAIM,
                 "claim-002": _EXPLORATORY_CLAIM,
             },
+            run_log=_RUN_AFTER_LOCK,
             research_plan=_LOCKED_PLAN,
         )
         md, summary = build_defensibility_report(session, "test-rep-conf-003", "2026-06-10")
@@ -418,7 +427,7 @@ class TestSummaryDictNewKeys:
         run_log = {
             "sigs.20260610.bench.ab12": {
                 "tool_name": "extract_hydrological_signatures",
-                "timestamp": "2026-06-10T00:00:00+00:00",
+                "timestamp": "2026-06-10T01:00:00+00:00",      # after the plan's locked_at (R-04)
                 "key_outputs": {"q_mean": 1.25},
             }
         }

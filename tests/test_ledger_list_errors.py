@@ -40,7 +40,7 @@ def envelope(res):
 @pytest.mark.parametrize("name,extra", TOOLS)
 def test_missing_session_is_a_structured_error(name, extra):
     env = envelope(call(name, {"session_id": "no-such-session", **extra}))
-    assert env["error"] is True and env["code"] == "SESSION_NOT_FOUND"
+    assert env["error"] is True and env["code"] == "STUDY_NOT_FOUND"
     assert env["recovery"] and env["next_tools"]
 
 
@@ -76,5 +76,5 @@ def test_raised_errors_are_structured_tool_errors(sessions):
     from ai_hydro.mcp.tools_ledger import _load_session_or_raise
     with pytest.raises(StructuredToolError) as ei:
         _load_session_or_raise("no-such-session")
-    assert ei.value.envelope["code"] == "SESSION_NOT_FOUND"
+    assert ei.value.envelope["code"] == "STUDY_NOT_FOUND"
     assert json.loads(str(ei.value)) == ei.value.envelope
