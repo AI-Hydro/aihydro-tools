@@ -430,6 +430,7 @@ def test_t1_old_modelling_is_refused_not_run(monkeypatch):
     assert spec is None and bad["code"] == "MODELLING_TOO_OLD" and bad["installed"] == "0.6.1"
 
 
+@needs_modelling
 def test_t6_runner_keeps_coded_refusals_and_the_traceback_for_the_rest(home, monkeypatch):
     from ai_hydro.modelling import runner
 
