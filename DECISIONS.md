@@ -35,6 +35,7 @@ returned a number for a quantity the record did not support (SPI-1 -3.09, Q100 +
    nominal under AR(1) 0.6 and a shared year effect, where the independent-seasons test is 0.30 and 0.43) and NOT checked against the paper's
    text, which I could not read. Long-term persistence and short records are not handled. A yearly series that is clipped at either end is
    dropped (reported). A missing optional package must not change the statistic; `pymannkendall` is dropped.
+   With a used season pair sharing fewer than 3 years, or fewer than 3 years in all, `p_value` is None with a reason; the slope stays.
 5b. **Mean annual totals (D11):** the sum over the 12 calendar months of (mean of finite days x days in month); None + reason if a
    month has no data; aridity on the same basis for P and PET. A plain mean over the finite days was +48% (dry season missing) or -48%
    (wet season missing) in the review's test. The estimator is a MONTHLY MEAN: a year-month is a valid monthly

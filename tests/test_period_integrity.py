@@ -235,7 +235,7 @@ def test_forcing_failed_variables_leave_a_record_and_nan_days_are_not_zero(monke
     monkeypatch.setattr(aihydro_data, "fetch", fetch)
     res = fo.fetch_forcing_data_routed(GEOM, "2020-01-01", "2020-12-31", variables=["pr", "pet"])
     d_ = res.data
-    assert d_["mean_annual_precip_mm"] == pytest.approx(3.0 * 365.25, abs=0.01)   # old rule: about half
+    assert d_["mean_annual_precip_mm"] == pytest.approx(3.0 * 365.25, abs=0.01)   # old rule: about 80%
     assert d_["precip_n_missing_days"] == 74 and d_["precip_n_finite_days"] == 292
     assert {f["variable"] for f in d_["variables_failed"]} == {"pet"}
     assert d_["forcing_complete"] is False and d_["variables_with_missing_days"] == {"prcp_mm": 74}

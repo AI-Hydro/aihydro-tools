@@ -96,7 +96,7 @@ watershed 0.3.0). CI is red until both are on PyPI.
   `forcing_complete`. The forcing data gains `variables_requested`, `variables_failed`, `variable_provenance` (per
   variable: product, source, units, coverage_complete, missing ranges, notes). `mean_annual_precip_mm` / `mean_annual_pet_mm`
   are the sum over the 12 calendar months of (mean of the finite days in the month x days in the month): a missing day is not zero
-  (3 mm/day with every other day NaN read 543, now 1095.75) and a missing season does not re-weight the year. None with a
+  (3 mm/day with every fifth day NaN read 876 under the old rule, now 1095.75; with every other day NaN the old rule read 543 and the result is now None with a reason) and a missing season does not re-weight the year. None with a
   `..._reason` when a calendar month lacks a valid monthly mean in at least 80% of the record's years. The estimator is a monthly mean: a
   year-month is valid with at most 10 missing days and no run of 5 or more (WMO-No. 1203 s4.4.1(a), the sourced definition for a mean
   parameter; run test implemented as longest run < 5); the 80% of years is s4.4.2, defined for climate normals and applied by analogy; mean annual temperature and `calculate_water_balance_metrics` use the same basis, as does `wet_day_frequency` (a ratio per month, s4.4.1(d); None + `wet_day_reason` when unusable); `aridity_index` is computed on that same basis for P and PET (None + reason
