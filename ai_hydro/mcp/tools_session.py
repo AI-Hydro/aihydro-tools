@@ -246,7 +246,7 @@ def clear_session(session_id: str | None = None, slots: list[str] | None = None)
         cleared = []
         for slot in to_clear:
             if slot.startswith('index_') and slot not in _RESULT_SLOTS:
-                if session._slots.pop(slot, None):
+                if session.drop_slot(slot):
                     cleared.append(slot)
             elif getattr(session, slot) is not None:
                 setattr(session, slot, None)
