@@ -260,3 +260,18 @@ def test_async_tool_save_waits_for_a_busy_guard_instead_of_failing(fake_fetch, t
     text = root.content[0].text
     assert "SESSION_BUSY" not in text, text[:300]
     assert not root.isError
+
+
+def test_chunk_coverage_facts_merge_like_one_call():
+    from types import SimpleNamespace as N
+
+    from ai_hydro.data.forcing import _merge_chunk_provenance
+
+    a = N(units="mm", coverage_complete=False, days_missing_head=3, days_missing_tail=2, days_missing_internal=1,
+          missing_ranges=[("1985-01-01", "1985-01-03")], notes=["n"])
+    b = N(units="mm", coverage_complete=True, days_missing_head=0, days_missing_tail=4, days_missing_internal=0,
+          missing_ranges=[], notes=["n", "m"])
+    m = _merge_chunk_provenance([a, b])
+    assert m["days_missing_head"] == 3 and m["days_missing_tail"] == 4
+    assert m["days_missing_internal"] == 1 + 2 + 0      # a's tail is interior once b follows it
+    assert m["coverage_complete"] is False and m["notes"] == ["n", "m"]
