@@ -370,61 +370,86 @@ class TestPeriodHelpers:
 # Trend helper (per YEAR, on the real time axis; tool audit D07)
 # ---------------------------------------------------------------------------
 
-def _monthly_stats(means=None, skip=(), slope_per_year=None):
-    """Period stats for the 24 months of 2021-2022, minus the months in ``skip``.
-
-    Either explicit ``means`` or values exactly linear in time (``slope_per_year`` units per year,
-    evaluated at each month's midpoint), so the true slope is known.
-    """
+def _monthly_stats(f, start="2021-01-01", end="2022-12-31", skip=()):
+    """Monthly period stats; ``f(mid_years, month)`` gives each month's mean. ``skip``: (year, month) failures."""
     from datetime import date
     from ai_hydro.mcp.tools_indices import _monthly_periods
     out = []
-    for k, (a, b) in enumerate(_monthly_periods("2021-01-01", "2022-12-31")):
-        if k in skip:
+    for a, b in _monthly_periods(start, end):
+        da, db = date.fromisoformat(a), date.fromisoformat(b)
+        if (da.year, da.month) in skip:
             continue
-        if means is not None:
-            m = means[k]
-        else:
-            da, db = date.fromisoformat(a), date.fromisoformat(b)
-            m = slope_per_year * ((da.toordinal() + db.toordinal()) / 2.0) / 365.2425
-        out.append({"period": a, "period_end": b, "mean": m})
+        mid = (da.toordinal() + db.toordinal()) / 2.0 / 365.2425
+        out.append({"period": a, "period_end": b, "mean": f(mid, da.month)})
     return out
+
+
+def _season(month):
+    return 0.25 * np.sin(2 * np.pi * (month - 4) / 12.0)
 
 
 class TestTrendPerYear:
     def test_a_series_rising_0_12_per_year_reports_0_12_not_0_01(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year
-        t = _trend_per_year(_monthly_stats(slope_per_year=0.12))
+        t = _trend_per_year(_monthly_stats(lambda m, mo: 0.12 * m), "monthly")
         assert t["slope_per_year"] == pytest.approx(0.12, rel=1e-9)     # a per-month slope would be 0.01
-        assert t["unit"] == "index units per year"
-        assert t["n_periods_used"] == 24
-        assert t["p_value"] < 0.001
+        assert t["unit"] == "index units per year" and t["n_periods_used"] == 24 and t["p_value"] < 0.01
+        assert "Hirsch, Slack & Smith 1982" in t["estimator"] and t["seasonality_removed"] is True
 
-    def test_failed_months_are_gaps_not_spliced(self):
+    def test_seasonal_cycle_plus_trend_recovers_the_trend(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year
-        skip = {2, 3, 4, 8, 9, 10, 11, 15, 16, 17, 20, 21, 22, 23}       # 14 failed, 10 served
-        stats = _monthly_stats(slope_per_year=0.12, skip=skip)
-        assert _trend_per_year(stats)["slope_per_year"] == pytest.approx(0.12, rel=1e-9)
-        # what the pre-fix code did with the same 10 values: consecutive integers, "per step"
-        served = [r["mean"] for r in stats]
-        spliced = np.polyfit(np.arange(len(served)), served, 1)[0]
-        assert spliced != pytest.approx(0.12, rel=0.1)           # a per-step slope, not per year
+        t = _trend_per_year(_monthly_stats(lambda m, mo: _season(mo) + 0.05 * m, "2015-01-01", "2019-12-31"), "monthly")
+        assert t["slope_per_year"] == pytest.approx(0.05, rel=1e-6) and t["p_value"] < 0.001
 
-    def test_estimator_is_named_and_does_not_depend_on_pymannkendall(self):
+    def test_seasonal_cycle_alone_is_not_a_trend(self):
+        """Review null case: a pure annual cycle over 8 months or 24 months must not read as a trend."""
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        t = _trend_per_year(_monthly_stats(lambda m, mo: _season(mo), "2015-01-01", "2019-12-31"), "monthly")
+        assert t["slope_per_year"] is None and "tied" in t["reason"]     # a pure cycle has no within-season change
+        rng = np.random.default_rng(0)
+        noisy = _trend_per_year(_monthly_stats(lambda m, mo: _season(mo) + rng.normal(0, 0.03), "2015-01-01", "2024-12-31"),
+                                "monthly")
+        assert noisy["p_value"] > 0.05 and abs(noisy["slope_per_year"]) < 0.01
+
+    def test_failed_months_leave_the_other_seasons_intact(self):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        stats = _monthly_stats(lambda m, mo: _season(mo) + 0.12 * m, "2021-01-01", "2023-12-31",
+                               skip={(2021, 3), (2022, 4), (2023, 5)})
+        t = _trend_per_year(stats, "monthly")
+        assert len(stats) == 33 and t["slope_per_year"] == pytest.approx(0.12, rel=1e-6)
+
+    def test_a_season_with_fewer_than_two_values_gives_no_estimate(self):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        stats = _monthly_stats(lambda m, mo: 0.12 * m, "2021-01-01", "2022-12-31", skip={(2022, 6)})
+        t = _trend_per_year(stats, "monthly")
+        assert t["slope_per_year"] is None and t["p_value"] is None and "[6]" in t["reason"]
+
+    def test_under_two_full_cycles_gives_no_estimate(self):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        for end in ("2021-08-31", "2021-12-31"):          # 8 and 12 months
+            t = _trend_per_year(_monthly_stats(lambda m, mo: _season(mo) + 0.1 * m, "2021-01-01", end), "monthly")
+            assert t["slope_per_year"] is None and t["p_value"] is None and "reason" in t
+
+    def test_yearly_uses_theil_sen_and_kendall_and_says_how_p_is_computed(self):
+        from datetime import date
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        stats = [{"period": f"{y}-01-01", "period_end": f"{y}-12-31", "mean": 0.3 + 0.02 * k}
+                 for k, y in enumerate(range(2015, 2025))]
+        t = _trend_per_year(stats, "yearly")
+        assert t["slope_per_year"] == pytest.approx(0.02, rel=2e-3) and t["p_value"] < 0.001
+        assert "Theil-Sen" in t["estimator"] and "exact for small samples" in t["test"]
+        assert _trend_per_year(stats[:3], "yearly")["slope_per_year"] is None
+
+    def test_works_without_pymannkendall_and_names_the_serial_dependence_limit(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year
         with patch.dict("sys.modules", {"pymannkendall": None}):
-            t = _trend_per_year(_monthly_stats(means=[float(i) for i in range(24)]))
-        assert "Theil-Sen" in t["estimator"] and "Mann-Kendall" in t["test"]
-        assert t["p_value"] is not None and t["seasonality_removed"] is False
+            t = _trend_per_year(_monthly_stats(lambda m, mo: 0.1 * m), "monthly")
+        assert "Hirsch & Slack (1984) is not included" in t["caveat"]
 
-    def test_constant_series_zero_slope(self):
+    def test_constant_series_has_no_defined_test(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year
-        assert _trend_per_year(_monthly_stats(means=[0.5] * 24))["slope_per_year"] == pytest.approx(0.0, abs=1e-12)
-
-    def test_fewer_than_four_periods_is_none(self):
-        from ai_hydro.mcp.tools_indices import _trend_per_year
-        assert _trend_per_year(_monthly_stats(means=[0.3, 0.6, 0.9] + [0.0] * 21, skip=set(range(3, 24)))) is None
-        assert _trend_per_year(_monthly_stats(means=[0.3, None, 0.6, None, 0.9, None] + [None] * 18)) is None
+        t = _trend_per_year(_monthly_stats(lambda m, mo: 0.5), "monthly")
+        assert t["slope_per_year"] is None and "tied" in t["reason"]
 
 
 # ---------------------------------------------------------------------------

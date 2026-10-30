@@ -68,6 +68,21 @@ def _peak_from_streamflow_slot(sf: Any) -> tuple[float | None, str]:
     return None, ""
 
 
+def flood_frequency_statistic(session) -> dict:
+    """What the session's flood-frequency return levels are levels OF.
+
+    ``compute_flood_frequency`` fits the annual maximum of DAILY MEAN discharge, which is lower than
+    the instantaneous peak a flood map is usually read against. The label travels with the discharge
+    so a daily-mean Q100 is not presented as a peak. Empty dict when the slot predates the field.
+    """
+    ff = _session_get(session, "flood_frequency")
+    if not isinstance(ff, dict):
+        return {}
+    meta = ff.get("meta") or {}
+    return {k: meta.get(k) for k in ("statistic", "year_type", "year_convention", "min_year_fraction", "n_years")
+            if meta.get(k) is not None}
+
+
 def resolve_inundation_discharge(
     session,
     *,

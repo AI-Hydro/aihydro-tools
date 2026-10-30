@@ -486,18 +486,38 @@ def generate_forcing_summary(
     return summary
 
 
-def _mean_annual_total(series: "pd.Series") -> Optional[float]:
-    """Mean annual total of a daily flux (mm/day -> mm/yr) over the days that HAVE a value.
+#: Mean days of each calendar month (February 28.25): twelve of them sum to 365.25.
+_MONTH_DAYS = (31.0, 28.25, 31.0, 30.0, 31.0, 30.0, 31.0, 31.0, 30.0, 31.0, 30.0, 31.0)
 
-    ``mean(finite days) * 365.25``. A missing (NaN) day is not a zero-flux day: dividing a sum
-    that skips NaN by the full record length (the old rule) biased the total low by the missing
-    share (3 mm/day with half the year missing read 543 mm, not 1096). None when no day has a value.
+
+def _mean_annual_total(dates, series) -> tuple:
+    """Mean annual total of a daily flux (mm/day -> mm/yr): ``(value | None, reason | None)``.
+
+    Sum over the 12 calendar months of (mean of the finite days in that month) x (days in the
+    month). A missing (NaN) day is neither a zero-flux day (the old ``sum / record length`` read 543
+    mm for 3 mm/day with half the year missing) nor, as a plain mean over the finite days would be,
+    a license to over-weight the observed season: if the missing days are one season, the mean of
+    the remaining days is that season's flux, not the year's (a missing dry season read +30%,
+    a missing wet season -45%, in the methods review's test). The monthly climatology weights each
+    calendar month by its length whatever the gaps are.
+
+    ``(None, reason)`` when a calendar month has no finite day at all: there is no honest annual
+    total from a record that never saw that month.
     """
-    vals = pd.to_numeric(series, errors="coerce")
-    vals = vals[np.isfinite(vals)]
-    if vals.empty:
-        return None
-    return float(vals.mean() * 365.25)
+    d = pd.DatetimeIndex(pd.to_datetime(list(dates)))
+    v = pd.to_numeric(pd.Series(np.asarray(series), index=d), errors="coerce")
+    v = v[np.isfinite(v)]
+    if v.empty:
+        return None, "no finite day"
+    clim = v.groupby(v.index.month).mean()
+    absent = [m for m in range(1, 13) if m not in clim.index]
+    if absent:
+        return None, f"calendar month(s) {absent} have no finite day"
+    return float(sum(clim[m] * _MONTH_DAYS[m - 1] for m in range(1, 13))), None
+
+
+def _dates_of(df: "pd.DataFrame"):
+    return df["date"] if "date" in df.columns else df.index
 
 
 def fetch_forcing_data_result(
@@ -596,11 +616,15 @@ def fetch_forcing_data_result(
         tmmx_col = "tmmx" if "tmmx" in var_cols else None
 
         if pr_col:
-            annual_pr = _mean_annual_total(df[pr_col])
+            annual_pr, why = _mean_annual_total(_dates_of(df), df[pr_col])
             clean["mean_annual_precip_mm"] = round(annual_pr, 2) if annual_pr is not None else None
+            if why:
+                clean["mean_annual_precip_reason"] = why
         if pet_col:
-            annual_pet = _mean_annual_total(df[pet_col])
+            annual_pet, why = _mean_annual_total(_dates_of(df), df[pet_col])
             clean["mean_annual_pet_mm"] = round(annual_pet, 2) if annual_pet is not None else None
+            if why:
+                clean["mean_annual_pet_reason"] = why
         if pr_col and pet_col and (clean.get("mean_annual_precip_mm") or 0) > 0 \
                 and clean.get("mean_annual_pet_mm") is not None:
             clean["aridity_index"] = round(
@@ -909,8 +933,14 @@ def fetch_forcing_data_routed(
     clean["variables_requested"] = [v for v in requested]
     clean["variables_failed"] = variables_failed
     clean["variable_provenance"] = variable_provenance
+    # Days with no value, per served variable column (a NaN cell is a missing value however the provider
+    # reported its coverage).
+    nan_cells = {c: int(df[c].isna().sum()) for c in df.columns
+                 if c not in ("date", "tavg_C") and int(df[c].isna().sum()) > 0}
+    clean["variables_with_missing_days"] = nan_cells
     clean["forcing_complete"] = bool(
         not variables_failed
+        and not nan_cells
         and all(p.get("coverage_complete") is not False for p in variable_provenance.values())
     )
 
@@ -920,16 +950,22 @@ def fetch_forcing_data_routed(
             n_fin = int(np.isfinite(pd.to_numeric(df[col], errors="coerce")).sum())
             clean[f"{key}_n_finite_days"] = n_fin
             clean[f"{key}_n_missing_days"] = int(len(df) - n_fin)
-    if "prcp_mm" in df.columns:
-        v = _mean_annual_total(df["prcp_mm"])
-        clean["mean_annual_precip_mm"] = round(v, 2) if v is not None else None
-    if "pet_mm" in df.columns:
-        v = _mean_annual_total(df["pet_mm"])
-        clean["mean_annual_pet_mm"] = round(v, 2) if v is not None else None
-    if (clean.get("mean_annual_precip_mm") or 0) > 0 and clean.get("mean_annual_pet_mm") is not None:
-        clean["aridity_index"] = round(
-            clean["mean_annual_pet_mm"] / clean["mean_annual_precip_mm"], 3
-        )
+    for col, name in (("prcp_mm", "precip"), ("pet_mm", "pet")):
+        if col in df.columns:
+            v, why = _mean_annual_total(df["date"], df[col])
+            clean[f"mean_annual_{name}_mm"] = round(v, 2) if v is not None else None
+            if why:
+                clean[f"mean_annual_{name}_reason"] = why
+    # Aridity on the SAME basis for both: both are monthly-climatology totals, never one of those and one
+    # sum over different day sets.
+    if "prcp_mm" in df.columns and "pet_mm" in df.columns:
+        if (clean.get("mean_annual_precip_mm") or 0) > 0 and clean.get("mean_annual_pet_mm") is not None:
+            clean["aridity_index"] = round(clean["mean_annual_pet_mm"] / clean["mean_annual_precip_mm"], 3)
+        else:
+            clean["aridity_index"] = None
+            clean["aridity_index_reason"] = (clean.get("mean_annual_precip_reason")
+                                             or clean.get("mean_annual_pet_reason")
+                                             or "precipitation total is not positive")
     if "tavg_C" in df.columns:
         clean["mean_annual_temp_C"] = round(float(df["tavg_C"].mean()), 2)   # pandas mean skips NaN
 

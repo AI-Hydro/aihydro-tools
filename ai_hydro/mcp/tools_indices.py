@@ -56,7 +56,7 @@ async def compute_spectral_index(
 
     Fetches bands from `sensor`, cloud-masks them (mask_clouds) and returns a median composite
     over [start, end]. With frequency="monthly"/"yearly" it returns a temporal stack with
-    per-period stats and a Mann-Kendall-compatible trend slope.
+    per-period stats and a trend per YEAR.
 
     Parameters
     ----------
@@ -82,8 +82,8 @@ async def compute_spectral_index(
     -------
     dict: index_name, data {mean, median, std, p10, p25, p75, p90, valid_px}, colormap, citation,
     use_case, threshold_hint, _files_saved, _map_layer, next_steps. Time-series mode adds
-    time_axis, period_means, trend_slope_per_year (index units/YEAR, Theil-Sen), p_value, trend,
-    n_periods_requested/served, periods_failed (a failed period is a gap).
+    time_axis, period_means, trend_slope_per_year (per YEAR; seasonal Kendall/Sen if monthly, None + reason if
+    unsupported), p_value, trend, n_periods_requested/served, periods_failed (a gap).
     """
     from ai_hydro.mcp.helpers import _resolve_session, _maybe_set_workspace
     from ai_hydro.session import HydroSession
@@ -288,7 +288,7 @@ async def compute_spectral_index(
         trend = None
         period_failures = result.get("period_failures", [])
         if time_axis and period_stats:
-            trend = _trend_per_year(period_stats)
+            trend = _trend_per_year(period_stats, frequency)
 
         if ctx:
             await ctx.report_progress(progress=10, total=10)
@@ -596,44 +596,89 @@ def _yearly_periods(start: str, end: str) -> list[tuple[str, str]]:
     return periods
 
 
-def _trend_per_year(period_stats: list[dict]) -> dict | None:
-    """Theil-Sen slope and Mann-Kendall test of the period means, in index units PER YEAR.
+def _trend_per_year(period_stats: list[dict], frequency: str | None = None) -> dict:
+    """Trend of the period means in index units PER YEAR, with the test and its limits stated.
 
-    The abscissa is the period midpoint in decimal years, so months that failed to
-    fetch leave a gap instead of shifting later months one step closer, and a
-    monthly series is not mislabelled (a slope per period is 12x a slope per year).
+    ``frequency="yearly"`` (or periods more than ~300 days long): Theil-Sen slope
+    (``scipy.stats.theilslopes``) and the Mann-Kendall test as ``scipy.stats.kendalltau`` of value
+    against time (scipy uses an exact p-value for small samples without ties and a tie-corrected
+    normal approximation otherwise).
 
-    Estimator (always the same, never a fallback): ``scipy.stats.theilslopes``
-    (median of pairwise slopes) and ``scipy.stats.kendalltau`` of value against
-    time (the Mann-Kendall test; tie-corrected normal approximation). Neither
-    removes the seasonal cycle nor corrects for serial correlation; both are
-    stated in the result. Returns None when fewer than 4 periods have a mean.
+    Sub-annual frequency (monthly): the SEASONAL Kendall test and seasonal Sen slope (Hirsch,
+    Slack & Smith 1982), season = calendar month. Each season is compared only with itself, so the
+    annual cycle - which dwarfs any trend in NDVI - cannot masquerade as one, and a failed month is a
+    missing value in its own season. The test statistic is the sum over seasons of the Mann-Kendall
+    S, with the tie-corrected variance summed over seasons (the seasons are treated as independent:
+    the covariance term of Hirsch & Slack 1984 is NOT included). The slope is the median of all
+    within-season pairwise slopes, abscissa in decimal years at the period midpoint.
+
+    Neither serial correlation within a season nor correlation between seasons is handled, so the
+    p-value is optimistic for persistent series (stated in the result's ``caveat``).
+
+    Returns a dict that always has ``slope_per_year`` and ``p_value``; both are None with a ``reason``
+    when the series cannot support the estimate: fewer than 4 periods (yearly); for a sub-annual
+    series, fewer than 2 full seasonal cycles or any of the 12 seasons with fewer than 2 values.
     """
     from datetime import date as _date
     from scipy import stats as _st
 
-    t, y = [], []
+    rows = []
     for r in period_stats:
         m = r.get("mean")
         if m is None or not np.isfinite(m):
             continue
         a = _date.fromisoformat(r["period"])
         b = _date.fromisoformat(r.get("period_end") or r["period"])
-        mid = a.toordinal() + (b.toordinal() - a.toordinal()) / 2.0
-        t.append(mid / 365.2425)
-        y.append(float(m))
-    if len(y) < 4:
-        return None
-    slope = float(_st.theilslopes(y, t)[0])
-    p = float(_st.kendalltau(t, y).pvalue)
-    note = ("Seasonal cycle not removed" if len(y) > 12 else "Short series")
-    return {
-        "slope_per_year": slope,
-        "p_value": p,
-        "unit": "index units per year",
-        "estimator": "Theil-Sen (scipy.stats.theilslopes) on period midpoints in decimal years",
-        "test": "Mann-Kendall via scipy.stats.kendalltau (tie-corrected, no serial-correlation correction)",
-        "n_periods_used": len(y),
-        "seasonality_removed": False,
-        "caveat": f"{note}; the p-value assumes independent observations.",
-    }
+        mid = (a.toordinal() + b.toordinal()) / 2.0 / 365.2425
+        rows.append((mid, float(m), a.month, (b.toordinal() - a.toordinal()) + 1))
+    base = {"slope_per_year": None, "p_value": None, "unit": "index units per year",
+            "n_periods_used": len(rows), "seasonality_removed": False}
+    seasonal = frequency == "monthly" or (frequency is None and rows and np.median([r[3] for r in rows]) < 300)
+
+    if not seasonal:
+        if len(rows) < 4:
+            return {**base, "estimator": None, "test": None,
+                    "reason": f"{len(rows)} period(s) with a mean; the yearly trend needs at least 4"}
+        t = [r[0] for r in rows]
+        y = [r[1] for r in rows]
+        return {**base, "slope_per_year": float(_st.theilslopes(y, t)[0]), "p_value": float(_st.kendalltau(t, y).pvalue),
+                "estimator": "Theil-Sen (scipy.stats.theilslopes) on period midpoints in decimal years",
+                "test": "Mann-Kendall via scipy.stats.kendalltau (exact for small samples without ties, "
+                        "tie-corrected normal approximation otherwise)",
+                "caveat": "The p-value assumes independent observations; serial correlation is not handled."}
+
+    seasons: dict[int, list[tuple[float, float]]] = {}
+    for mid, val, month, _ in rows:
+        seasons.setdefault(month, []).append((mid, val))
+    short = sorted(m for m in range(1, 13) if len(seasons.get(m, [])) < 2)
+    cycles = max((len(v) for v in seasons.values()), default=0)
+    if cycles < 2 or short:
+        why = (f"fewer than 2 full seasonal cycles ({cycles} value(s) in the best-covered month)"
+               if cycles < 2 else
+               f"calendar month(s) {short} have fewer than 2 values, so the seasonal test is undefined there")
+        return {**base, "estimator": None, "test": None, "reason": why,
+                "season_counts": {m: len(seasons.get(m, [])) for m in range(1, 13)}}
+    S = 0.0
+    var = 0.0
+    slopes: list[float] = []
+    for pts in seasons.values():
+        pts = sorted(pts)
+        n = len(pts)
+        for i in range(n):
+            for j in range(i + 1, n):
+                S += float(np.sign(pts[j][1] - pts[i][1]))
+                slopes.append((pts[j][1] - pts[i][1]) / (pts[j][0] - pts[i][0]))
+        _, counts = np.unique([v for _, v in pts], return_counts=True)
+        var += (n * (n - 1) * (2 * n + 5) - float(np.sum(counts * (counts - 1) * (2 * counts + 5)))) / 18.0
+    if var <= 0:
+        return {**base, "estimator": None, "test": None, "reason": "all values are tied within every season"}
+    z = 0.0 if S == 0 else (S - np.sign(S)) / np.sqrt(var)
+    return {**base, "slope_per_year": float(np.median(slopes)), "p_value": float(2.0 * _st.norm.sf(abs(z))),
+            "estimator": "seasonal Sen slope (Hirsch, Slack & Smith 1982): median of within-calendar-month pairwise slopes, "
+                         "period midpoints in decimal years",
+            "test": "seasonal Kendall (Hirsch, Slack & Smith 1982), season = calendar month, tie-corrected variance summed "
+                    "over seasons, normal approximation with continuity correction",
+            "seasonality_removed": True,
+            "season_counts": {m: len(seasons[m]) for m in range(1, 13)},
+            "caveat": "Serial dependence is not handled: the covariance term of Hirsch & Slack (1984) is not included, "
+                      "so the p-value is optimistic for persistent series."}

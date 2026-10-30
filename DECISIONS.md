@@ -10,25 +10,39 @@ returned a number for a quantity the record did not support (SPI-1 -3.09, Q100 +
    returns the complete periods, the excluded ones with observed/expected days, and a mask. The tools report the excluded periods.
    It lives in aihydro-watershed because the kernels do and the dependency direction is downward; aihydro-core would have
    forced a core release first. It also closes D26 (calendar-vs-climatic year, spliced window). It does not touch D18 (`_temporal_coverage` counting NaN values) or D27.
-2. **Thresholds are judgement calls, flagged for the lead.** Months: every day present (1.0), because a missing day in a
-   precipitation total is a lower bound and may be the wettest day. Years: 0.95 of days, the same fraction the package
-   already uses for the water-balance and grouped-CI years, so there is one rule. NEITHER comes from a source: the SPI User
-   Guide (WMO-No. 1090) could not be read here (the PDF fetched as undecodable) and Bulletin 17C, read in full-text search, states no
-   daily-coverage threshold (it treats missing years through EMA censoring). Both are arguments, echoed in the result.
-3. **Conventions, verified.** Water year 1 Oct-30 Sep labelled by the year it ends: Bulletin 17C (TM 4-B5) glossary/appendix text.
-   Climatic year 1 Apr-31 Mar for annual low flows: USGS SIR 2008-5126 section 3. Its labelling (we use the year it begins)
-   is our choice; the SIR page does not state one. Bulletin 17C defines the annual flood series from the INSTANTANEOUS peak and
-   allows the maximum daily mean as an alternative; the tool says its series is the daily-mean maximum, so its return levels
-   are daily-mean levels.
+2. **Thresholds.** Months: every day present (1.0) is SOURCED: WMO-No. 1203 (2017) s4.4.1(c) ("can only be calculated if there are
+   complete data over the month") and WMO-TD 341, as cited by the methods review. The SPI User Guide (WMO-No. 1090) marks missing -99,
+   asks for 20-30 years and has no within-month rule. Years: 0.95 of days is NOT sourced (the package's water-balance fraction) and the
+   7Q10 window fraction (0.95) is an engineering choice too; Bulletin 17C states no daily-coverage threshold (it censors missing
+   years, EMA). All are arguments and are echoed in the results. Flagged for the lead.
+3. **Conventions, verified.** Water year 1 Oct-30 Sep labelled by the year it ends: Bulletin 17C (TM 4-B5) Appendix 10, p. 104. Climatic
+   year 1 Apr-31 Mar for annual low flows: USGS SIR 2008-5126 and SIR 2006-5035 section 3; the begin-year label is the methods
+   review's citation of SIR 2006-5035 (the section-3 page I read gives the dates only). Bulletin 17C defines the annual flood series
+   from the INSTANTANEOUS peak and allows the maximum daily mean as an alternative; the tool says its series is the daily-mean
+   maximum, and `map_flood_inundation` carries that statistic with the discharge. `lp3` here is Pearson III on the logs by moments, not the
+   Bulletin 17C procedure.
 4. **Excluded, not imputed.** An incomplete period is dropped and named. Missing precipitation is never zero. An accumulation
    window containing an excluded month is NaN.
-5. **Trend (D07):** one estimator, always named: Theil-Sen + Mann-Kendall from scipy on a decimal-year axis. A
-   missing optional package must not change the statistic; `pymannkendall` is dropped. Seasonality is not removed (stated).
+5. **Trend (D07):** sub-annual series use the seasonal Kendall test and seasonal Sen slope (Hirsch, Slack & Smith 1982), season = calendar
+   month; Theil-Sen + Mann-Kendall is for yearly series only. Unsupported series (a season with < 2 values, < 2 cycles) return
+   None + reason, not a number. Serial dependence is not handled (no Hirsch & Slack 1984 variance); stated in the result. A missing
+   optional package must not change the statistic; `pymannkendall` is dropped.
+5b. **Mean annual totals (D11):** the sum over the 12 calendar months of (mean of finite days x days in month); None + reason if a
+   month has no data; aridity on the same basis for P and PET. A plain mean over the finite days was +30% (dry season missing) or -45%
+   (wet season missing) in the review's test.
+5c. **Days a source never holds:** GridMET (pygridmet) and Daymet have no 31 Dec in leap years; the kernel takes them out of expected
+   days (`calendar`) and reports it, so 100% for months does not drop every leap December. Real gaps still exclude.
 6. **Inclusive end (D10):** `filterDate` end is exclusive; one helper `filter_end` adds a day at every call, in aihydro-data and in
    the tools repo's own copy of the GEE code (a test keeps them in step). Daily-product edge tolerance is 0 (a pygridmet
    31 Dec leap-day skip stays disclosed-only).
 7. **Sub-daily (D12) is refused, not resampled.** Resampling would be a silent choice of aggregation; the error says how to fetch daily.
-   The guard also checks the date spacing, because the slot's `interval` label was itself wrong.
+   The guard also checks the date spacing, because the slot's `interval` label was itself wrong. It now lives in one loader used
+   by baseflow, FDC and flood frequency; `extract_hydrological_signatures` applies the same guard to the slot it consumes.
+
+**Left for Wave T2 (for the coordinator to move into `docs/vision-2040/plans/tool-integrity-2026-10.md`):** partial-year maxima as
+censored bounds (rather than excluded); a flood-season span rule (a year can be 95% complete and miss its flood season); the USGS
+peak-flow file as the Bulletin 17C input (instantaneous peaks, EMA); accumulation-flag (approval/qualifier) handling in the annual
+statistics; the long-scale SPI trade-off (SPI-12/24 under a 100% month rule loses windows to every gap).
 
 **Not done / open.** The `latest` SPI value is the last COMPLETE month; the tool does not extrapolate. SPI minimum calibration
 length (D27) and `_temporal_coverage` NaN counting (D18) are separate findings. The shared slot loader is not built here
