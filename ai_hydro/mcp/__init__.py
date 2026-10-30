@@ -369,6 +369,18 @@ except Exception as _e:
         "WS-4 arg-repair middleware not installed: %s", _e
     )
 
+# Geometry boundary: ONE rule for every tool's `geometry` / `geometries` argument (a bare coordinate
+# pair has no axis order and is refused, never guessed). After arg-repair (aliases are already
+# renamed to `geometry`), before the error contract.
+try:
+    from ai_hydro.mcp.geometry_boundary import install_geometry_boundary as _install_geometry_boundary
+    _install_geometry_boundary(mcp)
+except Exception as _e:
+    import logging
+    logging.getLogger("ai_hydro.mcp").warning(
+        "geometry-boundary middleware not installed: %s", _e
+    )
+
 # Error contract (U4): registered AFTER arg-repair, so it is the innermost middleware. Any tool
 # result dict with ``error is True`` becomes an MCP error (isError) carrying the same envelope.
 try:

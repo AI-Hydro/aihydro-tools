@@ -315,7 +315,7 @@ def test_a_background_job_captures_the_chat_id_at_submit_time(ws, monkeypatch):
                 "log_path": "x", "started_at": "now"}
 
     monkeypatch.setattr("ai_hydro.mcp.tools_data_async.jobs.start_job", fake_start_job)
-    res, body = call("data_fetch_background", {"variable": "precipitation", "geometry": [45.0, -69.0],
+    res, body = call("data_fetch_background", {"variable": "precipitation", "geometry": {"lat": 45.0, "lon": -69.0},
                                                "start": "2000-01-01", "end": "2000-01-31"},
                      meta=ctx(CHAT_A, ws, study="s1"))
     assert not res.is_error and not body.get("error"), body
