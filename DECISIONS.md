@@ -568,3 +568,21 @@ timeout and the final-answer audit timed out at 15 s.
    enforced from the tools layer instead. The forcing request is chunked inline rather than run as a detached job, so a 35-year call
    can still exceed a client timeout of a few minutes; it reports progress and stops on a cancel. Moving it to a job
    (`data_fetch_background` + `wait_for_job`) changes the result envelope and is left to a decision.
+
+### Review addendum (same decision, after the PR #27 review)
+
+- **Why serial execution used to hide data-safety bugs:** check-then-set, matplotlib's current figure, `warnings.catch_warnings`
+  and "ours wins" merges were safe only because sync tools never overlapped. Fixed at the shared mechanism: a re-entrant study write
+  guard held load-to-save by the claim/plan tools; merge rules that never replace a locked/sealed record and treat marked records as
+  atomic; one plot lock plus figure-object calls; one lock around the single `catch_warnings` use.
+- **Cancel semantics (decided):** a cancelled call is sealed `cancelled` (the record states the worker may still complete; rows and files
+  it already wrote cannot be undone), and `save()` raises `ToolCancelled` once the cancel flag is set. Raising was chosen over skipping
+  silently: it stops the abandoned worker at its next save and nothing reports success to anyone. The run-record sealing task is
+  detached, because a task awaiting inside a cancelled anyio scope is cancelled again at every await.
+- **Budget:** forcing and signatures default to 480 s so a long request answers with a retryable envelope before the client's ~600 s
+  timeout. Forcing resumes from aihydro-data's per-window cache; signatures does not (its inner fetch is one call), so its recovery
+  text sends the agent to `fetch_forcing_data` first or `precipitation="skip"`.
+- **Wave T2 (not done):** a job-handle route for long forcing windows (envelope change); per-class concurrency limits for heavy
+  network tools beyond `wait_for_job` (the mechanism, `_CLASS_OF` / `_CLASS_LIMIT`, exists; only `wait` is populated); socket-level
+  timeouts in the sibling data packages; a read-modify-write audit of the remaining slot writers (`tools_experiments`) beyond the leaf
+  merge.

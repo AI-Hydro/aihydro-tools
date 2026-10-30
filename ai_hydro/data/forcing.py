@@ -48,7 +48,7 @@ warnings.filterwarnings('ignore')
 # ---------------------------------------------------------------------------
 _DEFAULT_CHUNK_YEARS = 5
 _DEFAULT_CHUNK_TIMEOUT_S = 300.0
-_DEFAULT_BUDGET_S = 1500.0
+_DEFAULT_BUDGET_S = 480.0       # under the client's ~600 s timeout: stop with a retryable answer, not a hang
 
 
 def _env_float(name: str, default: float) -> float:
@@ -84,7 +84,8 @@ def _fetch_variable_chunked(adata_fetch, adata_var, geom, start_date, end_date, 
     from types import SimpleNamespace
 
     from ai_hydro.core.cancel import (
-        ToolCancelled, ToolDeadlineExceeded, check_cancelled_or_expired, report_progress, run_bounded,
+        ToolCancelled, ToolDeadlineExceeded, check_cancelled_or_expired, chunk_done,
+        report_progress, run_bounded,
     )
 
     timeout = _env_float("AIHYDRO_FETCH_CHUNK_TIMEOUT_S", _DEFAULT_CHUNK_TIMEOUT_S)
@@ -97,7 +98,9 @@ def _fetch_variable_chunked(adata_fetch, adata_var, geom, start_date, end_date, 
 
     check_cancelled_or_expired()
     if len(windows) == 1:
-        return one(start_date, end_date, fetch_kwargs)
+        res1 = one(start_date, end_date, fetch_kwargs)
+        chunk_done()
+        return res1
 
     frames, first = [], None
     for i, (s, e) in enumerate(windows):
@@ -117,6 +120,7 @@ def _fetch_variable_chunked(adata_fetch, adata_var, geom, start_date, end_date, 
             return one(start_date, end_date, fetch_kwargs)
         first = first or res
         frames.append(res.data)
+        chunk_done()
     report_progress(len(windows), len(windows), adata_var)
     df = pd.concat(frames, ignore_index=True)
     if "date" in df.columns:
@@ -765,15 +769,23 @@ _GRIDMET_ONLY_COL: dict[str, str] = {
 
 
 def _with_forcing_budget(fn):
-    """Bound the whole request by ``AIHYDRO_FORCING_BUDGET_S`` (default 1500 s), however it is called."""
+    """Bound the whole request by ``AIHYDRO_FORCING_BUDGET_S`` (default 480 s), however it is called."""
     import functools
 
     @functools.wraps(fn)
     def bounded(*args, **kwargs):
-        from ai_hydro.core.cancel import budget
+        from ai_hydro.core.cancel import ToolDeadlineExceeded, budget, chunk_counter
 
-        with budget(_env_float("AIHYDRO_FORCING_BUDGET_S", _DEFAULT_BUDGET_S)):
-            return fn(*args, **kwargs)
+        secs = _env_float("AIHYDRO_FORCING_BUDGET_S", _DEFAULT_BUDGET_S)
+        with chunk_counter() as counter, budget(secs):
+            try:
+                return fn(*args, **kwargs)
+            except ToolDeadlineExceeded as exc:
+                raise ToolDeadlineExceeded(
+                    f"the forcing request used its {secs:g} s budget with {counter['done']} of "
+                    f"{counter['total']} chunks fetched",
+                    chunks_done=counter["done"], chunks_total=counter["total"],
+                ) from exc
 
     return bounded
 
@@ -841,6 +853,9 @@ def fetch_forcing_data_routed(
 
     geom = _shapely_shape(watershed_geojson)
     requested: list[str] = variables or list(_ADATA_ROUTES.keys())
+    from ai_hydro.core.cancel import chunk_total_add
+    chunk_total_add(len([v for v in requested if v in _ADATA_ROUTES]) * len(_chunk_windows(
+        start_date, end_date, int(_env_float("AIHYDRO_FORCING_CHUNK_YEARS", _DEFAULT_CHUNK_YEARS)))))
 
     # ── Resolve product family → per-variable product IDs ──────────────────
     family_map: dict[str, str] = {}

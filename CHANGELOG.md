@@ -28,12 +28,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   thread) the call returns a structured, retryable `SESSION_BUSY` naming the holder and the running tools, not a hang.
 - **Forcing fetches are chunked, bounded and cancellable.** `fetch_forcing_data_routed` fetches `AIHYDRO_FORCING_CHUNK_YEARS`
   (default 5) at a time; between chunks it honours a client cancel and the request budget `AIHYDRO_FORCING_BUDGET_S` (default
-  1500 s, then a retryable `TIME_BUDGET_EXCEEDED`; completed chunks are in aihydro-data's cache so a retry resumes); every upstream
+  480 s, under the client's ~600 s timeout, then a retryable `TIME_BUDGET_EXCEEDED` with `chunks_done` / `chunks_total`; completed chunks are in aihydro-data's cache so "call again" resumes); every upstream
   call is bounded by `AIHYDRO_FETCH_CHUNK_TIMEOUT_S` (default 300 s) and reports MCP progress per chunk. The first chunk's product is
   pinned for the rest so the series is one product's; if a pinned chunk cannot be served the variable is fetched as one range, as
   before. Returned values and the result envelope are unchanged (tested against a single-call reference).
   `extract_hydrological_signatures` (which fetches streamflow and, for `precipitation="auto"`, precipitation) is bounded by
-  `AIHYDRO_SIGNATURES_BUDGET_S` (default 1200 s) and stops waiting on a client cancel.
+  `AIHYDRO_SIGNATURES_BUDGET_S` (default 480 s) and stops waiting on a client cancel; its inner fetch is not chunked, so its budget message says to fetch forcing first or use `precipitation="skip"`.
+- **Review hardening (data safety under concurrency).** Claim, plan and registry tools (`register_research_plan`, `add_claim`,
+  `update_claim_status`, `add_assumption`, `promote_claim_to_registry`, `check_registry_staleness`) hold the study's write guard
+  from load to save, so check-then-set is atomic (two concurrent plan locks: exactly one wins). The save merge never replaces a
+  locked or sealed record another call stored (structured `SESSION_CONFLICT`), treats any record with a `digest` / `sealed` /
+  `locked` marker as one unit (no field mixing), no longer revives a list item the caller removed, and re-applies the basin-change
+  drop after merging so slots computed for a replaced basin do not land next to the new watershed. matplotlib figure bodies are
+  serialised and use their own figure object (two basins' figures could be written into each other's PNG). `file_lock_bounded`
+  reports contention only for EAGAIN/EWOULDBLOCK (EACCES on Windows); a filesystem without `flock` (ENOLCK, ENOTSUP) degrades to the
+  in-process lock with one warning instead of failing every save as `SESSION_BUSY`. A cancelled call is sealed as cancelled (the
+  record says its worker may still finish) and its `session.save()` / `commit()` raise once the cancel is seen, so it cannot write
+  a result after the client gave up. A reserved worker pool (`AIHYDRO_RESERVED_THREADS`, default 6) serves `audit_interpretation`,
+  read-only tools and run-record sealing; `wait_for_job` is capped at 4 concurrent calls (`TOO_MANY_CONCURRENT_CALLS`); abandoned
+  worker threads and pool saturation are logged by the watchdog. Async tools save off the loop with the normal wait. `SESSION_BUSY`
+  now says what is and is not kept.
 - Race fix: the file-digest caches in `session/store.py` and `session/basin_identity.py` returned a key another thread could have
   cleared between the store and the read.
 

@@ -179,3 +179,81 @@ def test_forcing_tool_keeps_the_server_answering(fake_fetch, tmp_path, monkeypat
     s_t, a_t, running = asyncio.run(scenario())
     assert running, "the long forcing call should still have been running"
     assert s_t < 1.0 and a_t < 1.0, f"summary {s_t:.2f}s / audit {a_t:.2f}s while forcing ran"
+
+
+def test_budget_envelope_is_retryable_and_a_resumed_call_matches_the_single_call(fake_fetch, monkeypatch):
+    """N4: a budget stop says how far it got; calling again resumes from cached chunks, same values."""
+    from ai_hydro.core.cancel import ToolDeadlineExceeded
+
+    calls, state = fake_fetch
+    cache = {}
+    import aihydro_data
+
+    inner = aihydro_data.fetch
+
+    def cached_fetch(variable, geom, start, end, **kw):          # aihydro-data's disk cache, per window
+        key = (variable, start, end)
+        if key not in cache:
+            if state["delay"]:
+                time.sleep(state["delay"])
+            cache[key] = inner.__wrapped__(variable, geom, start, end, **kw) if hasattr(inner, "__wrapped__") \
+                else _Res(_series(variable, start, end), product=f"FAKE_{variable.upper()}")
+        return cache[key]
+
+    monkeypatch.setattr(aihydro_data, "fetch", cached_fetch)
+    monkeypatch.setenv("AIHYDRO_FORCING_CHUNK_YEARS", "100")
+    ref = _run(variables=["pr"]).to_dict()
+    cache.clear()
+    monkeypatch.setenv("AIHYDRO_FORCING_CHUNK_YEARS", "5")
+    state["delay"] = 0.25
+    monkeypatch.setenv("AIHYDRO_FORCING_BUDGET_S", "0.8")
+    with pytest.raises(ToolDeadlineExceeded) as err:
+        _run(variables=["pr"])
+    env = err.value.to_dict()
+    assert env["code"] == "TIME_BUDGET_EXCEEDED" and env["retryable"] is True
+    assert 0 < env["chunks_done"] < env["chunks_total"] == 7
+    assert "call again to continue" in env["recovery"].lower() and "raise" not in env["recovery"].lower()
+    monkeypatch.setenv("AIHYDRO_FORCING_BUDGET_S", "30")
+    state["delay"] = 0.0
+    resumed = _run(variables=["pr"]).to_dict()
+    assert resumed["data"] == ref["data"]
+
+
+def test_default_budget_is_under_the_client_timeout():
+    from ai_hydro.data import forcing
+
+    assert forcing._DEFAULT_BUDGET_S == 480.0
+
+
+def test_async_tool_save_waits_for_a_busy_guard_instead_of_failing(fake_fetch, tmp_path, monkeypatch):
+    """N5: fetch_forcing_data's save runs off the loop with the normal wait, not the 0.25 s loop backstop."""
+    import json
+
+    import ai_hydro.mcp  # noqa: F401
+    import ai_hydro.session.store as store
+    from ai_hydro.mcp.app import mcp
+
+    d = tmp_path / "sessions"
+    monkeypatch.setattr(store, "SESSIONS_DIR", d)
+    monkeypatch.setattr(store, "_SESSIONS_DIR", d)
+    store.HydroSession("t1-async").save()
+    target = store.HydroSession._path("t1-async")
+    handler = mcp._mcp_server.request_handlers[mcp_types.CallToolRequest]
+    entered, release = threading.Event(), threading.Event()
+
+    def holder():
+        with store._session_write_guard(target, "t1-async"):
+            entered.set()
+            release.wait(5)
+
+    threading.Thread(target=holder, daemon=True).start()
+    entered.wait(2)
+    threading.Timer(0.8, release.set).start()
+    req = mcp_types.CallToolRequest(method="tools/call", params=mcp_types.CallToolRequestParams(
+        name="fetch_forcing_data", arguments={"start_date": "2000-01-01", "end_date": "2001-12-31",
+                                              "session_id": "t1-async", "geometry_geojson": json.dumps(POLY)}))
+    r = asyncio.run(handler(req))
+    root = r.root if hasattr(r, "root") else r
+    text = root.content[0].text
+    assert "SESSION_BUSY" not in text, text[:300]
+    assert not root.isError

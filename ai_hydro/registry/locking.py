@@ -63,14 +63,34 @@ class LockTimeout(TimeoutError):
     """A bounded lock wait ran out (the lock is held by another thread or process)."""
 
 
+_warned_unsupported = False
+
+
+def _is_contended(exc: OSError) -> bool:
+    """True only when the error means "someone else holds the lock".
+
+    EAGAIN/EWOULDBLOCK on POSIX; EACCES (and EDEADLK) from ``msvcrt.locking`` on Windows. Anything
+    else (ENOLCK, ENOTSUP, EOPNOTSUPP, ENOSYS, EBADF on filesystems with no ``flock``) is not
+    contention and must not be reported as a busy study.
+    """
+    import errno
+
+    codes = {errno.EAGAIN, errno.EWOULDBLOCK}
+    if _msvcrt is not None:  # pragma: no cover - Windows
+        codes |= {errno.EACCES, errno.EDEADLK}
+    return exc.errno in codes
+
+
 @contextlib.contextmanager
 def file_lock_bounded(lock_path: Path, timeout: float) -> Iterator[None]:
     """``file_lock`` that gives up after ``timeout`` seconds with ``LockTimeout``.
 
     Polls a non-blocking acquire (10 ms steps up to 100 ms), so a holder that never lets go costs
-    the waiter a bounded wait instead of a hung thread. Without a locking primitive it degrades
-    to no lock, like ``file_lock``.
+    the waiter a bounded wait instead of a hung thread. When the filesystem cannot lock at all
+    (ENOLCK, ENOTSUP, ...) it degrades to no cross-process lock (the caller's in-process lock still
+    applies) and warns once; that is never reported as contention.
     """
+    global _warned_unsupported
     lock_path = Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
@@ -85,9 +105,17 @@ def file_lock_bounded(lock_path: Path, timeout: float) -> Iterator[None]:
                 elif _msvcrt is not None:  # pragma: no cover
                     os.lseek(fd, 0, os.SEEK_SET)
                     _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+                else:
+                    break                      # no primitive at all: in-process lock only
                 acquired = True
                 break
-            except OSError:
+            except OSError as exc:
+                if not _is_contended(exc):
+                    if not _warned_unsupported:
+                        _warned_unsupported = True
+                        log.warning("File locking is unavailable on this filesystem (%s); %s is "
+                                    "serialised within this process only.", exc, lock_path.name)
+                    break
                 if time.monotonic() >= deadline:
                     raise LockTimeout(f"lock {lock_path.name} not acquired within {timeout:g}s") from None
                 time.sleep(min(delay, max(0.0, deadline - time.monotonic())))

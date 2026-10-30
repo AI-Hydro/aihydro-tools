@@ -51,6 +51,8 @@ from typing import Optional
 
 import numpy as np
 
+from ai_hydro.analysis._plotlock import plot_serialized
+
 log = logging.getLogger(__name__)
 
 # Rasters larger than this get a tile pyramid; smaller rasters use single-PNG.
@@ -63,6 +65,7 @@ DEFAULT_MAX_OVERVIEW_PX = 2048
 DEFAULT_CHIP_PX = 256
 
 
+@plot_serialized
 def generate_tile_pyramid(
     raster: "xr.DataArray",
     output_dir: str,
@@ -258,6 +261,7 @@ def _colorise(arr: np.ndarray, norm, cmap, nodata_alpha: bool = True) -> np.ndar
     return rgba
 
 
+@plot_serialized
 def _write_overview(
     arr: np.ndarray,
     norm,
@@ -289,14 +293,15 @@ def _write_overview(
     )
     ax.imshow(rgba, aspect="auto", interpolation="nearest")
     ax.axis("off")
-    plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-    plt.savefig(str(out_path), dpi=100, bbox_inches="tight", pad_inches=0, transparent=True)
-    plt.close()
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    fig.savefig(str(out_path), dpi=100, bbox_inches="tight", pad_inches=0, transparent=True)
+    plt.close(fig)
 
     log.debug("overview PNG: %s  shape=%s", out_path.name, rgba.shape[:2])
     return out_path
 
 
+@plot_serialized
 def _write_chip_tiles(
     raster: "xr.DataArray",
     arr: np.ndarray,
@@ -401,10 +406,10 @@ def _write_chip_tiles(
             )
             ax.imshow(rgba, aspect="auto", interpolation="nearest")
             ax.axis("off")
-            plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-            plt.savefig(str(chip_path), dpi=100, bbox_inches="tight",
+            fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+            fig.savefig(str(chip_path), dpi=100, bbox_inches="tight",
                         pad_inches=0, transparent=True)
-            plt.close()
+            plt.close(fig)
 
             level_chips.append({
                 "path": str(chip_path),

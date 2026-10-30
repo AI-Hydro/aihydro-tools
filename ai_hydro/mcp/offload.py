@@ -107,6 +107,55 @@ def _pool() -> concurrent.futures.ThreadPoolExecutor:
     return _POOL
 
 
+_RESERVED: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _reserved_pool() -> concurrent.futures.ThreadPoolExecutor:
+    """A small pool kept free for the audit, read-only status tools and run-record sealing, so tools
+    that hang cannot starve the calls that tell the user what is happening."""
+    global _RESERVED
+    if _RESERVED is None:
+        with _POOL_LOCK:
+            if _RESERVED is None:
+                try:
+                    n = max(2, int(os.environ.get("AIHYDRO_RESERVED_THREADS", "6")))
+                except ValueError:
+                    n = 6
+                _RESERVED = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=n, thread_name_prefix="aihydro-reserved")
+    return _RESERVED
+
+
+_ALWAYS_RESERVED = frozenset({"audit_interpretation"})
+
+
+def _uses_reserved_pool(name: str | None, internal: bool) -> bool:
+    if internal or (name in _ALWAYS_RESERVED):
+        return True
+    if not name or name in _CLASS_OF:       # a long wait never takes a reserved worker
+        return False
+    try:
+        from ai_hydro.mcp.tool_surface import read_only_tools
+
+        return name in read_only_tools()
+    except Exception:
+        return False
+
+
+# Concurrency caps for classes of long-lived waiting calls (checked on the loop thread, no lock needed).
+# wait_for_job parks a worker for up to its wait budget; unbounded waits would fill the pool.
+_CLASS_OF = {"wait_for_job": "wait"}
+_CLASS_LIMIT = {"wait": 4}
+_CLASS_ACTIVE: dict[str, int] = {}
+
+
+def class_busy_envelope(name: str, cls: str) -> dict:
+    return {"error": True, "code": "TOO_MANY_CONCURRENT_CALLS", "retryable": True,
+            "message": (f"{name}: {_CLASS_LIMIT[cls]} calls of this kind are already waiting; "
+                        "more would starve the server's workers."),
+            "recovery": "Wait for one of them to finish (they return in time), then call again."}
+
+
 async def run_off_loop(fn: Callable[..., Any], *args: Any, _tool_name: str | None = None,
                        _track: bool = True, **kwargs: Any) -> Any:
     """Run ``fn(*args, **kwargs)`` in the tool pool with this task's contextvars; await the result.
@@ -141,8 +190,9 @@ async def run_off_loop(fn: Callable[..., Any], *args: Any, _tool_name: str | Non
                 with _RUNNING_LOCK:
                     _RUNNING.pop(call_id, None)
 
+    pool = _reserved_pool() if _uses_reserved_pool(name if _tool_name else None, not _track) else _pool()
     try:
-        return await loop.run_in_executor(_pool(), _run)
+        return await loop.run_in_executor(pool, _run)
     except BaseException:
         # CancelledError (client cancel / transport closed) or a tool error: tell a still-running
         # worker to stop at its next check. Harmless when it already finished.
@@ -177,7 +227,17 @@ def offload_sync(fn: Callable[..., Any]) -> Callable[..., Any]:
     async def _offloaded(*args: Any, **kwargs: Any) -> Any:
         from ai_hydro.mcp.app import ACTIVE_TOOL_NAME
 
-        return await run_off_loop(fn, *args, _tool_name=ACTIVE_TOOL_NAME.get() or fn.__name__, **kwargs)
+        name = ACTIVE_TOOL_NAME.get() or fn.__name__
+        cls = _CLASS_OF.get(name)
+        if cls is not None:
+            if _CLASS_ACTIVE.get(cls, 0) >= _CLASS_LIMIT[cls]:
+                return class_busy_envelope(name, cls)
+            _CLASS_ACTIVE[cls] = _CLASS_ACTIVE.get(cls, 0) + 1
+        try:
+            return await run_off_loop(fn, *args, _tool_name=name, **kwargs)
+        finally:
+            if cls is not None:
+                _CLASS_ACTIVE[cls] -= 1
 
     setattr(_offloaded, _MARK, True)
     _offloaded.__sync_origin__ = fn      # type: ignore[attr-defined]
@@ -232,8 +292,26 @@ def start_loop_watchdog(loop: asyncio.AbstractEventLoop, *, threshold_s: float |
     loop.call_soon_threadsafe(beat)
 
     def watch() -> None:
+        last_report = 0.0
         while not loop.is_closed():
             time.sleep(min(1.0, limit / 3))
+            now = time.monotonic()
+            if now - last_report > 60.0:
+                last_report = now
+                try:
+                    from ai_hydro.core.cancel import abandoned_threads
+
+                    ab = abandoned_threads()
+                    if ab:
+                        log.warning("%d abandoned worker thread(s) still running (their callers gave up): %s",
+                                    len(ab), ab[:8])
+                    busy = running_tools()
+                    if busy and len(busy) >= _pool()._max_workers:
+                        log.warning("tool pool saturated: %d calls running (reserved pool keeps the audit "
+                                    "and read-only tools responsive): %s", len(busy),
+                                    [(r["tool"], r["elapsed_s"]) for r in busy[:8]])
+                except Exception:
+                    pass
             lag = time.monotonic() - state["beat"]
             tid = state["tid"]
             if lag > limit and not state["warned"] and tid is not None:

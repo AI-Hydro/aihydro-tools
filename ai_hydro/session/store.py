@@ -919,8 +919,10 @@ class SessionBusyError(ToolError):
         who = f" by {holder}" if holder else ""
         super().__init__(
             code="SESSION_BUSY",
-            message=(f"Study {session_id!r} is being written{who}; waited {waited_s:.0f}s. "
-                     "Nothing was lost: retry this call."),
+            message=(f"Study {session_id!r} is being written{who}; waited {waited_s:.0f}s, so this call's "
+                     "result was NOT saved to the study. What is kept: everything already saved, and fetched "
+                     "data held in aihydro-data's cache (a retry re-reads it, not the network). Uncached "
+                     "computation from this call is recomputed on the retry."),
             details={"retryable": True, "session_id": session_id, "held_by": holder,
                      "running_tools": names, "waited_s": round(waited_s, 1)},
             recovery="Retry in a few seconds; wait_for_job(job_id) if a long job is running.",
@@ -946,18 +948,35 @@ def _current_tool_name() -> str | None:
         return None
 
 
+_HELD = threading.local()
+
+
 @contextlib.contextmanager
 def _session_write_guard(target: Path, session_id: str):
-    """Exclusive, bounded guard for writing ``target``; raises ``SessionBusyError`` on timeout."""
+    """Exclusive, bounded, re-entrant guard for writing ``target``; raises ``SessionBusyError`` on timeout.
+
+    Re-entrant per thread, so a tool that holds it across load-check-save (``session_write_guard``) can
+    call ``save()`` inside.
+    """
     from ai_hydro.registry.locking import LockTimeout, file_lock_bounded
 
     key = str(target)
+    held = getattr(_HELD, "keys", None)
+    if held is None:
+        held = _HELD.keys = {}
+    if held.get(key, 0) > 0:
+        held[key] += 1
+        try:
+            yield
+        finally:
+            held[key] -= 1
+        return
     wait = _session_write_wait_s()
     try:
         import asyncio
 
         asyncio.get_running_loop()
-        wait = min(wait, 0.25)       # an async tool saving on the loop thread must not hold the loop
+        wait = min(wait, 0.25)       # backstop: a save on the loop thread must not hold the loop
     except RuntimeError:
         pass
     started = time.monotonic()
@@ -982,9 +1001,11 @@ def _session_write_guard(target: Path, session_id: str):
         try:
             with file_lock_bounded(target.with_name(target.name + ".write.lock"), left):
                 _WRITE_HOLDERS[key] = _current_tool_name() or "unknown"
+                held[key] = 1
                 try:
                     yield
                 finally:
+                    held.pop(key, None)
                     _WRITE_HOLDERS.pop(key, None)
         except LockTimeout:
             raise busy() from None
@@ -992,21 +1013,66 @@ def _session_write_guard(target: Path, session_id: str):
         tlock.release()
 
 
-def _merge3(base: Any, ours: Any, theirs: Any, depth: int = 0) -> Any:
-    """Three-way merge of JSON-shaped state; ``ours`` wins where both sides changed one leaf."""
+@contextlib.contextmanager
+def session_write_guard(session_id: str, shard_id: str | None = None):
+    """Hold a study's write guard across a whole load -> check -> mutate -> save.
+
+    For tools whose correctness is a check-then-set (lock a plan, promote or revise a claim): the guard
+    is held for local work only, never across network or long compute, and waits are bounded
+    (``SESSION_BUSY``). ``HydroSession.load`` and ``save`` inside it are re-entrant.
+    """
+    with _session_write_guard(HydroSession._path(session_id, shard_id), session_id):
+        yield
+
+
+class SessionConflictError(ToolError):
+    """A save would replace a locked / sealed record that another call stored in the meantime."""
+
+    def __init__(self, session_id: str, path: str):
+        self.session_id, self.path = session_id, path
+        super().__init__(
+            code="SESSION_CONFLICT",
+            message=(f"Study {session_id!r}: another call already stored a locked or sealed record at "
+                     f"{path!r}; this call's different value was not saved. A locked record is never replaced."),
+            details={"retryable": False, "session_id": session_id, "path": path},
+            recovery="Reload the study (get_session_summary), look at the stored record, and decide whether "
+                     "your change is still wanted; a locked plan or sealed record is revised, not overwritten.",
+        )
+
+
+def _is_protected(v: Any) -> bool:
+    return isinstance(v, dict) and (v.get("locked") is True or v.get("sealed") is True)
+
+
+def _is_atomic(v: Any) -> bool:
+    """A record with an integrity marker is one unit: the later whole record wins, never a field mix."""
+    return isinstance(v, dict) and any(k in v for k in ("digest", "sealed", "locked", "content_hash", "revision_digest"))
+
+
+def _merge3(base: Any, ours: Any, theirs: Any, depth: int = 0, path: str = "") -> Any:
+    """Three-way merge of JSON-shaped state; ``ours`` (the later save) wins where both sides changed one leaf.
+
+    Never mixes fields of a record with an integrity marker (digest/sealed/locked...), and never
+    replaces a locked or sealed record another call stored with a different one (``_Conflict``).
+    """
     if ours == theirs:
         return ours
     if ours == base:
         return theirs
     if theirs == base:
         return ours
+    if _is_protected(theirs):
+        raise _Conflict(path)
+    if _is_atomic(ours) or _is_atomic(theirs):
+        return ours
     if isinstance(ours, dict) and isinstance(theirs, dict) and depth < _MERGE_DEPTH:
         b = base if isinstance(base, dict) else {}
         out: dict = {}
         for k in list(theirs) + [k for k in ours if k not in theirs]:
             in_o, in_t, in_b = k in ours, k in theirs, k in b
+            sub = f"{path}/{k}"
             if in_o and in_t:
-                out[k] = _merge3(b.get(k), ours[k], theirs[k], depth + 1)
+                out[k] = _merge3(b.get(k), ours[k], theirs[k], depth + 1, sub)
             elif in_o:                                   # absent on disk
                 if not in_b or ours[k] != b[k]:
                     out[k] = ours[k]                     # we added or changed it
@@ -1020,12 +1086,68 @@ def _merge3(base: Any, ours: Any, theirs: Any, depth: int = 0) -> Any:
         return out
     if isinstance(ours, list) and isinstance(theirs, list):
         b = base if isinstance(base, list) else []
-        added = [x for x in ours if x not in b and x not in theirs]
-        return list(theirs) + added                      # notes / citations: both sides' additions survive
+        kept = [x for x in theirs if not (x in b and x not in ours)]      # their list, minus what we removed
+        added = [x for x in ours if x not in b and x not in theirs]       # plus what we added
+        return kept + added
     return ours
 
 
-def _merge_session_raw(base_text: str | None, ours: dict, theirs_text: str) -> dict:
+class _Conflict(Exception):
+    def __init__(self, path: str):
+        self.path = path or "/"
+        super().__init__(self.path)
+
+
+def _basin_digest_of(raw: dict) -> str | None:
+    try:
+        ws = (raw.get("watershed") or {}).get(_LEGACY_FEATURE_ID, {}).get(_LEGACY_PARAMS_KEY)
+        return _bi.watershed_slot_digest(ws) if isinstance(ws, dict) else None
+    except Exception:
+        return None
+
+
+def _apply_basin_change(base: dict, merged: dict) -> None:
+    """If the merge changed the session basin, drop what was computed for the old one (as ``put_result`` does).
+
+    A merge can put a basin-dependent result computed for basin X next to a watershed Y that another
+    call stored (or the reverse); neither may stay on disk or reach raw readers.
+    """
+    prev, new = _basin_digest_of(base), _basin_digest_of(merged)
+    if not (prev and new and prev != new):
+        return
+    expected = _bi.make_identity(new, None)
+    dropped: list[str] = []
+    for slot in _bi.BASIN_DEPENDENT_SLOTS:
+        by_feature = merged.get(slot)
+        if not isinstance(by_feature, dict):
+            continue
+        by_key = by_feature.get(_LEGACY_FEATURE_ID)
+        if not isinstance(by_key, dict):
+            continue
+        for k in list(by_key):
+            if by_key[k] is not None and _bi.judge(by_key[k], expected) != _bi.VERIFIED:
+                del by_key[k]
+                if slot not in dropped:
+                    dropped.append(slot)
+        if not by_key:
+            del by_feature[_LEGACY_FEATURE_ID]
+        if not by_feature:
+            del merged[slot]
+    ws = (merged.get("watershed") or {}).get(_LEGACY_FEATURE_ID, {}).get(_LEGACY_PARAMS_KEY) or {}
+    data = ws.get("data") if isinstance(ws.get("data"), dict) else {}
+    cleared = None
+    if merged.get("site_id") and _bi.norm_gauge(merged["site_id"]) != _bi.norm_gauge(data.get("gauge_id")):
+        cleared = merged["site_id"]
+        merged["site_id"], merged["site_type"], merged["site_name"] = "", "", ""
+    extra = merged.setdefault("extra", {})
+    log_ = extra.setdefault("basin_changes", [])
+    if not (log_ and log_[-1].get("to") == new):
+        log_.append({"at": _now(), "from": prev, "to": new, "dropped_slots": sorted(dropped),
+                     "cleared_site_id": cleared, "by": "merge"})
+        del log_[:-20]
+
+
+def _merge_session_raw(base_text: str | None, ours: dict, theirs_text: str, session_id: str = "") -> dict:
     """Merge the object's state (``ours``) over what is on disk, relative to what it loaded."""
     try:
         base = json.loads(base_text) if base_text else {}
@@ -1038,7 +1160,11 @@ def _merge_session_raw(base_text: str | None, ours: dict, theirs_text: str) -> d
     ours_n = json.loads(json.dumps(ours, allow_nan=False))
     if not isinstance(base, dict) or not isinstance(theirs, dict):
         return ours_n
-    merged = _merge3(base, ours_n, theirs, 0)
+    try:
+        merged = _merge3(base, ours_n, theirs, 0)
+    except _Conflict as c:
+        raise SessionConflictError(session_id, c.path) from None
+    _apply_basin_change(base, merged)
     ua, ub = ours_n.get("updated_at"), theirs.get("updated_at")
     if isinstance(ua, str) and isinstance(ub, str):
         merged["updated_at"] = max(ua, ub)
@@ -1843,6 +1969,11 @@ class HydroSession:
         agent's instructions mid-task (the F-TS6 / session-study M3 problem). The digest is the
         ``aihydro://project/{prj}/context`` resource.
         """
+        # A call the client gave up on must not write its result afterwards (the run record says it was
+        # cancelled). Raising also stops the abandoned worker at its save instead of letting it run on.
+        from ai_hydro.core.cancel import check_cancelled
+
+        check_cancelled()
         self.updated_at = _now()
         try:
             for w in self.validate_identity():
@@ -1867,7 +1998,7 @@ class HydroSession:
                     except OSError:
                         theirs_text = ""
                     if theirs_text:
-                        ours = _merge_session_raw(self._base_text, ours, theirs_text)
+                        ours = _merge_session_raw(self._base_text, ours, theirs_text, self.session_id)
                         merged = True
             tmp = target.with_suffix(
                 f"{target.suffix}.tmp.{os.getpid()}.{int(time.time() * 1000)}.{threading.get_ident()}"

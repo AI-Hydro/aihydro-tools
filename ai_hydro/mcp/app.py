@@ -683,6 +683,7 @@ mcp.add_middleware(_EvalConditionMiddleware())
 #   * tools listed in RECORD_EXEMPT are skipped (catalog, read-only views, UI
 #     state, lifecycle); calls with no resolvable session are counted as
 #     ``no_session`` and not recorded.
+import asyncio  # noqa: E402
 import json as _json  # noqa: E402
 import time as _time  # noqa: E402
 import logging as _logging  # noqa: E402
@@ -893,6 +894,47 @@ def _mcp_client_label(context) -> str | None:
         return None
 
 
+_CANCEL_SEALS: set = set()
+
+
+def _seal_cancelled_call(run_records, *, tool, arguments, capture, chat_id, started, mcp_client, run_context) -> None:
+    """Seal the run record of a cancelled call as ``CANCELLED`` (fire and forget, never raises).
+
+    Runs as its own task: an awaiting task inside a cancelled anyio scope is cancelled again at every
+    await, so sealing in-line would be skipped. The record says the worker may still complete and write.
+    """
+    from ai_hydro.mcp.enforcement import _generate_unique_run_id
+    from ai_hydro.core.cancel import ToolCancelled
+    from ai_hydro.mcp.offload import run_off_loop
+
+    envelope = {
+        "error": True, "code": "CANCELLED", "cancelled": True,
+        "message": ("call cancelled by the client; its worker may still complete and write rows or files "
+                    "that this record cannot undo"),
+    }
+
+    async def seal():
+        try:
+            await run_off_loop(
+                run_records.record_call,
+                tool=tool, arguments=arguments, result=envelope,
+                failure=ToolCancelled(envelope["message"]), capture=capture, chat_id=chat_id,
+                id_factory=_generate_unique_run_id,
+                duration_ms=(_time.monotonic() - started) * 1000.0,
+                mcp_client=mcp_client, output_bytes=len(_json.dumps(envelope)), context=run_context,
+                _track=False,
+            )
+        except BaseException as exc:                      # noqa: BLE001 - sealing must never raise
+            _record_log.warning("could not seal cancelled call %s: %s", tool, exc)
+
+    try:
+        task = asyncio.get_running_loop().create_task(seal())
+        _CANCEL_SEALS.add(task)
+        task.add_done_callback(_CANCEL_SEALS.discard)
+    except Exception as exc:
+        _record_log.warning("could not schedule sealing of cancelled call %s: %s", tool, exc)
+
+
 class RunRecordMiddleware(Middleware):
     """Attach a sealed ``aihydro.run/2`` record to every recorded tool call.
 
@@ -934,6 +976,14 @@ class RunRecordMiddleware(Middleware):
             tool_result = await call_next(context)
         except Exception as exc:
             failure = exc
+        except asyncio.CancelledError:
+            # The client gave up. The worker may still be running and may already have written rows
+            # (a cancel cannot undo them): seal what exists as a cancelled call, in a task the
+            # cancelled scope cannot interrupt, then let the cancellation propagate.
+            _seal_cancelled_call(
+                run_records, tool=tool, arguments=arguments, capture=capture, chat_id=ACTIVE_CHAT_ID.get(),
+                started=started, mcp_client=_mcp_client_label(context), run_context=run_context)
+            raise
         finally:
             run_records.end_capture(token)
 

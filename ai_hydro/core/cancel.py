@@ -30,12 +30,46 @@ class ToolCancelled(Exception):
 
 
 class ToolDeadlineExceeded(TimeoutError):
-    """A bounded long operation ran out of its wall-clock budget."""
+    """A bounded long operation ran out of its wall-clock budget (retryable: finished work is cached)."""
+
+    def __init__(self, message: str = "", *, chunks_done: int | None = None, chunks_total: int | None = None,
+                 recovery: str | None = None):
+        super().__init__(message)
+        self.chunks_done, self.chunks_total, self.recovery = chunks_done, chunks_total, recovery
 
     def to_dict(self) -> dict:
-        return {"error": True, "code": "TIME_BUDGET_EXCEEDED", "retryable": True, "message": str(self),
-                "recovery": ("Call again: chunks already fetched are cached, so the retry resumes. "
-                             "Raise AIHYDRO_FORCING_BUDGET_S, or request a shorter window.")}
+        d: dict = {"error": True, "code": "TIME_BUDGET_EXCEEDED", "retryable": True, "message": str(self),
+                   "recovery": self.recovery or ("Call again to continue: the chunks already fetched are cached, "
+                                                 "so the retry resumes where this call stopped.")}
+        if self.chunks_total is not None:
+            d["chunks_done"], d["chunks_total"] = self.chunks_done, self.chunks_total
+        return d
+
+
+_CHUNKS: contextvars.ContextVar[dict | None] = contextvars.ContextVar("aihydro_chunk_counter", default=None)
+
+
+@contextlib.contextmanager
+def chunk_counter():
+    """Count finished chunks of the running request, for the retryable budget envelope."""
+    counter = {"done": 0, "total": 0}
+    token = _CHUNKS.set(counter)
+    try:
+        yield counter
+    finally:
+        _CHUNKS.reset(token)
+
+
+def chunk_done(n: int = 1) -> None:
+    c = _CHUNKS.get()
+    if c is not None:
+        c["done"] += n
+
+
+def chunk_total_add(n: int) -> None:
+    c = _CHUNKS.get()
+    if c is not None:
+        c["total"] += n
 
 
 def bind_cancel_event(event: threading.Event | None) -> None:
@@ -100,6 +134,17 @@ def report_progress(done: float, total: float, message: str = "") -> None:
         pass
 
 
+_ABANDONED_LOCK = threading.Lock()
+_ABANDONED: dict[int, tuple[str, float]] = {}      # thread ident -> (label, abandoned_at) while still running
+
+
+def abandoned_threads() -> list[dict[str, Any]]:
+    """Worker threads a bounded call stopped waiting for and that have not ended yet."""
+    now = time.monotonic()
+    with _ABANDONED_LOCK:
+        return [{"label": lbl, "age_s": round(now - t, 1)} for lbl, t in _ABANDONED.values()]
+
+
 def run_bounded(fn: Callable[..., Any], *args: Any, timeout: float | None = None, label: str = "",
                 poll: float = 0.25, **kwargs: Any) -> Any:
     """Run ``fn`` in a daemon thread and wait for it, honouring cancel, the call's budget and ``timeout``.
@@ -122,11 +167,29 @@ def run_bounded(fn: Callable[..., Any], *args: Any, timeout: float | None = None
             done.set()
 
     started = time.monotonic()
-    threading.Thread(target=_target, name=f"aihydro-bounded-{label or 'call'}", daemon=True).start()
+    th = threading.Thread(target=_target, name=f"aihydro-bounded-{label or 'call'}", daemon=True)
+    th.start()
+
+    def abandon() -> None:
+        if not done.is_set():
+            with _ABANDONED_LOCK:
+                _ABANDONED[th.ident or id(th)] = (label or "call", time.monotonic())
+
+            def _forget() -> None:
+                done.wait()
+                with _ABANDONED_LOCK:
+                    _ABANDONED.pop(th.ident or id(th), None)
+
+            threading.Thread(target=_forget, daemon=True, name="aihydro-abandon-reaper").start()
+
     while not done.wait(poll):
-        check_cancelled_or_expired()
-        if timeout is not None and time.monotonic() - started > timeout:
-            raise TimeoutError(f"{label or 'operation'} did not finish within {timeout:g}s")
+        try:
+            check_cancelled_or_expired()
+            if timeout is not None and time.monotonic() - started > timeout:
+                raise TimeoutError(f"{label or 'operation'} did not finish within {timeout:g}s")
+        except BaseException:
+            abandon()
+            raise
     if "error" in box:
         raise box["error"]
     return box["value"]
