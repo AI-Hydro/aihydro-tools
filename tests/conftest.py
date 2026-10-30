@@ -129,3 +129,35 @@ def _block_network_for_offline_tests(request, monkeypatch):
     # fallbacks); an attempt that was caught is still an offline violation.
     if attempts:
         pytest.fail(f"{len(attempts)} blocked network attempt(s); first: {attempts[0]}", pytrace=False)
+
+
+# ── CI: a missing modelling package is a failure, not a skip ─────────────────
+# The modelling-backed tools are guarded by skips so a bare local checkout still runs. In CI
+# (``CI`` set) the package is installed, so such a skip means the install broke and the guarded
+# tests silently stopped running: make it fail.
+
+def _is_modelling_skip(rep) -> bool:
+    if not rep.skipped or not isinstance(rep.longrepr, tuple):
+        return False
+    reason = str(rep.longrepr[-1]).lower()
+    return "aihydro_modelling" in reason or "aihydro-modelling" in reason
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    if os.environ.get("CI") and _is_modelling_skip(rep):
+        reason = str(rep.longrepr[-1])
+        rep.outcome = "failed"
+        rep.longrepr = f"skipped in CI because aihydro-modelling is missing or too old: {reason}"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector):
+    outcome = yield
+    rep = outcome.get_result()
+    if os.environ.get("CI") and _is_modelling_skip(rep):
+        reason = str(rep.longrepr[-1])
+        rep.outcome = "failed"
+        rep.longrepr = f"skipped in CI because aihydro-modelling is missing or too old: {reason}"

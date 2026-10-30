@@ -32,9 +32,12 @@ jobs:
       - name: Install package with dev + extras
         run: |
           pip install import-linter
-          # No `modelling`/`all` extra: aihydro-modelling is private (see
-          # DECISIONS.md); its tests skip when it is absent.
           pip install -e ".[analysis,data,delineation,gee,mcp,viz,dev]" pyyaml
+          # The modelling-backed tools are tested, not skipped: tests/conftest.py turns a
+          # modelling skip into a failure when CI is set. CPU-only torch keeps this small;
+          # the neuralhydrology extra is not needed (tests fake backend availability).
+          pip install "aihydro-modelling[torch]>=0.6.2,<0.7" \
+            --extra-index-url https://download.pytorch.org/whl/cpu
 
       - name: Lint with ruff (advisory — pre-existing debt, not yet a merge gate)
         continue-on-error: true

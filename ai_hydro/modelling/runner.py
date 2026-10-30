@@ -59,6 +59,25 @@ def _write_status(
     status_path.write_text(json.dumps(payload, indent=2))
 
 
+def _refusal_code(exc: BaseException) -> str | None:
+    """The code of an exception that is a deliberate refusal, else None (not any ``.code``)."""
+    types: list[type] = []
+    try:
+        from aihydro_core.primitives.errors import ToolError
+        types.append(ToolError)
+    except ImportError:
+        pass
+    try:
+        from aihydro_modelling.backends.hbv import InsufficientDataError
+        types.append(InsufficientDataError)
+    except ImportError:
+        pass
+    if types and isinstance(exc, tuple(types)):
+        code = getattr(exc, "code", None)
+        return str(code) if code else None
+    return None
+
+
 def _require_scored(result: dict) -> None:
     """A run that scored nothing is a failure, never a ``complete`` model (audit F7)."""
     if result.get("nse") is None:
@@ -261,14 +280,15 @@ def run(artifact_dir: Path) -> None:
     except Exception as exc:
         tb = traceback.format_exc()
         log.error("Training failed:\n%s", tb)
-        # A refusal that names its own code (INSUFFICIENT_DATA, BASIN_MISMATCH, ...) keeps it
-        # and its full message; anything else is an unexpected TRAINING_ERROR with the tail.
-        code = getattr(exc, "code", None)
-        _write_status(
-            artifact_dir, job_id, "failed",
-            error=({"code": str(code), "message": str(exc)[:1500]} if code
-                   else {"code": "TRAINING_ERROR", "message": tb[-500:]}),
-        )
+        # A deliberate refusal (ToolError, InsufficientDataError) keeps its own code and full
+        # message; any other exception is an unexpected TRAINING_ERROR. The traceback is kept
+        # in both cases (train.log has it in full; the status carries its tail).
+        code = _refusal_code(exc)
+        if code:
+            error = {"code": code, "message": str(exc)[:1500], "traceback": tb[-800:]}
+        else:
+            error = {"code": "TRAINING_ERROR", "message": tb[-500:]}
+        _write_status(artifact_dir, job_id, "failed", error=error)
         sys.exit(1)
 
 

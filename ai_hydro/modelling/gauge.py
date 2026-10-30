@@ -42,8 +42,14 @@ _CMS_UNITS = {"m3/s", "m^3/s", "m³/s", "cms", "m3 s-1", "m3s-1"}
 
 
 def _norm_gauge(value) -> str:
+    """Canonical form of a gauge id for comparison: no ``USGS:``/``USGS-``/``USGS `` prefix, and
+    all-digit ids compared as integers (``01031500`` == ``1031500``), so formatting differences
+    do not raise a false BASIN_MISMATCH."""
+    import re
+
     g = str(value or "").strip().lower()
-    return g[len("usgs:"):] if g.startswith("usgs:") else g
+    g = re.sub(r"^usgs[\s:_-]*", "", g)
+    return g.lstrip("0") or "0" if g.isdigit() else g
 
 
 def _declared_gauge(slot) -> str:

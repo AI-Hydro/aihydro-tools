@@ -759,6 +759,49 @@ def _rating(nse) -> str:
             "poor" if nse is not None else "unknown")
 
 
+def _kernel_staleness(result: dict) -> str | None:
+    """Why a stored HBV result cannot be trusted, or None.
+
+    HBV results made before aihydro-modelling 0.6.2 came from a kernel that created water
+    (audit F1). They carry no ``hbv_kernel`` stamp; a stamp that differs from the installed
+    kernel's is also stale. Non-HBV results are not affected.
+    """
+    if str(result.get("model_type") or "").lower() != "hbv" and \
+            str(result.get("framework") or "").lower() != "hbv-light":
+        return None
+    have = result.get("hbv_kernel")
+    try:
+        from aihydro_modelling.backends.hbv import HBV_KERNEL
+    except ImportError:
+        HBV_KERNEL = None
+    if not have:
+        return ("it carries no hbv_kernel stamp: it was produced by the HBV kernel that created water "
+                "(aihydro-modelling < 0.6.2)")
+    if HBV_KERNEL and have != HBV_KERNEL:
+        return f"it was produced by HBV kernel '{have}', the installed kernel is '{HBV_KERNEL}'"
+    return None
+
+
+def _stale_model(reason: str, *, session_id, source: str, result: dict, job_id: str | None = None) -> dict:
+    """A stored model that must be re-run: reported, but never as a clean trained model."""
+    out = {
+        "session_id": session_id,
+        "error": False,
+        "model_trained": False,
+        "stale": True,
+        "code": "MODEL_STALE_KERNEL",
+        "source": source,
+        "message": f"The stored HBV result is stale: {reason}. Its skill numbers are withheld; re-run "
+                   "the training (propose_and_train / train_hydro_model).",
+        "framework": result.get("framework"),
+        "model_dir": result.get("model_dir"),
+        "hbv_kernel": result.get("hbv_kernel"),
+    }
+    if job_id:
+        out["job_id"] = job_id
+    return out
+
+
 def _job_error(job_id: str, code: str, message: str, **extra) -> dict:
     """A job-scoped refusal. ``model_trained`` is always False: no other model's skill is ever shown."""
     return {"error": True, "code": code, "job_id": job_id, "model_trained": False,
@@ -784,13 +827,21 @@ def _job_model_results(job_id: str, session_id: str | None) -> dict:
             next_tools=["list_jobs"],
         )
 
-    # Kind and owning session come from the job's own records.
+    # Kind and owning session come from the job's own records (public registry listing).
     try:
-        from aihydro_core.jobs import _read_registry
-        entry = _read_registry().get(job_id) or {}
+        entry = next((j for j in (jobs.list_jobs().get("jobs") or [])
+                      if j.get("job_id") == job_id), {})
     except Exception:
         entry = {}
-    artifact_dir = Path(entry.get("artifact_dir") or status.get("artifact_dir") or "")
+    adir = entry.get("artifact_dir") or status.get("artifact_dir")
+    if not adir:
+        # No artifact dir: never fall back to Path("") (the working directory).
+        return _job_error(
+            job_id, "JOB_NOT_FOUND",
+            f"Job {job_id} has no artifact directory on record, so its result cannot be read.",
+            next_tools=["list_jobs"],
+        )
+    artifact_dir = Path(adir)
     cfg: dict = {}
     try:
         cfg = _json.loads((artifact_dir / "job_config.json").read_text())
@@ -829,6 +880,15 @@ def _job_model_results(job_id: str, session_id: str | None) -> dict:
     sid = job_session or asked
 
     state = status.get("status")
+    if state not in ("complete", "failed", "cancelled") and status.get("_pid_alive") is False:
+        # status.json says the job is running but its process is gone: it crashed.
+        return _job_error(
+            job_id, "JOB_PROCESS_GONE",
+            f"Job {job_id} reports '{state}' but its process is no longer running; it most likely "
+            "crashed. There is no model to report.",
+            session_id=sid, job_status=state, job_note=status.get("_note"),
+            next_tools=["get_training_status"],
+        )
     if state == "failed":
         return _job_error(
             job_id, "JOB_FAILED", f"Job {job_id} failed; there is no model to report.",
@@ -860,6 +920,9 @@ def _job_model_results(job_id: str, session_id: str | None) -> dict:
             f"Job {job_id} finished without a scored model (no test-period NSE); it is not reported as trained.",
             session_id=sid, job_status=state,
         )
+    stale = _kernel_staleness(partial)
+    if stale:
+        return _stale_model(stale, session_id=sid, job_id=job_id, source="job_artifact", result=partial)
     return {
         "session_id": sid,
         "job_id": job_id,
@@ -914,6 +977,9 @@ def get_model_results(session_id: str | None = None, job_id: str | None = None) 
                 "message": "The cached model has no test-period NSE (it scored nothing); "
                            "it is not reported as trained. Re-train on a window the record covers.",
             }
+        stale = _kernel_staleness(result)
+        if stale:
+            return _stale_model(stale, session_id=session_id, source="session_cache", result=result)
         return {
             "session_id": session_id,
             "model_trained": True,

@@ -31,7 +31,7 @@ def _spec_has_forbid() -> bool:
 
 needs_new_modelling = pytest.mark.skipif(
     not _spec_has_forbid(),
-    reason="needs aihydro-modelling with the integrity fixes (extra=forbid, backend defaults)",
+    reason="needs aihydro-modelling >= 0.6.2 (the integrity fixes: extra=forbid, backend defaults)",
 )
 
 SID = "audit-job"
@@ -65,7 +65,8 @@ def _mkjob(home, jid, status, kind="training", session=SID, pid=999999, **extra)
 
 def _session_with_old_model():
     s = HydroSession(SID)
-    s.model = {"nse": 0.91, "kge": 0.88, "framework": "hbv-light", "model_dir": "/old/run"}
+    s.model = {"nse": 0.91, "kge": 0.88, "framework": "hbv-light", "model_dir": "/old/run",
+               "hbv_kernel": "hbv-conserving/1"}
     s.save()
     HydroSession("audit-other").save()
 
@@ -367,9 +368,100 @@ def test_f9_consistent_and_undeclared_slots_pass(home):
     assert basin_consistency_error(s, "01031500") is None
 
 
+@needs_new_modelling
 def test_f9_kickoff_refuses_a_mixed_basin_session(home, captured):
     from ai_hydro.mcp.tools_modelling import train_hydro_model
 
     _mixed_session()
     r = train_hydro_model(session_id="audit-mix")
     assert r["error"] and r["code"] == "BASIN_MISMATCH" and not captured
+
+
+# ── Review items: stale kernel, too-old package, job edge cases, runner codes, gauge ids ──
+
+def test_t3_unstamped_hbv_model_is_stale_not_clean(home):
+    s = HydroSession(SID)
+    s.model = {"nse": 0.91, "framework": "hbv-light", "model_type": "hbv"}   # pre-0.6.2: no stamp
+    s.save()
+    r = _gmr(session_id=SID)
+    assert r["model_trained"] is False and r["stale"] is True and r["code"] == "MODEL_STALE_KERNEL"
+    assert "nse" not in r and "performance_rating" not in r
+
+
+def test_t3_unstamped_job_result_is_stale(home):
+    _mkjob(home, "job_old", "complete", partial_results={"nse": 0.7, "framework": "hbv-light"})
+    r = _gmr(job_id="job_old")
+    assert r["model_trained"] is False and r["stale"] is True and "nse" not in r
+
+
+@needs_new_modelling
+def test_t3_current_kernel_stamp_is_clean(home):
+    from aihydro_modelling.backends.hbv import HBV_KERNEL
+    _mkjob(home, "job_new", "complete",
+           partial_results={"nse": 0.7, "framework": "hbv-light", "hbv_kernel": HBV_KERNEL})
+    assert _gmr(job_id="job_new")["model_trained"] is True
+
+
+def test_t4_job_without_artifact_dir_is_not_found_and_never_reads_cwd(home, monkeypatch):
+    from ai_hydro.mcp import tools_modelling as tm
+
+    monkeypatch.setattr(tm.jobs, "get_job_status", lambda j: {"job_id": j, "status": "complete",
+                        "partial_results": {"nse": 0.9}})
+    monkeypatch.setattr(tm.jobs, "list_jobs", lambda *a, **k: {"jobs": []})
+    (home / "job_config.json").write_text(json.dumps({"session_id": "elsewhere"}))
+    monkeypatch.chdir(home)           # a job_config.json sits in the cwd; it must not be read
+    r = _gmr(job_id="ghost")
+    assert r["code"] == "JOB_NOT_FOUND" and r["model_trained"] is False
+
+
+def test_t5_dead_process_job_is_not_still_running(home):
+    _mkjob(home, "job_dead", "running", progress={"restarts_done": 1})
+    r = _gmr(session_id=SID, job_id="job_dead")
+    assert r["code"] == "JOB_PROCESS_GONE" and r["model_trained"] is False
+    assert "still" not in r["message"]
+
+
+@needs_modelling
+def test_t1_old_modelling_is_refused_not_run(monkeypatch):
+    import aihydro_modelling as m
+    from ai_hydro.modelling.spec_gate import gate_spec
+
+    monkeypatch.setattr(m, "__version__", "0.6.1")
+    spec, bad = gate_spec({"backend": "hbv"})
+    assert spec is None and bad["code"] == "MODELLING_TOO_OLD" and bad["installed"] == "0.6.1"
+
+
+def test_t6_runner_keeps_coded_refusals_and_the_traceback_for_the_rest(home, monkeypatch):
+    from ai_hydro.modelling import runner
+
+    class Coded(Exception):          # has .code but is not a deliberate refusal
+        code = "SOMETHING_ELSE"
+
+    assert runner._refusal_code(Coded("x")) is None
+    from aihydro_core.primitives.errors import ToolError
+    assert runner._refusal_code(ToolError("INSUFFICIENT_DATA", "m")) == "INSUFFICIENT_DATA"
+
+    _train_session()
+    art = home / "art"
+    art.mkdir()
+    (art / "job_config.json").write_text(json.dumps({"job_id": "j", "session_id": SID, "framework": "hbv"}))
+    monkeypatch.setattr("ai_hydro.modelling.metrics.extract_basin_data",
+                        lambda *a, **k: (_ for _ in ()).throw(Coded("boom")))
+    statuses = []
+    monkeypatch.setattr(runner, "_write_status", lambda d, j, status, **kw: statuses.append((status, kw)))
+    with pytest.raises(SystemExit):
+        runner.run(art)
+    err = statuses[-1][1]["error"]
+    assert err["code"] == "TRAINING_ERROR" and "Coded" in err["message"]
+
+
+def test_t7_gauge_id_formats_do_not_raise_false_mismatch(home):
+    from ai_hydro.modelling.gauge import _norm_gauge, basin_consistency_error
+
+    assert _norm_gauge("USGS-01031500") == _norm_gauge("usgs:1031500") == _norm_gauge("01031500")
+    s = _mixed_session()
+    s.watershed["data"]["gauge_id"] = "USGS-01031500"
+    s.forcing["data"]["gauge_id"] = "1031500"
+    assert basin_consistency_error(s, "01031500") is None
+    s.forcing["data"]["gauge_id"] = "1031501"
+    assert basin_consistency_error(s, "01031500")["code"] == "BASIN_MISMATCH"

@@ -58,6 +58,37 @@ def flat_to_spec_dict(framework: str, model: str, **fields: Any) -> tuple[dict |
     return out, None
 
 
+#: The first aihydro-modelling release whose ``ModelSpec`` rejects unknown keys, resolves
+#: per-backend defaults, and whose HBV kernel conserves water. An older package would run
+#: this gate with a spec that silently ignores typos and trains neural models at HBV defaults.
+MIN_MODELLING = "0.6.2"
+
+
+def modelling_too_old() -> dict | None:
+    """A ``MODELLING_TOO_OLD`` refusal when the installed package predates the gate, else None."""
+    import aihydro_modelling as m
+    import re
+
+    def _tuple(v: str) -> tuple:
+        return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+
+    have = str(getattr(m, "__version__", "0"))
+    old = _tuple(have) < _tuple(MIN_MODELLING)
+    # Feature check as well: a dev build can carry the right number without the change.
+    if not old and not hasattr(m, "unknown_key_hints"):
+        old = True
+    if not old:
+        return None
+    return _err(
+        "MODELLING_TOO_OLD",
+        f"The installed aihydro-modelling ({have}) is older than {MIN_MODELLING}; training would run "
+        "without the spec gate (typos ignored, neural models at HBV defaults) and on the "
+        "non-conserving HBV kernel.",
+        installed=have, required=f">={MIN_MODELLING},<0.7",
+        recovery=f'Upgrade: pip install -U "aihydro-modelling[torch,nh]>={MIN_MODELLING},<0.7"',
+    )
+
+
 def gate_spec(raw: dict) -> tuple[Any, dict | None]:
     """Parse + statically validate + availability-check. Returns ``(spec, None)`` or ``(None, error_dict)``.
 
@@ -66,6 +97,10 @@ def gate_spec(raw: dict) -> tuple[Any, dict | None]:
     """
     import aihydro_modelling as m
     from pydantic import ValidationError
+
+    old = modelling_too_old()
+    if old:
+        return None, old
 
     try:
         spec = m.ModelSpec.model_validate(raw)
