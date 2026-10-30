@@ -6,7 +6,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [2.8.4] - 2026-10-30 (answer audit: USGS data codes)
 
 ### Fixed
 
