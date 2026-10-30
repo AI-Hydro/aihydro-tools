@@ -35,6 +35,7 @@ import numpy as np
 
 from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.mcp.app import mcp, Context
+from ai_hydro.mcp.offload import run_off_loop
 
 log = logging.getLogger(__name__)
 
@@ -166,7 +167,7 @@ async def compute_spectral_index(
         # Strategy: try fetching the index directly as a variable
         # (fast path for NDVI / NDWI which have products registered).
         # On error / missing bands, fall back to band-by-band fetch.
-        result = await asyncio.to_thread(
+        result = await run_off_loop(
             _fetch_and_compute_index,
             idx_key=idx_key,
             sensor=sensor,

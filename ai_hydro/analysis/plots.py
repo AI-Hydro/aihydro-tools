@@ -21,6 +21,8 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+from ai_hydro.analysis._plotlock import plot_serialized
+
 # ---------------------------------------------------------------------------
 # Backend guard — import once so callers don't need to worry about it
 # ---------------------------------------------------------------------------
@@ -36,6 +38,7 @@ except ImportError:
 
 def _mpl_required(fn):
     """Decorator: skip and return None if matplotlib is not installed."""
+    @plot_serialized
     def wrapper(*args, **kwargs):
         if not _MPL_AVAILABLE:
             log.warning("matplotlib not available — %s skipped", fn.__name__)
@@ -134,10 +137,10 @@ def plot_watershed_map(
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.ticklabel_format(useOffset=False)
 
-    plt.tight_layout()
+    fig.tight_layout()
     out_path = os.path.join(output_dir, f"watershed_{gauge_id}_map.png")
-    plt.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
     log.info("Watershed map saved: %s", out_path)
     return out_path
 
@@ -205,10 +208,10 @@ def plot_hydrograph(
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.1f}"))
 
-    plt.tight_layout()
+    fig.tight_layout()
     out_path = os.path.join(output_dir, f"hydrograph_{gauge_id}.png")
-    plt.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
     log.info("Hydrograph saved: %s", out_path)
     return out_path
 
@@ -322,11 +325,11 @@ def plot_flow_duration_curve(
 
     ax2.set_title("Hydrological Signatures", fontsize=11, fontweight="bold")
 
-    plt.suptitle(f"USGS gauge {gauge_id}", fontsize=10, y=1.01)
-    plt.tight_layout()
+    fig.suptitle(f"USGS gauge {gauge_id}", fontsize=10, y=1.01)
+    fig.tight_layout()
     out_path = os.path.join(output_dir, f"fdc_{gauge_id}.png")
-    plt.savefig(out_path, dpi=200, bbox_inches="tight")
-    plt.close()
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
     log.info("FDC plot saved: %s", out_path)
     return out_path
 
@@ -482,9 +485,9 @@ def plot_raster_tile(
     )
     ax.imshow(rgba, aspect="auto", interpolation="nearest")
     ax.axis("off")
-    plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-    plt.savefig(out_path, dpi=100, bbox_inches="tight", pad_inches=0, transparent=True)
-    plt.close()
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    fig.savefig(out_path, dpi=100, bbox_inches="tight", pad_inches=0, transparent=True)
+    plt.close(fig)
 
     log.info("Raster tile saved: %s  bounds=%s", out_path, bounds_wgs84)
     return out_path, bounds_wgs84

@@ -306,6 +306,9 @@ def wait_for_job(job_id: str, max_wait_seconds: int = _MAX_WAIT_SECONDS, poll_in
                     "next_step": f"wait_for_job('{job_id}') again with the same job_id to keep waiting.",
                     "note": "Polling is server-side and costs no tokens — just call wait_for_job again.",
                 }
+            from ai_hydro.core.cancel import check_cancelled
+
+            check_cancelled()          # the wait runs in a worker thread: stop when the client cancels
             time.sleep(interval)
     except Exception as e:
         log.error("wait_for_job failed: %s", e)

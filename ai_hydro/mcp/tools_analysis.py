@@ -44,6 +44,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 from ai_hydro.mcp.app import mcp, Context
+from ai_hydro.mcp.offload import progress_sink_for, run_off_loop, set_progress_sink
 from ai_hydro.mcp.enforcement import post_run as _post_run
 from ai_hydro.mcp.helpers import (
     SessionResolutionError,
@@ -1244,6 +1245,19 @@ def _resolve_session_geometry(
     return _get_session_geometry(session_id)
 
 
+import threading as _threading
+
+_WARNINGS_LOCK = _threading.Lock()
+
+
+def _env_seconds(name: str, default: float) -> float:
+    try:
+        v = float(os.environ.get(name, default))
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
 @mcp.tool()
 def extract_hydrological_signatures(
     session_id: str | None = None,
@@ -1567,15 +1581,33 @@ def extract_hydrological_signatures(
                 if len(_q_dates) != len(_q_cms) else "the slot's dates could not be parsed")
 
         from ai_hydro.analysis.signatures import extract_hydrological_signatures as _fn
-        result = _fn(
-            gauge_id=usgs_gauge_id,
-            watershed_geojson=watershed_geojson,
-            area_km2=area_km2,
-            start_date=start_date,
-            end_date=end_date,
-            q_cms_series=_q_arg,
-            **({"precipitation": precipitation} if precipitation != "auto" else {}),
-        )
+        # The function fetches streamflow (NWIS) and, for precipitation="auto", the basin precipitation
+        # through code that has no deadline of its own. Bound the call and let a client cancel stop the wait.
+        from ai_hydro.core.cancel import ToolDeadlineExceeded, budget, run_bounded
+        _sig_budget = _env_seconds("AIHYDRO_SIGNATURES_BUDGET_S", 480.0)
+        try:
+            with budget(_sig_budget):
+                result = run_bounded(
+                    _fn,
+                    gauge_id=usgs_gauge_id,
+                    watershed_geojson=watershed_geojson,
+                    area_km2=area_km2,
+                    start_date=start_date,
+                    end_date=end_date,
+                    q_cms_series=_q_arg,
+                    **({"precipitation": precipitation} if precipitation != "auto" else {}),
+                    timeout=_sig_budget,
+                    label="extract_hydrological_signatures",
+                )
+        except TimeoutError as _te:
+            # Its inner fetch is one call (not chunked), so "call again" would not resume: say what does.
+            raise ToolDeadlineExceeded(
+                f"extract_hydrological_signatures used its {_sig_budget:g} s budget "
+                "(its streamflow / precipitation fetch is not chunked)",
+                recovery=("Fetch the inputs first, in chunks that are cached: fetch_forcing_data(...) for the "
+                          "period, then call again; or pass precipitation=\"skip\" to compute the "
+                          "signatures that need no precipitation."),
+            ) from _te
         d = _result_to_dict(result)
         # Acquisitions made inside the signatures function are declared, never
         # silent. aihydro-watershed reports the precipitation it received in
@@ -2014,7 +2046,7 @@ async def compute_twi(
                 from ai_hydro.analysis.twi import compute_twi as _fn_full
 
                 twi_prefix = _canonical_prefix(session_id, "twi")
-                result = await asyncio.to_thread(
+                result = await run_off_loop(
                     _fn_full,
                     watershed_shapely,
                     resolution=resolution,
@@ -2042,7 +2074,7 @@ async def compute_twi(
                 # C2: store under feature-keyed three-level slot
                 session.put_result("twi", _feature_id, _params_key, d)
                 session.add_citations(["usgs_3dep", "copernicus_glo30"])
-                session.commit()
+                await run_off_loop(session.commit)
                 d["_files_saved"] = files
                 d["feature_id"] = _feature_id
 
@@ -2103,7 +2135,7 @@ async def compute_twi(
         # Fallback: statistics only (workspace missing, create_map=False,
         # or full computation raised a fatal error)
         from ai_hydro.analysis.twi import compute_twi_result as _fn
-        result = await asyncio.to_thread(
+        result = await run_off_loop(
             _fn, watershed_geojson=watershed_geojson, resolution=resolution
         )
         d = _result_to_dict(result)
@@ -2113,7 +2145,7 @@ async def compute_twi(
         # C2: store under feature-keyed three-level slot
         session.put_result("twi", _feature_id, _params_key, d)
         session.add_citations(["usgs_3dep", "copernicus_glo30"])
-        session.commit()
+        await run_off_loop(session.commit)
         d["feature_id"] = _feature_id
         saved = _workspace_write(session_id, _canonical_fname(session_id, "twi", "json"), d["data"])
         if saved:
@@ -2279,12 +2311,12 @@ async def map_flood_inundation(
             prepare_hand_stack,
         )
 
-        stack = await asyncio.to_thread(
+        stack = await run_off_loop(
             prepare_hand_stack,
             watershed_geom,
             resolution=resolution,
         )
-        result = await asyncio.to_thread(
+        result = await run_off_loop(
             compute_inundation_from_stack,
             stack,
             float(q),
@@ -2388,7 +2420,7 @@ async def map_flood_inundation(
             },
         }
         session.put_result("inundation", _inund_fid, str(float(q)), d)
-        session.commit()
+        await run_off_loop(session.commit)
 
         if create_map:
             try:
@@ -2646,7 +2678,7 @@ async def map_flood_inundation_hydrograph(
         from ai_hydro.analysis.inundation import INUNDATION_CAVEAT, INUNDATION_SCOPE
         from ai_hydro.analysis.inundation_hydrograph import compute_inundation_hydrograph_frames
 
-        frames, stack = await asyncio.to_thread(
+        frames, stack = await run_off_loop(
             compute_inundation_hydrograph_frames,
             watershed_geom,
             time_hr,
@@ -2824,7 +2856,7 @@ async def map_flood_inundation_hydrograph(
                 d["_map_warning"] = str(map_err)
 
         session.put_result("inundation_hydrograph", "__legacy__", str(max_frames), d)
-        session.commit()
+        await run_off_loop(session.commit)
 
         if ctx:
             await ctx.report_progress(progress=max_frames + 2, total=max_frames + 2)
@@ -2947,7 +2979,7 @@ async def create_cn_grid(
         cn_folder = cn_prefix.replace("cn_", "cn_grid_", 1)
         output_dir = str(Path(workspace) / cn_folder)
 
-        result = await asyncio.to_thread(
+        result = await run_off_loop(
             _fn,
             geometry=watershed_shapely,
             year=year,
@@ -3016,7 +3048,7 @@ async def create_cn_grid(
                 (prov.get("soil_product") or "polaris").lower(),
             ] if c
         ]
-        _feature_cache_store(session, "cn", _feature_id, _key, d,
+        await run_off_loop(_feature_cache_store, session, "cn", _feature_id, _key, d,
                              citations=_cn_citations)
         d["feature_id"] = _feature_id
         d["_files_saved"] = list(file_paths.values())
@@ -3148,8 +3180,9 @@ async def fetch_forcing_data(
             # Phase B: @feature_tool handles resolve → cache → store → commit
             if ctx:
                 await ctx.report_progress(progress=0, total=2)
+                set_progress_sink(progress_sink_for(ctx))     # per-chunk progress from the worker
 
-            result_envelope: dict = await asyncio.to_thread(
+            result_envelope: dict = await run_off_loop(
                 _fk,
                 store=session,
                 feature=_feature_arg,
@@ -3197,7 +3230,7 @@ async def fetch_forcing_data(
                 if "data" in _stored:
                     _stored["data"]["_data_file"] = saved
                 session.put_result("forcing", _feature_id, _params_key, _stored)
-                session.commit()
+                await run_off_loop(session.commit)
 
         else:
             # Fallback: geometry_geojson override or kernel unavailable
@@ -3228,7 +3261,9 @@ async def fetch_forcing_data(
                 await ctx.report_progress(progress=0, total=2)
 
             from ai_hydro.data.forcing import fetch_forcing_data_routed as _fn
-            result = await asyncio.to_thread(
+            if ctx:
+                set_progress_sink(progress_sink_for(ctx))
+            result = await run_off_loop(
                 _fn, watershed_geojson=watershed_geojson,
                 start_date=start_date, end_date=end_date,
                 variables=variables, product=product,
@@ -3242,7 +3277,7 @@ async def fetch_forcing_data(
             )
             if saved:
                 d["data"]["_data_file"] = saved
-            _feature_cache_store(session, "forcing", _feature_id, _params_key, d,
+            await run_off_loop(_feature_cache_store, session, "forcing", _feature_id, _params_key, d,
                                  citations=["gridmet", "chirps", "era5"])
             d_data = d["data"]
 
@@ -3666,7 +3701,9 @@ def separate_baseflow(
             warmup_bias = warmup_bias_disclosure(len(q))      # 31-364 days: biased low, say so
             import warnings as _w
             from aihydro_watershed.signatures.baseflow import WarmupBiasWarning
-            with _w.catch_warnings():
+            # catch_warnings swaps the process-global filter list: concurrent users would restore each
+            # other's saved state, so every use in this module goes through one lock.
+            with _WARNINGS_LOCK, _w.catch_warnings():
                 _w.simplefilter("ignore", WarmupBiasWarning)  # disclosed in the result instead
                 bf = lyne_hollick(q, alpha=alpha, n_passes=n_passes)
         elif method == "ukih":
@@ -4189,7 +4226,7 @@ async def fetch_soil_attributes_ssurgo(
                 "next_tools": ["data_fetch"],
             }
 
-        res = await asyncio.to_thread(ssurgo_catchment_attributes, geom)
+        res = await run_off_loop(ssurgo_catchment_attributes, geom)
         summary = res["summary"]
         data = {k: v for k, v in summary.items() if k not in ("product", "source")}
         d = {
@@ -4201,7 +4238,7 @@ async def fetch_soil_attributes_ssurgo(
                 "citation": SSURGO_CITATION,
             },
         }
-        _feature_cache_store(session, "ssurgo", _feature_id, _key, d,
+        await run_off_loop(_feature_cache_store, session, "ssurgo", _feature_id, _key, d,
                              citations=["ssurgo_gnatsgo"])
         # Basin-mean values in the shape compute_soil_loss_rusle reads. That slot describes the
         # session's own basin, so another feature's or an override geometry's values never
@@ -4224,7 +4261,7 @@ async def fetch_soil_attributes_ssurgo(
                 "meta": {"tool": "fetch_soil_attributes_ssurgo",
                          "product": summary.get("product")},
             })
-        session.save()
+        await run_off_loop(session.save)
         d["feature_id"] = _feature_id
         if not _is_session_basin:
             d["soil_slot_written"] = False

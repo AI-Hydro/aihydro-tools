@@ -84,6 +84,12 @@ ACTIVE_CALL_NOTES: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "ACTIVE_CALL_NOTES", default=None
 )
 
+# Name of the tool being called (set by _ContextInjectionMiddleware). The offload wrapper and the
+# SESSION_BUSY result use it to say which tool is running.
+ACTIVE_TOOL_NAME: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ACTIVE_TOOL_NAME", default=None
+)
+
 # ---------------------------------------------------------------------------
 # Tier registry — single source of truth for all tool tier assignments.
 # When a new @mcp.tool() is added, add its name here.
@@ -436,6 +442,15 @@ mcp = FastMCP(
 )
 
 
+def _register_form(function):
+    """What FastMCP registers for ``function``: a sync tool becomes an async wrapper that runs the
+    original in a worker thread (``ai_hydro.mcp.offload``), so no tool or resource can block the
+    event loop. Async functions pass through unchanged."""
+    from ai_hydro.mcp.offload import offload_sync
+
+    return offload_sync(function)
+
+
 def _preserve_callable_registration(method):
     """Register FastMCP components but leave ordinary callables in modules.
 
@@ -446,13 +461,13 @@ def _preserve_callable_registration(method):
     def decorator_factory(*args, **kwargs):
         if len(args) == 1 and callable(args[0]) and not kwargs:
             function = args[0]
-            method(function)
+            method(_register_form(function))
             return function
 
         register = method(*args, **kwargs)
 
         def decorate(function):
-            register(function)
+            register(_register_form(function))
             return function
 
         return decorate
@@ -596,6 +611,7 @@ class _ContextInjectionMiddleware(Middleware):
             (ACTIVE_PROJECT_ID, ACTIVE_PROJECT_ID.set(project_id)),
             (ACTIVE_CONTEXT_SOURCE, ACTIVE_CONTEXT_SOURCE.set(source)),
             (ACTIVE_CONTEXT_CLIENT, ACTIVE_CONTEXT_CLIENT.set(client)),
+            (ACTIVE_TOOL_NAME, ACTIVE_TOOL_NAME.set(getattr(message, "name", None) or None)),
         )
         try:
             return await call_next(context)
@@ -667,6 +683,7 @@ mcp.add_middleware(_EvalConditionMiddleware())
 #   * tools listed in RECORD_EXEMPT are skipped (catalog, read-only views, UI
 #     state, lifecycle); calls with no resolvable session are counted as
 #     ``no_session`` and not recorded.
+import asyncio  # noqa: E402
 import json as _json  # noqa: E402
 import time as _time  # noqa: E402
 import logging as _logging  # noqa: E402
@@ -877,6 +894,47 @@ def _mcp_client_label(context) -> str | None:
         return None
 
 
+_CANCEL_SEALS: set = set()
+
+
+def _seal_cancelled_call(run_records, *, tool, arguments, capture, chat_id, started, mcp_client, run_context) -> None:
+    """Seal the run record of a cancelled call as ``CANCELLED`` (fire and forget, never raises).
+
+    Runs as its own task: an awaiting task inside a cancelled anyio scope is cancelled again at every
+    await, so sealing in-line would be skipped. The record says the worker may still complete and write.
+    """
+    from ai_hydro.mcp.enforcement import _generate_unique_run_id
+    from ai_hydro.core.cancel import ToolCancelled
+    from ai_hydro.mcp.offload import run_off_loop
+
+    envelope = {
+        "error": True, "code": "CANCELLED", "cancelled": True,
+        "message": ("call cancelled by the client; its worker may still complete and write rows or files "
+                    "that this record cannot undo"),
+    }
+
+    async def seal():
+        try:
+            await run_off_loop(
+                run_records.record_call,
+                tool=tool, arguments=arguments, result=envelope,
+                failure=ToolCancelled(envelope["message"]), capture=capture, chat_id=chat_id,
+                id_factory=_generate_unique_run_id,
+                duration_ms=(_time.monotonic() - started) * 1000.0,
+                mcp_client=mcp_client, output_bytes=len(_json.dumps(envelope)), context=run_context,
+                _track=False,
+            )
+        except BaseException as exc:                      # noqa: BLE001 - sealing must never raise
+            _record_log.warning("could not seal cancelled call %s: %s", tool, exc)
+
+    try:
+        task = asyncio.get_running_loop().create_task(seal())
+        _CANCEL_SEALS.add(task)
+        task.add_done_callback(_CANCEL_SEALS.discard)
+    except Exception as exc:
+        _record_log.warning("could not schedule sealing of cancelled call %s: %s", tool, exc)
+
+
 class RunRecordMiddleware(Middleware):
     """Attach a sealed ``aihydro.run/2`` record to every recorded tool call.
 
@@ -918,6 +976,14 @@ class RunRecordMiddleware(Middleware):
             tool_result = await call_next(context)
         except Exception as exc:
             failure = exc
+        except asyncio.CancelledError:
+            # The client gave up. The worker may still be running and may already have written rows
+            # (a cancel cannot undo them): seal what exists as a cancelled call, in a task the
+            # cancelled scope cannot interrupt, then let the cancellation propagate.
+            _seal_cancelled_call(
+                run_records, tool=tool, arguments=arguments, capture=capture, chat_id=ACTIVE_CHAT_ID.get(),
+                started=started, mcp_client=_mcp_client_label(context), run_context=run_context)
+            raise
         finally:
             run_records.end_capture(token)
 
@@ -938,7 +1004,12 @@ class RunRecordMiddleware(Middleware):
                     size = len(_json.dumps(result_dict, default=str))
                 else:
                     result_dict = {"error": True, "message": f"{type(failure).__name__}: {failure}"}
-            outcome = run_records.record_call(
+            # Sealing writes the run log (SQLite, up to a 30 s lock wait) and digests files: never
+            # on the event loop, or one contended study stalls every call.
+            from ai_hydro.mcp.offload import run_off_loop
+
+            outcome = await run_off_loop(
+                run_records.record_call,
                 tool=tool,
                 arguments=arguments,
                 result=result_dict,
@@ -950,6 +1021,7 @@ class RunRecordMiddleware(Middleware):
                 mcp_client=_mcp_client_label(context),
                 output_bytes=size,
                 context=run_context,
+                _track=False,
             )
             record_error = outcome.record_error
             if (failure is None and tool_result is not None and outcome.call_run_id

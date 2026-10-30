@@ -290,6 +290,12 @@ def _resolve_session_with_rule(
         note_session_resolution(rule)
     except Exception:  # recording must never break resolution
         pass
+    try:
+        from ai_hydro.mcp.offload import note_running_session
+
+        note_running_session(sid)      # lets a SESSION_BUSY result name the tools running on this study
+    except Exception:
+        pass
     return sid, rule
 
 
