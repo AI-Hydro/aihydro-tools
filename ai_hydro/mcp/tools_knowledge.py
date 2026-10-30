@@ -61,7 +61,7 @@ def get_metric_definition(metric_id: str, workspace_dir: str | None = None) -> d
     """
     try:
         registry = get_registry(workspace_dir)
-        metric = registry.metrics.get(metric_id)
+        metric = registry.metrics.get(metric_id) or registry.metrics.get(f"metric.{metric_id}")
         if not metric:
             return _tool_error_to_dict(ValueError(f"Metric '{metric_id}' not found in registry."))
         return metric.model_dump()
@@ -140,6 +140,10 @@ def get_equation_definition(equation_id: str, workspace_dir: str | None = None) 
     try:
         registry = get_registry(workspace_dir)
         eq = registry.equations.get(equation_id)
+        if not eq and not registry.equations:
+            return _tool_error_to_dict(ValueError(
+                "No equations are bundled with this build: knowledge/equations.yaml does not exist yet, "
+                f"so '{equation_id}' cannot be looked up. This is missing content, not an unknown id."))
         if not eq:
             return _tool_error_to_dict(ValueError(f"Equation '{equation_id}' not found in registry."))
         return eq.model_dump()

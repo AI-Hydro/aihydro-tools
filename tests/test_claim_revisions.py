@@ -218,7 +218,9 @@ def test_concurrent_writers_get_consecutive_revisions(session):
 
 
 def _promoted():
-    _add(prereg_id="prereg.x.1")
+    from ai_hydro.mcp.tools_ledger import register_research_plan
+    register_research_plan("rev", "Synthetic NSE exceeds 0.5", ["extract_hydrological_signatures"])
+    _add()
     _supported()
     approve("rev", "c1")
     assert promote_claim_to_registry("rev", "c1", researcher_approved=True)["status"] == "promoted"
@@ -232,8 +234,10 @@ def _raw():
 
 
 def test_prereg_id_is_in_the_revision_content(session):
-    _add(prereg_id="prereg.x.1")
-    assert _rows()[0]["content"]["prereg_id"] == "prereg.x.1"
+    from ai_hydro.mcp.tools_ledger import register_research_plan
+    pid = register_research_plan("rev", "Synthetic NSE exceeds 0.5", ["extract_hydrological_signatures"])["prereg_id"]
+    _add(prereg_id=pid)               # R-04: the id must name the study's locked plan
+    assert _rows()[0]["content"]["prereg_id"] == pid
 
 
 def test_intact_chain_has_no_registry_mismatch(session):

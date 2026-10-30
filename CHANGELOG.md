@@ -37,8 +37,132 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - Race fix: the file-digest caches in `session/store.py` and `session/basin_identity.py` returned a key another thread could have
   cleared between the store and the read.
 
+Tool integrity Wave T1-S: study and claim integrity (below), then T1-A / T1-B entries.
+
+Source: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`. No version bump.
+
+### Fixed
+
+- **`data_fetch` and `data_fetch_background` refuse a mistyped `session_id`** with `STUDY_NOT_FOUND` instead of running as an unrecorded call. The session stays optional: with no id, the call runs as before.
+- **R-06 The knowledge and workflow data files now ship in the wheel.** `pyproject.toml` package-data omitted `knowledge/*.yaml`, the
+  bundled concept JSON and `workflows/*.workflow.yaml`, so in an installed build `get_variable_definition`, `list_known_variables`,
+  `get_metric_definition`, `list_known_metrics`, `get_dataset_info`, `list_known_datasets`, `list_available_workflows` and
+  `get_workflow_manifest` returned nothing (and "not found" for every id). `tests/test_wheel_packaging.py` builds the wheel from a clean
+  tree, asserts every git-tracked non-Python file under `ai_hydro/` is in it, installs it and checks the registries and one tool of each kind
+  from the installed copy. **`get_equation_definition` still returns "not found" for every id**: the loader reads `knowledge/equations.yaml`
+  (schema `EquationDefinition`) and no such file has ever existed in the repository. That is missing content, not packaging; none was invented.
+  `get_equation_definition` now says plainly that no equations are bundled. `get_metric_definition` accepts an id without the `metric.` prefix (`kge`).
+- **R-02 `add_claim` runs the comparison gates it documents.** `comparison_ref` was copied into the claim after the status gate ran, so a
+  comparison claim the producer said could not be claimed (`comparison_gate`) or whose CI excludes the forcing product
+  (`forcing_scope_gate`) was recorded as `supported`/`weakly_supported`. It is now part of the claim before the gate.
+- **R-01 / R-29 One study resolver: writing to an unknown study is a refusal.** `HydroSession.load` returns an empty session for an unknown
+  id and `save()` made it real, so `add_claim(session_id="typoX")` silently created a study. New `resolve_existing_study` (and
+  `HydroSession.exists`) is used by `add_claim`, `update_claim_status`, `add_assumption`, `list_claims`, `list_assumptions`,
+  `promote_claim_to_registry`, `check_registry_staleness`, `draft_claim_from_run`, `register_research_plan`, `run_skeptic`, the 7
+  validators, `define_experiment`, `run_experiment`, `get_experiment_table`, and the session tools `get_session_summary`,
+  `get_session_health`, `get_session_raw_state`, `clear_session`, `add_note`, `archive_session`, `merge_session_shards`,
+  `write_research_interpretation`, `export_session`, `register_feature`, `list_features`, `set_active_feature`, `bind_map_to_claim`, `bind_claim_to_item`, `audit_interpretation`, and `get_model_results` (without `job_id`). An id that names no saved study returns `STUDY_NOT_FOUND` with candidates and creates
+  nothing. `start_session`, the delineation tools and the GeoWorkspace map tools still create; the compute tools (`fetch_*`, `extract_*`, `compute_*`, `separate_baseflow`, training tools) still open a study for an unknown explicit id (deferred, listed in the scan test). A scan test fails if a tool that takes
+  `session_id` bypasses a resolver. **Behaviour change:** `list_claims` / `list_assumptions` report an unknown study as `STUDY_NOT_FOUND`
+  (was `SESSION_NOT_FOUND`).
+- **R-03 Retraction propagates to the registry.** `update_claim_status` / `add_claim` with `status="retracted"` retract the claim's
+  registry row (`registry_retracted` in the result; the row records `retracted_by`, and an unreadable registry is reported as `registry_retraction_failed`, or refuses a reinstatement with `REGISTRY_UNREADABLE`); `check_registry_staleness` finds retractions made elsewhere, propagates them and
+  reports `retracted_claims`; its note no longer says "All checked claims have current evidence" over a retraction. A retracted claim cannot be
+  set back to `supported`/`weakly_supported` (`retracted_claim_gate`). `add_claim` on an existing claim keeps its `registry_id` and
+  `promoted` link instead of dropping them.
+- **R-07 A stale claim is not reinstated by a sentence.** From `stale`, `supported`/`weakly_supported` is refused (`stale_claim_gate`) while
+  the claim still cites any source that changed; it is allowed once the evidence is re-bound to a different run, and the registry row stays
+  `stale` until a human re-approves (`aihydro-approve`, then `promote_claim_to_registry`). Nothing here can promote. The skeptic's
+  `registry_conflict` check, `check_registry_staleness` (`status_conflicts`) and `start_session` (`claim_flags`) now compare the study status
+  with the registry row.
+- **R-04 "Confirmatory" has to be earned.** `add_claim(prereg_id=...)` must name the study's own locked plan (`prereg_gate`). A claim is confirmatory only if it cites at least one run and every cited run is provably (timezone-aware timestamp) recorded after the lock, otherwise `post_hoc_plan` or `unverified_order` (so a free-text plan such as "baseflow analysis" cannot hide that the run came first), and plan entries that name no tool or slot are reported as unmatched. A plan locked
+  after a planned analysis had already run is stamped `post_hoc`: claims on it are not confirmatory (`PREREG_POST_HOC` warning) and the
+  defensibility report says so. The report counts a planned analysis as executed only when a run of that exact tool name happened after
+  `locked_at` (substring matching removed). Plans and claims already on disk keep working: the report judges them from their timestamps and
+  shows an unverified `prereg_id` as exploratory.
+- **R-05 / R-32 Citation lookup is verified and honest about failure.** `get_citation_by_doi` resolves at the DOI endpoint (CrossRef, DataCite,
+  Semantic Scholar) and returns only a record whose DOI equals the one asked for; a string that is not a DOI is refused. Free-text hits need
+  title-word overlap of at least 0.6 on whole words (author names and years are not counted against a title, and fewer than two content words can never match); a capitalised query word absent from the title must be a family name in the hit's author list and a query year must be within one year of the record's (online-first dates), else the hit is only an unverified candidate; `high` needs title, authors and year to match, or a near-full-title match when the query has neither; weak hits come back as `not_confirmed` with unverified `candidates`, never as "no citation exists". A provider that cannot be reached is
+  `CITATION_LOOKUP_UNAVAILABLE` (`unavailable: true`, `not_found: false`), never `not_found`; `not_found` is returned only when every provider
+  answered. An unsupported `source_hint` is refused; `_render_apa` no longer crashes on an empty `container-title`.
+Owner feedback on the installed 0.4.3 build: `data_fetch(variable="streamflow", geometry=[-68.5828, 47.2375], ..., gauge_id="01013500")`
+was refused with "geometry is in region 'global'" (the pair is GeoJSON order, read as lat,lon it is in the Southern Ocean), and the
+agent then fell back to the deprecated tool and tripped on `start_date` / `end_date`. Without `gauge_id` the same call raised no
+refusal and was routed to modelled products for the wrong place.
+
+### Fixed
+
+- **A bare coordinate pair is refused, never guessed (one boundary for every tool).** `ai_hydro/mcp/geometry_boundary.py`
+  (`GeometryBoundaryMiddleware`, plus the same check inside `data_fetch` / `data_fetch_background` for direct calls) holds every tool
+  argument named `geometry` or `geometries` to one rule: `[a, b]`, `(a, b)`, `"a,b"` and `"[a, b]"` return a retryable structured error.
+  `GEOMETRY_AXIS_AMBIGUOUS` (both values within +/-90) shows both readings and the exact `{"lat":..,"lon":..}` fix;
+  `GEOMETRY_AXIS_SWAPPED` (one value cannot be a latitude) states the only possible reading and still refuses. `{"lat","lon"}`, GeoJSON,
+  a 4-number bbox (range and order checked: `GEOMETRY_BBOX_INVALID`), WKT and a gauge id pass. The tool schemas now tell the agent to use
+  the dict form.
+- **Every coordinate gets the same validator (tool audit R-11, D43).** Parameters are classified by name (`geometry`, `geometries`,
+  `roi`, `*geojson`, `outlet`, `lat`/`latitude`/`*_lat`, `lon`/`lng`/`longitude`/`*_lon`), so a new tool is covered without being listed.
+  `register_feature(lat=-100, lon=500, outlet_lat=95)` and the like return `GEOMETRY_RANGE_INVALID`; GeoJSON positions (including
+  inside `*_geojson` strings and Feature collections) must be [lon, lat] within range, so projected coordinates such as
+  `[500000, 5200000]` are refused; `outlet` is range-checked in its documented (lat, lon) order. A bare 4-number bbox with all values
+  within +/-90 is axis-ambiguous like a pair (`GEOMETRY_BBOX_AXIS_AMBIGUOUS`, both readings and the fix); the explicit form is
+  `{"west","south","east","north"}`, converted to a GeoJSON Polygon at the boundary. A scan test fails if any tool with such a
+  parameter is not behind the validator.
+- **A swapped `outlet` can no longer drive a modelled product.** A bare `outlet` pair is refused like a geometry pair (`{"lat","lon"}` is
+  accepted and converted), and an outlet farther than 5 km from its geometry is `GEOMETRY_OUTLET_MISMATCH` (`data_fetch`, `data_batch_fetch`).
+- `outlet` is part of the sealed call inputs; `data_fetch(outlet=...)` is typed `tuple | {"lat","lon"}`. Distances to a geometry use longitudes
+  wrapped to the geometry, and a geometry written across +/-180 is refused (`GEOMETRY_ANTIMERIDIAN_UNSUPPORTED`) instead of mis-measured.
+- **Every `data_fetch` result echoes `resolved_place`** (lat, lon, region or bbox, centroid, region), also sealed in the call inputs; a
+  session `site_id` / BasinRef that names the place adds a top-level `session_note`.
+- **`data_fetch` and `data_fetch_background` need no geometry when a gauge names the place.** `gauge_id` (or a session BasinRef with a
+  verified `usgs:` alias, or a session whose `site_id` is a USGS gauge) locates the request: the point comes from the USGS Water Data API
+  monitoring-location record and is reported as `resolved_location` and recorded in the call's inputs. The request is still pinned to
+  `NWIS_STREAMFLOW` with no fallback (ADR-003 A2 unchanged). With neither: `GEOMETRY_REQUIRED` (retryable).
+- **A gauge and a place that disagree are refused by name.** More than 5 km (aihydro-data's pre-registered gauge-to-outlet distance) between
+  `gauge_id` and the geometry returns `GAUGE_LOCATION_MISMATCH` with both locations and the distance, instead of the misleading
+  "region 'global'" text. If the gauge lookup cannot be made the old region rule still applies.
+- **Deprecated `fetch_streamflow_data` accepts `start` / `end`** (arg-repair aliases to `start_date` / `end_date` when the tool has no
+  `start` / `end` of its own). The tool stays deprecated; no parameter was added.
+
+### Changed
+
+- `data_fetch(variable, start, end, geometry=None, ...)` and `data_fetch_background(variable, start, end, geometry=None, ...)`: `geometry`
+  moved after `start` / `end` and is optional (Python positional callers; MCP calls are by name). `data_fetch_background` also takes `session_id`.
+- Tests that passed a bare `[lat, lon]` pair or a point several km from the gauge were changed to `{"lat","lon"}` at the gauge's recorded
+  location (`tests/test_usgs_u3.py`, `test_series_tools.py`, `test_map_provenance.py`).
+
 ### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
 
+### Fixed
+
+- **Argument repair no longer changes what a call means (tool-integrity T1-A; audit D06, F20).** `area_m2=2.5e9` used to become
+  `area_km2=2.5e9` with the value unchanged (peak 5,349,166,650 m3/s instead of 5,349); `rainfall_m` to `rainfall_mm`,
+  `expected_area_m2`, `slope_length_mm` and `mode` to `model` behaved the same way. A rename is now applied only when the parsed
+  semantic tokens of the two names are identical: units (`m`, `mm`, `km2`, `m3s`, `hr`, ...), bounds and axes (`min`/`max`,
+  `start`/`end`, `lat`/`lon`), sides (`a`/`b`, `train`/`val`/`test`), single letters and anything with a digit. The rule is on tokens, not
+  tool names, so it covers every tool. Beyond that, fuzzy renames now allow only a case or separator change or one typo inside a word of
+  six letters or more, never a singular/plural change (`metrics`/`metric`, `gauge_ids`/`gauge_id`), never an added or dropped word
+  (`feature_id`/`feature`, `dem_resolution`/`resolution`), and never a list or object pushed into a scalar parameter.
+- A near-miss across units is refused with a structured `ARG_UNIT_MISMATCH` error naming the supplied and expected parameter and the
+  expected unit (`rescaled: false`); the tool does not run and no value is rescaled. A bare name never picks a unit (`discharge` is not
+  `discharge_m3s`).
+- **Every applied repair is in the result.** Renames and type coercions are returned as `_arg_repairs` (a list of
+  `{kind, from, to, rule}`), also on error results and on the self-help error. A tool that returns a list gets one extra text block.
+- **The sealed run records the arguments that ran.** `RunRecordMiddleware` wraps `ArgRepairMiddleware`, so repair now hands the
+  post-repair arguments to the capture: `input_digest` and session resolution use them (`sid=` now resolves as `session_id=`), and the
+  record gains `extra.arg_repairs` and `extra.supplied_input_digest` (the digest of what the caller sent). `_arg_repairs` is a transport key,
+  excluded from the output digest.
+- A tool's own structured refusal (for example `SESSION_RESOLUTION_FAILED`) now carries `_arg_repairs` when a repair was applied.
+- `"nan"`, `"inf"` and `"Infinity"` strings are no longer coerced to numbers.
+
+### Removed
+
+- Alias `site` and `site_id` to `gauge_id`: a site is not always a stream gauge. They now go through the teach path with `did_you_mean`.
+- Fuzzy renames that were applied before and are now refused (39 distinct in the F20 sweep over all tool schemas), among them
+  `mode` to `model` (`train_hydro_model`), `model` to `mode` (`data_fetch`), `series_a`/`series_b` to `series`, `series` to `series_b`,
+  `gauge_ids` to `gauge_id`, `metric` and `metrics`, `variable` and `variables`, `feature_id`/`features` to `feature`,
+  `dem_resolution` and `resolution`, `interpretation` and `interpretation_text`.
+
+### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
 - **A new basin in a used session is no longer answered with the old basin's numbers.** Every basin-dependent session result
   (`streamflow`, `signatures`, `geomorphic`, `forcing`, `twi`, `cn`, `soil`, `ssurgo`, `baseflow`, `flow_duration`,
   `flood_frequency`, `drought`, `design_hydrograph`, `soil_loss`, `inundation*`) is stamped `meta.basin_identity`
@@ -62,12 +186,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   southern or western point is named differently from before.
 
 ### Existing sessions
-
 A slot or cache entry written before this release has no stamp. It is **unverified**, never silently trusted and never a crash:
 cache lookups treat it as a miss (the tool recomputes and stamps), slot consumers still read it, `session.summary()` lists it under
 `basin_identity`, the consuming tools (`separate_baseflow`, `compute_flow_duration_curve`, `compute_flood_frequency`,
 `compute_drought_index`) return a `basin_identity` block, and a result derived from it stays unverified
 (`meta.basin_identity_inputs_unverified`). Sealed run records and the run log are untouched.
+
 
 ---
 

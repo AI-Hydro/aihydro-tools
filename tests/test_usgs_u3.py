@@ -47,7 +47,7 @@ def _fetch(start_end=PROVISIONAL, session="u3", **kw):
     from ai_hydro.mcp.tools_data_fetch import data_fetch
 
     gauge, start, end = start_end
-    return data_fetch("streamflow", gauge, start, end, session_id=session, **kw)
+    return data_fetch("streamflow", start, end, geometry=gauge, session_id=session, **kw)
 
 
 # --------------------------------------------------------------- slot writer (D6) + validator
@@ -355,6 +355,8 @@ def seen(monkeypatch):
     return box
 
 
+GAUGE_PT = {"lat": 47.2375, "lon": -68.5828}          # USGS 01013500 (recorded monitoring-location)
+
 POLY = {"type": "Polygon", "coordinates": [[[-68.7, 47.1], [-68.4, 47.1], [-68.4, 47.4],
                                            [-68.7, 47.4], [-68.7, 47.1]]]}
 
@@ -380,7 +382,7 @@ def _session_with_basin(basin_ref, geom=POLY):
 def test_data_fetch_exposes_gauge_id_and_pins_the_observation_product(world, seen):
     from ai_hydro.mcp.tools_data_fetch import data_fetch
 
-    r = data_fetch("streamflow", [47.2, -68.5], "2000-01-01", "2000-12-31", session_id="u3", gauge_id="01013500")
+    r = data_fetch("streamflow", "2000-01-01", "2000-12-31", geometry=GAUGE_PT, session_id="u3", gauge_id="01013500")
     assert seen["gauge_id"] == "01013500" and seen["basin_ref"] is None
     # B1: strict observation request, no fallback chain, no unpinned auto mode
     assert seen["mode"] == "manual" and seen["product"] == "NWIS_STREAMFLOW" and seen["fallback"] == []
@@ -393,7 +395,7 @@ def test_transient_nwis_failure_on_a_named_gauge_is_never_modelled_flow(world):
 
     world.override = lambda url, params: (429, {}, b"{}") if url.endswith("/daily/items") else None
     g, s, e = PROVISIONAL
-    r = data_fetch("streamflow", [47.2, -68.5], s, e, session_id="u3", gauge_id=g)
+    r = data_fetch("streamflow", s, e, geometry=GAUGE_PT, session_id="u3", gauge_id=g)
     assert r["error"] is True and r["terminal"] is False
     assert r["code"] in ("USGS_RATE_LIMITED", "SOURCE_UNAVAILABLE", "ALL_PRODUCTS_FAILED") or r["code"]
     assert "GEOGLOWS" not in json.dumps(r) or "fallback_history" not in json.dumps(r)
@@ -405,17 +407,22 @@ def test_transient_nwis_failure_on_a_named_gauge_is_never_modelled_flow(world):
 def test_conflicting_product_and_non_conus_geometry_are_refused(world, seen):
     from ai_hydro.mcp.tools_data_fetch import data_fetch
 
-    r = data_fetch("streamflow", [47.2, -68.5], "2000-01-01", "2000-12-31", session_id="u3",
+    r = data_fetch("streamflow", "2000-01-01", "2000-12-31", geometry=GAUGE_PT, session_id="u3",
                    gauge_id="01013500", product="GLOFAS_STREAMFLOW")
     assert r["code"] == "GAUGE_ID_NOT_APPLICABLE" and "conflicts" in r["message"] and not seen
-    r = data_fetch("streamflow", [51.5, -0.1], "2000-01-01", "2000-12-31", session_id="u3", gauge_id="01013500")
+    # the gauge's own location is looked up: a place that is not the gauge is a mismatch naming both ...
+    r = data_fetch("streamflow", "2000-01-01", "2000-12-31", geometry={"lat": 51.5, "lon": -0.1}, session_id="u3", gauge_id="01013500")
+    assert r["code"] == "GAUGE_LOCATION_MISMATCH" and not seen
+    # ... and when the lookup cannot be made the region rule still refuses a non-CONUS place
+    world.override = lambda url, params: (429, {}, b"{}") if "monitoring-locations" in url else None
+    r = data_fetch("streamflow", "2000-01-01", "2000-12-31", geometry={"lat": 51.5, "lon": -0.1}, session_id="u3", gauge_id="01013500")
     assert r["code"] == "GAUGE_ID_NOT_APPLICABLE" and "CONUS" in r["message"] and not seen
 
 
 def test_gauge_id_only_applies_to_streamflow(world, seen):
     from ai_hydro.mcp.tools_data_fetch import data_fetch
 
-    r = data_fetch("precipitation", POLY, "2000-01-01", "2000-12-31", session_id="u3", gauge_id="01013500")
+    r = data_fetch("precipitation", "2000-01-01", "2000-12-31", geometry=POLY, session_id="u3", gauge_id="01013500")
     assert r["code"] == "GAUGE_ID_NOT_APPLICABLE" and not seen
 
 
@@ -424,7 +431,7 @@ def test_verified_session_basin_ref_is_passed_and_pins(world, seen):
 
     ref = _ref(True)
     _session_with_basin(ref)
-    data_fetch("streamflow", POLY, "2000-01-01", "2000-12-31", session_id="u3")
+    data_fetch("streamflow", "2000-01-01", "2000-12-31", geometry=POLY, session_id="u3")
     assert seen["basin_ref"] == ref and seen["gauge_id"] is None
     assert seen["mode"] == "manual" and seen["product"] == "NWIS_STREAMFLOW" and seen["fallback"] == []
 
@@ -436,7 +443,7 @@ def test_equivalent_geometry_reuses_the_ref_by_iou(world, seen):
     _session_with_basin(ref)
     shifted = {"type": "Polygon", "coordinates": [[[-68.7, 47.1], [-68.4, 47.1], [-68.4, 47.4],
                                                   [-68.7, 47.4], [-68.70001, 47.1], [-68.7, 47.1]]]}
-    data_fetch("streamflow", shifted, "2000-01-01", "2000-12-31", session_id="u3")
+    data_fetch("streamflow", "2000-01-01", "2000-12-31", geometry=shifted, session_id="u3")
     assert seen.get("basin_ref") == ref                                  # same digest-or-IoU>=0.99 geometry
 
 
@@ -464,7 +471,7 @@ def test_basin_ref_is_not_passed_unless_verified_and_for_this_basin(world, monke
     else:
         _session_with_basin(_ref(True))
         geom = "01013500"
-    data_fetch("streamflow", geom, "2000-01-01", "2000-12-31", session_id="u3")
+    data_fetch("streamflow", "2000-01-01", "2000-12-31", geometry=geom, session_id="u3")
     assert not seen_pipe                                              # identity path not taken
     assert seen_plain and "gauge_id" not in seen_plain and "basin_ref" not in seen_plain
 
@@ -477,7 +484,7 @@ def test_near_miss_geometry_declines_with_a_hint(world, monkeypatch):
     _session_with_basin(_ref(True))
     off = {"type": "Polygon", "coordinates": [[[-68.7, 47.1], [-68.45, 47.1], [-68.45, 47.4],
                                               [-68.7, 47.4], [-68.7, 47.1]]]}      # ~83 % of the area
-    r = data_fetch("streamflow", off, "2000-01-01", "2000-12-31", session_id="u3")
+    r = data_fetch("streamflow", "2000-01-01", "2000-12-31", geometry=off, session_id="u3")
     assert "basin_ref_hint" in r and "IoU" in r["basin_ref_hint"] and "gauge_id" in r["basin_ref_hint"]
 
 
@@ -492,7 +499,7 @@ def test_a2_thresholds_are_not_on_the_agent_surface():
     assert "gauge_id" in inspect.signature(getattr(data_fetch_background, "fn", data_fetch_background)).parameters
 
 
-def test_background_pins_gauge_requests_and_keeps_the_terminal_flag(monkeypatch, tmp_path):
+def test_background_pins_gauge_requests_and_keeps_the_terminal_flag(world, monkeypatch, tmp_path):
     from ai_hydro.mcp import tools_data_async as tda
     from ai_hydro.mcp.runners.data_fetch_runner import DataFetchRunner
     import aihydro_data
@@ -502,13 +509,13 @@ def test_background_pins_gauge_requests_and_keeps_the_terminal_flag(monkeypatch,
     monkeypatch.setattr(tda.jobs, "start_job", lambda **k: started.update(k) or {
         "job_id": "j", "artifact_dir": str(tmp_path), "log_path": "l", "started_at": "t"})
     fn = getattr(tda.data_fetch_background, "fn", tda.data_fetch_background)
-    out = fn("streamflow", [47.2, -68.5], "2000-01-01", "2000-12-31", gauge_id="01013500")
+    out = fn("streamflow", "2000-01-01", "2000-12-31", geometry=GAUGE_PT, gauge_id="01013500")
     assert started["config"]["gauge_id"] == "01013500" and out["status"] == "pending"
-    assert fn("precipitation", POLY, "2000-01-01", "2000-12-31", gauge_id="01013500")["code"] == "GAUGE_ID_NOT_APPLICABLE"
+    assert fn("precipitation", "2000-01-01", "2000-12-31", geometry=POLY, gauge_id="01013500")["code"] == "GAUGE_ID_NOT_APPLICABLE"
     # the queued-backend preflight cannot be bypassed by pinning another product to a gauge
-    assert fn("streamflow", [47.2, -68.5], "2000-01-01", "2000-12-31", gauge_id="01013500",
+    assert fn("streamflow", "2000-01-01", "2000-12-31", geometry=GAUGE_PT, gauge_id="01013500",
               product="GLOFAS_STREAMFLOW")["code"] == "GAUGE_ID_NOT_APPLICABLE"
-    assert fn("streamflow", [51.5, -0.1], "2000-01-01", "2000-12-31", gauge_id="01013500")["code"] == "GAUGE_ID_NOT_APPLICABLE"
+    assert fn("streamflow", "2000-01-01", "2000-12-31", geometry={"lat": 51.5, "lon": -0.1}, gauge_id="01013500")["code"] == "GAUGE_LOCATION_MISMATCH"
 
     got = {}
     monkeypatch.setattr(aihydro_data, "fetch", lambda **k: got.update(k) or (_ for _ in ()).throw(RuntimeError("stop")))
@@ -528,7 +535,7 @@ def test_plain_data_fetch_refusal_envelope_carries_terminal(world):
 
     poly = {"type": "Polygon", "coordinates": [[[-68.7, 47.1], [-68.4, 47.1], [-68.4, 47.4],
                                                [-68.7, 47.4], [-68.7, 47.1]]]}
-    r = data_fetch("streamflow", poly, "2000-01-01", "2000-12-31", session_id="u3")      # polygon, no gauge
+    r = data_fetch("streamflow", "2000-01-01", "2000-12-31", geometry=poly, session_id="u3")      # polygon, no gauge
     assert r["error"] is True and r["code"] == "GAUGE_REQUIRED" and r["terminal"] is True
 
 
@@ -536,7 +543,7 @@ def test_cache_false_says_validators_did_not_run(world):
     from ai_hydro.mcp.tools_data_fetch import data_fetch
 
     g, s, e = PROVISIONAL
-    r = data_fetch("streamflow", g, s, e, session_id="u3", cache=False)
+    r = data_fetch("streamflow", s, e, geometry=g, session_id="u3", cache=False)
     assert not r.get("error"), r
     assert "cache=False" in r["validators_not_run"] and "quality_flags" not in r
     assert HydroSession.load("u3").streamflow is None
@@ -595,7 +602,7 @@ def test_both_slot_writers_drop_null_rows_and_record_them(world):
     assert d["quality_summary"]["n_missing_dates"] == 1
     # same convention as the data-layer path: a null day is not a row in the data_fetch slot either
     from ai_hydro.mcp.tools_data_fetch import data_fetch
-    data_fetch("streamflow", "01013500", "2020-01-01", "2020-01-10", session_id="u3")
+    data_fetch("streamflow", "2020-01-01", "2020-01-10", geometry="01013500", session_id="u3")
     saved = json.loads(Path(HydroSession.load("u3").streamflow["data"]["_data_file"]).read_text())
     assert len(saved["q_cms"]) == len(saved["dates"]) == len(saved["qualification_codes"]) == 9
     assert saved["missing_dates"] == ["2020-01-04"]

@@ -281,6 +281,8 @@ class TestToolSmoke:
         from ai_hydro.mcp.tools_session import get_session_summary
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            from ai_hydro.session.store import HydroSession
+            HydroSession("01031500").save()      # R-01: the study must exist
             result = get_session_summary("01031500")
             assert isinstance(result["computed"], list)
             assert isinstance(result["pending"], list)
@@ -290,6 +292,8 @@ class TestToolSmoke:
         from ai_hydro.mcp.tools_session import add_note
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            from ai_hydro.session.store import HydroSession
+            HydroSession("01031500").save()      # R-01: the study must exist
             result = add_note("01031500", "my research note")
             assert "my research note" in result["notes"]
 
@@ -314,6 +318,8 @@ class TestToolSmoke:
         from ai_hydro.mcp.tools_session import clear_session
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            from ai_hydro.session.store import HydroSession
+            HydroSession("01031500").save()      # R-01: the study must exist
             result = clear_session("01031500", ["nonexistent_slot"])
             assert result["error"] is True
             assert result["code"] == "INVALID_SLOTS"
@@ -336,6 +342,8 @@ class TestToolSmoke:
         from ai_hydro.mcp.tools_modelling import get_model_results
         with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
              patch("ai_hydro.session.store._REPO_ROOT", tmp_path):
+            from ai_hydro.session.store import HydroSession
+            HydroSession("01031500").save()      # R-01: the study must exist
             result = get_model_results("01031500")
             assert result["model_trained"] is False
 

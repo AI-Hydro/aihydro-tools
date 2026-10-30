@@ -17,6 +17,7 @@ from ai_hydro.mcp.helpers import (
     SessionResolutionError,
     _normalize_session_id,
     _resolve_session,
+    resolve_existing_study,
     _tool_error_to_dict,
     _workspace_write,
 )
@@ -39,6 +40,15 @@ def _surface_integrity_findings(session, summary: dict) -> None:
     try:
         from ai_hydro.claims.status_gate import stored_claim_flags
         flags = stored_claim_flags(session)
+        from ai_hydro.claims.lifecycle import registry_conflicts
+        for c in registry_conflicts(session.session_id, getattr(session, "claims", None) or {}):
+            flags.append({
+                "claim_id": c["claim_id"], "status": c["status"], "code": "registry_conflict",
+                "rule": "study_asserts_no_more_than_registry",
+                "how_to_fix": (f"The registry entry {c['registry_id']} is {c['registry_status']}. Re-bind the "
+                               "evidence with add_claim and re-promote under a fresh human approval, or set the "
+                               "claim back to 'tested'."),
+            })
         if flags:
             summary["claim_flags"] = flags
     except Exception as exc:
@@ -158,7 +168,7 @@ def get_session_summary(session_id: str | None = None) -> dict:
     session_id is optional — auto-resolved from the active chat when omitted.
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        session_id = resolve_existing_study(session_id)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         summary = session.summary()
@@ -188,7 +198,7 @@ def get_session_health(session_id: str | None = None) -> dict:
     used for workspace filenames.
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        session_id = resolve_existing_study(session_id)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         warnings = session.validate_identity()
@@ -226,7 +236,7 @@ def clear_session(session_id: str | None = None, slots: list[str] | None = None)
     (omit for all data slots).
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        session_id = resolve_existing_study(session_id)
         from ai_hydro.session import HydroSession
         from ai_hydro.session.store import _COMMON_SLOTS as _RESULT_SLOTS
         session = HydroSession.load(session_id)
@@ -267,7 +277,7 @@ def add_note(session_id: str | None = None, note: str = "") -> dict:
     Append a researcher annotation (hypothesis, anomaly, decision) to the session.
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        session_id = resolve_existing_study(session_id)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         added = session.add_note(note)
@@ -294,7 +304,7 @@ def archive_session(session_id: str | None = None) -> dict:
     sessions stay readable and exportable.
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        session_id = resolve_existing_study(session_id)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         session.archive()
@@ -312,7 +322,7 @@ def get_session_raw_state(session_id: str | None = None) -> dict:
     author + persist the prose synthesis.
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        session_id = resolve_existing_study(session_id)
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         slots = {}
@@ -348,7 +358,7 @@ def merge_session_shards(session_id: str | None = None, shard_ids: list[str] | N
     merge all available shards.
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        session_id = resolve_existing_study(session_id)
         from ai_hydro.session import merge_session_shards as _merge
         result = _merge(session_id, shard_ids=shard_ids)
         return result
@@ -370,7 +380,7 @@ def write_research_interpretation(
     short descriptive slug for display + exports.
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        session_id = resolve_existing_study(session_id)
         from ai_hydro.session import HydroSession
         from ai_hydro.mcp.tools_docs import _write_tools_md, _list_tools_sync
 
@@ -624,7 +634,7 @@ def export_session(
     capsule_path: override the default capsule directory.
     """
     try:
-        session_id = _resolve_session(session_id, None, allow_auto_create=False)
+        session_id = resolve_existing_study(session_id)
         from ai_hydro.session import HydroSession
         import shutil
         from datetime import datetime
@@ -1315,7 +1325,7 @@ def register_feature(
         Basin outlet for geomorphic parameters (centroid when omitted).
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         from aihydro_core.features.registry import FeatureRegistry
         session = HydroSession.load(session_id)
@@ -1366,7 +1376,7 @@ def list_features(session_id: str | None = None) -> dict:
     session_id : str | None — session to inspect. Auto-resolved when omitted.
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         feats = session.list_features()
@@ -1412,7 +1422,7 @@ def set_active_feature(
         Session to update. Auto-resolved when omitted.
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         from aihydro_core.features.registry import FeatureRegistry
         session = HydroSession.load(session_id)
@@ -1453,7 +1463,7 @@ def bind_map_to_claim(
         Session to update. Auto-resolved when omitted.
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
         # Validate that the claim exists in this session
@@ -1503,7 +1513,7 @@ def bind_claim_to_item(
     such layer and the map holds none).
     """
     try:
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
         from ai_hydro.mcp.map_items import add_link
         from ai_hydro.mcp.map_layer_catalog import find_catalog_layer

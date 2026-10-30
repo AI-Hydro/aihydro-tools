@@ -1,5 +1,84 @@
 # Decisions
 
+## 2026-10-30 - One study resolver, one claim lifecycle, earned pre-registration (tool integrity T1-S)
+
+Source: the record audit (`docs/vision-2040/findings/tool-audit-record-2026-10-30.md`), R-01..R-07, R-29, R-32.
+
+1. **Only explicit tools create a study.** `HydroSession.load` still returns an empty session for an unknown id (callers that create
+   rely on it), so the guard is at the tool boundary: `resolve_existing_study` / `_resolve_session(..., must_exist=True)`. It is a separate
+   flag, not implied by `allow_auto_create=False`, so the data-fetch and series tools (other lanes) are untouched. `session_id` stays a required
+   argument on the ledger tools; making it optional (R-36) is a schema change left for its own PR. The GeoWorkspace map tools
+   (`map_set_roi`, `map_set_working_geometry`, `map_save_roi`) deliberately open a study from a drawn region and are allow-listed in the scan test.
+2. **One code.** The existence refusal is `STUDY_NOT_FOUND` everywhere, including `list_claims`/`list_assumptions` (was `SESSION_NOT_FOUND`).
+3. **Retraction propagates without an approval record.** Retracting narrows what the registry asserts; it grants nothing. Everything that
+   widens it (a `promoted` row, including the return from `stale`) still needs the human `aihydro-approve` record and
+   `promote_claim_to_registry`. A retracted registry row is never reopened: a re-promotion writes a new row, and the study claim cannot return to
+   a supporting status (`retracted_claim_gate`). A human-only retract CLI (audit R-03) is not added: it would only reach what the author's own
+   status change now reaches.
+4. **Leaving `stale` requires re-bound evidence, not a rationale.** The gate compares the sources recorded at detection (`stale_sources`, on
+   the claim and in the registry row) with the evidence the claim now cites. A claim stale without recorded sources falls back to its previous
+   spans. The gate is on `supported`/`weakly_supported`; downgrades are always allowed.
+5. **Study claims keep their registry link across a redefinition** (`promoted`, `registry_id`, `promoted_at`, `staleness_detected_at`,
+   `stale_sources`). These keys are outside the revision digest and the approval record, so keeping them grants nothing.
+6. **Post-hoc is judged on the planned analyses only.** The audit proposed counting all runs existing at lock; that would label nearly
+   every real study post hoc (delineation and data fetch always precede the plan). A plan is `post_hoc` when a run or slot named EXACTLY by a
+   planned analysis predates `locked_at`. Matching is by normalised exact name; descriptions that are not tool names never match. Plans
+   already on disk without the stamp are judged from their timestamps at report time.
+7. **Citation not-found requires every provider to answer.** A DOI is `not_found` only if CrossRef, DataCite and Semantic Scholar all
+   answered without a record whose DOI matches; any unreachable provider makes the answer `unavailable`. The free-text threshold (0.6, 0.8 for
+   high confidence) is a heuristic on title words, not a verification; a hit above it is still a lookup result for the agent to cite verbatim.
+8. **Deferred:** `equations.yaml` content (R-06), optional `session_id`/`study_id` alias (R-36), `session_note` when an explicit id differs from
+   the bound study, the remaining non-atomic writes (R-18/R-41, T2), three-state check results (T2).
+## 2026-10-30 - A coordinate pair has no axis order: refuse it at one boundary; the gauge locates itself
+
+Owner evidence: `geometry=[-68.5828, 47.2375]` (lon, lat; USGS 01013500, northern Maine) was read by aihydro-data as (lat, lon), a point
+in the Southern Ocean. With `gauge_id` the call was refused as "region 'global'"; without it nothing refused and the router served CHIRPS /
+ERA5-Land / GEOGLOWS for the wrong place, real-looking numbers for the wrong location. That second case is the defect that matters.
+
+1. **Refuse, do not normalise (even when only one reading is possible).** When both values are within +/-90 the pair is genuinely
+   ambiguous (`GEOMETRY_AXIS_AMBIGUOUS`: both readings and the exact fix are returned, nothing is guessed). When one value exceeds 90
+   only one reading is valid (`GEOMETRY_AXIS_SWAPPED`). Normalising that case would have been correct, but it makes the accepted
+   inputs depend on the data, so the same call shape works for Seattle and silently fails for Maine. One rule is easier for a weak model
+   to learn: bare pairs are never accepted; send `{"lat":..,"lon":..}`. The error is retryable (`terminal: false`) and its `recovery`
+   text is the corrected argument. The refusal costs one turn; a wrong-place fetch costs a wrong result.
+2. **One boundary, not per-tool logic.** `GeometryBoundaryMiddleware` checks any call that supplies `geometry` / `geometries`, so tools
+   registered by other packages (`data_validate_request`, `data_batch_fetch`) are covered with no change there; the retaining
+   `data_fetch` and `data_fetch_background` run the same `check_geometry_arg` for direct Python calls. A scan test lists the live tool
+   schemas and fails if any geometry-taking tool is not behind it. Out of scope, and still bare-pair readers: aihydro-data's
+   `outlet=(lat, lon)` parameter and the `*_geojson` string parameters (GeoJSON is unambiguous).
+3. **Gauge first.** A USGS site number determines a place. `geometry` is optional when `gauge_id` (or a verified session BasinRef alias,
+   or a session USGS `site_id`) names it; the point is the Water Data API monitoring-location record. ADR-003 A2 is untouched:
+   a gauge request is still `mode="manual"`, `product="NWIS_STREAMFLOW"`, `fallback=[]`; nothing here can send it to a modelled
+   product. A geometry given with the gauge must be within 5 km of it (the A2 `max_distance_m` pre-registered threshold, read from
+   aihydro-data, not a new number); otherwise `GAUGE_LOCATION_MISMATCH` names both places. If the location lookup fails, only that
+   check is skipped (the pinned fetch cannot return another place's data); a gauge-only call whose lookup fails returns a transient error.
+4. **Deprecated tool.** `fetch_streamflow_data` takes `start_date`/`end_date`. Rather than adding parameters, the existing arg-repair
+   alias table gets the reverse pair (`start`->`start_date`, `end`->`end_date`), which applies only when the tool has no `start`/`end`.
+
+5. **Same validator for every coordinate (audit R-11, D43).** Selection is by parameter name, not a tool list. A bbox whose four
+   values are all within +/-90 is as ambiguous as a pair (`[47,-69,48,-68]` is a lat-first box in Antarctica or a lon-first box in
+   Maine), and a range check cannot tell them apart, so bare 4-lists are refused unless a value beyond 90 settles the axes; the
+   dict `{"west","south","east","north"}` is the explicit form. GeoJSON is trusted to be [lon, lat] (the spec), but each position is
+   range-checked, which catches projected metres; a lat-first GeoJSON position inside +/-90 is indistinguishable from a valid one and
+   is NOT detected.
+6. **`outlet` is a coordinate too (review of the first version).** Range-checking it was not enough: a swapped in-range outlet
+   (`[-68.58, 47.24]`) passes any range check, and GEOGLOWS / Open-Meteo snap to the outlet ahead of the polygon, so a Maine
+   polygon returned modelled flow for the Southern Ocean. Now (a) a bare outlet pair is refused like a geometry pair, the explicit
+   form is `{"lat","lon"}` and the boundary converts it to the `[lat, lon]` list aihydro-data's signature takes; (b) when an outlet and a
+   geometry are both present (single call, `data_fetch`, and `data_batch_fetch` per label) the outlet must be inside the geometry or
+   within the A2 5 km tolerance of it, else `GEOMETRY_OUTLET_MISMATCH`.
+6b. **Where the outlet is converted.** Only the middleware converts `{"lat","lon"}` to `[lat, lon]` (before schema validation); it then
+   sets `BOUNDARY_CHECKED` for the call so the wrapper does not read the converted pair as a caller's bare pair. A direct Python call
+   leaves it unset and the wrapper runs the same functions. The outlet is not compared with a station-id geometry (that routes to an
+   observation product) or with a `{label: outlet}` mapping (no consumer). A geometry spanning more than 180 degrees of longitude is
+   refused rather than measured in planar lon/lat; the outlet is wrapped to the geometry's side of +/-180.
+7. **Residual, made visible instead.** A GeoJSON Point, WKT or in-range polygon with swapped axes is a valid place and cannot be
+   detected. Every `data_fetch` result (and the `data_fetch_background` reply) therefore carries `resolved_place`: `{lat, lon, region}`
+   for a point, `{bbox, centroid, region}` otherwise, `{gauge, region}` for a station id; it is also in the sealed call inputs. When the
+   session's `site_id` or BasinRef names the place, a top-level `session_note` says so (and is prepended to `notes`).
+
+Consequence for callers: `data_fetch(variable, start, end, geometry=None, ...)` reordered its Python signature; MCP callers are unaffected.
+
 ## 2026-10-30 - Basin identity is a stamp on the result, checked by the one session loader (tool integrity T1-B)
 
 **Context.** Audit D01-D05/D33: the result cache key held no geometry for the session basin, a watershed change invalidated
