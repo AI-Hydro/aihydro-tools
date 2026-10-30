@@ -66,14 +66,40 @@ def test_a_prereg_id_of_another_plan_is_refused_and_names_the_real_one():
     assert plan["prereg_id"] in res["teaching_error"]["how_to_fix"]
 
 
-def test_the_studys_own_prereg_id_is_confirmatory_when_nothing_ran_first():
+def test_the_studys_own_prereg_id_is_confirmatory_when_it_cites_a_run_made_after_the_lock():
     HydroSession(SID).save()
     plan = register_research_plan(SID, "BFI exceeds 0.4", ["extract_hydrological_signatures"])
     assert plan["post_hoc"] is False and plan["planned_ran_before_lock"] == []
-    res = claim(prereg_id=plan["prereg_id"])
-    assert res["status"] == "recorded" and res["prereg"] == "confirmatory"
+    seed(("r1", "extract_hydrological_signatures", ts(+5)))
+    res = claim(prereg_id=plan["prereg_id"], evidence_spans=SPAN_R1)
+    assert res["status"] == "recorded" and res["prereg"] == "confirmatory" and "warnings" not in res
     md, summary = report()
     assert "✅ confirmatory" in md and summary["n_confirmatory_claims"] == 1
+
+
+def test_a_claim_citing_no_run_is_unverified_order_not_confirmatory():
+    HydroSession(SID).save()
+    plan = register_research_plan(SID, "BFI exceeds 0.4", ["extract_hydrological_signatures"])
+    res = claim(prereg_id=plan["prereg_id"])
+    assert res["status"] == "recorded" and res["prereg"] == "unverified_order"
+    assert res["warnings"][0]["code"] == "PREREG_ORDER_UNVERIFIED"
+    md, summary = report()
+    assert summary["n_confirmatory_claims"] == 0 and "unverified order" in md and "✅ confirmatory" not in md
+
+
+def test_a_run_with_a_naive_or_unreadable_timestamp_does_not_earn_confirmatory():
+    HydroSession(SID).save()
+    plan = register_research_plan(SID, "BFI exceeds 0.4", ["extract_hydrological_signatures"])
+    naive = (datetime.now() + timedelta(seconds=30)).replace(tzinfo=None).isoformat()
+    for rid, stamp in (("r1", naive), ("r2", "not a time"), ("r3", None)):
+        seed((rid, "extract_hydrological_signatures", stamp))
+        res = claim(claim_id=f"c_{rid}", prereg_id=plan["prereg_id"],
+                    evidence_spans=[{"source_type": "run", "source_id": rid, "metric_ref": "baseflow_index"}])
+        assert res["prereg"] == "unverified_order", (rid, res)
+    assert report()[1]["n_confirmatory_claims"] == 0
+
+
+SPAN_R1 = [{"source_type": "run", "source_id": "r1", "metric_ref": "baseflow_index"}]
 
 
 def test_a_claim_without_a_prereg_id_is_unchanged():

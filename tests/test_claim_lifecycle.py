@@ -289,3 +289,11 @@ def test_a_failed_registry_retraction_is_reported_and_the_study_retraction_stand
 def test_registry_retraction_records_who_retracted(promoted):
     update_claim_status(SID, "c1", "retracted", "low", "Withdrawn: the source series was wrong.")
     assert registry.all_entries()[0]["retracted_by"] == "agent"
+
+
+def test_a_downgrade_to_tested_works_with_an_unreadable_registry(promoted, monkeypatch):
+    def boom(_sid):
+        raise OSError("registry unreadable")
+    monkeypatch.setattr(registry, "find_by_session", boom)
+    res = update_claim_status(SID, "c1", "tested", "low", "Downgraded while the evidence is re-examined.")
+    assert res["status"] == "updated" and HydroSession.load(SID).claims["c1"]["status"] == "tested"

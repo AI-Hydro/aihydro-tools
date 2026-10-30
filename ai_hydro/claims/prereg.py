@@ -26,14 +26,15 @@ def norm(name: str) -> str:
 
 
 def parse_ts(value: Any) -> datetime | None:
-    """ISO-8601 timestamp -> aware UTC datetime; ``None`` if absent or unreadable."""
+    """ISO-8601 timestamp -> aware UTC datetime; ``None`` if absent, unreadable or naive (no zone)."""
     if not isinstance(value, str) or not value.strip():
         return None
     try:
         dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    # A naive timestamp has no zone, so its order against the lock cannot be established: unreadable.
+    return dt.astimezone(timezone.utc) if dt.tzinfo else None
 
 
 def locked_plan(session: Any) -> dict | None:
@@ -89,21 +90,37 @@ def analysis_status(session: Any, plan: dict) -> list[dict]:
     return out
 
 
-def runs_not_after_lock(session: Any, plan: dict, claim: dict) -> list[str]:
-    """Cited ``run`` source ids not timestamped strictly after the plan's lock (missing/unreadable = not after)."""
+def run_order(session: Any, plan: dict, claim: dict) -> tuple[list[str], list[str], int]:
+    """``(late, unverifiable, n_run_spans)`` for the ``run`` spans a claim cites, against the plan's lock.
+
+    ``late``: the run is timestamped at or before ``locked_at``. ``unverifiable``: the run is missing from the
+    log or its timestamp is absent, unreadable or naive. Neither earns ``confirmatory``.
+    """
     locked_at = parse_ts(plan.get("locked_at"))
     run_log = session.get("_run_log") or {}
-    bad = []
+    late: list[str] = []
+    unverifiable: list[str] = []
+    seen: set[str] = set()
     for sp in claim.get("evidence_spans") or []:
         if not isinstance(sp, dict) or sp.get("source_type") != "run":
             continue
         rid = str(sp.get("source_id"))
+        if rid in seen:
+            continue
+        seen.add(rid)
         row = run_log.get(rid)
         t = parse_ts(row.get("timestamp")) if isinstance(row, dict) else None
-        if locked_at is None or t is None or t <= locked_at:
-            if rid not in bad:
-                bad.append(rid)
-    return bad
+        if locked_at is None or t is None:
+            unverifiable.append(rid)
+        elif t <= locked_at:
+            late.append(rid)
+    return late, unverifiable, len(seen)
+
+
+def runs_not_after_lock(session: Any, plan: dict, claim: dict) -> list[str]:
+    """Cited ``run`` ids not provably after the lock (late or unverifiable)."""
+    late, unverifiable, _n = run_order(session, plan, claim)
+    return late + unverifiable
 
 
 def is_post_hoc(session: Any, plan: dict) -> bool:
@@ -118,13 +135,21 @@ def is_confirmatory(session: Any, claim: dict) -> bool:
 
 
 def prereg_label(session: Any, claim: dict) -> str:
-    """``confirmatory`` | ``post_hoc_plan`` | ``unverified_prereg_id`` | ``exploratory``."""
+    """``confirmatory`` | ``post_hoc_plan`` | ``unverified_order`` | ``unverified_prereg_id`` | ``exploratory``.
+
+    Confirmatory needs the plan to be the study's, not post hoc, and the claim to cite at least one ``run`` span,
+    every one provably recorded after the lock. A claim citing no run cannot show the plan came before its data
+    (``unverified_order``), and neither can one whose run timestamp is missing, unreadable or naive.
+    """
     pid = claim.get("prereg_id")
     if not pid:
         return "exploratory"
     plan = plan_for_prereg(session, pid)
     if plan is None:
         return "unverified_prereg_id"
-    if is_post_hoc(session, plan) or runs_not_after_lock(session, plan, claim):
+    late, unverifiable, n_runs = run_order(session, plan, claim)
+    if is_post_hoc(session, plan) or late:
         return "post_hoc_plan"
+    if n_runs == 0 or unverifiable:
+        return "unverified_order"
     return "confirmatory"

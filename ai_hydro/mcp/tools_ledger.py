@@ -360,6 +360,19 @@ def _post_hoc_warning(plan: dict, late_runs: list[str] | None = None, plan_post_
     }
 
 
+def _order_warning(plan: dict, unverifiable: list[str]) -> dict:
+    return {
+        "code": "PREREG_ORDER_UNVERIFIED", "severity": "warning", "blocking": False,
+        "message": ("This claim is not yet confirmatory: it cites no run recorded after the plan was locked"
+                    + (f" (unverifiable run timestamps: {', '.join(unverifiable)})" if unverifiable else "")
+                    + ", so the plan cannot be shown to precede its data. The defensibility report lists it as "
+                      "'unverified_order'."),
+        "how_to_fix": ("Cite the run(s), made after the lock, that produced the number (add_claim "
+                       "evidence_spans with source_type 'run')."),
+        "prereg_id": plan.get("prereg_id"),
+    }
+
+
 def _propagate_retraction(out: dict, session_id: str, claim_id: str, claim_dict: dict, status: str,
                           reason: str) -> None:
     """A claim set to ``retracted`` retracts its registry row(s); the result says which (R-03).
@@ -466,14 +479,18 @@ def add_claim(
         if gate is not None:
             return gate
         prereg_warning = None
+        prereg_state = None
         if prereg_id:
             from ai_hydro.claims import prereg as _prereg
             plan = _prereg.plan_for_prereg(session, prereg_id)
             if plan is None:
                 return _prereg_refusal(session, session_id, claim_id, claim_dict, status, prereg_id)
-            if _prereg.prereg_label(session, {**claim_dict, "prereg_id": prereg_id}) == "post_hoc_plan":
+            prereg_state = _prereg.prereg_label(session, {**claim_dict, "prereg_id": prereg_id})
+            if prereg_state == "post_hoc_plan":
                 prereg_warning = _post_hoc_warning(
                     plan, _prereg.runs_not_after_lock(session, plan, claim_dict), _prereg.is_post_hoc(session, plan))
+            elif prereg_state == "unverified_order":
+                prereg_warning = _order_warning(plan, _prereg.runs_not_after_lock(session, plan, claim_dict))
         if prereg_id:
             claim_dict["prereg_id"] = prereg_id
         if records:
@@ -509,7 +526,7 @@ def add_claim(
         out = {"id": claim_id, "status": "recorded", **path_report}
         _propagate_retraction(out, session_id, claim_id, claim_dict, status, confidence_rationale)
         if prereg_id:
-            out["prereg"] = "post_hoc_plan" if prereg_warning else "confirmatory"
+            out["prereg"] = prereg_state
         if entries:
             out["basin_refs"] = entries
             out["auto_bound"] = auto_bound

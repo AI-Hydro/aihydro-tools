@@ -45,14 +45,14 @@ Source: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`. No version 
   `stale` until a human re-approves (`aihydro-approve`, then `promote_claim_to_registry`). Nothing here can promote. The skeptic's
   `registry_conflict` check, `check_registry_staleness` (`status_conflicts`) and `start_session` (`claim_flags`) now compare the study status
   with the registry row.
-- **R-04 "Confirmatory" has to be earned.** `add_claim(prereg_id=...)` must name the study's own locked plan (`prereg_gate`). A claim is confirmatory only if every run it cites was recorded after the lock (so a free-text plan such as "baseflow analysis" cannot hide that the run came first), and plan entries that name no tool or slot are reported as unmatched. A plan locked
+- **R-04 "Confirmatory" has to be earned.** `add_claim(prereg_id=...)` must name the study's own locked plan (`prereg_gate`). A claim is confirmatory only if it cites at least one run and every cited run is provably (timezone-aware timestamp) recorded after the lock, otherwise `post_hoc_plan` or `unverified_order` (so a free-text plan such as "baseflow analysis" cannot hide that the run came first), and plan entries that name no tool or slot are reported as unmatched. A plan locked
   after a planned analysis had already run is stamped `post_hoc`: claims on it are not confirmatory (`PREREG_POST_HOC` warning) and the
   defensibility report says so. The report counts a planned analysis as executed only when a run of that exact tool name happened after
   `locked_at` (substring matching removed). Plans and claims already on disk keep working: the report judges them from their timestamps and
   shows an unverified `prereg_id` as exploratory.
 - **R-05 / R-32 Citation lookup is verified and honest about failure.** `get_citation_by_doi` resolves at the DOI endpoint (CrossRef, DataCite,
   Semantic Scholar) and returns only a record whose DOI equals the one asked for; a string that is not a DOI is refused. Free-text hits need
-  title-word overlap of at least 0.6 on whole words (author names and years are not counted against a title, and fewer than two content words can never match); weak hits come back as `not_confirmed` with unverified `candidates`, never as "no citation exists". A provider that cannot be reached is
+  title-word overlap of at least 0.6 on whole words (author names and years are not counted against a title, and fewer than two content words can never match); a capitalised query word absent from the title must be a family name in the hit's author list and a query year must be within one year of the record's (online-first dates), else the hit is only an unverified candidate; `high` needs title, authors and year to match, or a near-full-title match when the query has neither; weak hits come back as `not_confirmed` with unverified `candidates`, never as "no citation exists". A provider that cannot be reached is
   `CITATION_LOOKUP_UNAVAILABLE` (`unavailable: true`, `not_found: false`), never `not_found`; `not_found` is returned only when every provider
   answered. An unsupported `source_hint` is refused; `_render_apa` no longer crashes on an empty `container-title`.
 

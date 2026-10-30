@@ -280,6 +280,7 @@ def build_defensibility_report(
                 "confirmatory": "✅ confirmatory",
                 "post_hoc_plan": "○ exploratory (plan locked after its analyses ran)",
                 "unverified_prereg_id": "○ exploratory (prereg_id names no locked plan)",
+                "unverified_order": "○ unverified order (cites no run provably after the lock)",
             }.get(_prereg.prereg_label(session, c), "○ exploratory")
             lines.append(
                 f"| `{cid[:16]}` | {icon} {status} | {ctype} | {conf} "
@@ -395,7 +396,7 @@ def build_defensibility_report(
     rows: list[dict] = []
     for run_id, entry in sorted(run_log.items()):
         tool = entry.get("tool_name", "?")
-        ts = entry.get("timestamp", "")[:10]
+        ts = (entry.get("timestamp") or "")[:10]
         for k, v in entry.get("key_outputs", {}).items():
             if k.startswith("_") or not isinstance(v, (int, float)):
                 continue

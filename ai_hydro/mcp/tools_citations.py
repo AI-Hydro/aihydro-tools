@@ -161,49 +161,86 @@ HIGH_TITLE_SCORE = 0.8
 
 
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
+_YEAR_RE = re.compile(r"^(?:19|20)\d\d$")
+#: A query year may differ from the record's year by this much: online-first and print dates often straddle
+#: a year boundary (the Crossref ``issued`` date is one of them). Two or more years apart is a different paper.
+YEAR_TOLERANCE = 1
 
 
 def _stem(w: str) -> str:
     return w[:-1] if len(w) > 4 and w.endswith("s") else w
 
 
-def _score_detail(titles: list[str] | str | Any, query: str) -> tuple[float, int]:
-    """``(score, n_content_words)``: share of the query's content words found as whole words in the title.
+def _family(name: str) -> str:
+    """Lower-case family name from "Vogel, Richard", "Richard M. Vogel" or "Vogel"."""
+    name = (name or "").strip()
+    if "," in name:
+        name = name.split(",", 1)[0]
+    parts = _WORD_RE.findall(name)
+    return parts[-1].lower() if parts else ""
 
-    Years are dropped, and so is a capitalised word absent from the title (an author's name: titles do not carry
-    them), so "Vogel Fennessey 1994 flow duration curves" is judged on "flow duration curves". Matching is on
-    whole words ("flow" does not match "overflow"). Fewer than two content words can never reach the match
-    threshold: one keyword identifies nothing.
+
+def _assess(query: str, title: Any, families: list[str] | None, year: Any) -> dict[str, Any]:
+    """Judge one provider hit against a free-text query.
+
+    * Content words are the query words that count toward the title match: more than 3 letters, not a number, and
+      not a capitalised word missing from the title. Matching is on whole words ("flow" is not "overflow").
+    * A capitalised query word missing from the title is treated as an author name and MUST be a family name in
+      the hit's author list; a four-digit query year MUST be within ``YEAR_TOLERANCE`` of the record's year.
+      A mismatch rejects the hit (it is listed as an unverified candidate, never returned as the citation).
+      A provider that gives no authors/year leaves the check unverified: the hit may be returned but not as `high`.
+    * Fewer than two scored content words never reach the match threshold; ``n_scored`` counts the words actually
+      scored, not the ones discarded.
+    * `high` needs: title score >= HIGH_TITLE_SCORE, 3+ scored words, authors and year verified where the query
+      gave them, and, when the query gave neither, a near-full-title match (the query covers >= 0.8 of the title's
+      words), so a short topic phrase is never `high`.
     """
-    if not titles:
-        return 0.0, 0
-    title = (titles[0] if isinstance(titles, list) else str(titles))
-    title_words = {_stem(w.lower()) for w in _WORD_RE.findall(title)}
-    content = []
+    t = title[0] if isinstance(title, list) and title else (title if isinstance(title, str) else "")
+    title_words = {_stem(w.lower()) for w in _WORD_RE.findall(t)}
+    content, names, years = [], [], []
     for w in _WORD_RE.findall(query):
-        if len(w) <= 3 or w.isdigit():
+        if _YEAR_RE.match(w):
+            years.append(int(w))
+        elif len(w) <= 3 or w.isdigit():
             continue
-        if w[0].isupper() and _stem(w.lower()) not in title_words:
-            continue
-        content.append(_stem(w.lower()))
-    if not content:
-        return 0.0, 0
-    score = sum(1 for w in content if w in title_words) / len(content)
+        elif w[0].isupper() and _stem(w.lower()) not in title_words:
+            names.append(w.lower())
+        else:
+            content.append(_stem(w.lower()))
+    matched = [w for w in content if w in title_words]
+    score = len(matched) / len(content) if content else 0.0
     if len(content) < 2:
         score = min(score, MIN_TITLE_SCORE - 0.1)
-    return score, len(content)
+    out: dict[str, Any] = {"score": score, "n_scored": len(content), "reject": None, "unverified": []}
+    fams = {f for f in (families or []) if f}
+    if names:
+        if not fams:
+            out["unverified"].append("the provider gave no authors to check the author name(s) against")
+        elif not all(n in fams for n in names):
+            out["reject"] = f"author(s) {', '.join(names)} not among the record's authors"
+    if years and not out["reject"]:
+        try:
+            ry = int(year) if year not in (None, "") else None
+        except (TypeError, ValueError):
+            ry = None
+        if ry is None:
+            out["unverified"].append("the provider gave no year to check the query year against")
+        elif any(abs(y - ry) > YEAR_TOLERANCE for y in years):
+            out["reject"] = f"year {', '.join(map(str, years))} differs from the record's year {ry}"
+    covers = len(set(matched)) / len(title_words) if title_words else 0.0
+    out["high"] = bool(
+        not out["reject"] and not out["unverified"] and score >= HIGH_TITLE_SCORE and len(content) >= 3
+        and (bool(names) or bool(years) or covers >= 0.8))
+    return out
 
 
 def _title_match_score(titles: list[str] | str | Any, query: str) -> float:
-    return _score_detail(titles, query)[0]
+    return _assess(query, titles, None, None)["score"]
 
 
-def _n_content(query: str) -> int:
-    return len([w for w in _WORD_RE.findall(query) if len(w) > 3 and not w.isdigit()])
-
-
-def _entry(doi: str, csl: dict[str, Any], source: str, confidence: str) -> dict[str, Any]:
+def _entry(doi: str, csl: dict[str, Any], source: str, confidence: str, match_note: str = "") -> dict[str, Any]:
     return {
+        **({"matchNote": match_note} if match_note else {}),
         "doi": doi,
         "cslJson": csl,
         "formattedApa": _render_apa(csl),
@@ -275,6 +312,14 @@ def _semantic_scholar_by_doi(doi: str) -> tuple[str, dict[str, Any] | None]:
         if got == doi else (NOT_FOUND, None)
 
 
+def _crossref_year(it: dict[str, Any]) -> Any:
+    for key in ("issued", "published-print", "published-online", "published"):
+        parts = (it.get(key) or {}).get("date-parts") or [[None]]
+        if parts and parts[0] and parts[0][0]:
+            return parts[0][0]
+    return None
+
+
 def _search_crossref(query: str) -> tuple[str, dict[str, Any] | None, list[dict]]:
     url = (f"https://api.crossref.org/works?query={urllib.parse.quote(query)}"
            f"&rows=3&mailto=gh9690%40myamu.ac.in")
@@ -285,9 +330,10 @@ def _search_crossref(query: str) -> tuple[str, dict[str, Any] | None, list[dict]
     for it in ((data or {}).get("message") or {}).get("items") or []:
         doi = _normalize_doi(it.get("DOI", ""))
         if doi:
-            cands.append((_title_match_score(it.get("title"), query), doi, it))
-    return _pick(query, cands, "crossref", lambda sc: "high" if sc >= HIGH_TITLE_SCORE and _n_content(query) >= 3 else "medium",
-                 lambda it, doi: it)
+            fams = [_family(a.get("family") or a.get("name") or "") for a in it.get("author") or []
+                    if isinstance(a, dict)]
+            cands.append((_assess(query, it.get("title"), fams, _crossref_year(it)), doi, it))
+    return _pick(cands, "crossref", True, lambda it, doi: it)
 
 
 def _search_semantic_scholar(query: str) -> tuple[str, dict[str, Any] | None, list[dict]]:
@@ -300,8 +346,9 @@ def _search_semantic_scholar(query: str) -> tuple[str, dict[str, Any] | None, li
     for it in (data or {}).get("data") or []:
         doi = _normalize_doi(((it.get("externalIds") or {}).get("DOI")) or "")
         if doi:
-            cands.append((_title_match_score(it.get("title"), query), doi, it))
-    return _pick(query, cands, "semantic-scholar", lambda sc: "medium", _semantic_scholar_csl)
+            fams = [_family(a.get("name") or "") for a in it.get("authors") or [] if isinstance(a, dict)]
+            cands.append((_assess(query, it.get("title"), fams, it.get("year")), doi, it))
+    return _pick(cands, "semantic-scholar", False, _semantic_scholar_csl)
 
 
 def _search_datacite(query: str) -> tuple[str, dict[str, Any] | None, list[dict]]:
@@ -314,22 +361,32 @@ def _search_datacite(query: str) -> tuple[str, dict[str, Any] | None, list[dict]
         doi = _normalize_doi(attrs.get("doi") or it.get("id") or "")
         titles = attrs.get("titles") or []
         if doi:
-            cands.append((_title_match_score([titles[0].get("title", "")] if titles else [], query), doi, attrs))
-    return _pick(query, cands, "datacite", lambda sc: "low", _datacite_csl)
+            fams = [_family(c.get("familyName") or c.get("name") or "") for c in attrs.get("creators") or []
+                    if isinstance(c, dict)]
+            cands.append((_assess(query, [titles[0].get("title", "")] if titles else [], fams,
+                                  attrs.get("publicationYear")), doi, attrs))
+    return _pick(cands, "datacite", False, _datacite_csl, base="low")
 
 
-def _pick(query, cands, source, confidence_of, csl_of):
-    """Best candidate at or above ``MIN_TITLE_SCORE`` -> found; otherwise not_found with the closest ones listed."""
+def _pick(cands, source, may_be_high, csl_of, base="medium"):
+    """Best non-rejected hit at or above ``MIN_TITLE_SCORE`` -> found; every other hit is a listed candidate."""
     if not cands:
         return NOT_FOUND, None, []
-    score, doi, raw = max(cands, key=lambda c: c[0])
-    listed = [{"doi": d, "title_match": round(sc, 2), "source": source}
-              for sc, d, _ in sorted(cands, key=lambda c: -c[0])]
-    if score < MIN_TITLE_SCORE:
+    listed = [{"doi": d, "title_match": round(a["score"], 2), "source": source,
+               **({"rejected": a["reject"]} if a["reject"] else {})}
+              for a, d, _ in sorted(cands, key=lambda c: -c[0]["score"])]
+    ok = [c for c in cands if not c[0]["reject"] and c[0]["score"] >= MIN_TITLE_SCORE]
+    if not ok:
         return NOT_FOUND, None, listed
+    a, doi, raw = max(ok, key=lambda c: c[0]["score"])
     csl = csl_of(raw, doi)
     csl.setdefault("DOI", doi)
-    return FOUND, _entry(doi, csl, source, confidence_of(score)), listed
+    confidence = "high" if (may_be_high and a["high"]) else base
+    note = ""
+    if confidence != "high" and may_be_high:
+        note = ("Medium confidence: " + ("; ".join(a["unverified"]) if a["unverified"] else
+                "a topic-only or partial title match is not enough for high") + ". Verify before citing.")
+    return FOUND, _entry(doi, csl, source, confidence, note), listed
 
 
 _PROVIDERS = ("crossref", "semantic-scholar", "datacite")
@@ -420,6 +477,7 @@ def _cached_response(entry: dict[str, Any]) -> dict[str, Any]:
         "source": entry["source"],
         "confidence": entry["confidence"],
         "from_cache": True,
+        **({"match_note": entry["matchNote"]} if entry.get("matchNote") else {}),
     }
 
 
@@ -432,6 +490,7 @@ def _fresh_response(result: dict[str, Any]) -> dict[str, Any]:
         "source": result["source"],
         "confidence": result["confidence"],
         "from_cache": False,
+        **({"match_note": result["matchNote"]} if result.get("matchNote") else {}),
     }
 
 
