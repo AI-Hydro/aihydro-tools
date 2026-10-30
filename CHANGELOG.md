@@ -6,6 +6,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased] (modelling integrity, tool audit 2026-10-30 F2/F5/F6/F7/F9/F12)
+
+Requires the aihydro-modelling release carrying the matching fixes (HBV water conservation,
+`ModelSpec` `extra="forbid"` and per-backend defaults, `window_coverage`). **Any stored HBV result
+from before that release came from a non-conservative kernel; re-run it.**
+
+### Fixed
+
+- **`get_model_results(job_id=...)` returns that job's own result or a refusal (F2).** An unknown, failed, cancelled, autoresearch or
+  other-session job used to fall through to `session.model` and report `model_trained: true` with a different run's NSE. It now returns
+  `JOB_NOT_FOUND`, `JOB_FAILED`, `JOB_CANCELLED`, `NOT_A_TRAINING_JOB` (`next_tools: ["get_leaderboard"]` for autoresearch),
+  `JOB_SESSION_MISMATCH`, or `JOB_NO_SKILL`; `model_trained` is false in every one. A failed job was also missed because its
+  `status.json` `error` dict was read as a lookup failure. A job needs no session resolution: it names its own.
+- **Untrained models are not complete (F7).** The runner validates the resolved record against every window
+  (`validate_with_data`, now with per-window coverage) and fails with `INSUFFICIENT_DATA` when a window is not covered; a run with no
+  test-period NSE ends `failed`, never `complete`, and is not cached in the session. The runner keeps a refusal's own error code
+  instead of `TRAINING_ERROR`. `get_model_results` reports a cached model without NSE as `model_trained: false`.
+- **`train_hydro_model` shares the `propose_and_train` gate (F6, F12, F5).** Both reduce to one `ModelSpec` and pass
+  `gate_spec` (`ai_hydro/modelling/spec_gate.py`): unknown keys refused with `did_you_mean`, overlapping fit/select/report periods
+  refused, ranges checked, backend availability checked. Unset `epochs`/`learning_rate` resolve per backend (HBV 500 / 0.05, neural
+  30 / 0.001); the job records the resolved values.
+- **Mixed-basin and unit-mismatched sessions refuse (F9).** `BASIN_MISMATCH` when the watershed, streamflow or forcing slot declares a gauge
+  other than the session's `site_id`; `UNIT_MISMATCH` when the streamflow slot declares units other than m3/s. Checked at kickoff and in
+  `extract_basin_data`. Slots that do not declare a gauge are not checked.
+
+### Changed (behavioural)
+
+- `train_hydro_model` now refuses what it used to start: overlapping periods, an unknown `framework` (for example `ealstm`; use
+  `framework="lstm", model="ealstm"`) or `model`, out-of-range values. Its `epochs`, `n_restarts`, `hidden_size` and `learning_rate`
+  default to `None`. A neural job started without them trains at 30 epochs / lr 0.001 (was 500 / 0.05).
+- HBV results carry `scored_period` and `n_scored`, and their test skill covers the whole reported test window.
+
+---
+
 ## [2.8.4] - 2026-10-30 (answer audit: USGS data codes)
 
 ### Fixed
