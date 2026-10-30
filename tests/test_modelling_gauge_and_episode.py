@@ -20,10 +20,9 @@ from ai_hydro.session.store import HydroSession
 SID = "kings-study"
 
 
-needs_modelling = pytest.mark.skipif(
-    importlib.util.find_spec("aihydro_modelling") is None,
-    reason="needs the optional aihydro-modelling package (private; not installable in public CI)",
-)
+from _modelling_marks import modelling_mark, modelling_marks
+
+needs_modelling = modelling_mark()
 
 
 @pytest.fixture
@@ -114,7 +113,7 @@ def test_training_runner_with_no_site_id_writes_a_failed_status(home, tmp_path, 
 
 @pytest.mark.parametrize("tool,args", [
     ("train_hydro_model", {}),
-    pytest.param("run_autoresearch", {"hypothesis": "h", "max_experiments": 2}, marks=needs_modelling),
+    pytest.param("run_autoresearch", {"hypothesis": "h", "max_experiments": 2}, marks=modelling_marks()),
 ])
 def test_kickoffs_refuse_without_a_gauge_and_start_no_job(home, monkeypatch, tool, args):
     from ai_hydro.mcp import tools_modelling as tm

@@ -54,6 +54,7 @@ def train_neural_hydrology(
     seq_length:  int  = 365,
     batch_size:  int  = 256,
     learning_rate: float = 0.001,
+    spec: Any = None,
 ) -> dict:
     """
     Train a NeuralHydrology model for a session gauge.
@@ -63,6 +64,9 @@ def train_neural_hydrology(
     Return schema is unchanged.
     """
     data, data_source = extract_basin_data(session, gauge_id, output_dir)
+    if spec is not None:
+        from ai_hydro.modelling.spec_gate import require_trainable
+        require_trainable(spec, data)
     return _train_nh(
         gauge_id=gauge_id, forcing=data.forcing, q_by_date=data.q_by_date,
         static_attrs=data.static_attrs, output_dir=output_dir,

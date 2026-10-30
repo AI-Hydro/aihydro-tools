@@ -59,6 +59,40 @@ def _write_status(
     status_path.write_text(json.dumps(payload, indent=2))
 
 
+def _refusal_code(exc: BaseException) -> str | None:
+    """The code of an exception that is a deliberate refusal, else None (not any ``.code``)."""
+    types: list[type] = []
+    try:
+        from aihydro_core.primitives.errors import ToolError
+        types.append(ToolError)
+    except ImportError:
+        pass
+    try:
+        from aihydro_modelling.backends.hbv import InsufficientDataError
+        types.append(InsufficientDataError)
+    except ImportError:
+        pass
+    if types and isinstance(exc, tuple(types)):
+        code = getattr(exc, "code", None)
+        return str(code) if code else None
+    return None
+
+
+def _require_scored(result: dict) -> None:
+    """A run that scored nothing is a failure, never a ``complete`` model (audit F7)."""
+    if result.get("nse") is None:
+        from aihydro_core.primitives.errors import ToolError
+        raise ToolError(
+            code="INSUFFICIENT_DATA",
+            message=(
+                "The model produced no test-period skill: fewer than 10 days had both an "
+                "observation and a simulation inside the test window after spin-up "
+                f"(scored_period={result.get('scored_period')}, n_scored={result.get('n_scored')})."
+            ),
+            recovery="Choose a test window the observed streamflow record covers.",
+        )
+
+
 def run(artifact_dir: Path) -> None:
     config_path = artifact_dir / "job_config.json"
     if not config_path.exists():
@@ -131,8 +165,11 @@ def run(artifact_dir: Path) -> None:
             )
 
             training_data, _ = extract_basin_data(session, usgs_gauge_id, artifact_dir)
+            from ai_hydro.modelling.spec_gate import require_trainable
+            require_trainable(spec, training_data)
             hydro_result = _mod_train(spec, training_data)
             result: dict = dict(hydro_result.data)
+            _require_scored(result)
             result["spec"] = spec.model_dump()
 
             # Inject _run_id and write run-log entry via enforcement.post_run().
@@ -169,6 +206,19 @@ def run(artifact_dir: Path) -> None:
             # ── Legacy path: flat-param dispatch (train_hydro_model backward compat)
             fw = (framework or "hbv").lower().replace("-", "").replace("_", "")
 
+            # Same pre-flight as the spec path: the record must cover every window.
+            from aihydro_modelling.spec import ModelSpec as _MS
+            from ai_hydro.modelling.spec_gate import flat_to_spec_dict
+            _raw, _gerr = flat_to_spec_dict(
+                framework, model,
+                train_start=train_start, train_end=train_end, val_start=val_start,
+                val_end=val_end, test_start=test_start, test_end=test_end, epochs=epochs,
+                n_restarts=n_restarts, learning_rate=learning_rate, hidden_size=hidden_size,
+            )
+            if _gerr:
+                raise ValueError(_gerr["message"])
+            legacy_spec = _MS.model_validate(_raw)
+
             if fw in ("hbv", "hbvlight", "differentiable", "hydrodl2"):
                 from ai_hydro.modelling.conceptual.hbv import train_hbv_light
                 result = train_hbv_light(
@@ -182,6 +232,7 @@ def run(artifact_dir: Path) -> None:
                     epochs=epochs,
                     n_restarts=n_restarts,
                     learning_rate=learning_rate,
+                    spec=legacy_spec,
                 )
             elif fw in ("neuralhydrology", "nh", "lstm"):
                 from ai_hydro.modelling.neural.lstm import train_neural_hydrology
@@ -199,9 +250,11 @@ def run(artifact_dir: Path) -> None:
                     epochs=epochs,
                     hidden_size=hidden_size,
                     learning_rate=learning_rate,
+                    spec=legacy_spec,
                 )
             else:
                 raise ValueError(f"Unknown framework: {framework!r}")
+            _require_scored(result)
 
             # Cache result in session
             session.model = result
@@ -224,13 +277,18 @@ def run(artifact_dir: Path) -> None:
             )
             log.info("Training complete: NSE=%.4f", nse or 0)
 
-    except Exception:
+    except Exception as exc:
         tb = traceback.format_exc()
         log.error("Training failed:\n%s", tb)
-        _write_status(
-            artifact_dir, job_id, "failed",
-            error={"code": "TRAINING_ERROR", "message": tb[-500:]},
-        )
+        # A deliberate refusal (ToolError, InsufficientDataError) keeps its own code and full
+        # message; any other exception is an unexpected TRAINING_ERROR. The traceback is kept
+        # in both cases (train.log has it in full; the status carries its tail).
+        code = _refusal_code(exc)
+        if code:
+            error = {"code": code, "message": str(exc)[:1500], "traceback": tb[-800:]}
+        else:
+            error = {"code": "TRAINING_ERROR", "message": tb[-500:]}
+        _write_status(artifact_dir, job_id, "failed", error=error)
         sys.exit(1)
 
 

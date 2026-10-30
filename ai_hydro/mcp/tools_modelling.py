@@ -59,10 +59,10 @@ def train_hydro_model(
     val_end: str = "2007-09-30",
     test_start: str = "2007-10-01",
     test_end: str = "2010-09-30",
-    epochs: int = 500,
-    n_restarts: int = 3,
-    hidden_size: int = 64,
-    learning_rate: float = 0.05,
+    epochs: int | None = None,
+    n_restarts: int | None = None,
+    hidden_size: int | None = None,
+    learning_rate: float | None = None,
 ) -> dict:
     """
     Kick off a model training job (detached subprocess). Returns {job_id}
@@ -70,6 +70,10 @@ def train_hydro_model(
     Requires watershed+forcing (HBV) or watershed+streamflow+forcing (LSTM).
     framework: hbv (HBV-light, default) | neuralhydrology (LSTM, needs pip
     install neuralhydrology). model (NH only): cudalstm | ealstm | transformer.
+    epochs / learning_rate / n_restarts / hidden_size: leave unset for the backend's own
+    defaults (HBV 500 epochs, lr 0.05; neural 30 epochs, lr 0.001).
+    The request goes through the same gate as propose_and_train: periods must be disjoint
+    (train < val < test), values in range, and the backend available.
     Typical runtime: 2-15 min (HBV), 15-60 min (LSTM).
     """
     try:
@@ -77,8 +81,31 @@ def train_hydro_model(
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
-        fw = (framework or "hbv").lower().replace("-", "").replace("_", "")
-        if fw in ("neuralhydrology", "nh", "lstm"):
+        # One gate for every training request (audit F6, F12): build a ModelSpec, validate it,
+        # check the backend. Unset optimiser fields resolve from the backend family.
+        from ai_hydro.modelling.spec_gate import flat_to_spec_dict, gate_spec
+        raw, bad = flat_to_spec_dict(
+            framework, model,
+            train_start=train_start, train_end=train_end, val_start=val_start, val_end=val_end,
+            test_start=test_start, test_end=test_end, epochs=epochs, n_restarts=n_restarts,
+            hidden_size=hidden_size, learning_rate=learning_rate,
+        )
+        if bad:
+            return bad
+
+        # Spec errors (unknown framework/model, overlapping periods, ranges) are reported
+        # before missing prerequisites so they are not hidden behind them. Without the
+        # modelling package the gate is deferred: the other refusals still apply first.
+        try:
+            spec, bad = gate_spec(raw)
+            if bad and bad.get("code") == "MODELLING_TOO_OLD":
+                spec, bad = None, None      # deferred like an absent package: the later gate refuses
+            if bad:
+                return bad
+        except ModuleNotFoundError:
+            spec = None
+
+        if raw["backend"] != "hbv":
             required = ("watershed", "streamflow", "forcing")
         else:
             required = ("watershed", "forcing")
@@ -99,10 +126,18 @@ def train_hydro_model(
                 ),
             }
 
-        from ai_hydro.modelling.gauge import gauge_error
+        from ai_hydro.modelling.gauge import basin_consistency_error, gauge_error
         _gerr = gauge_error(session, session_id)
         if _gerr:
             return _gerr
+        _berr = basin_consistency_error(session, session.site_id)
+        if _berr:
+            return _berr
+
+        if spec is None:       # modelling package absent: raises -> MODELLING_NOT_INSTALLED
+            spec, bad = gate_spec(raw)
+            if bad:
+                return bad
 
         job_id = uuid.uuid4().hex[:12]
 
@@ -116,16 +151,18 @@ def train_hydro_model(
             "session_id": session_id,
             "framework": framework,
             "model": model,
-            "train_start": train_start,
-            "train_end": train_end,
-            "val_start": val_start,
-            "val_end": val_end,
-            "test_start": test_start,
-            "test_end": test_end,
-            "epochs": epochs,
-            "n_restarts": n_restarts,
-            "hidden_size": hidden_size,
-            "learning_rate": learning_rate,
+            # The resolved values (the gate's spec), not the raw arguments: what runs is
+            # what is recorded.
+            "train_start": spec.train_start,
+            "train_end": spec.train_end,
+            "val_start": spec.val_start,
+            "val_end": spec.val_end,
+            "test_start": spec.test_start,
+            "test_end": spec.test_end,
+            "epochs": spec.epochs,
+            "n_restarts": spec.n_restarts,
+            "hidden_size": spec.hidden_size,
+            "learning_rate": spec.learning_rate,
         }
 
         # Spawn as a registered, cancellable job (PID persisted → cancel_job works).
@@ -314,7 +351,7 @@ def propose_and_train(
     """
     Validate a ModelSpec then kick off a training job if the spec is valid.
 
-    Unlike train_hydro_model (flat params, no pre-flight gate), this tool:
+    Takes the full typed spec (train_hydro_model is the flat-parameter form of the same gate):
       1. Parses spec_json → ModelSpec (typed, with per-backend conditionals).
       2. Runs static pre-flight validation BEFORE touching the GPU or disk.
          Invalid science (train/test overlap, seq_length > record, etc.) fails
@@ -357,45 +394,20 @@ def propose_and_train(
                 "hint": "Pass a JSON string — e.g. propose_and_train(spec_json='{\"backend\": \"hbv\"}')",
             }
 
-        try:
-            spec = m.ModelSpec.model_validate(raw)
-        except Exception as ve:
+        if not isinstance(raw, dict):
             return {
                 "error": True,
                 "code": "INVALID_SPEC",
-                "message": str(ve),
+                "message": "spec_json must be a JSON object of ModelSpec fields.",
                 "hint": "Call describe_model_space() to see valid fields and ranges.",
             }
 
-        # ── Static pre-flight validation ──────────────────────────────────
-        errors = m.validate(spec)
-        if errors:
-            return {
-                "error": True,
-                "code": "VALIDATION_ERROR",
-                "validation_passed": False,
-                "errors": errors,
-                "hint": (
-                    "Fix the errors listed above then retry. "
-                    "Call describe_model_space() to see valid ranges."
-                ),
-            }
-
-        # ── Backend availability check ─────────────────────────────────────
-        avail = m.availability()
-        backend_status = avail.get(spec.backend)
-        if backend_status is not None and not backend_status.available:
-            return {
-                "error": True,
-                "code": "BACKEND_UNAVAILABLE",
-                "validation_passed": True,  # spec is valid; host just can't run it
-                "backend": spec.backend,
-                "reason": backend_status.reason,
-                "hint": (
-                    "Pick an available backend (call describe_model_space() to see which) "
-                    "or install the required dependency."
-                ),
-            }
+        # Unknown keys, static pre-flight validation and backend availability (one gate,
+        # shared with train_hydro_model).
+        from ai_hydro.modelling.spec_gate import gate_spec
+        spec, bad = gate_spec(raw)
+        if bad:
+            return bad
 
         # ── Session prerequisite check ────────────────────────────────────
         from ai_hydro.session import HydroSession
@@ -423,10 +435,13 @@ def propose_and_train(
                 ),
             }
 
-        from ai_hydro.modelling.gauge import gauge_error
+        from ai_hydro.modelling.gauge import basin_consistency_error, gauge_error
         _gerr = gauge_error(session, session_id)
         if _gerr:
             return _gerr
+        _berr = basin_consistency_error(session, session.site_id)
+        if _berr:
+            return _berr
 
         # ── Kick off job ──────────────────────────────────────────────────
         job_id = uuid.uuid4().hex[:12]
@@ -593,10 +608,13 @@ def run_autoresearch(
                 ),
             }
 
-        from ai_hydro.modelling.gauge import gauge_error
+        from ai_hydro.modelling.gauge import basin_consistency_error, gauge_error
         _gerr = gauge_error(session, session_id)
         if _gerr:
             return _gerr
+        _berr = basin_consistency_error(session, session.site_id)
+        if _berr:
+            return _berr
 
         # ── Kick off job ──────────────────────────────────────────────────
         job_id = uuid.uuid4().hex[:12]
@@ -740,42 +758,206 @@ def get_leaderboard(job_id: str) -> dict:
         return _tool_error_to_dict(e)
 
 
+def _rating(nse) -> str:
+    return ("excellent" if nse is not None and nse >= 0.75 else
+            "satisfactory" if nse is not None and nse >= 0.50 else
+            "poor" if nse is not None else "unknown")
+
+
+def _kernel_staleness(result: dict) -> str | None:
+    """Why a stored HBV result cannot be trusted, or None.
+
+    HBV results made before aihydro-modelling 0.6.2 came from a kernel that created water
+    (audit F1). They carry no ``hbv_kernel`` stamp; a stamp that differs from the installed
+    kernel's is also stale. Non-HBV results are not affected.
+    """
+    if str(result.get("model_type") or "").lower() != "hbv" and \
+            str(result.get("framework") or "").lower() != "hbv-light":
+        return None
+    have = result.get("hbv_kernel")
+    try:
+        from aihydro_modelling.backends.hbv import HBV_KERNEL
+    except ImportError:
+        HBV_KERNEL = None
+    if not have:
+        return ("it carries no hbv_kernel stamp: it was produced by the HBV kernel that created water "
+                "(aihydro-modelling < 0.6.2)")
+    if HBV_KERNEL and have != HBV_KERNEL:
+        return f"it was produced by HBV kernel '{have}', the installed kernel is '{HBV_KERNEL}'"
+    return None
+
+
+def _stale_model(reason: str, *, session_id, source: str, result: dict, job_id: str | None = None) -> dict:
+    """A stored model that must be re-run: reported, but never as a clean trained model."""
+    out = {
+        "session_id": session_id,
+        "error": False,
+        "model_trained": False,
+        "stale": True,
+        "code": "MODEL_STALE_KERNEL",
+        "source": source,
+        "message": f"The stored HBV result is stale: {reason}. Its skill numbers are withheld; re-run "
+                   "the training (propose_and_train / train_hydro_model).",
+        "framework": result.get("framework"),
+        "model_dir": result.get("model_dir"),
+        "hbv_kernel": result.get("hbv_kernel"),
+    }
+    if job_id:
+        out["job_id"] = job_id
+    return out
+
+
+def _job_error(job_id: str, code: str, message: str, **extra) -> dict:
+    """A job-scoped refusal. ``model_trained`` is always False: no other model's skill is ever shown."""
+    return {"error": True, "code": code, "job_id": job_id, "model_trained": False,
+            "message": message, **extra}
+
+
+def _job_model_results(job_id: str, session_id: str | None) -> dict:
+    """Results of THIS job and nothing else (audit F2).
+
+    When ``job_id`` is given it is authoritative: an unknown, failed, cancelled, wrong-kind or
+    other-session job gets its own structured answer. Control never falls through to the
+    session's cached model, whose skill belongs to a different run.
+    """
+    import json as _json
+
+    status = jobs.get_job_status(job_id)
+    # A lookup failure is the envelope ``{"error": True, ...}``; a failed job's own status.json
+    # also carries an ``error`` key (a dict describing the failure), which is not a lookup failure.
+    if status.get("error") is True:
+        return _job_error(
+            job_id, "JOB_NOT_FOUND",
+            status.get("message") or f"No job found for job_id='{job_id}'.",
+            next_tools=["list_jobs"],
+        )
+
+    # Kind and owning session come from the job's own records (public registry listing).
+    try:
+        entry = next((j for j in (jobs.list_jobs().get("jobs") or [])
+                      if j.get("job_id") == job_id), {})
+    except Exception:
+        entry = {}
+    adir = entry.get("artifact_dir") or status.get("artifact_dir")
+    if not adir and status.get("log_path"):
+        # A legacy job (not in the registry; found by get_job_status through its path fallback)
+        # does not expose its artifact dir, but its status.json names its log inside it.
+        cand = Path(str(status["log_path"])).parent
+        if (cand / "status.json").exists():
+            adir = str(cand)
+    if not adir:
+        # No artifact dir: never fall back to Path("") (the working directory).
+        return _job_error(
+            job_id, "JOB_NOT_FOUND",
+            f"Job {job_id} has no artifact directory on record, so its result cannot be read.",
+            next_tools=["list_jobs"],
+        )
+    artifact_dir = Path(adir)
+    cfg: dict = {}
+    try:
+        cfg = _json.loads((artifact_dir / "job_config.json").read_text())
+    except (OSError, ValueError):
+        cfg = {}
+    kind = str(entry.get("kind") or "").lower()
+    if not kind:     # unregistered job: infer from what it carries
+        kind = ("training" if ("spec" in cfg or "framework" in cfg or "partial_results" in status)
+                else "unknown")
+    if kind != "training":
+        return _job_error(
+            job_id, "NOT_A_TRAINING_JOB",
+            f"Job {job_id} is a '{kind}' job, not a training job; it has no single trained model.",
+            job_kind=kind,
+            next_tools=["get_leaderboard"] if "autoresearch" in kind or "search" in kind
+            else ["get_training_status"],
+        )
+
+    job_session = str(cfg.get("session_id") or "")
+    asked = session_id
+    if asked is None:
+        # No session named: do not require resolution, but never show a job from another study.
+        try:
+            from ai_hydro.mcp.helpers import _resolve_session as _rs
+            asked = _rs(None, None, allow_auto_create=False, allow_recent_fallback=False, must_exist=True)
+        except Exception:
+            asked = None
+    if job_session and asked and job_session != asked:
+        return _job_error(
+            job_id, "JOB_SESSION_MISMATCH",
+            f"Job {job_id} belongs to session '{job_session}', not '{asked}'. "
+            "Its result is not shown in another study.",
+            job_session_id=job_session,
+            recovery=f"Call get_model_results(job_id='{job_id}', session_id='{job_session}').",
+        )
+    sid = job_session or asked
+
+    state = status.get("status")
+    if state not in ("complete", "failed", "cancelled") and status.get("_pid_alive") is False:
+        # status.json says the job is running but its process is gone: it crashed.
+        return _job_error(
+            job_id, "JOB_PROCESS_GONE",
+            f"Job {job_id} reports '{state}' but its process is no longer running; it most likely "
+            "crashed. There is no model to report.",
+            session_id=sid, job_status=state, job_note=status.get("_note"),
+            next_tools=["get_training_status"],
+        )
+    if state == "failed":
+        return _job_error(
+            job_id, "JOB_FAILED", f"Job {job_id} failed; there is no model to report.",
+            session_id=sid, job_error=status.get("error"), next_tools=["get_training_status"],
+        )
+    if state == "cancelled":
+        return _job_error(
+            job_id, "JOB_CANCELLED", f"Job {job_id} was cancelled; there is no model to report.",
+            session_id=sid,
+        )
+    if state != "complete":
+        out = {
+            "session_id": sid,
+            "model_trained": False,
+            "job_id": job_id,
+            "job_status": state,
+            "progress": status.get("progress"),
+            "message": f"Job {job_id} is still {state or 'running'}.",
+        }
+        if status.get("_note"):
+            out["job_note"] = status["_note"]
+        return out
+
+    partial = status.get("partial_results") or {}
+    nse = partial.get("nse")
+    if not partial or nse is None:
+        return _job_error(
+            job_id, "JOB_NO_SKILL",
+            f"Job {job_id} finished without a scored model (no test-period NSE); it is not reported as trained.",
+            session_id=sid, job_status=state,
+        )
+    stale = _kernel_staleness(partial)
+    if stale:
+        return _stale_model(stale, session_id=sid, job_id=job_id, source="job_artifact", result=partial)
+    return {
+        "session_id": sid,
+        "job_id": job_id,
+        "model_trained": True,
+        "source": "job_artifact",
+        **partial,
+        "performance_rating": _rating(nse),
+    }
+
+
 @mcp.tool()
 def get_model_results(session_id: str | None = None, job_id: str | None = None) -> dict:
     """
-    Return cached training results: NSE, KGE, RMSE, model_dir. job_id reads
-    from the job artifact dir; otherwise from session.model.
-    session_id : str | None (optional from Wave 3) — auto-resolved from chat context.
+    Return training results: NSE, KGE, RMSE, model_dir. With job_id, returns THAT job's result
+    only (JOB_NOT_FOUND / JOB_FAILED / JOB_CANCELLED / NOT_A_TRAINING_JOB / JOB_SESSION_MISMATCH
+    otherwise; it never falls back to another model). Without job_id, the session's latest model.
+    session_id : str | None — auto-resolved from chat context; a job names its own session.
     """
     try:
-        session_id = _resolve_session(session_id, None, must_exist=not job_id)
-
-        # If job_id provided, try to read from artifact dir first
         if job_id:
-            status = get_training_status(job_id)
-            if not status.get("error") and status.get("status") == "complete":
-                partial = status.get("partial_results")
-                if partial:
-                    nse = partial.get("nse")
-                    return {
-                        "session_id": session_id,
-                        "model_trained": True,
-                        "source": "job_artifact",
-                        **partial,
-                        "performance_rating": (
-                            "excellent" if nse is not None and nse >= 0.75 else
-                            "satisfactory" if nse is not None and nse >= 0.50 else
-                            "poor" if nse is not None else "unknown"
-                        ),
-                    }
-            elif not status.get("error"):
-                return {
-                    "session_id": session_id,
-                    "model_trained": False,
-                    "job_status": status.get("status"),
-                    "progress": status.get("progress"),
-                    "message": f"Job {job_id} is still {status.get('status', 'running')}.",
-                }
+            # The job names its own session; resolution is not required (and must not create one).
+            return _job_model_results(job_id, session_id)
+
+        session_id = _resolve_session(session_id, None, must_exist=True)
 
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
@@ -797,16 +979,25 @@ def get_model_results(session_id: str | None = None, job_id: str | None = None) 
 
         result = session.model
         nse = result.get("nse")
+        if nse is None:
+            # A cached model with no test-period skill was never scored: not a trained model.
+            return {
+                "session_id": session_id,
+                "error": False,
+                "model_trained": False,
+                "code": "MODEL_NOT_SCORED",
+                "message": "The cached model has no test-period NSE (it scored nothing); "
+                           "it is not reported as trained. Re-train on a window the record covers.",
+            }
+        stale = _kernel_staleness(result)
+        if stale:
+            return _stale_model(stale, session_id=session_id, source="session_cache", result=result)
         return {
             "session_id": session_id,
             "model_trained": True,
             "source": "session_cache",
             **result,
-            "performance_rating": (
-                "excellent" if nse is not None and nse >= 0.75 else
-                "satisfactory" if nse is not None and nse >= 0.50 else
-                "poor" if nse is not None else "unknown"
-            ),
+            "performance_rating": _rating(nse),
         }
 
     except Exception as e:

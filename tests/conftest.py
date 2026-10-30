@@ -129,3 +129,46 @@ def _block_network_for_offline_tests(request, monkeypatch):
     # fallbacks); an attempt that was caught is still an offline violation.
     if attempts:
         pytest.fail(f"{len(attempts)} blocked network attempt(s); first: {attempts[0]}", pytrace=False)
+
+
+# ── Opt-in: a missing modelling package is a failure, not a skip ─────────────
+# The modelling-backed tools need the private aihydro-modelling package, which public CI cannot
+# install; there these tests skip (honestly). They run, with no skips allowed, in the private
+# aihydro-modelling repo's workflow, which checks out this repo and sets
+# AIHYDRO_REQUIRE_MODELLING=1. With that variable set:
+#   * the session refuses to start unless the package is importable and new enough;
+#   * a test carrying the ``needs_modelling`` marker (tests/_modelling_marks.py) that is skipped
+#     for any reason is reported as a failure.
+
+_MIN_MODELLING = (0, 6, 2)
+
+
+def _require_modelling() -> bool:
+    return os.environ.get("AIHYDRO_REQUIRE_MODELLING") == "1"
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "needs_modelling: needs the private aihydro-modelling package (skips without it; "
+                   "fails when AIHYDRO_REQUIRE_MODELLING=1)")
+    if not _require_modelling():
+        return
+    import re
+    try:
+        import aihydro_modelling as m
+    except ImportError as exc:
+        pytest.exit(f"AIHYDRO_REQUIRE_MODELLING=1 but aihydro_modelling cannot be imported: {exc}", 3)
+    have = tuple(int(x) for x in re.findall(r"\d+", str(m.__version__))[:3])
+    if have < _MIN_MODELLING:
+        pytest.exit(f"AIHYDRO_REQUIRE_MODELLING=1 but aihydro_modelling {m.__version__} < "
+                    f"{'.'.join(map(str, _MIN_MODELLING))}", 3)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    if _require_modelling() and rep.skipped and item.get_closest_marker("needs_modelling"):
+        reason = rep.longrepr[-1] if isinstance(rep.longrepr, tuple) else rep.longrepr
+        rep.outcome = "failed"
+        rep.longrepr = f"needs_modelling test skipped while AIHYDRO_REQUIRE_MODELLING=1: {reason}"

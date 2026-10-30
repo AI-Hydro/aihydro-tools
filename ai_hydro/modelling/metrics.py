@@ -122,6 +122,12 @@ def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
     """
     from aihydro_modelling import TrainingData
 
+    from ai_hydro.modelling.gauge import basin_consistency_error
+    _bad = basin_consistency_error(session, gauge_id)
+    if _bad:
+        from aihydro_core.primitives.errors import ToolError
+        raise ToolError(code=_bad["code"], message=_bad["message"], recovery=_bad["recovery"])
+
     area_km2 = session.watershed["data"]["area_km2"]
 
     # Streamflow: CAMELS first, then session-cached USGS.
