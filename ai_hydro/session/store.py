@@ -78,6 +78,7 @@ Plugins can register their own result slots without editing core code:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -85,11 +86,13 @@ import math
 import os
 import re
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from aihydro_core.primitives.errors import ToolError
 from ai_hydro.registry.paths import home_path
 from ai_hydro.session import basin_identity as _bi
 
@@ -774,10 +777,11 @@ def _file_digest(path: Path) -> str:
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
-    if len(_DIGEST_CACHE) > 512:
+    digest = "sha256:" + h.hexdigest()
+    if len(_DIGEST_CACHE) > 512:          # tools run in threads: return the local, never re-read the cache
         _DIGEST_CACHE.clear()
-    _DIGEST_CACHE[key] = "sha256:" + h.hexdigest()
-    return _DIGEST_CACHE[key]
+    _DIGEST_CACHE[key] = digest
+    return digest
 
 
 def _resolve_artifact(raw: str, roots: list[Path]) -> tuple[Path | None, str | None]:
@@ -878,6 +882,296 @@ def _json_safe(obj: Any) -> Any:
     return obj
 
 
+# ---------------------------------------------------------------------------
+# Concurrent writers (T1-R)
+#
+# Tools run in worker threads, so two calls on one study overlap (a long fetch, then a note). A
+# session is a read-modify-write of one JSON file: without care the later save replaces the
+# earlier one's changes. No lock is held while a tool works.  ``save()`` instead
+#   * takes a short, bounded write guard (in-process lock + a sidecar flock for other processes)
+#     around "compare, merge, write" only, never across a tool's network or compute;
+#   * if the file changed since this object loaded it, three-way merges (what we loaded / what we
+#     hold / what is on disk), so each writer's own changes survive; our value wins only where
+#     both changed the same leaf;
+#   * raises ``SessionBusyError`` (code SESSION_BUSY, retryable) when the guard cannot be taken in
+#     ``AIHYDRO_SESSION_WRITE_WAIT_S`` seconds, naming the tool that holds it.
+# ---------------------------------------------------------------------------
+_SESSION_WRITE_WAIT_S = 10.0
+_MERGE_DEPTH = 3                 # slots: product -> feature -> params_key; deeper values replace wholesale
+_FORCE_MERGE = object()          # "the disk stamp is unknown: merge on the next save"
+_NO_MERGE = object()             # a freshly built object (not loaded): its first save is authoritative, as before
+
+
+def _session_write_wait_s() -> float:
+    try:
+        return max(0.1, float(os.environ.get("AIHYDRO_SESSION_WRITE_WAIT_S", _SESSION_WRITE_WAIT_S)))
+    except ValueError:
+        return _SESSION_WRITE_WAIT_S
+
+
+class SessionBusyError(ToolError):
+    """A study's write guard could not be taken in time. Retryable; names who holds it."""
+
+    def __init__(self, session_id: str, holder: str | None, waited_s: float, running: list[str] | None = None):
+        self.session_id = session_id
+        self.holder = holder
+        names = running or ([holder] if holder else [])
+        who = f" by {holder}" if holder else ""
+        super().__init__(
+            code="SESSION_BUSY",
+            message=(f"Study {session_id!r} is being written{who}; waited {waited_s:.0f}s, so this call's "
+                     "result was NOT saved to the study. What is kept: everything already saved, and fetched "
+                     "data held in aihydro-data's cache (a retry re-reads it, not the network). Uncached "
+                     "computation from this call is recomputed on the retry."),
+            details={"retryable": True, "session_id": session_id, "held_by": holder,
+                     "running_tools": names, "waited_s": round(waited_s, 1)},
+            recovery="Retry in a few seconds; wait_for_job(job_id) if a long job is running.",
+            alternatives=["wait_for_job", "get_session_summary"],
+        )
+
+
+_WRITE_LOCKS: dict[str, threading.Lock] = {}
+_WRITE_HOLDERS: dict[str, str] = {}
+_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def _stamp_of(st: os.stat_result) -> tuple[int, int, int]:
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _current_tool_name() -> str | None:
+    try:
+        from ai_hydro.mcp.app import ACTIVE_TOOL_NAME
+
+        return ACTIVE_TOOL_NAME.get()
+    except Exception:
+        return None
+
+
+_HELD = threading.local()
+
+
+@contextlib.contextmanager
+def _session_write_guard(target: Path, session_id: str):
+    """Exclusive, bounded, re-entrant guard for writing ``target``; raises ``SessionBusyError`` on timeout.
+
+    Re-entrant per thread, so a tool that holds it across load-check-save (``session_write_guard``) can
+    call ``save()`` inside.
+    """
+    from ai_hydro.registry.locking import LockTimeout, file_lock_bounded
+
+    key = str(target)
+    held = getattr(_HELD, "keys", None)
+    if held is None:
+        held = _HELD.keys = {}
+    if held.get(key, 0) > 0:
+        held[key] += 1
+        try:
+            yield
+        finally:
+            held[key] -= 1
+        return
+    wait = _session_write_wait_s()
+    try:
+        import asyncio
+
+        asyncio.get_running_loop()
+        wait = min(wait, 0.25)       # backstop: a save on the loop thread must not hold the loop
+    except RuntimeError:
+        pass
+    started = time.monotonic()
+    with _WRITE_LOCKS_GUARD:
+        tlock = _WRITE_LOCKS.setdefault(key, threading.Lock())
+
+    def busy() -> SessionBusyError:
+        running: list[str] = []
+        try:
+            from ai_hydro.mcp.offload import running_tools
+
+            running = sorted({r["tool"] for r in running_tools()
+                              if r.get("session_id") in (None, session_id)})
+        except Exception:
+            pass
+        return SessionBusyError(session_id, _WRITE_HOLDERS.get(key), time.monotonic() - started, running)
+
+    if not tlock.acquire(timeout=wait):
+        raise busy()
+    try:
+        left = max(0.05, wait - (time.monotonic() - started))
+        try:
+            with file_lock_bounded(target.with_name(target.name + ".write.lock"), left):
+                _WRITE_HOLDERS[key] = _current_tool_name() or "unknown"
+                held[key] = 1
+                try:
+                    yield
+                finally:
+                    held.pop(key, None)
+                    _WRITE_HOLDERS.pop(key, None)
+        except LockTimeout:
+            raise busy() from None
+    finally:
+        tlock.release()
+
+
+@contextlib.contextmanager
+def session_write_guard(session_id: str, shard_id: str | None = None):
+    """Hold a study's write guard across a whole load -> check -> mutate -> save.
+
+    For tools whose correctness is a check-then-set (lock a plan, promote or revise a claim): the guard
+    is held for local work only, never across network or long compute, and waits are bounded
+    (``SESSION_BUSY``). ``HydroSession.load`` and ``save`` inside it are re-entrant.
+    """
+    with _session_write_guard(HydroSession._path(session_id, shard_id), session_id):
+        yield
+
+
+class SessionConflictError(ToolError):
+    """A save would replace a locked / sealed record that another call stored in the meantime."""
+
+    def __init__(self, session_id: str, path: str):
+        self.session_id, self.path = session_id, path
+        super().__init__(
+            code="SESSION_CONFLICT",
+            message=(f"Study {session_id!r}: another call already stored a locked or sealed record at "
+                     f"{path!r}; this call's different value was not saved. A locked record is never replaced."),
+            details={"retryable": False, "session_id": session_id, "path": path},
+            recovery="Reload the study (get_session_summary), look at the stored record, and decide whether "
+                     "your change is still wanted; a locked plan or sealed record is revised, not overwritten.",
+        )
+
+
+def _is_protected(v: Any) -> bool:
+    return isinstance(v, dict) and (v.get("locked") is True or v.get("sealed") is True)
+
+
+def _is_atomic(v: Any) -> bool:
+    """A record with an integrity marker is one unit: the later whole record wins, never a field mix."""
+    return isinstance(v, dict) and any(k in v for k in ("digest", "sealed", "locked", "content_hash", "revision_digest"))
+
+
+def _merge3(base: Any, ours: Any, theirs: Any, depth: int = 0, path: str = "") -> Any:
+    """Three-way merge of JSON-shaped state; ``ours`` (the later save) wins where both sides changed one leaf.
+
+    Never mixes fields of a record with an integrity marker (digest/sealed/locked...), and never
+    replaces a locked or sealed record another call stored with a different one (``_Conflict``).
+    """
+    if ours == theirs:
+        return ours
+    if ours == base:
+        return theirs
+    if theirs == base:
+        return ours
+    if _is_protected(theirs):
+        raise _Conflict(path)
+    if _is_atomic(ours) or _is_atomic(theirs):
+        return ours
+    if isinstance(ours, dict) and isinstance(theirs, dict) and depth < _MERGE_DEPTH:
+        b = base if isinstance(base, dict) else {}
+        out: dict = {}
+        for k in list(theirs) + [k for k in ours if k not in theirs]:
+            in_o, in_t, in_b = k in ours, k in theirs, k in b
+            sub = f"{path}/{k}"
+            if in_o and in_t:
+                out[k] = _merge3(b.get(k), ours[k], theirs[k], depth + 1, sub)
+            elif in_o:                                   # absent on disk
+                if not in_b or ours[k] != b[k]:
+                    out[k] = ours[k]                     # we added or changed it
+                # else: they deleted a value we did not touch -> stays deleted
+            else:                                        # absent in ours
+                if not in_b:
+                    out[k] = theirs[k]                   # they added it
+                elif theirs[k] != b[k]:
+                    out[k] = theirs[k]                   # we deleted it but they changed it: keep theirs
+                # else: we deleted, they did not touch -> deleted
+        return out
+    if isinstance(ours, list) and isinstance(theirs, list):
+        b = base if isinstance(base, list) else []
+        kept = [x for x in theirs if not (x in b and x not in ours)]      # their list, minus what we removed
+        added = [x for x in ours if x not in b and x not in theirs]       # plus what we added
+        return kept + added
+    return ours
+
+
+class _Conflict(Exception):
+    def __init__(self, path: str):
+        self.path = path or "/"
+        super().__init__(self.path)
+
+
+def _basin_digest_of(raw: dict) -> str | None:
+    try:
+        ws = (raw.get("watershed") or {}).get(_LEGACY_FEATURE_ID, {}).get(_LEGACY_PARAMS_KEY)
+        return _bi.watershed_slot_digest(ws) if isinstance(ws, dict) else None
+    except Exception:
+        return None
+
+
+def _apply_basin_change(base: dict, merged: dict) -> None:
+    """If the merge changed the session basin, drop what was computed for the old one (as ``put_result`` does).
+
+    A merge can put a basin-dependent result computed for basin X next to a watershed Y that another
+    call stored (or the reverse); neither may stay on disk or reach raw readers.
+    """
+    prev, new = _basin_digest_of(base), _basin_digest_of(merged)
+    if not (prev and new and prev != new):
+        return
+    expected = _bi.make_identity(new, None)
+    dropped: list[str] = []
+    for slot in _bi.BASIN_DEPENDENT_SLOTS:
+        by_feature = merged.get(slot)
+        if not isinstance(by_feature, dict):
+            continue
+        by_key = by_feature.get(_LEGACY_FEATURE_ID)
+        if not isinstance(by_key, dict):
+            continue
+        for k in list(by_key):
+            if by_key[k] is not None and _bi.judge(by_key[k], expected) != _bi.VERIFIED:
+                del by_key[k]
+                if slot not in dropped:
+                    dropped.append(slot)
+        if not by_key:
+            del by_feature[_LEGACY_FEATURE_ID]
+        if not by_feature:
+            del merged[slot]
+    ws = (merged.get("watershed") or {}).get(_LEGACY_FEATURE_ID, {}).get(_LEGACY_PARAMS_KEY) or {}
+    data = ws.get("data") if isinstance(ws.get("data"), dict) else {}
+    cleared = None
+    if merged.get("site_id") and _bi.norm_gauge(merged["site_id"]) != _bi.norm_gauge(data.get("gauge_id")):
+        cleared = merged["site_id"]
+        merged["site_id"], merged["site_type"], merged["site_name"] = "", "", ""
+    extra = merged.setdefault("extra", {})
+    log_ = extra.setdefault("basin_changes", [])
+    if not (log_ and log_[-1].get("to") == new):
+        log_.append({"at": _now(), "from": prev, "to": new, "dropped_slots": sorted(dropped),
+                     "cleared_site_id": cleared, "by": "merge"})
+        del log_[:-20]
+
+
+def _merge_session_raw(base_text: str | None, ours: dict, theirs_text: str, session_id: str = "") -> dict:
+    """Merge the object's state (``ours``) over what is on disk, relative to what it loaded."""
+    try:
+        base = json.loads(base_text) if base_text else {}
+    except ValueError:
+        base = {}
+    try:
+        theirs = json.loads(theirs_text)
+    except ValueError:
+        return ours                                      # unreadable file: our state replaces it, as before
+    ours_n = json.loads(json.dumps(ours, allow_nan=False))
+    if not isinstance(base, dict) or not isinstance(theirs, dict):
+        return ours_n
+    try:
+        merged = _merge3(base, ours_n, theirs, 0)
+    except _Conflict as c:
+        raise SessionConflictError(session_id, c.path) from None
+    _apply_basin_change(base, merged)
+    ua, ub = ours_n.get("updated_at"), theirs.get("updated_at")
+    if isinstance(ua, str) and isinstance(ub, str):
+        merged["updated_at"] = max(ua, ub)
+    return merged
+
+
+
 class HydroSession:
     """Persistent research state for a single study across tool calls.
 
@@ -917,6 +1211,10 @@ class HydroSession:
         self._site_name_history: list[dict] = []
         # Basin-dependent slots served unstamped by get() on this instance (see basin_identity).
         self._unverified_reads: set[str] = set()
+        # What the file looked like when this object loaded it (stat stamp + text); save() merges
+        # when another writer changed it since. ``None`` stamp = the file did not exist.
+        self._disk_stamp: Any = _NO_MERGE
+        self._base_text: str | None = None
         # Slots recomputed (put) during this call. Used ONLY to leave a recomputed slot out of ``identity_note``;
         # ``put_result`` keeps inheriting from the full ``_unverified_reads`` set, so a product derived after the
         # recompute from an input that was read unverified is still carried as unverified.
@@ -1600,9 +1898,14 @@ class HydroSession:
                 path = legacy_path
             else:
                 return cls(session_id, shard_id)
+        base_text: str | None = None
+        stamp: Any = None
         try:
             with open(path) as f:
-                raw = json.load(f)
+                base_text = f.read()
+                if path == cls._path(session_id, shard_id):
+                    stamp = _stamp_of(os.fstat(f.fileno()))
+            raw = json.loads(base_text)
         except json.JSONDecodeError as exc:
             log.error("Session file at %s is corrupted: %s", path, exc)
             raise RuntimeError(
@@ -1611,6 +1914,8 @@ class HydroSession:
             ) from exc
 
         session = cls(session_id, shard_id)
+        session._base_text = base_text
+        session._disk_stamp = stamp
 
         # Keys that are stored at the top level but are NOT product slots.
         _META_KEYS = {
@@ -1687,6 +1992,11 @@ class HydroSession:
         agent's instructions mid-task (the F-TS6 / session-study M3 problem). The digest is the
         ``aihydro://project/{prj}/context`` resource.
         """
+        # A call the client gave up on must not write its result afterwards (the run record says it was
+        # cancelled). Raising also stops the abandoned worker at its save instead of letting it run on.
+        from ai_hydro.core.cancel import check_cancelled
+
+        check_cancelled()
         self.updated_at = _now()
         try:
             for w in self.validate_identity():
@@ -1697,18 +2007,45 @@ class HydroSession:
             pass
         _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         target = self._path(self.session_id, self.shard_id)
-        tmp = target.with_suffix(
-            f"{target.suffix}.tmp.{os.getpid()}.{int(time.time() * 1000)}"
-        )
-        payload = json.dumps(_json_safe(self._to_raw()), indent=2, allow_nan=False)
-        with open(tmp, "w") as f:
-            f.write(payload)
+        ours = _json_safe(self._to_raw())
+        with _session_write_guard(target, self.session_id):
             try:
-                f.flush()
-                os.fsync(f.fileno())
+                cur = _stamp_of(target.stat())
             except OSError:
-                pass
-        os.replace(tmp, target)
+                cur = None
+            merged = False
+            if self._disk_stamp is not _NO_MERGE and cur != self._disk_stamp:
+                if cur is not None:                      # another writer saved since we loaded
+                    try:
+                        theirs_text = target.read_text()
+                    except OSError:
+                        theirs_text = ""
+                    if theirs_text:
+                        ours = _merge_session_raw(self._base_text, ours, theirs_text, self.session_id)
+                        merged = True
+            tmp = target.with_suffix(
+                f"{target.suffix}.tmp.{os.getpid()}.{int(time.time() * 1000)}.{threading.get_ident()}"
+            )
+            payload = json.dumps(ours, indent=2, allow_nan=False)
+            with open(tmp, "w") as f:
+                f.write(payload)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, target)
+            if merged:
+                # The in-memory object does not hold the other writer's changes: keep merging on
+                # the next save, with this object's own state as the baseline.
+                self._base_text = json.dumps(_json_safe(self._to_raw()), indent=2, allow_nan=False)
+                self._disk_stamp = _FORCE_MERGE
+            else:
+                self._base_text = payload
+                try:
+                    self._disk_stamp = _stamp_of(target.stat())
+                except OSError:
+                    self._disk_stamp = _FORCE_MERGE
         if sync_context and not self.shard_id:
             try:
                 self.write_research_context()

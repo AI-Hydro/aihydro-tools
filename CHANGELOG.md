@@ -8,6 +8,49 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (T1-R: the server stays responsive while a tool runs)
+
+- **No tool can block the event loop any more.** FastMCP 2.14 runs a plain `def` tool inline on the asyncio loop
+  (`FunctionTool.run` -> `type_adapter.validate_python`). In tools 2.8.4 one sync tool waited on a lock that a worker thread of a
+  35-year `fetch_forcing_data` held, the loop stood still for over an hour, every later call hit the client timeout and the
+  final-answer audit never ran ("Audit not run"). Registration now turns every sync tool and resource function into an `async`
+  wrapper that runs it in a dedicated worker pool (`AIHYDRO_TOOL_THREADS`, default 64) with the caller's contextvars
+  (`_chat_id` / `_workspace` / study context, run-record capture, call notes), the original signature and docstring (the published
+  tool schema is unchanged; checked tool by tool), and a cooperative cancel flag. One mechanism in `ai_hydro/mcp/offload.py`,
+  applied where `mcp.tool` / `mcp.resource` are wrapped in `app.py`; no FastMCP internals are patched. The `async` tools' own
+  `asyncio.to_thread` calls use the same pool and cancel flag. Sealing the run record (SQLite, up to a 30 s lock wait) also runs
+  off the loop. A watchdog logs the blocking frame if the loop ever stalls again (`AIHYDRO_LOOP_STALL_WARN_S`, default 3 s).
+  `wait_for_job` no longer sleeps on the loop.
+- **Concurrent calls on one study no longer overwrite each other.** `HydroSession.save()` now three-way merges against what the
+  object loaded when another call saved in between (a note written while a long fetch ran survives the fetch's later save),
+  under a short, bounded write guard (in-process lock plus a sidecar `flock`) held only around compare-merge-write, never across a
+  tool's network or compute. If the guard cannot be taken in `AIHYDRO_SESSION_WRITE_WAIT_S` (default 10 s; 0.25 s on the loop
+  thread) the call returns a structured, retryable `SESSION_BUSY` naming the holder and the running tools, not a hang.
+- **Forcing fetches are chunked, bounded and cancellable.** `fetch_forcing_data_routed` fetches `AIHYDRO_FORCING_CHUNK_YEARS`
+  (default 5) at a time; between chunks it honours a client cancel and the request budget `AIHYDRO_FORCING_BUDGET_S` (default
+  480 s, under the client's ~600 s timeout, then a retryable `TIME_BUDGET_EXCEEDED` with `chunks_done` / `chunks_total`; completed chunks are in aihydro-data's cache so "call again" resumes); every upstream
+  call is bounded by `AIHYDRO_FETCH_CHUNK_TIMEOUT_S` (default 300 s) and reports MCP progress per chunk. The first chunk's product is
+  pinned for the rest so the series is one product's; if a pinned chunk cannot be served the variable is fetched as one range, as
+  before. Returned values and the result envelope are unchanged (tested against a single-call reference).
+  `extract_hydrological_signatures` (which fetches streamflow and, for `precipitation="auto"`, precipitation) is bounded by
+  `AIHYDRO_SIGNATURES_BUDGET_S` (default 480 s) and stops waiting on a client cancel; its inner fetch is not chunked, so its budget message says to fetch forcing first or use `precipitation="skip"`.
+- **Review hardening (data safety under concurrency).** Claim, plan and registry tools (`register_research_plan`, `add_claim`,
+  `update_claim_status`, `add_assumption`, `promote_claim_to_registry`, `check_registry_staleness`) hold the study's write guard
+  from load to save, so check-then-set is atomic (two concurrent plan locks: exactly one wins). The save merge never replaces a
+  locked or sealed record another call stored (structured `SESSION_CONFLICT`), treats any record with a `digest` / `sealed` /
+  `locked` marker as one unit (no field mixing), no longer revives a list item the caller removed, and re-applies the basin-change
+  drop after merging so slots computed for a replaced basin do not land next to the new watershed. matplotlib figure bodies are
+  serialised and use their own figure object (two basins' figures could be written into each other's PNG). `file_lock_bounded`
+  reports contention only for EAGAIN/EWOULDBLOCK (EACCES on Windows); a filesystem without `flock` (ENOLCK, ENOTSUP) degrades to the
+  in-process lock with one warning instead of failing every save as `SESSION_BUSY`. A cancelled call is sealed as cancelled (the
+  record says its worker may still finish) and its `session.save()` / `commit()` raise once the cancel is seen, so it cannot write
+  a result after the client gave up. A reserved worker pool (`AIHYDRO_RESERVED_THREADS`, default 6) serves `audit_interpretation`,
+  read-only tools and run-record sealing; `wait_for_job` is capped at 4 concurrent calls (`TOO_MANY_CONCURRENT_CALLS`); abandoned
+  worker threads and pool saturation are logged by the watchdog. Async tools save off the loop with the normal wait. `SESSION_BUSY`
+  now says what is and is not kept.
+- Race fix: the file-digest caches in `session/store.py` and `session/basin_identity.py` returned a key another thread could have
+  cleared between the store and the read.
+
 Tool integrity Wave T1 (audit findings `tool-audit-{data,record,misc}-2026-10-30`; no version bump), grouped by lane: T1-S study and claim integrity, T1-G geometry boundary and gauge-first `data_fetch`, T1-A argument repair, T1-B basin identity, plus review follow-ups. Source for T1-S: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`.
 
 ### Fixed

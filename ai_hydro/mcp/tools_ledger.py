@@ -6,6 +6,7 @@ within a research session.
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -18,6 +19,7 @@ from fastmcp.exceptions import ToolError as McpToolError
 from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.errors import StructuredToolError
 from ai_hydro.session import HydroSession
+from ai_hydro.session.store import session_write_guard
 from ai_hydro.session.models import ScientificClaim, Assumption, ClaimScope, EvidenceSpan
 from ai_hydro.mcp.helpers import _tool_error_to_dict, resolve_existing_study
 from ai_hydro.mcp.ledger_commands import push_claim_event
@@ -35,6 +37,35 @@ from ai_hydro.claims.promotion_policy import (  # noqa: E402
     evaluate_promotion,
     promotion_check,
 )
+
+
+def _serialized_study(fn):
+    """Run a check-then-set tool under the study's write guard from load to save.
+
+    Locking a plan, filing a claim and promoting one are "read the record, decide, write it": two
+    overlapping calls would each pass the check. The guard is held for local work only (no network)
+    and its wait is bounded (``SESSION_BUSY``); ``load`` / ``save`` inside it are re-entrant. A
+    session id that does not resolve falls through, so the tool returns its own refusal.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        sid = kwargs.get("session_id", args[0] if args else None)
+        try:
+            sid = resolve_existing_study(sid)
+        except Exception:
+            return fn(*args, **kwargs)
+        try:
+            guard = session_write_guard(sid)
+            guard.__enter__()
+        except Exception as exc:               # SESSION_BUSY: structured, retryable, nothing run
+            return _tool_error_to_dict(exc)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            guard.__exit__(None, None, None)
+
+    return wrapper
+
 
 
 def _resolve_basin_refs(session, basins: list[str], basin_refs: list[dict] | None,
@@ -395,6 +426,7 @@ def _propagate_retraction(out: dict, session_id: str, claim_id: str, claim_dict:
 
 
 @mcp.tool()
+@_serialized_study
 def add_claim(
     session_id: str,
     claim_id: str,
@@ -555,6 +587,7 @@ def add_claim(
 
 
 @mcp.tool()
+@_serialized_study
 def update_claim_status(
     session_id: str,
     claim_id: str,
@@ -643,6 +676,7 @@ def update_claim_status(
 
 
 @mcp.tool()
+@_serialized_study
 def add_assumption(
     session_id: str,
     assumption_id: str,
@@ -714,6 +748,7 @@ def list_assumptions(session_id: str, validated: bool | None = None) -> list[dic
 
 
 @mcp.tool()
+@_serialized_study
 def promote_claim_to_registry(
     session_id: str,
     claim_id: str,
@@ -948,6 +983,7 @@ def promote_claim_to_registry(
 
 
 @mcp.tool()
+@_serialized_study
 def check_registry_staleness(session_id: str) -> dict:
     """
     Check all promoted claims from this session for staleness.
@@ -1215,6 +1251,7 @@ def draft_claim_from_run(
 
 
 @mcp.tool()
+@_serialized_study
 def register_research_plan(
     session_id: str,
     hypothesis: str,

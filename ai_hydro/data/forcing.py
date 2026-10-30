@@ -34,6 +34,133 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 
+# ---------------------------------------------------------------------------
+# Bounded, chunked, cancellable fetching (T1-R)
+#
+# A 35-year daily request used to be one blocking call per variable with no budget: it outlived the
+# client's timeout, ignored a cancel and held a worker for as long as the upstream took.  The
+# window is now fetched in ``AIHYDRO_FORCING_CHUNK_YEARS``-year chunks (default 5).  Between
+# chunks the call checks for a cancel and its wall-clock budget; every upstream call is bounded by
+# ``AIHYDRO_FETCH_CHUNK_TIMEOUT_S`` (default 300 s); progress is reported per chunk.  The product
+# that served the first chunk is pinned for the rest, so the series is one product's, exactly as a
+# single call would return; if a pinned chunk cannot be served, the variable is fetched as one
+# range, as before.  aihydro-data's disk cache makes a re-run after a timeout resume cheaply.
+# ---------------------------------------------------------------------------
+_DEFAULT_CHUNK_YEARS = 5
+_DEFAULT_CHUNK_TIMEOUT_S = 300.0
+_DEFAULT_BUDGET_S = 480.0       # under the client's ~600 s timeout: stop with a retryable answer, not a hang
+
+
+def _env_float(name: str, default: float) -> float:
+    import os
+
+    try:
+        v = float(os.environ.get(name, default))
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _chunk_windows(start_date: str, end_date: str, years: int) -> list[tuple[str, str]]:
+    """Inclusive ``(start, end)`` ISO windows of ``years`` calendar years covering the range."""
+    start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
+    if years < 1 or end < start:
+        return [(start_date, end_date)]
+    out: list[tuple[str, str]] = []
+    cur = start
+    while cur <= end:
+        nxt = cur + pd.DateOffset(years=years)
+        stop = min(nxt - pd.Timedelta(days=1), end)
+        out.append((cur.strftime("%Y-%m-%d"), stop.strftime("%Y-%m-%d")))
+        cur = nxt
+    return out
+
+
+def _merge_chunk_provenance(parts: list) -> dict:
+    """Per-variable coverage facts of a chunked fetch, as one call over the whole window would report.
+
+    Head comes from the first chunk, tail from the last, interior chunk edges count as internal gaps;
+    ranges are concatenated (a gap that spans a chunk boundary is reported as two adjacent ranges).
+    """
+    g = lambda r, k: getattr(r, k, None)          # noqa: E731
+    internal = None
+    if all(g(r, "days_missing_internal") is not None for r in parts):
+        internal = sum(g(r, "days_missing_internal") for r in parts)
+        internal += sum((g(r, "days_missing_head") or 0) for r in parts[1:])
+        internal += sum((g(r, "days_missing_tail") or 0) for r in parts[:-1])
+    flags = [g(r, "coverage_complete") for r in parts]
+    notes: list = []
+    for r in parts:
+        for note in (g(r, "notes") or []):
+            if note not in notes:
+                notes.append(note)
+    ranges: list = []
+    for r in parts:
+        ranges += list(g(r, "missing_ranges") or [])
+    return {
+        "units": g(parts[0], "units"),
+        "coverage_complete": None if all(f is None for f in flags) else all(bool(f) for f in flags if f is not None),
+        "days_missing_head": g(parts[0], "days_missing_head"),
+        "days_missing_tail": g(parts[-1], "days_missing_tail"),
+        "days_missing_internal": internal,
+        "missing_ranges": ranges,
+        "notes": notes,
+    }
+
+
+def _fetch_variable_chunked(adata_fetch, adata_var, geom, start_date, end_date, fetch_kwargs):
+    """``aihydro_data.fetch`` for one variable, chunked, bounded and cancellable.
+
+    Returns an object with ``.data`` (DataFrame with a ``date`` column), ``.product``, ``.source``.
+    """
+    from types import SimpleNamespace
+
+    from ai_hydro.core.cancel import (
+        ToolCancelled, ToolDeadlineExceeded, check_cancelled_or_expired, chunk_done,
+        report_progress, run_bounded,
+    )
+
+    timeout = _env_float("AIHYDRO_FETCH_CHUNK_TIMEOUT_S", _DEFAULT_CHUNK_TIMEOUT_S)
+    years = int(_env_float("AIHYDRO_FORCING_CHUNK_YEARS", _DEFAULT_CHUNK_YEARS))
+    windows = _chunk_windows(start_date, end_date, years)
+
+    def one(s, e, kwargs):
+        return run_bounded(adata_fetch, adata_var, geom, s, e, timeout=timeout,
+                           label=f"fetch {adata_var} {s}..{e}", **kwargs)
+
+    check_cancelled_or_expired()
+    if len(windows) == 1:
+        res1 = one(start_date, end_date, fetch_kwargs)
+        chunk_done()
+        return res1
+
+    frames, parts, first = [], [], None
+    for i, (s, e) in enumerate(windows):
+        check_cancelled_or_expired()
+        report_progress(i, len(windows), f"{adata_var} {s}..{e}")
+        kwargs = dict(fetch_kwargs)
+        if first is not None and "product" not in kwargs:
+            kwargs["mode"], kwargs["product"] = "manual", first.product
+        try:
+            res = one(s, e, kwargs)
+        except (ToolCancelled, ToolDeadlineExceeded):
+            raise
+        except Exception:
+            if first is None:
+                raise
+            # A pinned chunk the product cannot serve: answer exactly as a single call would.
+            return one(start_date, end_date, fetch_kwargs)
+        first = first or res
+        parts.append(res)
+        frames.append(res.data)
+        chunk_done()
+    report_progress(len(windows), len(windows), adata_var)
+    df = pd.concat(frames, ignore_index=True)
+    if "date" in df.columns:
+        df = df.drop_duplicates(subset="date", keep="first").sort_values("date").reset_index(drop=True)
+    return SimpleNamespace(data=df, product=first.product, source=first.source, **_merge_chunk_provenance(parts))
+
+
 def fetch_forcing_data(
     watershed_geom,
     start_date: str,
@@ -801,6 +928,29 @@ _GRIDMET_ONLY_COL: dict[str, str] = {
 }
 
 
+def _with_forcing_budget(fn):
+    """Bound the whole request by ``AIHYDRO_FORCING_BUDGET_S`` (default 480 s), however it is called."""
+    import functools
+
+    @functools.wraps(fn)
+    def bounded(*args, **kwargs):
+        from ai_hydro.core.cancel import ToolDeadlineExceeded, budget, chunk_counter
+
+        secs = _env_float("AIHYDRO_FORCING_BUDGET_S", _DEFAULT_BUDGET_S)
+        with chunk_counter() as counter, budget(secs):
+            try:
+                return fn(*args, **kwargs)
+            except ToolDeadlineExceeded as exc:
+                raise ToolDeadlineExceeded(
+                    f"the forcing request used its {secs:g} s budget with {counter['done']} of "
+                    f"{counter['total']} chunks fetched",
+                    chunks_done=counter["done"], chunks_total=counter["total"],
+                ) from exc
+
+    return bounded
+
+
+@_with_forcing_budget
 def fetch_forcing_data_routed(
     watershed_geojson: dict,
     start_date: str,
@@ -847,6 +997,7 @@ def fetch_forcing_data_routed(
     """
     from shapely.geometry import shape as _shapely_shape
     from ai_hydro.core import DataSource, HydroMeta, HydroResult, ToolError
+    from ai_hydro.core.cancel import ToolCancelled, ToolDeadlineExceeded
 
     _TOOL_PATH = "ai_hydro.data.forcing.fetch_forcing_data_routed"
 
@@ -862,6 +1013,9 @@ def fetch_forcing_data_routed(
 
     geom = _shapely_shape(watershed_geojson)
     requested: list[str] = variables or list(_ADATA_ROUTES.keys())
+    from ai_hydro.core.cancel import chunk_total_add
+    chunk_total_add(len([v for v in requested if v in _ADATA_ROUTES]) * len(_chunk_windows(
+        start_date, end_date, int(_env_float("AIHYDRO_FORCING_CHUNK_YEARS", _DEFAULT_CHUNK_YEARS)))))
 
     # ── Resolve product family → per-variable product IDs ──────────────────
     family_map: dict[str, str] = {}
@@ -894,7 +1048,8 @@ def fetch_forcing_data_routed(
             fetch_kwargs["product"] = pinned
 
         try:
-            result = _adata_fetch(adata_var, geom, start_date, end_date, **fetch_kwargs)
+            result = _fetch_variable_chunked(
+                _adata_fetch, adata_var, geom, start_date, end_date, fetch_kwargs)
             df_var = result.data.copy()
             # Normalise: rename value column to our output name
             val_col = next((c for c in df_var.columns if c != "date"), None)
@@ -936,6 +1091,8 @@ def fetch_forcing_data_routed(
                 "missing_ranges": list(getattr(result, "missing_ranges", []) or [])[:20],
                 "notes": [str(n) for n in (getattr(result, "notes", []) or [])][:10],
             }
+        except (ToolCancelled, ToolDeadlineExceeded):
+            raise                       # stop the whole request: a cancel or an exhausted budget is not a warning
         except Exception as exc:
             warnings_list.append(f"{adata_var}: {exc}")
             variables_failed.append({"variable": var, "output": out_col,
@@ -947,9 +1104,13 @@ def fetch_forcing_data_routed(
         try:
             from ai_hydro.analysis._dem import _geom_in_conus
             if _geom_in_conus(geom) and _DEPS_AVAILABLE:
-                ds = gridmet.get_bygeom(
-                    geom, dates=(start_date, end_date),
+                from ai_hydro.core.cancel import run_bounded as _run_bounded
+
+                ds = _run_bounded(
+                    gridmet.get_bygeom, geom, dates=(start_date, end_date),
                     variables=conus_only_requested,
+                    timeout=_env_float("AIHYDRO_FETCH_CHUNK_TIMEOUT_S", _DEFAULT_CHUNK_TIMEOUT_S) * 2,
+                    label="fetch gridmet-only variables",
                 )
                 for var in conus_only_requested:
                     if var in ds.data_vars:
@@ -967,6 +1128,8 @@ def fetch_forcing_data_routed(
                 )
                 variables_failed += [{"variable": v, "reason": "CONUS-only variable, basin outside CONUS"}
                                      for v in conus_only_requested]
+        except (ToolCancelled, ToolDeadlineExceeded):
+            raise
         except Exception as exc:
             warnings_list.append(f"CONUS-only fetch failed: {exc}")
             variables_failed += [{"variable": v, "reason": f"CONUS-only fetch failed: {exc}"[:300]}
