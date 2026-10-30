@@ -6,7 +6,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-**Modelling integrity (T1-M, tool audit 2026-10-30 F2/F5/F6/F7/F9/F12), part of Unreleased:**
+## [2.8.5] - 2026-10-31 (tool integrity Wave T1)
+
+Tool integrity Wave T1: fixes across the data, study, modelling and statistics tools from the 2026-10-30 audit, plus a
+server that stays responsive while a tool runs. Requires aihydro-data >= 0.2.6 and aihydro-watershed >= 0.3.
+
+**Results change.** SPI/SPEI, annual maxima, flood frequency, 7Q10, trend p-values, mean annual totals and aridity can
+differ from earlier releases, or return None with a reason where the record does not support them. Bare coordinate
+pairs and unknown study ids are refused, not guessed. Any stored HBV result needs re-running.
+
+**Modelling integrity (T1-M, tool audit 2026-10-30 F2/F5/F6/F7/F9/F12):**
 
 Requires aihydro-modelling >= 0.6.2 (the `modelling` extra is pinned to it; `gate_spec` refuses an older one with `MODELLING_TOO_OLD`), carrying the matching fixes (HBV water conservation,
 `ModelSpec` `extra="forbid"` and per-backend defaults, `window_coverage`). **Any stored HBV result
@@ -37,8 +46,6 @@ from before that release came from a non-conservative kernel; re-run it.**
   `framework="lstm", model="ealstm"`) or `model`, out-of-range values. Its `epochs`, `n_restarts`, `hidden_size` and `learning_rate`
   default to `None`. A neural job started without them trains at 30 epochs / lr 0.001 (was 500 / 0.05).
 - HBV results carry `scored_period` and `n_scored`, and their test skill covers the whole reported test window.
-
-## [Unreleased]
 
 ### Fixed (T1-R: the server stays responsive while a tool runs)
 
