@@ -83,6 +83,10 @@ _GLOBAL_ALIASES: dict[str, str] = {
     "lng": "longitude",
     "start_date": "start",
     "end_date": "end",
+    # the reverse spelling, for the one deprecated tool that still takes start_date/end_date
+    # (applies only when the tool has no `start` / `end` of its own)
+    "start": "start_date",
+    "end": "end_date",
     "begin": "start",
     "freq": "frequency",
     "res": "resolution",
