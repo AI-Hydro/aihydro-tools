@@ -6,9 +6,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased] (modelling integrity, tool audit 2026-10-30 F2/F5/F6/F7/F9/F12)
+**Modelling integrity (T1-M, tool audit 2026-10-30 F2/F5/F6/F7/F9/F12), part of Unreleased:**
 
-Requires the aihydro-modelling release carrying the matching fixes (HBV water conservation,
+Requires aihydro-modelling >= 0.6.2 (the `modelling` extra is pinned to it; `gate_spec` refuses an older one with `MODELLING_TOO_OLD`), carrying the matching fixes (HBV water conservation,
 `ModelSpec` `extra="forbid"` and per-backend defaults, `window_coverage`). **Any stored HBV result
 from before that release came from a non-conservative kernel; re-run it.**
 
@@ -37,6 +37,40 @@ from before that release came from a non-conservative kernel; re-run it.**
   `framework="lstm", model="ealstm"`) or `model`, out-of-range values. Its `epochs`, `n_restarts`, `hidden_size` and `learning_rate`
   default to `None`. A neural job started without them trains at 30 epochs / lr 0.001 (was 500 / 0.05).
 - HBV results carry `scored_period` and `n_scored`, and their test skill covers the whole reported test window.
+
+## [Unreleased]
+
+### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
+
+- **A new basin in a used session is no longer answered with the old basin's numbers.** Every basin-dependent session result
+  (`streamflow`, `signatures`, `geomorphic`, `forcing`, `twi`, `cn`, `soil`, `ssurgo`, `baseflow`, `flow_duration`,
+  `flood_frequency`, `drought`, `design_hydrograph`, `soil_loss`, `inundation*`) is stamped `meta.basin_identity`
+  (`geometry_digest` + `gauge_id`). The session serves a cached result only when the stamp matches the basin it is asked about
+  (`get_result`), and a slot only when it is not stamped for another basin (`get`). Replacing the session watershed with a
+  different geometry drops every result held for the old basin, clears `site_id`/`site_type`/`site_name` (unless the new
+  watershed names the same gauge) and logs the change in `session.extra["basin_changes"]` (D01, D02: `compute_twi` returned the
+  old TWI as a cache hit; the signature kernel got the old gauge with the new area; flood frequency used the old gauge's flow).
+  `camels` and `model` are multi-basin by design and are not dropped.
+- **`feature=` binds or refuses.** `_feature_cache_resolve` now resolves through `_resolve_registered_feature`, so
+  `compute_twi`, `create_cn_grid`, `fetch_soil_attributes_ssurgo` and `fetch_forcing_data` refuse an unregistered id (or a raw
+  GeoJSON string) with `FEATURE_NOT_RESOLVED` instead of computing on the session basin (D03). `map_flood_inundation` maps the
+  registered feature's geometry; a feature that is not the session basin needs an explicit `discharge_m3s`
+  (`FEATURE_DISCHARGE_REQUIRED`) because the session's flow slots belong to the session basin (D04).
+- `extract_hydrological_signatures(geometry_geojson=<another basin>)` is refused (`GEOMETRY_OVERRIDE_NOT_SESSION_BASIN`): the
+  kernel used to get that geometry's forcing with the session basin's gauge, area and flow (D05). Register the basin with its
+  gauge and pass `feature=`.
+- `fetch_soil_attributes_ssurgo` writes the session `soil` slot (read by RUSLE) only for the session basin (D33).
+- `delineate_watershed_from_point` slugs carry the sign of each coordinate (`basin_47p237_m68p583`), so mirrored points no longer
+  share a session or file name (D46). Points with both coordinates >= 0 keep their earlier name; an auto-created session for a
+  southern or western point is named differently from before.
+
+### Existing sessions
+
+A slot or cache entry written before this release has no stamp. It is **unverified**, never silently trusted and never a crash:
+cache lookups treat it as a miss (the tool recomputes and stamps), slot consumers still read it, `session.summary()` lists it under
+`basin_identity`, the consuming tools (`separate_baseflow`, `compute_flow_duration_curve`, `compute_flood_frequency`,
+`compute_drought_index`) return a `basin_identity` block, and a result derived from it stays unverified
+(`meta.basin_identity_inputs_unverified`). Sealed run records and the run log are untouched.
 
 ---
 
