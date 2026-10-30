@@ -9,7 +9,7 @@ write_research_interpretation is the only hard gate.
 from __future__ import annotations
 
 from ai_hydro.mcp.app import mcp
-from ai_hydro.mcp.helpers import _tool_error_to_dict
+from ai_hydro.mcp.helpers import _tool_error_to_dict, resolve_existing_study
 
 
 @mcp.tool()
@@ -36,6 +36,7 @@ def run_skeptic(
         from ai_hydro.session.store import HydroSession
         from ai_hydro.skeptic import run_all_checks
 
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         text = (interpretation_text or session.interpretation or "").strip()
         report = run_all_checks(session, text)

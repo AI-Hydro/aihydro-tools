@@ -157,6 +157,17 @@ def check_assumption_violations(session: "HydroSession") -> list[SkepticIssue]:
 # Check 4 — Registry conflict: session status degraded below promoted entry
 # ---------------------------------------------------------------------------
 
+def _registry_already_says(session: "HydroSession", claim_id: str, claim_dict: dict, status: str) -> bool:
+    """True when the claim's registry rows exist and none is still ``promoted`` (they say ``status`` too)."""
+    try:
+        from ai_hydro.claims.lifecycle import registry_rows
+        rows = registry_rows(session.session_id, claim_id, claim_dict)
+    except Exception:
+        return False
+    return bool(rows) and not any(r.get("status") == "promoted" for r in rows) \
+        and any(r.get("status") == status for r in rows)
+
+
 def check_registry_conflicts(session: "HydroSession") -> list[SkepticIssue]:
     issues: list[SkepticIssue] = []
     for claim_dict in session.claims.values():
@@ -166,6 +177,9 @@ def check_registry_conflicts(session: "HydroSession") -> list[SkepticIssue]:
         # "promoted" in registry but now stale/retracted/contradicted in session
         if session_status in ("stale", "retracted", "contradicted"):
             claim_id = claim_dict.get("id", claim_dict.get("claim_id", "?"))
+            if session_status in ("stale", "retracted") and _registry_already_says(session, claim_id, claim_dict,
+                                                                                   session_status):
+                continue               # the registry row already carries the same withdrawal: consistent
             issues.append(SkepticIssue(
                 issue_type="registry_conflict",
                 severity="warning",
@@ -181,6 +195,25 @@ def check_registry_conflicts(session: "HydroSession") -> list[SkepticIssue]:
                     "to the registry, or retract the registry entry explicitly."
                 ),
             ))
+    # Reverse direction (R-07): the study says supported while the registry row is stale or retracted.
+    try:
+        from ai_hydro.claims.lifecycle import registry_conflicts
+        for c in registry_conflicts(session.session_id, session.claims):
+            issues.append(SkepticIssue(
+                issue_type="registry_conflict",
+                severity="warning",
+                description=(
+                    f"Claim '{c['claim_id']}' is '{c['status']}' in this study, but its registry entry "
+                    f"({c['registry_id']}) is '{c['registry_status']}'. The study asserts more than the "
+                    f"registry does."),
+                claim_id=c["claim_id"],
+                recommendation=(
+                    "Re-run the originating tool and re-state the claim with add_claim citing the new run, "
+                    "then re-promote it under a fresh human approval (aihydro-approve); or set the claim back "
+                    "to 'tested'."),
+            ))
+    except Exception:           # advisory: an unreadable registry costs the check, never the report
+        pass
     return issues
 
 

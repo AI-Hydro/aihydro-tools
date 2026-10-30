@@ -191,8 +191,12 @@ where = ["."]
 include = ["ai_hydro*", "bench*"]
 
 [tool.setuptools.package-data]
-ai_hydro = []
-"ai_hydro.knowledge" = ["library_refs/*.json", "reference/camels_us_v1_2/*"]
+ai_hydro = ["README.md"]
+# The knowledge registries (variables/metrics/datasets YAML) and the bundled
+# concept JSON are read from the package directory at run time; omitting them
+# leaves the nine knowledge/workflow tools empty in an installed build (R-06).
+"ai_hydro.knowledge" = ["*.yaml", "*.json", "library_refs/*.json", "reference/camels_us_v1_2/*"]
+"ai_hydro.workflows" = ["*.workflow.yaml"]
 "ai_hydro.data" = ["merit_manifest.yaml"]
 "ai_hydro.mcp" = ["tool_annotations.toml"]
 bench = ["tasks.yaml", "BENCHMARK.md"]

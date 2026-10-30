@@ -202,8 +202,8 @@ def mark_stale(registry_id: str, stale_sources: list[str], reason: str = "eviden
     return updated
 
 
-def mark_retracted(registry_id: str, reason: str = "") -> bool:
-    """Mark an entry as retracted (researcher withdrew the claim)."""
+def mark_retracted(registry_id: str, reason: str = "", retracted_by: str = "agent") -> bool:
+    """Mark an entry as retracted (the claim was withdrawn). ``retracted_by``: ``agent`` | ``human``."""
     _ensure_dir()
     with _lock():
         entries = _read_all()
@@ -212,6 +212,7 @@ def mark_retracted(registry_id: str, reason: str = "") -> bool:
             if entry.get("registry_id") == registry_id:
                 entry["status"] = "retracted"
                 entry["retracted_at"] = datetime.now(timezone.utc).isoformat()
+                entry["retracted_by"] = retracted_by
                 if reason:
                     entry["retraction_reason"] = reason
                 updated = True

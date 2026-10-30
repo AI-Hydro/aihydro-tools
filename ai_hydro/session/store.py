@@ -1551,8 +1551,25 @@ class HydroSession:
         return _contained_path(candidate)
 
     @classmethod
+    def exists(cls, session_id: str) -> bool:
+        """True iff a saved session file exists for ``session_id`` (current or legacy name).
+
+        ``load`` cannot answer this: it returns an empty session for an unknown id, and the next
+        ``save()`` turns that into a real study (R-01). Tools that write into a study must check
+        here (through ``resolve_existing_study``) before loading.
+        """
+        try:
+            path = cls._path(session_id)
+            if path.exists():
+                return True
+            legacy = cls._legacy_raw_path(session_id)
+            return legacy is not None and legacy.exists()
+        except Exception:
+            return False
+
+    @classmethod
     def load(cls, session_id: str, shard_id: str | None = None) -> HydroSession:
-        """Load an existing session or return a new empty one."""
+        """Load an existing session or return a new empty one (see ``exists``)."""
         path = cls._path(session_id, shard_id)
         if not path.exists():
             legacy_path = cls._legacy_raw_path(session_id, shard_id)

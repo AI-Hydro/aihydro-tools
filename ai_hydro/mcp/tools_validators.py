@@ -10,7 +10,7 @@ import logging
 from typing import Literal
 
 from ai_hydro.mcp.app import mcp
-from ai_hydro.mcp.helpers import _tool_error_to_dict
+from ai_hydro.mcp.helpers import _tool_error_to_dict, resolve_existing_study
 from ai_hydro.registry.paths import aihydro_home
 from ai_hydro.session import HydroSession
 from ai_hydro.validators.models import ValidatorResult
@@ -56,6 +56,7 @@ def check_water_balance_consistency(session_id: str) -> dict:
     precipitation the signatures record marks as not used.
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         sigs = session.get("signatures")
         if not sigs:
@@ -134,6 +135,7 @@ def check_temporal_alignment(session_id: str, slot_a: str, slot_b: str) -> dict:
     Check if two time-series slots share the same temporal range.
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         a = session.get(slot_a)
         b = session.get(slot_b)
@@ -204,6 +206,7 @@ def check_unit_consistency(session_id: str, slot: str, expected_units: str) -> d
     Check if a session slot uses the expected scientific units.
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         s = session.get(slot)
         if not s:
@@ -414,6 +417,7 @@ def check_record_length(
     extract_hydrological_signatures (source "signatures").
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         if source != "streamflow" or series_digest or run_id or feature:
             b = _bound(session, source, series_digest, run_id, feature)
@@ -665,6 +669,7 @@ def check_usgs_qualification_codes(
     In that case, treat the data as unreviewed and note it as a limitation.
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         if source != "streamflow" or series_digest or run_id or feature:
             b = _bound(session, source, series_digest, run_id, feature)
@@ -900,6 +905,7 @@ def check_regulated_basin(
     should be listed as a limitation.
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         if source != "streamflow" or series_digest or run_id or feature:
             b = _bound(session, source, series_digest, run_id, feature)
@@ -1079,6 +1085,7 @@ def check_stationarity(
     Degrades gracefully when scipy is unavailable.
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         if source != "streamflow" or series_digest or run_id or feature:
             b = _bound(session, source, series_digest, run_id, feature)
