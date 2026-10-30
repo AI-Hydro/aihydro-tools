@@ -1136,7 +1136,8 @@ def _legacy_data_shim(
         aihydro-data variable name (e.g. ``"streamflow"``, ``"precipitation"``).
     geometry : Any
         Geometry accepted by aihydro-data: shapely, GeoDataFrame, GeoJSON dict,
-        ``(lat, lon)`` tuple, bounding-box 4-tuple, or a USGS gauge-ID string.
+        ``{"lat", "lon"}`` dict, bounding-box, or a USGS gauge-ID string. The MCP tools refuse a bare
+        coordinate pair (no axis order); this internal shim does not check, callers must pass an unambiguous form.
     start, end : str
         ISO-8601 date strings.  Pass ``""`` for static products.
     **kw

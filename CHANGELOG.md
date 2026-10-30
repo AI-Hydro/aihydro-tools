@@ -55,6 +55,52 @@ Source: `docs/vision-2040/findings/tool-audit-record-2026-10-30.md`. No version 
   title-word overlap of at least 0.6 on whole words (author names and years are not counted against a title, and fewer than two content words can never match); a capitalised query word absent from the title must be a family name in the hit's author list and a query year must be within one year of the record's (online-first dates), else the hit is only an unverified candidate; `high` needs title, authors and year to match, or a near-full-title match when the query has neither; weak hits come back as `not_confirmed` with unverified `candidates`, never as "no citation exists". A provider that cannot be reached is
   `CITATION_LOOKUP_UNAVAILABLE` (`unavailable: true`, `not_found: false`), never `not_found`; `not_found` is returned only when every provider
   answered. An unsupported `source_hint` is refused; `_render_apa` no longer crashes on an empty `container-title`.
+Owner feedback on the installed 0.4.3 build: `data_fetch(variable="streamflow", geometry=[-68.5828, 47.2375], ..., gauge_id="01013500")`
+was refused with "geometry is in region 'global'" (the pair is GeoJSON order, read as lat,lon it is in the Southern Ocean), and the
+agent then fell back to the deprecated tool and tripped on `start_date` / `end_date`. Without `gauge_id` the same call raised no
+refusal and was routed to modelled products for the wrong place.
+
+### Fixed
+
+- **A bare coordinate pair is refused, never guessed (one boundary for every tool).** `ai_hydro/mcp/geometry_boundary.py`
+  (`GeometryBoundaryMiddleware`, plus the same check inside `data_fetch` / `data_fetch_background` for direct calls) holds every tool
+  argument named `geometry` or `geometries` to one rule: `[a, b]`, `(a, b)`, `"a,b"` and `"[a, b]"` return a retryable structured error.
+  `GEOMETRY_AXIS_AMBIGUOUS` (both values within +/-90) shows both readings and the exact `{"lat":..,"lon":..}` fix;
+  `GEOMETRY_AXIS_SWAPPED` (one value cannot be a latitude) states the only possible reading and still refuses. `{"lat","lon"}`, GeoJSON,
+  a 4-number bbox (range and order checked: `GEOMETRY_BBOX_INVALID`), WKT and a gauge id pass. The tool schemas now tell the agent to use
+  the dict form.
+- **Every coordinate gets the same validator (tool audit R-11, D43).** Parameters are classified by name (`geometry`, `geometries`,
+  `roi`, `*geojson`, `outlet`, `lat`/`latitude`/`*_lat`, `lon`/`lng`/`longitude`/`*_lon`), so a new tool is covered without being listed.
+  `register_feature(lat=-100, lon=500, outlet_lat=95)` and the like return `GEOMETRY_RANGE_INVALID`; GeoJSON positions (including
+  inside `*_geojson` strings and Feature collections) must be [lon, lat] within range, so projected coordinates such as
+  `[500000, 5200000]` are refused; `outlet` is range-checked in its documented (lat, lon) order. A bare 4-number bbox with all values
+  within +/-90 is axis-ambiguous like a pair (`GEOMETRY_BBOX_AXIS_AMBIGUOUS`, both readings and the fix); the explicit form is
+  `{"west","south","east","north"}`, converted to a GeoJSON Polygon at the boundary. A scan test fails if any tool with such a
+  parameter is not behind the validator.
+- **A swapped `outlet` can no longer drive a modelled product.** A bare `outlet` pair is refused like a geometry pair (`{"lat","lon"}` is
+  accepted and converted), and an outlet farther than 5 km from its geometry is `GEOMETRY_OUTLET_MISMATCH` (`data_fetch`, `data_batch_fetch`).
+- `outlet` is part of the sealed call inputs; `data_fetch(outlet=...)` is typed `tuple | {"lat","lon"}`. Distances to a geometry use longitudes
+  wrapped to the geometry, and a geometry written across +/-180 is refused (`GEOMETRY_ANTIMERIDIAN_UNSUPPORTED`) instead of mis-measured.
+- **Every `data_fetch` result echoes `resolved_place`** (lat, lon, region or bbox, centroid, region), also sealed in the call inputs; a
+  session `site_id` / BasinRef that names the place adds a top-level `session_note`.
+- **`data_fetch` and `data_fetch_background` need no geometry when a gauge names the place.** `gauge_id` (or a session BasinRef with a
+  verified `usgs:` alias, or a session whose `site_id` is a USGS gauge) locates the request: the point comes from the USGS Water Data API
+  monitoring-location record and is reported as `resolved_location` and recorded in the call's inputs. The request is still pinned to
+  `NWIS_STREAMFLOW` with no fallback (ADR-003 A2 unchanged). With neither: `GEOMETRY_REQUIRED` (retryable).
+- **A gauge and a place that disagree are refused by name.** More than 5 km (aihydro-data's pre-registered gauge-to-outlet distance) between
+  `gauge_id` and the geometry returns `GAUGE_LOCATION_MISMATCH` with both locations and the distance, instead of the misleading
+  "region 'global'" text. If the gauge lookup cannot be made the old region rule still applies.
+- **Deprecated `fetch_streamflow_data` accepts `start` / `end`** (arg-repair aliases to `start_date` / `end_date` when the tool has no
+  `start` / `end` of its own). The tool stays deprecated; no parameter was added.
+
+### Changed
+
+- `data_fetch(variable, start, end, geometry=None, ...)` and `data_fetch_background(variable, start, end, geometry=None, ...)`: `geometry`
+  moved after `start` / `end` and is optional (Python positional callers; MCP calls are by name). `data_fetch_background` also takes `session_id`.
+- Tests that passed a bare `[lat, lon]` pair or a point several km from the gauge were changed to `{"lat","lon"}` at the gauge's recorded
+  location (`tests/test_usgs_u3.py`, `test_series_tools.py`, `test_map_provenance.py`).
+
+### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
 
 ### Fixed
 
