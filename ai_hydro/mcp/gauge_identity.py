@@ -160,10 +160,14 @@ def resolve_request(variable: str, geometry: Any, product: Optional[str], gauge_
                 basin_ref, hint = session_basin_ref(session_id, ws_geom)
                 if basin_ref is not None:
                     notes["location_source"] = "session BasinRef (verified usgs: alias), session watershed geometry"
+                    notes["session_note"] = ("No geometry or gauge_id was given: the session's verified BasinRef (its watershed and "
+                                             "usgs: alias) named the place. Pass gauge_id or geometry explicitly for a different one.")
                     return {"geometry": ws_geom, "gauge_id": None, "basin_ref": basin_ref, "hint": hint, "notes": notes}
             if session.site_type == "usgs_gauge" and session.site_id:
                 gauge_id = str(session.site_id)
                 notes["gauge_source"] = f"session.site_id={gauge_id}"
+                notes["session_note"] = (f"No geometry or gauge_id was given: the session's site_id (USGS gauge {gauge_id}) named the "
+                                         "place. Pass gauge_id or geometry explicitly to fetch a different one.")
         except Exception as exc:
             log.debug("gauge-first: no session gauge (%s)", exc)
         if gauge_id is None:

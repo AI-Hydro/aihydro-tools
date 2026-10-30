@@ -336,14 +336,70 @@ def test_lat_lon_parameters_are_range_checked_by_name():
         assert check_coordinate_arg(name, good, "t") is None, name
 
 
-def test_outlet_is_range_checked_in_its_documented_lat_lon_order():
-    assert check_coordinate_arg("outlet", [LAT, LON])  is None
-    e = check_coordinate_arg("outlet", [LAT, 500.0], "data_fetch")
-    assert e["code"] == "GEOMETRY_RANGE_INVALID" and "(lat, lon)" in e["message"]
-    assert check_coordinate_arg("outlet", [-122.3, 47.6], "data_fetch")["code"] == "GEOMETRY_RANGE_INVALID"
+MAINE = {"type": "Polygon", "coordinates": [[[-68.7, 47.1], [-68.4, 47.1], [-68.4, 47.4], [-68.7, 47.4], [-68.7, 47.1]]]}
+
+
+def test_outlet_bare_pair_is_ambiguous_and_dict_form_is_converted():
+    e = check_coordinate_arg("outlet", [LAT, LON], "data_fetch")
+    assert e["code"] == "GEOMETRY_AXIS_AMBIGUOUS" and "outlet" in e["recovery"] and "geometry" not in e["recovery"]
+    assert check_coordinate_arg("outlet", {"lat": LAT, "lon": LON}, "t") is None
+    assert check_coordinate_arg("outlet", {"lat": 95, "lon": 1}, "t")["code"] == "GEOMETRY_RANGE_INVALID"
+    fixed, err = check_arguments({"geometry": MAINE, "outlet": {"lat": LAT, "lon": LON}}, "t")
+    assert err is None and fixed["outlet"] == [LAT, LON]
+
+
+def test_in_range_swapped_outlet_cannot_drive_a_modelled_product(world, modelled):
+    """The review's case: a Maine polygon with outlet (lon, lat) read as (lat, lon) snaps to the Southern Ocean."""
     from ai_hydro.mcp.tools_data_fetch import data_fetch
 
-    assert data_fetch("streamflow", START, END, geometry={"lat": LAT, "lon": LON}, outlet=[95.0, 10.0])["code"] == "GEOMETRY_RANGE_INVALID"
+    swapped = {"lat": LON, "lon": LAT}
+    r = data_fetch("streamflow", START, END, geometry=MAINE, outlet=swapped, session_id="gb")
+    assert r["code"] == "GEOMETRY_OUTLET_MISMATCH" and r["retryable"] is True
+    assert r["outlet"]["lat"] == pytest.approx(LON) and not modelled["called"]
+    # a bare pair never gets that far
+    assert data_fetch("streamflow", START, END, geometry=MAINE, outlet=[LON, LAT])["code"] == "GEOMETRY_AXIS_AMBIGUOUS"
+    # through the real MCP handler too, and for a point geometry
+    err, body, _ = call_tool("data_fetch", {"variable": "streamflow", "geometry": MAINE, "outlet": swapped,
+                                            "start": START, "end": END})
+    assert err and body["code"] == "GEOMETRY_OUTLET_MISMATCH" and not modelled["called"]
+    err, body, _ = call_tool("data_fetch", {"variable": "streamflow", "geometry": {"lat": LAT, "lon": LON},
+                                            "outlet": swapped, "start": START, "end": END})
+    assert err and body["code"] == "GEOMETRY_OUTLET_MISMATCH"
+
+
+def test_correct_outlet_inside_or_within_tolerance_reaches_the_router_as_lat_lon_list(world, modelled):
+    from ai_hydro.mcp.tools_data_fetch import data_fetch
+
+    data_fetch("streamflow", START, END, geometry=MAINE, outlet={"lat": LAT, "lon": LON}, session_id="gb")
+    assert modelled["called"] == 1 and modelled["outlet"] == [LAT, LON]
+    near = {"lat": 47.4 + 0.02, "lon": -68.55}            # ~2 km north of the polygon edge (< 5 km)
+    data_fetch("streamflow", START, END, geometry=MAINE, outlet=near, session_id="gb")
+    assert modelled["called"] == 2
+
+
+def test_batch_outlets_are_checked_per_label():
+    from ai_hydro.mcp.geometry_boundary import check_outlet_matches_geometry
+
+    geoms = {"a": MAINE, "b": MAINE}
+    assert check_outlet_matches_geometry(geoms, {"a": [LAT, LON], "b": [LON, LAT]}, "data_batch_fetch")["code"] == "GEOMETRY_OUTLET_MISMATCH"
+    assert check_outlet_matches_geometry(geoms, {"a": [LAT, LON]}, "data_batch_fetch") is None
+
+
+def test_every_result_echoes_the_resolved_place_and_session_gauge_is_noted(world, seen, modelled):
+    from ai_hydro.mcp.tools_data_fetch import _resolved_place, data_fetch
+
+    p = _resolved_place({"lat": LAT, "lon": LON}, None)
+    assert p == {"lat": LAT, "lon": LON, "region": "CONUS"}
+    q = _resolved_place(MAINE, None)
+    assert q["bbox"] == [-68.7, 47.1, -68.4, 47.4] and q["region"] == "CONUS" and "centroid" in q
+    # an in-order-but-wrong point is valid and undetectable, so the result must show where it went
+    r = data_fetch("precipitation", START, END, geometry="POINT (47.2375 -68.5828)", session_id="gb")
+    assert r.get("resolved_place") is not None or r.get("code") == "CAPTURED"
+    s = HydroSession.load("gb")
+    s.site_id, s.site_type = GAUGE, "usgs_gauge"
+    s.save()
+    r = _df()
+    assert "site_id" in r["session_note"] and r["gauge_source"].endswith(GAUGE)
 
 
 def test_geojson_positions_are_range_checked():

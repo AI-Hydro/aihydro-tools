@@ -85,6 +85,12 @@ def _pending_status(job_id: str, artifact_dir: Path, variable: str, context: dic
     }
 
 
+def _place(geometry: Any, gauge_id: str | None) -> dict:
+    from ai_hydro.mcp.tools_data_fetch import _resolved_place
+
+    return _resolved_place(geometry, gauge_id)
+
+
 @mcp.tool()
 def data_fetch_background(
     variable: str,
@@ -216,6 +222,8 @@ def data_fetch_background(
             "artifact_dir":  job["artifact_dir"],
             "log_path":      job["log_path"],
             "started_at":    job["started_at"],
+            "resolved_place": _place(geometry, gauge_id),
+            **{k: v for k, v in resolved["notes"].items() if k in ("session_note", "resolved_location", "gauge_source")},
             "wait_with":     f"wait_for_job('{job['job_id']}')",
             "retrieve_with": f"get_data_fetch_result('{job['job_id']}')",
             "_note": (

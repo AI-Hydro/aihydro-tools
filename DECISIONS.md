@@ -31,9 +31,17 @@ ERA5-Land / GEOGLOWS for the wrong place, real-looking numbers for the wrong loc
    Maine), and a range check cannot tell them apart, so bare 4-lists are refused unless a value beyond 90 settles the axes; the
    dict `{"west","south","east","north"}` is the explicit form. GeoJSON is trusted to be [lon, lat] (the spec), but each position is
    range-checked, which catches projected metres; a lat-first GeoJSON position inside +/-90 is indistinguishable from a valid one and
-   is NOT detected. `outlet` keeps aihydro-data's (lat, lon) convention: it is range-checked in that order but has no dict form,
-   because the wrapper's signature must match aihydro-data's `outlet: tuple`; a swapped in-range outlet is not caught here, only by
-   the A2 gauge checks downstream.
+   is NOT detected.
+6. **`outlet` is a coordinate too (review of the first version).** Range-checking it was not enough: a swapped in-range outlet
+   (`[-68.58, 47.24]`) passes any range check, and GEOGLOWS / Open-Meteo snap to the outlet ahead of the polygon, so a Maine
+   polygon returned modelled flow for the Southern Ocean. Now (a) a bare outlet pair is refused like a geometry pair, the explicit
+   form is `{"lat","lon"}` and the boundary converts it to the `[lat, lon]` list aihydro-data's signature takes; (b) when an outlet and a
+   geometry are both present (single call, `data_fetch`, and `data_batch_fetch` per label) the outlet must be inside the geometry or
+   within the A2 5 km tolerance of it, else `GEOMETRY_OUTLET_MISMATCH`.
+7. **Residual, made visible instead.** A GeoJSON Point, WKT or in-range polygon with swapped axes is a valid place and cannot be
+   detected. Every `data_fetch` result (and the `data_fetch_background` reply) therefore carries `resolved_place`: `{lat, lon, region}`
+   for a point, `{bbox, centroid, region}` otherwise, `{gauge, region}` for a station id; it is also in the sealed call inputs. When the
+   session's `site_id` or BasinRef names the place, a top-level `session_note` says so (and is prepended to `notes`).
 
 Consequence for callers: `data_fetch(variable, start, end, geometry=None, ...)` reordered its Python signature; MCP callers are unaffected.
 

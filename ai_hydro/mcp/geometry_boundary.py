@@ -288,16 +288,88 @@ def check_coordinate_arg(name: str, value: Any, tool: str = "") -> Optional[dict
                 f"{name}={value} is not a valid {what} (within +/-{lim:g} degrees, EPSG:4326).",
                 f"Resend {name} in decimal degrees within +/-{lim:g}; check latitude and longitude are not swapped.", tool)
         return None
-    # outlet: documented as a (lat, lon) pair by aihydro-data. Its order is stated, so it is range-checked in that order
-    # (a swapped outlet has |second| > 90 only sometimes; the gauge-resolution layer refuses the rest).
+    # outlet: a bare pair is as ambiguous as a bare geometry pair (aihydro-data reads it as (lat, lon), resolve_gauge as
+    # (lon, lat)), so it is refused the same way; the explicit form is {"lat","lon"} (see ``outlet_pair``).
+    return _check_outlet_value(value, tool)
+
+
+def _check_outlet_value(value: Any, tool: str) -> Optional[dict]:
+    if isinstance(value, dict):
+        if {"lat", "lon"}.issubset(value):
+            return _check_dict(value, tool)
+        for v in value.values():                 # data_batch_fetch: {label: outlet}
+            err = _check_outlet_value(v, tool)
+            if err:
+                return err
+        return None
     if isinstance(value, (list, tuple)) and len(value) == 2 and all(_is_num(v) for v in value):
-        lat, lon = value
-        if abs(lat) > 90 or abs(lon) > 180:
-            return _envelope(
-                "GEOMETRY_RANGE_INVALID",
-                f"outlet={list(value)} is read as (lat, lon): latitude {lat} / longitude {lon} is out of range.",
-                "Send outlet as [lat, lon] in decimal degrees (latitude within +/-90, longitude within +/-180).", tool)
+        err = _pair_error(float(value[0]), float(value[1]), tool)
+        for k in ("message", "recovery"):
+            err[k] = err[k].replace("geometry", "outlet").replace("bare coordinate pair", "bare outlet pair")
+        return err
     return None
+
+
+def outlet_pair(value: Any) -> Any:
+    """``{"lat","lon"}`` -> the ``[lat, lon]`` list aihydro-data takes; anything else unchanged. A mapping of labels is converted member-wise."""
+    if isinstance(value, dict):
+        if {"lat", "lon"}.issubset(value):
+            return [float(value["lat"]), float(value["lon"])]
+        return {k: outlet_pair(v) for k, v in value.items()}
+    return value
+
+
+def _tolerance_m() -> float:
+    from ai_hydro.mcp.gauge_identity import _mismatch_limit_m
+
+    return _mismatch_limit_m()
+
+
+def check_outlet_matches_geometry(geometry: Any, outlet: Any, tool: str = "") -> Optional[dict]:
+    """``GEOMETRY_OUTLET_MISMATCH`` when ``outlet`` ([lat, lon]) is farther than the A2 5 km tolerance from ``geometry``
+    (0 m when inside a polygon). The outlet drives GEOGLOWS / Open-Meteo snapping ahead of the polygon, so an outlet that is
+    a different place from the geometry would fetch modelled flow for it. A mapping is checked per label against a mapping
+    of geometries. Anything that cannot be coerced is left to the fetch's own error."""
+    if geometry is None or outlet is None:
+        return None
+    if isinstance(geometry, str) and not geometry.strip().upper().startswith(("POINT", "POLY", "MULTI", "LINE", "GEOMETRYC")):
+        return None                                  # a gauge id / JSON string: no geometry to compare with here
+    if isinstance(outlet, dict) and not {"lat", "lon"}.issubset(outlet):
+        if isinstance(geometry, dict) and "type" not in geometry:
+            for k, o in outlet.items():
+                if k in geometry:
+                    err = check_outlet_matches_geometry(geometry[k], o, tool)
+                    if err:
+                        return err
+        return None
+    pair = outlet_pair(outlet)
+    if not (isinstance(pair, (list, tuple)) and len(pair) == 2 and all(_is_num(v) for v in pair)):
+        return None
+    try:
+        from ai_hydro.mcp.gauge_identity import _distance_m
+
+        d = _distance_m(geometry, float(pair[0]), float(pair[1]))
+    except Exception:
+        return None
+    tol = _tolerance_m()
+    if d <= tol:
+        return None
+    try:
+        from aihydro_data.geometry import coerce_geometry
+
+        c = coerce_geometry(geometry).centroid
+        where = {"lat": c.y, "lon": c.x}
+    except Exception:
+        where = None
+    return _envelope(
+        "GEOMETRY_OUTLET_MISMATCH",
+        f"outlet lat={pair[0]}, lon={pair[1]} is {d / 1000:.0f} km from the requested geometry"
+        + (f" (centroid lat={where['lat']:.5f}, lon={where['lon']:.5f})" if where else "")
+        + f"; the limit is {tol / 1000:.0f} km (inside the polygon, or within that distance of it). They are not the same place, "
+        "so nothing was fetched: modelled streamflow would have been snapped to the outlet.",
+        'Resend outlet as {"lat": ..., "lon": ...} at the basin outlet, or drop outlet. A swapped latitude/longitude is the usual cause.',
+        tool, distance_m=round(d), geometry_centroid=where, outlet={"lat": pair[0], "lon": pair[1]},
+    )
 
 
 def check_arguments(args: dict, tool: str = "") -> tuple[dict, Optional[dict]]:
@@ -310,6 +382,14 @@ def check_arguments(args: dict, tool: str = "") -> tuple[dict, Optional[dict]]:
             return args, err
         if param_kind(key) == "geometry" and isinstance(val, dict) and {"west", "south", "east", "north"}.issubset(val):
             out[key] = _to_polygon(val)
+        elif param_kind(key) == "outlet" and val is not None:
+            out[key] = outlet_pair(val)
+    outlet = out.get("outlet")
+    geom = out.get("geometry", out.get("geometries"))
+    if outlet is not None and geom is not None:
+        err = check_outlet_matches_geometry(geom, outlet, tool)
+        if err:
+            return args, err
     return out, None
 
 

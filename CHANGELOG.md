@@ -30,6 +30,10 @@ refusal and was routed to modelled products for the wrong place.
   within +/-90 is axis-ambiguous like a pair (`GEOMETRY_BBOX_AXIS_AMBIGUOUS`, both readings and the fix); the explicit form is
   `{"west","south","east","north"}`, converted to a GeoJSON Polygon at the boundary. A scan test fails if any tool with such a
   parameter is not behind the validator.
+- **A swapped `outlet` can no longer drive a modelled product.** A bare `outlet` pair is refused like a geometry pair (`{"lat","lon"}` is
+  accepted and converted), and an outlet farther than 5 km from its geometry is `GEOMETRY_OUTLET_MISMATCH` (`data_fetch`, `data_batch_fetch`).
+- **Every `data_fetch` result echoes `resolved_place`** (lat, lon, region or bbox, centroid, region), also sealed in the call inputs; a
+  session `site_id` / BasinRef that names the place adds a top-level `session_note`.
 - **`data_fetch` and `data_fetch_background` need no geometry when a gauge names the place.** `gauge_id` (or a session BasinRef with a
   verified `usgs:` alias, or a session whose `site_id` is a USGS gauge) locates the request: the point comes from the USGS Water Data API
   monitoring-location record and is reported as `resolved_location` and recorded in the call's inputs. The request is still pinned to

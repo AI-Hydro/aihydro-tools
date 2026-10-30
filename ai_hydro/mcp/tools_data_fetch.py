@@ -261,6 +261,25 @@ def _streamflow_flags(session_id: str) -> list:
     return out
 
 
+def _resolved_place(geometry: Any, gauge_id: str | None) -> dict:
+    """``{lat, lon, region}`` for a point, ``{bbox, centroid, region}`` otherwise, ``{gauge, region}`` for a station id. Never raises."""
+    try:
+        from aihydro_data.geometry import GaugeID, coerce_geometry
+        from aihydro_data.routing.detect import detect_region
+
+        g = coerce_geometry(geometry)
+        region = detect_region(g)
+        if isinstance(g, GaugeID):
+            return {"gauge": g.id, "region": region}
+        if g.geom_type == "Point":
+            return {"lat": g.y, "lon": g.x, "region": region}
+        c = g.centroid
+        return {"bbox": [round(v, 6) for v in g.bounds], "bbox_order": "west,south,east,north",
+                "centroid": {"lat": c.y, "lon": c.x}, "region": region}
+    except Exception as exc:
+        return {"unresolved": str(exc)[:120]}
+
+
 def data_fetch(
     variable: str,
     start: str,
@@ -308,7 +327,8 @@ def data_fetch(
         log.debug("data_fetch: no session resolved, call is not recorded (%s)", exc)
 
     from ai_hydro.mcp import gauge_identity as gi
-    from ai_hydro.mcp.geometry_boundary import check_arguments, check_coordinate_arg, check_geometry_arg
+    from ai_hydro.mcp.geometry_boundary import (
+        check_arguments, check_coordinate_arg, check_geometry_arg, check_outlet_matches_geometry, outlet_pair)
 
     bad = check_geometry_arg(geometry, "data_fetch")
     if bad:
@@ -317,12 +337,18 @@ def data_fetch(
     if bad:
         return bad
     geometry = check_arguments({"geometry": geometry}, "data_fetch")[0]["geometry"]
+    outlet = outlet_pair(outlet)
 
     resolved = gi.resolve_request(variable, geometry, product, gauge_id, sid, "data_fetch")
     if "refusal" in resolved:
         return resolved["refusal"]
     geometry, gauge_id = resolved["geometry"], resolved["gauge_id"] or gauge_id
     basin_ref, hint, notes = resolved["basin_ref"], resolved["hint"], resolved["notes"]
+    # the outlet is checked against the place the request will actually use (after gauge-first resolution)
+    bad = check_outlet_matches_geometry(geometry, outlet, "data_fetch")
+    if bad:
+        return bad
+    place = _resolved_place(geometry, gauge_id)
 
     if gauge_id is not None or basin_ref is not None:
         result = _fetch_with_identity(
@@ -339,8 +365,14 @@ def data_fetch(
         ))
     if hint and isinstance(result, dict):
         result["basin_ref_hint"] = hint
-    if notes and isinstance(result, dict):
-        result.update(notes)        # resolved_location / location_source / gauge_source: how the place was fixed
+    if isinstance(result, dict):
+        # The place the fetch used, on every result: a GeoJSON Point / WKT with the axes swapped is valid and undetectable, so
+        # the result must make the location visible to the caller and to the record.
+        result["resolved_place"] = place
+        if notes:
+            result.update(notes)    # resolved_location / location_source / gauge_source / session_note: how the place was fixed
+            if notes.get("session_note") and isinstance(result.get("notes"), list):
+                result["notes"] = [notes["session_note"], *result["notes"]]
     # ``redirect`` is only returned by older aihydro-data (before U4 the queued redirect was a
     # success-shaped dict); current aihydro-data raises an MCP error instead.
     if not isinstance(result, dict) or result.get("error") or result.get("redirect"):
@@ -380,6 +412,7 @@ def data_fetch(
         "variable": variable, "start": start, "end": end, "mode": mode, "product": product,
         "aggregation": aggregation, "cache": cache, "region": region,
     }
+    inputs["resolved_place"] = place
     if gauge_id is not None:
         inputs["gauge_id"] = gauge_id
     if isinstance(geometry, str):
