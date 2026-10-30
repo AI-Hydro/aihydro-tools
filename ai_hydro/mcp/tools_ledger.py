@@ -19,7 +19,7 @@ from ai_hydro.mcp.app import mcp
 from ai_hydro.mcp.errors import StructuredToolError
 from ai_hydro.session import HydroSession
 from ai_hydro.session.models import ScientificClaim, Assumption, ClaimScope, EvidenceSpan
-from ai_hydro.mcp.helpers import _tool_error_to_dict
+from ai_hydro.mcp.helpers import _tool_error_to_dict, resolve_existing_study
 from ai_hydro.mcp.ledger_commands import push_claim_event
 from aihydro_core.primitives.hashing import content_hash
 from ai_hydro import identity
@@ -328,6 +328,54 @@ def _uncertainty_assertion_warnings(session_id: str, claim_dict: dict) -> list[d
     }]
 
 
+def _prereg_refusal(session, session_id: str, claim_id: str, claim_dict: dict, status: str,
+                    prereg_id: str) -> dict:
+    """``prereg_id`` names no locked plan of this study: confirmatory cannot be a typed label (R-04)."""
+    from ai_hydro.claims.status_gate import _refusal
+    plan = session.get("_research_plan")
+    have = plan.get("prereg_id") if isinstance(plan, dict) and plan.get("locked") else None
+    return _refusal(
+        "prereg_gate", claim_id, claim_dict, status, "prereg_id_must_name_this_studys_locked_plan",
+        f"prereg_id {str(prereg_id)[:80]!r} is not the locked research plan of study '{session_id}'"
+        + (f" (its plan is '{have}')." if have else " (this study has no locked plan)."),
+        ("1. Call register_research_plan first and pass the prereg_id it returns; or\n"
+         "2. Omit prereg_id: the claim is then exploratory, which is what it is without a plan.")
+        + (f"\nThe plan this study has: prereg_id='{have}'." if have else ""),
+        prereg_id=prereg_id, study_plan_prereg_id=have)
+
+
+def _post_hoc_warning(plan: dict) -> dict:
+    return {
+        "code": "PREREG_POST_HOC", "severity": "warning", "blocking": False,
+        "message": ("The plan was locked after planned analyses had already run, so this claim is NOT "
+                    "confirmatory: the defensibility report lists it as 'post_hoc_plan'."),
+        "how_to_fix": ("Treat it as exploratory. For a confirmatory test, register the plan before running "
+                       "the analyses, in a new study."),
+        "prereg_id": plan.get("prereg_id"),
+    }
+
+
+def _propagate_retraction(out: dict, session_id: str, claim_id: str, claim_dict: dict, status: str,
+                          reason: str) -> None:
+    """A claim set to ``retracted`` retracts its registry row(s); the result says which (R-03).
+
+    Done after the session is saved, so the session is never ahead of a failed registry write: a failure is
+    reported in the result and ``check_registry_staleness`` repeats the propagation.
+    """
+    if status != "retracted":
+        return
+    try:
+        from ai_hydro.claims import lifecycle
+        changed = lifecycle.propagate_retraction(session_id, claim_id, claim_dict, reason)
+        if changed:
+            out["registry_retracted"] = changed
+    except Exception as exc:
+        log.warning("registry retraction for %s/%s failed: %s", session_id, claim_id, exc)
+        out["registry_retraction_failed"] = (
+            f"The claim is retracted in this study, but its registry entry could not be updated ({exc}). "
+            "Run check_registry_staleness to propagate it.")
+
+
 @mcp.tool()
 def add_claim(
     session_id: str,
@@ -360,7 +408,9 @@ def add_claim(
         promotion: BASIN_REF_REQUIRED.
     evidence_spans: [{"source_type": "run", "source_id": "<run_id>", "metric_ref": "kge"}]; legacy
         `evidence` (untyped dicts) is auto-migrated. Pass one of the two.
-    prereg_id: from register_research_plan; marks the claim confirmatory.
+    prereg_id: the prereg_id register_research_plan returned for THIS study; marks the claim confirmatory.
+        Any other value is refused (`prereg_gate`). A plan locked after its analyses had run is
+        post_hoc: the claim is recorded with a `PREREG_POST_HOC` warning and is not confirmatory.
 
     Metric-scoped status="supported" is refused (`uncertainty_gate`): record another status, then
     update_claim_status(uncertainty_verified=True). `evidence_gate` (supported with no evidence
@@ -378,6 +428,7 @@ def add_claim(
     """
     try:
         identity.require_safe_ids(session_id, claim_id)
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
 
         entries, auto_bound, records = _resolve_basin_refs(session, basins, basin_refs, session_id, claim_id)
@@ -405,12 +456,31 @@ def add_claim(
         gate = _status_gate(session_id, claim_id, claim_dict, status, False)   # add_claim cannot assert it
         if gate is not None:
             return gate
+        from ai_hydro.claims import lifecycle
+        previous = session.claims.get(claim_id)
+        gate = lifecycle.reinstatement_gate(session_id, claim_id, previous, claim_dict, status)
+        if gate is not None:
+            return gate
+        prereg_warning = None
+        if prereg_id:
+            from ai_hydro.claims import prereg as _prereg
+            plan = _prereg.plan_for_prereg(session, prereg_id)
+            if plan is None:
+                return _prereg_refusal(session, session_id, claim_id, claim_dict, status, prereg_id)
+            if _prereg.is_post_hoc(session, plan):
+                prereg_warning = _post_hoc_warning(plan)
         if prereg_id:
             claim_dict["prereg_id"] = prereg_id
         if records:
             claim_dict["basin_ref_records"] = records   # retained verified refs; outside the revision digest
         existed = claim_id in session.claims
         before = _revision_fields(session, claim_id) if existed else None
+        if isinstance(previous, dict):
+            # Redefining a claim keeps its link to the registry and its staleness record: the registry row
+            # still refers to the promoted revision, and the skeptic and the staleness check key on the link (R-03).
+            for key in lifecycle.LINK_FIELDS:
+                if key in previous and key not in claim_dict:
+                    claim_dict[key] = previous[key]
         session.claims[claim_id] = claim_dict
         path_report: dict = {}
         rev = _record_revision(session, claim_id, tool="add_claim", before=before,
@@ -432,6 +502,9 @@ def add_claim(
             revision_digest=rev.revision_digest,
         )
         out = {"id": claim_id, "status": "recorded", **path_report}
+        _propagate_retraction(out, session_id, claim_id, claim_dict, status, confidence_rationale)
+        if prereg_id:
+            out["prereg"] = "post_hoc_plan" if prereg_warning else "confirmatory"
         if entries:
             out["basin_refs"] = entries
             out["auto_bound"] = auto_bound
@@ -447,6 +520,8 @@ def add_claim(
             warnings = warnings + forcing_prose_warnings(session_id, claim_dict)
         except Exception as exc:            # advisory only
             log.warning("forcing prose hint skipped: %s", exc)
+        if prereg_warning:
+            warnings = warnings + [prereg_warning]
         if warnings:
             out["warnings"] = warnings
             out["_note"] = warnings[0]["message"] + " " + warnings[0]["how_to_fix"]
@@ -478,6 +553,7 @@ def update_claim_status(
     Returns `promotion_check` (violations promotion would raise; advisory).
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         if claim_id not in session.claims:
             raise ValueError(f"Claim '{claim_id}' not found.")
@@ -486,6 +562,10 @@ def update_claim_status(
         claim_type = claim_dict.get("claim_type", "")
 
         gate = _status_gate(session_id, claim_id, claim_dict, status, uncertainty_verified)
+        if gate is not None:
+            return gate
+        from ai_hydro.claims import lifecycle
+        gate = lifecycle.reinstatement_gate(session_id, claim_id, claim_dict, claim_dict, status)
         if gate is not None:
             return gate
 
@@ -523,6 +603,7 @@ def update_claim_status(
         # C2 advisory: what promotion would block on this claim as stored (same policy).
         out = {"id": claim_id, "status": "updated", **path_report,
                "promotion_check": promotion_check(session, claim_dict, claim_id=claim_id)}
+        _propagate_retraction(out, session_id, claim_id, claim_dict, status, rationale)
         try:
             from ai_hydro.claims.status_gate import forcing_prose_warnings
             hint = forcing_prose_warnings(session_id, claim_dict)
@@ -552,6 +633,7 @@ def add_assumption(
     Record a scientific assumption or caveat in the session ledger.
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         
         assumption = Assumption(
@@ -576,20 +658,12 @@ def _load_session_or_raise(session_id: str) -> HydroSession:
     ``HydroSession.load`` returns a fresh empty session for an unknown id, which a
     ``-> list`` tool would report as "no claims". The two list tools cannot return the
     usual error dict (their output schema is an array), so a missing or unreadable
-    session is raised as ``ToolError`` whose text is the JSON envelope.
+    session is raised as ``ToolError`` whose text is the JSON envelope (``STUDY_NOT_FOUND``
+    when the study does not exist).
     """
     try:
-        path = HydroSession._path(session_id)
-        legacy = HydroSession._legacy_raw_path(session_id)
-        if not path.exists() and not (legacy is not None and legacy.exists()):
-            envelope = {
-                "error": True, "code": "SESSION_NOT_FOUND",
-                "message": f"No saved session '{session_id}'; this is not an empty ledger.",
-                "recovery": "Check the session id or call start_session first.",
-                "next_tools": ["start_session", "get_session_summary"],
-            }
-            raise StructuredToolError(envelope)
-        return HydroSession.load(session_id)
+        # The one study resolver: an unknown id is STUDY_NOT_FOUND with candidates (R-01).
+        return HydroSession.load(resolve_existing_study(session_id))
     except McpToolError:
         raise
     except Exception as exc:
@@ -656,6 +730,7 @@ def promote_claim_to_registry(
         # Stored ids that predate the id rule stay readable but cannot be promoted: the
         # approval command (aihydro-approve <session> <claim>) must be buildable safely.
         identity.require_safe_ids(session_id, claim_id, stored=True)
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         claim_dict = session.claims.get(claim_id)
         if not claim_dict:
@@ -873,6 +948,7 @@ def check_registry_staleness(session_id: str) -> dict:
             check_evidence_staleness,
         )
 
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
 
         entries = find_by_session(session_id)
@@ -882,11 +958,21 @@ def check_registry_staleness(session_id: str) -> dict:
         stale_results = []
         fresh_results = []
 
+        from ai_hydro.claims import lifecycle
+        retracted_results = []
+
         for entry in promoted:
             cid = entry["claim_id"]
             rid = entry["registry_id"]
             spans = entry.get("evidence_spans", [])
             ev_versions = entry.get("evidence_versions", {})
+
+            # A claim withdrawn in the study must not stay `promoted` in the registry (R-03).
+            mine = session.claims.get(cid)
+            if isinstance(mine, dict) and mine.get("status") == "retracted":
+                if lifecycle.propagate_retraction(session_id, cid, mine, mine.get("confidence_rationale", "")):
+                    retracted_results.append({"claim_id": cid, "registry_id": rid})
+                continue
 
             stale_sources = check_evidence_staleness(session, ev_versions, spans, entry.get("evidence_seals"))
 
@@ -900,6 +986,7 @@ def check_registry_staleness(session_id: str) -> dict:
                     before = _revision_fields(session, cid)
                     claim_dict["status"] = "stale"
                     claim_dict["staleness_detected_at"] = datetime.now(timezone.utc).isoformat()
+                    claim_dict["stale_sources"] = list(stale_sources)   # what must be re-bound to leave `stale`
                     _record_revision(session, cid, tool="check_registry_staleness",
                                      reason="staleness", before=before,
                                      extra_cause={"registry_id": rid, "stale_sources": list(stale_sources)})
@@ -955,19 +1042,33 @@ def check_registry_staleness(session_id: str) -> dict:
                                 "promoted_revision": entry.get("claim_revision"),
                                 "latest_revision": latest["revision"], "flag": "claim_revised_since_promotion"})
 
+        # A study claim that asserts more than its registry row (supported over a stale or retracted row) is
+        # reported, not rewritten: leaving `stale` needs re-bound evidence and a human approval (R-07).
+        conflicts = lifecycle.registry_conflicts(session_id, session.claims)
+
+        notes = []
+        if stale_results:
+            notes.append("Stale claims have had their session status set to 'stale'. "
+                         "Re-run the originating tool with fresh data and call "
+                         "promote_claim_to_registry again to refresh.")
+        if retracted_results:
+            notes.append("Claims retracted in this study have been retracted in the registry.")
+        if conflicts:
+            notes.append("Some study claims are 'supported' while their registry entry is stale or retracted "
+                         "(`status_conflicts`): re-bind the evidence with add_claim, then re-promote under a fresh "
+                         "human approval (aihydro-approve).")
         return {
             "revision_chain_mismatches": mismatches,
             "claim_revised_since_promotion": revised,
             "n_checked": len(promoted),
             "n_stale": len(stale_results),
             "n_already_stale": len(already_stale),
+            "n_retracted": len(retracted_results),
             "stale_claims": stale_results,
+            "retracted_claims": retracted_results,
+            "status_conflicts": conflicts,
             "fresh_claims": fresh_results,
-            "note": (
-                "Stale claims have had their session status set to 'stale'. "
-                "Re-run the originating tool with fresh data and call "
-                "promote_claim_to_registry again to refresh."
-            ) if stale_results else "All checked claims have current evidence.",
+            "note": " ".join(notes) if notes else "All checked claims have current evidence.",
         }
     except Exception as exc:
         return _tool_error_to_dict(exc)
@@ -1030,6 +1131,7 @@ def draft_claim_from_run(
     runoff_ratio, baseflow_index.
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         run_log: dict = session.get("_run_log") or {}
         run = run_log.get(run_id)
@@ -1119,6 +1221,8 @@ def register_research_plan(
         locked_at       — ISO-8601 UTC timestamp of the lock
         hypothesis      — echo
         n_planned       — number of planned analyses registered
+        post_hoc        — True if a planned analysis had already run when the plan was locked
+                          (planned_ran_before_lock lists them); such a plan is not confirmatory
     """
     try:
         if not hypothesis or not hypothesis.strip():
@@ -1126,6 +1230,7 @@ def register_research_plan(
         if not planned_analyses:
             raise ValueError("planned_analyses must contain at least one entry.")
 
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
 
         existing = session.get("_research_plan")
@@ -1172,6 +1277,11 @@ def register_research_plan(
             "locked_at": locked_at,
             "locked": True,
         }
+        # A plan is only a plan if the analyses it names had not run yet (R-04): stamp what had.
+        from ai_hydro.claims import prereg as _prereg
+        ran_before = [a["analysis"] for a in _prereg.analysis_status(session, plan) if a["ran_before_lock"]]
+        plan["planned_ran_before_lock"] = ran_before
+        plan["post_hoc"] = bool(ran_before)
         session.set("_research_plan", plan)
         session.save()
 
@@ -1181,10 +1291,16 @@ def register_research_plan(
             "locked_at": locked_at,
             "hypothesis": plan["hypothesis"],
             "n_planned": len(plan["planned_analyses"]),
+            "post_hoc": plan["post_hoc"],
+            "planned_ran_before_lock": ran_before,
             "note": (
                 f"Plan locked. Pass prereg_id='{prereg_id}' to add_claim for any "
                 "claims that directly test this hypothesis. Claims without a "
                 "prereg_id will be labelled exploratory in the defensibility report."
+            ) if not ran_before else (
+                f"Plan locked AFTER these planned analyses had already run: {', '.join(ran_before)}. "
+                "It is recorded as post_hoc, and claims filed with this prereg_id are not confirmatory; "
+                "the defensibility report says so."
             ),
         }
     except Exception as exc:

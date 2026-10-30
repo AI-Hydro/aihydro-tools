@@ -127,3 +127,11 @@ def test_installed_wheel_registries_are_non_empty(built_wheel, tmp_path):
     assert info["workflows"], f"installed workflow registry is empty: {info}"
     assert info["kge_id"], f"get_metric_definition(metric.kge) failed in the installed wheel: {info}"
     assert info["list_metrics"] > 0
+
+
+def test_metric_lookup_accepts_an_id_without_the_prefix_and_equations_say_none_are_bundled():
+    from ai_hydro.mcp import tools_knowledge as tk
+    fn = lambda t: getattr(t, "fn", t)
+    assert fn(tk.get_metric_definition)("kge")["id"] == "metric.kge"
+    out = fn(tk.get_equation_definition)("equation.penman_monteith")
+    assert "No equations are bundled" in out["message"]
