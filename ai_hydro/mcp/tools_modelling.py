@@ -866,7 +866,7 @@ def _job_model_results(job_id: str, session_id: str | None) -> dict:
         # No session named: do not require resolution, but never show a job from another study.
         try:
             from ai_hydro.mcp.helpers import _resolve_session as _rs
-            asked = _rs(None, None, allow_auto_create=False, allow_recent_fallback=False)
+            asked = _rs(None, None, allow_auto_create=False, allow_recent_fallback=False, must_exist=True)
         except Exception:
             asked = None
     if job_session and asked and job_session != asked:
@@ -943,9 +943,10 @@ def get_model_results(session_id: str | None = None, job_id: str | None = None) 
     """
     try:
         if job_id:
+            # The job names its own session; resolution is not required (and must not create one).
             return _job_model_results(job_id, session_id)
 
-        session_id = _resolve_session(session_id, None)
+        session_id = _resolve_session(session_id, None, must_exist=True)
 
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)

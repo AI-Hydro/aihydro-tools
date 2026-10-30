@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
+import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -63,20 +66,52 @@ def _cache_put(entry: dict[str, Any]) -> None:
         log.debug("Citation cache write failed: %s", exc)
 
 
-def _http_get(url: str) -> dict[str, Any] | None:
+# Outcomes of one provider call. "unavailable" (network error, timeout, 5xx, unreadable body) means the
+# provider could not answer: it is never evidence that no citation exists (R-32).
+FOUND, NOT_FOUND, UNAVAILABLE = "found", "not_found", "unavailable"
+
+
+def _http_fetch(url: str) -> tuple[str, dict[str, Any] | None]:
+    """``("ok", data)``, ``("not_found", None)`` on HTTP 404, else ``("unavailable", None)``."""
     try:
         req = urllib.request.Request(
             url,
             headers={"User-Agent": _POLITE_UA, "Accept": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            return "ok", json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return NOT_FOUND, None
+        log.debug("HTTP GET failed (%s): HTTP %s", url, exc.code)
+        return UNAVAILABLE, None
     except Exception as exc:
         log.debug("HTTP GET failed (%s): %s", url, exc)
-        return None
+        return UNAVAILABLE, None
+
+
+# ── DOI helpers ───────────────────────────────────────────────────────────
+
+_DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
+
+
+def _normalize_doi(text: str) -> str:
+    """Lower-case DOI without a resolver prefix; ``""`` when ``text`` is not shaped like a DOI."""
+    t = (text or "").strip().lower()
+    for prefix in ("https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/", "doi:"):
+        if t.startswith(prefix):
+            t = t[len(prefix):].strip()
+    return t if _DOI_RE.match(t) else ""
 
 
 # ── APA renderer ──────────────────────────────────────────────────────────
+
+def _first(value: Any, default: str = "") -> str:
+    """First element of a CSL list field, or the string itself; ``default`` when empty."""
+    if isinstance(value, (list, tuple)):
+        return str(value[0]) if value else default
+    return str(value) if value else default
+
 
 def _render_apa(csl: dict[str, Any]) -> str:
     authors_raw = csl.get("author", [])
@@ -93,19 +128,16 @@ def _render_apa(csl: dict[str, Any]) -> str:
     else:
         author_str = "Unknown"
 
-    issued = csl.get("issued", {})
-    date_parts = issued.get("date-parts", [[""]])
+    issued = csl.get("issued") or {}
+    date_parts = issued.get("date-parts") or [[""]]
     year = date_parts[0][0] if date_parts and date_parts[0] else ""
 
-    title_raw = csl.get("title", "Untitled")
-    title = title_raw[0] if isinstance(title_raw, list) else title_raw
+    title = _first(csl.get("title"), "Untitled")
+    journal = _first(csl.get("container-title"))
 
-    journal_raw = csl.get("container-title", "")
-    journal = journal_raw[0] if isinstance(journal_raw, list) else journal_raw
-
-    volume = csl.get("volume", "")
+    volume = csl.get("volume") or ""
     issue = f"({csl['issue']})" if csl.get("issue") else ""
-    page = csl.get("page", "")
+    page = csl.get("page") or ""
     doi = csl.get("DOI", "")
 
     apa = f"{author_str} ({year}). {title}."
@@ -123,120 +155,379 @@ def _render_apa(csl: dict[str, Any]) -> str:
 
 # ── Provider functions ─────────────────────────────────────────────────────
 
+#: A free-text hit below this title-word overlap is a candidate, never a citation (R-05).
+MIN_TITLE_SCORE = 0.6
+#: At or above this overlap a Crossref hit is labelled high confidence.
+HIGH_TITLE_SCORE = 0.8
+
+
+_WORD_RE = re.compile(r"[A-Za-z0-9]+")
+_YEAR_RE = re.compile(r"^(?:19|20)\d\d$")
+#: A query year may differ from the record's year by this much: online-first and print dates often straddle
+#: a year boundary (the Crossref ``issued`` date is one of them). Two or more years apart is a different paper.
+YEAR_TOLERANCE = 1
+
+
+def _stem(w: str) -> str:
+    return w[:-1] if len(w) > 4 and w.endswith("s") else w
+
+
+_SPECIAL = str.maketrans({"ø": "o", "Ø": "O", "ß": "ss", "đ": "d", "Đ": "D", "ł": "l", "Ł": "L", "æ": "ae", "Æ": "AE"})
+
+
+def _fold(text: str) -> str:
+    """Accent-free text: "Müller" -> "Muller", "Åström" -> "Astrom", so a name matches however it is typed."""
+    text = unicodedata.normalize("NFKD", str(text or "")).translate(_SPECIAL)
+    return "".join(c for c in text if not unicodedata.combining(c))
+
+
+def _family(name: str, is_family_field: bool = False) -> set[str]:
+    """Lower-case surname tokens of one author. Every part counts: "Smith-Jones" gives smith, jones and
+    smithjones; "van der Waal" gives van, der, waal. For a "Given Family" or "Family, Given" string only the family
+    part is used (the last words, or the words before the comma)."""
+    name = _fold(name).strip()
+    if not is_family_field:
+        if "," in name:
+            name = name.split(",", 1)[0]
+        else:
+            name = name.rsplit(None, 1)[-1] if name.split() else ""
+    parts = [p.lower() for p in _WORD_RE.findall(name)]
+    out = set(parts)
+    if len(parts) > 1:
+        out.add("".join(parts))
+    return out
+
+
+def _assess(query: str, title: Any, families: list[set[str]] | None, year: Any) -> dict[str, Any]:
+    """Judge one provider hit against a free-text query.
+
+    * Content words are the query words that count toward the title match: more than 3 letters, not a number.
+      Matching is on whole, accent-folded words ("flow" is not "overflow", "Muller" is "Müller").
+    * A capitalised query word absent from the title is accepted only as a CONFIRMED family name of the hit. Any other
+      such word, anywhere in the query ("flow duration curves Vogel Fennessey"), rejects the hit: a surname and a
+      place name ("Mississippi River") cannot be told apart cheaply, and a wrong DOI is worse than a missed match, so
+      the hit is listed as an unverified candidate. A four-digit query year MUST be within ``YEAR_TOLERANCE`` of the
+      record's year; a provider that gives no year leaves it unverified (returned, never `high`).
+    * Fewer than two scored content words never reach the match threshold; ``n_scored`` counts the words actually
+      scored.
+    * `high` needs: title score >= HIGH_TITLE_SCORE, 3+ scored words, authors and year verified where the query gave
+      them, and, when the query gave neither, a near-full-title match (the query covers >= 0.8 of the title's
+      content words AND the title has at least 5), so a short topic phrase is never `high`.
+    """
+    t = title[0] if isinstance(title, list) and title else (title if isinstance(title, str) else "")
+    t = _fold(t)
+    query = _fold(query)
+    title_words = {_stem(w.lower()) for w in _WORD_RE.findall(t)}
+    title_content = {_stem(w.lower()) for w in _WORD_RE.findall(t) if len(w) > 3 and not w.isdigit()}
+    fam_all: set[str] = set().union(*families) if families else set()
+    content, names, years, foreign = [], [], [], []
+    for w in _WORD_RE.findall(query):
+        if _YEAR_RE.match(w):
+            years.append(int(w))
+        elif len(w) <= 3 or w.isdigit():
+            continue
+        elif w[0].isupper() and _stem(w.lower()) not in title_words:
+            # A capitalised word that is not in the title is a surname or a place/proper noun we cannot tell apart
+            # cheaply. It counts only as a confirmed family name of the hit; anything else rejects the hit.
+            (names if w.lower() in fam_all else foreign).append(w.lower())
+        else:
+            content.append(_stem(w.lower()))
+    matched = [w for w in content if w in title_words]
+    score = len(matched) / len(content) if content else 0.0
+    if len(content) < 2:
+        score = min(score, MIN_TITLE_SCORE - 0.1)
+    out: dict[str, Any] = {"score": score, "n_scored": len(content), "reject": None, "unverified": []}
+    if foreign:
+        out["reject"] = (f"{', '.join(foreign)} is neither in the title nor a family name among the record's "
+                         + ("authors" if fam_all else "authors (the provider gave none)"))
+    if years and not out["reject"]:
+        try:
+            ry = int(year) if year not in (None, "") else None
+        except (TypeError, ValueError):
+            ry = None
+        if ry is None:
+            out["unverified"].append("the provider gave no year to check the query year against")
+        elif any(abs(y - ry) > YEAR_TOLERANCE for y in years):
+            out["reject"] = f"year {', '.join(map(str, years))} differs from the record's year {ry}"
+    covers = len(set(matched) & title_content) / len(title_content) if title_content else 0.0
+    out["high"] = bool(
+        not out["reject"] and not out["unverified"] and score >= HIGH_TITLE_SCORE and len(content) >= 3
+        and (bool(names) or bool(years) or (covers >= 0.8 and len(title_content) >= 5)))
+    return out
+
+
 def _title_match_score(titles: list[str] | str | Any, query: str) -> float:
-    if not titles:
-        return 0.0
-    title = (titles[0] if isinstance(titles, list) else str(titles)).lower()
-    words = [w for w in query.lower().split() if len(w) > 3]
-    if not words:
-        return 0.0
-    return sum(1 for w in words if w in title) / len(words)
+    return _assess(query, titles, None, None)["score"]
 
 
-def _from_crossref(query: str) -> dict[str, Any] | None:
-    url = (
-        f"https://api.crossref.org/works"
-        f"?query={urllib.parse.quote(query)}"
-        f"&rows=3&mailto=gh9690%40myamu.ac.in"
-    )
-    data = _http_get(url)
-    if not data:
-        return None
-    items = data.get("message", {}).get("items", [])
-    if not items:
-        return None
-    best = max(items, key=lambda x: _title_match_score(x.get("title"), query))
-    doi = best.get("DOI", "").lower()
-    if not doi:
-        return None
-    score = _title_match_score(best.get("title"), query)
+def _entry(doi: str, csl: dict[str, Any], source: str, confidence: str, match_note: str = "") -> dict[str, Any]:
     return {
-        "doi": doi,
-        "cslJson": best,
-        "formattedApa": _render_apa(best),
-        "source": "crossref",
-        "confidence": "high" if score > 0.5 else "medium",
-        "cachedAtMs": int(time.time() * 1000),
-    }
-
-
-def _from_semantic_scholar(query: str) -> dict[str, Any] | None:
-    url = (
-        f"https://api.semanticscholar.org/graph/v1/paper/search"
-        f"?query={urllib.parse.quote(query)}&limit=3"
-        f"&fields=title,authors,year,externalIds,journal,volume,pages"
-    )
-    data = _http_get(url)
-    if not data:
-        return None
-    items = data.get("data", [])
-    if not items:
-        return None
-    best = items[0]
-    ext = best.get("externalIds") or {}
-    doi = (ext.get("DOI") or "").lower()
-    if not doi:
-        return None
-    csl: dict[str, Any] = {
-        "DOI": doi,
-        "title": [best.get("title", "")],
-        "author": [
-            {"family": (n := a.get("name", "")).split()[-1], "given": " ".join(n.split()[:-1])}
-            for a in best.get("authors", [])
-        ],
-        "issued": {"date-parts": [[best["year"]]]} if best.get("year") else {},
-        "container-title": [best["journal"]["name"]] if best.get("journal") else [],
-        "volume": (best.get("journal") or {}).get("volume"),
-        "page": (best.get("journal") or {}).get("pages"),
-    }
-    return {
+        **({"matchNote": match_note} if match_note else {}),
         "doi": doi,
         "cslJson": csl,
         "formattedApa": _render_apa(csl),
-        "source": "semantic-scholar",
-        "confidence": "medium",
+        "source": source,
+        "confidence": confidence,
         "cachedAtMs": int(time.time() * 1000),
     }
 
 
-def _from_datacite(query: str) -> dict[str, Any] | None:
-    url = f"https://api.datacite.org/dois?query={urllib.parse.quote(query)}&page[size]=3"
-    data = _http_get(url)
-    if not data:
-        return None
-    items = data.get("data", [])
-    if not items:
-        return None
-    best = items[0]
-    attrs = best.get("attributes") or {}
-    doi = (attrs.get("doi") or best.get("id") or "").lower()
-    if not doi:
-        return None
-    csl: dict[str, Any] = {
+def _semantic_scholar_csl(item: dict[str, Any], doi: str) -> dict[str, Any]:
+    journal = item.get("journal") or {}
+    return {
         "DOI": doi,
-        "title": [attrs["titles"][0]["title"]] if attrs.get("titles") else [],
+        "title": [item.get("title") or ""],
         "author": [
-            {
-                "family": c.get("familyName") or c.get("name", ""),
-                "given": c.get("givenName", ""),
-            }
-            for c in attrs.get("creators", [])
+            {"family": (n.split() or [""])[-1], "given": " ".join(n.split()[:-1])}
+            for n in ((a.get("name") or "") for a in item.get("authors") or [])
+        ],
+        "issued": {"date-parts": [[item["year"]]]} if item.get("year") else {},
+        "container-title": [journal["name"]] if journal.get("name") else [],
+        "volume": journal.get("volume"),
+        "page": journal.get("pages"),
+    }
+
+
+def _datacite_csl(attrs: dict[str, Any], doi: str) -> dict[str, Any]:
+    titles = attrs.get("titles") or []
+    return {
+        "DOI": doi,
+        "title": [titles[0].get("title", "")] if titles else [],
+        "author": [
+            {"family": c.get("familyName") or c.get("name", ""), "given": c.get("givenName", "")}
+            for c in attrs.get("creators") or []
         ],
         "issued": {"date-parts": [[attrs["publicationYear"]]]} if attrs.get("publicationYear") else {},
         "publisher": attrs.get("publisher"),
         "type": "dataset",
     }
+
+
+def _crossref_by_doi(doi: str) -> tuple[str, dict[str, Any] | None]:
+    url = f"https://api.crossref.org/works/{urllib.parse.quote(doi, safe='/')}?mailto=gh9690%40myamu.ac.in"
+    status, data = _http_fetch(url)
+    if status != "ok":
+        return status, None
+    item = (data or {}).get("message") or {}
+    got = _normalize_doi(item.get("DOI", ""))
+    return (FOUND, _entry(doi, item, "crossref", "high")) if got == doi else (NOT_FOUND, None)
+
+
+def _datacite_by_doi(doi: str) -> tuple[str, dict[str, Any] | None]:
+    status, data = _http_fetch(f"https://api.datacite.org/dois/{urllib.parse.quote(doi, safe='/')}")
+    if status != "ok":
+        return status, None
+    row = (data or {}).get("data") or {}
+    attrs = row.get("attributes") or {}
+    got = _normalize_doi(attrs.get("doi") or row.get("id") or "")
+    return (FOUND, _entry(doi, _datacite_csl(attrs, doi), "datacite", "high")) if got == doi else (NOT_FOUND, None)
+
+
+def _semantic_scholar_by_doi(doi: str) -> tuple[str, dict[str, Any] | None]:
+    url = (f"https://api.semanticscholar.org/graph/v1/paper/DOI:{urllib.parse.quote(doi, safe='/')}"
+           f"?fields=title,authors,year,externalIds,journal")
+    status, data = _http_fetch(url)
+    if status != "ok":
+        return status, None
+    got = _normalize_doi(((data or {}).get("externalIds") or {}).get("DOI") or "")
+    return (FOUND, _entry(doi, _semantic_scholar_csl(data, doi), "semantic-scholar", "high")) \
+        if got == doi else (NOT_FOUND, None)
+
+
+def _crossref_year(it: dict[str, Any]) -> Any:
+    for key in ("issued", "published-print", "published-online", "published"):
+        parts = (it.get(key) or {}).get("date-parts") or [[None]]
+        if parts and parts[0] and parts[0][0]:
+            return parts[0][0]
+    return None
+
+
+def _search_crossref(query: str) -> tuple[str, dict[str, Any] | None, list[dict]]:
+    url = (f"https://api.crossref.org/works?query={urllib.parse.quote(query)}"
+           f"&rows=3&mailto=gh9690%40myamu.ac.in")
+    status, data = _http_fetch(url)
+    if status != "ok":
+        return status, None, []
+    cands = []
+    for it in ((data or {}).get("message") or {}).get("items") or []:
+        doi = _normalize_doi(it.get("DOI", ""))
+        if doi:
+            fams = [_family(a["family"], True) if a.get("family") else _family(a.get("name") or "")
+                    for a in it.get("author") or [] if isinstance(a, dict)]
+            cands.append((_assess(query, it.get("title"), fams, _crossref_year(it)), doi, it))
+    return _pick(cands, "crossref", True, lambda it, doi: it)
+
+
+def _search_semantic_scholar(query: str) -> tuple[str, dict[str, Any] | None, list[dict]]:
+    url = (f"https://api.semanticscholar.org/graph/v1/paper/search?query={urllib.parse.quote(query)}&limit=3"
+           f"&fields=title,authors,year,externalIds,journal,volume,pages")
+    status, data = _http_fetch(url)
+    if status != "ok":
+        return status, None, []
+    cands = []
+    for it in (data or {}).get("data") or []:
+        doi = _normalize_doi(((it.get("externalIds") or {}).get("DOI")) or "")
+        if doi:
+            fams = [_family(a.get("name") or "") for a in it.get("authors") or [] if isinstance(a, dict)]
+            cands.append((_assess(query, it.get("title"), fams, it.get("year")), doi, it))
+    return _pick(cands, "semantic-scholar", False, _semantic_scholar_csl)
+
+
+def _search_datacite(query: str) -> tuple[str, dict[str, Any] | None, list[dict]]:
+    status, data = _http_fetch(f"https://api.datacite.org/dois?query={urllib.parse.quote(query)}&page[size]=3")
+    if status != "ok":
+        return status, None, []
+    cands = []
+    for it in (data or {}).get("data") or []:
+        attrs = it.get("attributes") or {}
+        doi = _normalize_doi(attrs.get("doi") or it.get("id") or "")
+        titles = attrs.get("titles") or []
+        if doi:
+            fams = [_family(c["familyName"], True) if c.get("familyName") else _family(c.get("name") or "")
+                    for c in attrs.get("creators") or [] if isinstance(c, dict)]
+            cands.append((_assess(query, [titles[0].get("title", "")] if titles else [], fams,
+                                  attrs.get("publicationYear")), doi, attrs))
+    return _pick(cands, "datacite", False, _datacite_csl, base="low")
+
+
+def _pick(cands, source, may_be_high, csl_of, base="medium"):
+    """Best non-rejected hit at or above ``MIN_TITLE_SCORE`` -> found; every other hit is a listed candidate."""
+    if not cands:
+        return NOT_FOUND, None, []
+    listed = [{"doi": d, "title_match": round(a["score"], 2), "source": source,
+               **({"rejected": a["reject"]} if a["reject"] else {})}
+              for a, d, _ in sorted(cands, key=lambda c: -c[0]["score"])]
+    ok = [c for c in cands if not c[0]["reject"] and c[0]["score"] >= MIN_TITLE_SCORE]
+    if not ok:
+        return NOT_FOUND, None, listed
+    a, doi, raw = max(ok, key=lambda c: c[0]["score"])
+    csl = csl_of(raw, doi)
+    csl.setdefault("DOI", doi)
+    confidence = "high" if (may_be_high and a["high"]) else base
+    note = ""
+    if confidence != "high" and may_be_high:
+        note = ("Medium confidence: " + ("; ".join(a["unverified"]) if a["unverified"] else
+                "a topic-only or partial title match is not enough for high") + ". Verify before citing.")
+    return FOUND, _entry(doi, csl, source, confidence, note), listed
+
+
+_PROVIDERS = ("crossref", "semantic-scholar", "datacite")
+_DOI_PROVIDERS = {"crossref": _crossref_by_doi, "datacite": _datacite_by_doi,
+                  "semantic-scholar": _semantic_scholar_by_doi}
+_SEARCH_PROVIDERS = {"crossref": _search_crossref, "semantic-scholar": _search_semantic_scholar,
+                     "datacite": _search_datacite}
+
+
+def _unavailable(query: str, providers: dict[str, str]) -> dict[str, Any]:
+    down = sorted(n for n, st in providers.items() if st == UNAVAILABLE)
     return {
-        "doi": doi,
-        "cslJson": csl,
-        "formattedApa": _render_apa(csl),
-        "source": "datacite",
-        "confidence": "low",
-        "cachedAtMs": int(time.time() * 1000),
+        "error": True,
+        "code": "CITATION_LOOKUP_UNAVAILABLE",
+        "unavailable": True,
+        "not_found": False,
+        "query": query,
+        "providers": providers,
+        "message": (f"Could not reach {', '.join(down)}; no provider that answered knew this citation. "
+                    "This does NOT mean no citation exists."),
+        "recovery": ("Retry later or from a network that can reach the providers. Do not write 'No peer-reviewed "
+                     "citation found' on this basis, and never invent a citation."),
+        "next_tools": ["lookup_citation", "get_citation_by_doi"],
     }
 
 
+def _not_found(query: str, providers: dict[str, str], candidates: list[dict] | None = None) -> dict[str, Any]:
+    if candidates:
+        return {
+            "not_confirmed": True,
+            "not_found": False,
+            "query": query,
+            "providers": providers,
+            "candidates": candidates[:5],
+            "_note": (
+                "Not confirmed: no hit matched the query well enough to cite. `candidates` are the closest "
+                "unverified hits; check them (or refine the query with title words), and cite one only after "
+                "lookup_citation/get_citation_by_doi verifies it. This does NOT show that no citation exists, "
+                "so do not write 'No peer-reviewed citation found' on this basis. Never invent a citation."),
+        }
+    return {
+        "not_found": True,
+        "query": query,
+        "providers": providers,
+        "_note": (
+            "Every provider answered and returned nothing for this query. "
+            "NEVER invent a citation: write 'No peer-reviewed citation found' in the module."),
+    }
+
+
+def _resolve_exact_doi(doi: str, hint: str) -> dict[str, Any]:
+    """Resolve ``doi`` through the providers' DOI endpoints; the returned DOI must equal the one asked for."""
+    states: dict[str, str] = {}
+    for name in (_PROVIDERS if hint == "any" else (hint,)):
+        status, result = _DOI_PROVIDERS[name](doi)
+        states[name] = status
+        if status == FOUND and result:
+            return {"found": result}
+    if UNAVAILABLE in states.values():
+        return {"response": _unavailable(doi, states)}
+    return {"response": _not_found(doi, states)}
+
+
+def _resolve_search(query: str, hint: str) -> dict[str, Any]:
+    states: dict[str, str] = {}
+    candidates: list[dict] = []
+    for name in (_PROVIDERS if hint == "any" else (hint,)):
+        status, result, listed = _SEARCH_PROVIDERS[name](query)
+        states[name] = status
+        candidates += listed
+        if status == FOUND and result:
+            return {"found": result}
+    if UNAVAILABLE in states.values():
+        resp = _unavailable(query, states)
+        if candidates:
+            resp["candidates"] = candidates[:5]
+        return {"response": resp}
+    return {"response": _not_found(query, states, candidates)}
+
+
 # ── MCP tools ──────────────────────────────────────────────────────────────
+
+def _cached_response(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "doi": entry["doi"],
+        "formatted_apa": entry["formattedApa"],
+        "csl_json": entry["cslJson"],
+        "source": entry["source"],
+        "confidence": entry["confidence"],
+        "from_cache": True,
+        **({"match_note": entry["matchNote"]} if entry.get("matchNote") else {}),
+    }
+
+
+def _fresh_response(result: dict[str, Any]) -> dict[str, Any]:
+    _cache_put(result)
+    return {
+        "doi": result["doi"],
+        "formatted_apa": result["formattedApa"],
+        "csl_json": result["cslJson"],
+        "source": result["source"],
+        "confidence": result["confidence"],
+        "from_cache": False,
+        **({"match_note": result["matchNote"]} if result.get("matchNote") else {}),
+    }
+
+
+def _bad_hint(source_hint: str | None) -> dict | None:
+    hint = (source_hint or "any").strip().lower()
+    if hint in ("any", *_PROVIDERS):
+        return None
+    return {
+        "error": True,
+        "code": "INVALID_ARGUMENT",
+        "message": f"source_hint={source_hint!r} is not a supported provider.",
+        "recovery": "Use one of: crossref, semantic-scholar, datacite, or omit it to try all.",
+        "next_tools": ["lookup_citation"],
+    }
+
 
 @mcp.tool()
 def lookup_citation(
@@ -248,64 +539,37 @@ def lookup_citation(
     Look up a citation (free text or DOI). Cascade: CrossRef → Semantic
     Scholar → DataCite. Cached at ~/.aihydro/citations/ (30 day TTL).
 
-    ALWAYS call before writing any reference. If not_found, write
-    "No peer-reviewed citation found" — NEVER invent a DOI/author/year.
+    ALWAYS call before writing any reference. Three outcomes, never conflated:
+    a verified citation; `not_found` (every provider answered and none matched
+    well enough: write "No peer-reviewed citation found", NEVER invent a
+    DOI/author/year); or `unavailable` (a provider could not be reached: this
+    says nothing about whether the citation exists, so retry, do not write "not
+    found"). A DOI query is resolved at the DOI endpoint and the returned DOI
+    must equal the one asked for; a free-text hit needs enough title-word
+    overlap, and closer misses come back as unverified `candidates`.
     Use the returned formatted_apa and doi exactly as returned.
     source_hint: crossref | semantic-scholar | datacite (default: cascade).
     """
     try:
         if not query.strip():
             return {"error": True, "message": "query cannot be empty"}
+        bad = _bad_hint(source_hint)
+        if bad:
+            return bad
+        hint = (source_hint or "any").strip().lower()
 
-        # Check cache first for DOI queries
-        doi_pattern = query.strip().lower().replace("https://doi.org/", "")
-        if doi_pattern.startswith("10.") and not force_refresh:
-            cached = _cache_get(doi_pattern)
-            if cached:
-                return {
-                    "doi": cached["doi"],
-                    "formatted_apa": cached["formattedApa"],
-                    "csl_json": cached["cslJson"],
-                    "source": cached["source"],
-                    "confidence": cached["confidence"],
-                    "from_cache": True,
-                }
-
-        # Cascade providers
-        result: dict[str, Any] | None = None
-        hint = (source_hint or "any").lower()
-
-        if not result and hint not in ("semantic-scholar", "datacite"):
-            result = _from_crossref(query)
-        if not result and hint not in ("crossref", "datacite"):
-            result = _from_semantic_scholar(query)
-        if not result and hint not in ("crossref", "semantic-scholar"):
-            result = _from_datacite(query)
-        # Exhaustive fallback for "any"
-        if not result and hint == "any":
-            result = _from_semantic_scholar(query)
-            if not result:
-                result = _from_datacite(query)
-
-        if not result:
-            return {
-                "not_found": True,
-                "query": query,
-                "_note": (
-                    "No provider returned a match. "
-                    "NEVER invent a citation — write 'No peer-reviewed citation found' in the module."
-                ),
-            }
-
-        _cache_put(result)
-        return {
-            "doi": result["doi"],
-            "formatted_apa": result["formattedApa"],
-            "csl_json": result["cslJson"],
-            "source": result["source"],
-            "confidence": result["confidence"],
-            "from_cache": False,
-        }
+        doi = _normalize_doi(query)
+        if doi:
+            if not force_refresh:
+                cached = _cache_get(doi)
+                if cached and _normalize_doi(cached.get("doi", "")) == doi:
+                    return _cached_response(cached)
+            out = _resolve_exact_doi(doi, hint)
+        else:
+            out = _resolve_search(query, hint)
+        if "found" in out:
+            return _fresh_response(out["found"])
+        return out["response"]
 
     except Exception as e:
         log.error("lookup_citation failed: %s", e)
@@ -316,9 +580,23 @@ def lookup_citation(
 def get_citation_by_doi(doi: str, force_refresh: bool = False) -> dict:
     """
     Resolve a citation by exact DOI (uses cache when fresh). Same schema
-    as lookup_citation.
+    as lookup_citation. The DOI endpoint is used, never a search, and the
+    DOI the provider returns must equal the one asked for. Network failure is
+    `unavailable`, not `not_found`. A string that is not a DOI is refused.
     """
-    return lookup_citation(doi, force_refresh=force_refresh)
+    try:
+        if not _normalize_doi(doi):
+            return {
+                "error": True,
+                "code": "INVALID_ARGUMENT",
+                "message": f"{str(doi)[:80]!r} is not a DOI (expected 10.<registrant>/<suffix>).",
+                "recovery": "Pass the bare DOI, e.g. 10.1061/(ASCE)0733-9496(1994)120:4(485), or use "
+                            "lookup_citation for a title or author search.",
+                "next_tools": ["lookup_citation"],
+            }
+        return lookup_citation(doi, force_refresh=force_refresh)
+    except Exception as e:
+        return _tool_error_to_dict(e)
 
 
 @mcp.tool()

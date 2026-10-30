@@ -49,7 +49,7 @@ from typing import Any
 
 from ai_hydro.mcp.app import mcp
 from ai_hydro.session import HydroSession
-from ai_hydro.mcp.helpers import _tool_error_to_dict
+from ai_hydro.mcp.helpers import _tool_error_to_dict, resolve_existing_study
 from aihydro_core.primitives.hashing import content_hash, param_hash
 
 log = logging.getLogger("ai_hydro.mcp.experiments")
@@ -243,6 +243,7 @@ def define_experiment(
                 f"be filled. Valid metrics: {list(_TOOL_OUTPUT_KEYS[tool])}."
             )
 
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
 
         phash = param_hash(params)
@@ -338,6 +339,7 @@ def run_experiment(
         no_metrics (feature_id → reason)
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         exps = _load_experiments(session)
 
@@ -533,6 +535,7 @@ def get_experiment_table(
         aggregate_stats (mean/min/max per metric across rows with run ids)
     """
     try:
+        session_id = resolve_existing_study(session_id)
         session = HydroSession.load(session_id)
         exps = _load_experiments(session)
 

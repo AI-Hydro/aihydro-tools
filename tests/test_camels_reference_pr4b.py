@@ -89,15 +89,15 @@ def _pyproject_text():
 
 
 def test_package_data_ships_the_reference_directory():
-    assert '"ai_hydro.knowledge" = ["library_refs/*.json", "reference/camels_us_v1_2/*"]' in _pyproject_text()
+    assert '"ai_hydro.knowledge" = ["*.yaml", "*.json", "library_refs/*.json", "reference/camels_us_v1_2/*"]' in _pyproject_text()
 
 
 # ------------------------------------------------------------------ pins
 
-def test_sibling_pins_are_the_wave3_minimums():
+def test_sibling_pins_are_the_t1p_minimums():
     text = _pyproject_text()
-    for pin in ('"aihydro-core[contracts]>=0.2.11,<0.3"', '"aihydro-data>=0.2.5,<0.3"',
-                '"aihydro-watershed>=0.2.1,<0.3"'):
+    for pin in ('"aihydro-core[contracts]>=0.2.11,<0.3"', '"aihydro-data>=0.2.6,<0.3"',
+                '"aihydro-watershed>=0.3,<0.4"'):
         assert pin in text, pin
 
 

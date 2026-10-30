@@ -23,6 +23,7 @@ def isolated_ledger(tmp_path, monkeypatch):
 def test_claims_ledger():
     session_id = "test-ledger-claims"
     session = HydroSession(session_id)
+    session.save()      # tools no longer create a study for an unknown id (R-01)
     
     res = add_claim(
         session_id=session_id,
@@ -44,6 +45,7 @@ def test_claims_ledger():
 def test_promotion_gate():
     session_id = "test-promotion"
     session = HydroSession(session_id)
+    session.save()      # tools no longer create a study for an unknown id (R-01)
     
     add_claim(
         session_id=session_id,
@@ -283,6 +285,7 @@ def test_add_claim_migrates_legacy_evidence_to_evidence_spans():
 def test_assumptions_ledger():
     session_id = "test-ledger-assumptions"
     session = HydroSession(session_id)
+    session.save()      # tools no longer create a study for an unknown id (R-01)
     
     res = add_assumption(
         session_id=session_id,
@@ -340,6 +343,7 @@ def test_promotion_emits_an_invalidation_event_only_on_success(monkeypatch):
                         lambda **kw: events.append(kw) or True)
     sid = "test-promotion-event"
     session = HydroSession(sid)
+    session.save()      # tools no longer create a study for an unknown id (R-01)
     session.set("_run_log", {"r1": {"run_id": "r1", "session_id": sid,
         "key_outputs": {"kge": 0.8, "_uncertainty": {"kge": {
             "value": 0.8, "ci_low": 0.7, "ci_high": 0.9, "ci_level": 0.95,

@@ -614,3 +614,31 @@ def test_latest_run_per_tool_is_what_counts():
              _row("r2", {"bfi": 0.445}, tool="a", ts="2026-10-01T00:00:00+00:00"),
              _row("r3", {"baseflow_index": 0.445}, tool="b"))
     assert find_metric_conflicts(s) == []
+
+
+# ---- R-02: add_claim runs the comparison gates it documents (comparison_ref set before the gate)
+
+@pytest.mark.parametrize("status", ["weakly_supported", "supported"])
+def test_add_claim_refuses_a_comparison_claim_the_producer_says_cannot_be_claimed(status):
+    _seed(_rr_run(None, comparison=NOT_CLAIMABLE))
+    res = _claim(status, claim_type="methodological", statement=DIFF_CLAIM, evidence_spans=_span("r_rr", "runoff_ratio"),
+                 comparison_ref="CAMELS-US v1.2")
+    assert res["error"] == "comparison_gate", res
+    assert "cmp" not in HydroSession.load(SID).claims and "c1" not in HydroSession.load(SID).claims   # nothing stored
+
+
+def test_add_claim_refuses_a_comparison_claim_whose_ci_excludes_forcing():
+    _seed(_rr_run(EXCLUDES_FORCING))
+    res = _claim("weakly_supported", claim_type="methodological", statement=PLAIN_CLAIM,
+                 evidence_spans=_span("r_rr", "runoff_ratio"), comparison_ref="CAMELS-US v1.2")
+    assert res["error"] == "forcing_scope_gate", res
+
+
+def test_add_claim_without_comparison_ref_is_still_accepted_and_the_ref_is_stored_when_set():
+    _seed(_rr_run(None, comparison=NOT_CLAIMABLE))
+    assert _claim("weakly_supported", claim_type="methodological", statement=PLAIN_CLAIM,
+                  evidence_spans=_span("r_rr", "runoff_ratio"))["status"] == "recorded"
+    assert HydroSession.load(SID).claims["c1"]["comparison_ref"] is None
+    assert _claim("proposed", claim_id="c2", evidence_spans=_span("r_rr", "runoff_ratio"),
+                  comparison_ref="  CAMELS-US v1.2 ")["status"] == "recorded"
+    assert HydroSession.load(SID).claims["c2"]["comparison_ref"] == "CAMELS-US v1.2"

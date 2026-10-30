@@ -72,7 +72,7 @@ def serve(env, monkeypatch, mcp_server):
 
         monkeypatch.setattr(pipeline, "fetch", fake_fetch)
         err, body, _ = call(mcp_server, "data_fetch", {
-            "variable": variable, "geometry": [41.0, -71.0], "start": str(dates[0])[:10],
+            "variable": variable, "geometry": {"lat": 41.0, "lon": -71.0}, "start": str(dates[0])[:10],
             "end": str(dates[-1])[:10], "cache": cache, "session_id": SID})
         assert not err and "error" not in body, body
         return body
@@ -130,7 +130,7 @@ def test_data_fetch_accepts_session_id_and_without_a_session_returns_unrecorded(
     import shutil
     shutil.rmtree(store._SESSIONS_DIR, ignore_errors=True)
     err, body, _ = call(mcp_server, "data_fetch", {
-        "variable": "streamflow", "geometry": [41.0, -71.0], "start": "2020-01-01", "end": "2020-01-01"})
+        "variable": "streamflow", "geometry": {"lat": 41.0, "lon": -71.0}, "start": "2020-01-01", "end": "2020-01-01"})
     assert not err and "_run_id" not in body and body["variable"] == "streamflow"
 
 
@@ -540,7 +540,13 @@ def test_data_fetch_wrapper_signature_is_a_superset_of_aihydro_data():
     missing = [n for n in theirs if n not in ours]
     assert not missing, f"aihydro-data's data_fetch gained parameters the wrapper hides: {missing}"
     for n, p in theirs.items():
-        assert ours[n].default == p.default, n
+        if n == "geometry":      # the one deliberate difference: optional here (gauge-first), required there
+            assert ours[n].default is None and p.default is inspect.Parameter.empty
+        else:
+            assert ours[n].default == p.default, n
+        if n == "outlet":        # also takes {"lat","lon"} (converted at the boundary); the tuple form is unchanged
+            assert str(ours[n].annotation).startswith("tuple[float, float] | dict[str, float]")
+            continue
         assert ours[n].annotation == p.annotation, n
     # session_id is ours; gauge_id is ours until aihydro-data's own MCP data_fetch exposes it
     # (its pipeline fetch() takes it; the wrapper forwards it).

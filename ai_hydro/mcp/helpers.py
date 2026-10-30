@@ -56,6 +56,15 @@ class SessionResolutionError(RuntimeError):
         return d
 
 
+class StudyNotFoundError(SessionResolutionError):
+    """The named (or bound) study does not exist. Nothing was created or written."""
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d["code"] = "STUDY_NOT_FOUND"
+        return d
+
+
 def _read_active_workspace_file() -> str | None:
     """
     Read ~/.aihydro/active_workspace.json written by the VS Code extension on
@@ -159,6 +168,7 @@ def _resolve_session(
     auto_create_hint: str | None = None,
     allow_auto_create: bool = True,
     allow_recent_fallback: bool = True,
+    must_exist: bool = False,
 ) -> str:
     """
     Resolve which study (HydroSession) a tool call should operate on.
@@ -202,6 +212,12 @@ def _resolve_session(
         Set to ``False`` to forbid every inferred resolution (steps 5 and 5b), as the audit does.
         An evaluation run forbids them for every tool.  When the recent-study guess
         fires, the result carries a top-level ``session_warning``.
+    must_exist:
+        Set to ``True`` for every tool that records into or reads from a study without being the
+        one that creates it. A resolved id with no saved session raises ``StudyNotFoundError``
+        (``STUDY_NOT_FOUND``, with candidates) instead of letting ``HydroSession.load`` hand back an
+        empty session that the next ``save()`` would turn into a new study (R-01). Prefer
+        ``resolve_existing_study``.
 
     Returns
     -------
@@ -214,8 +230,38 @@ def _resolve_session(
     return _resolve_session_with_rule(
         session_id, chat_id,
         auto_create_hint=auto_create_hint, allow_auto_create=allow_auto_create,
-        allow_recent_fallback=allow_recent_fallback,
+        allow_recent_fallback=allow_recent_fallback, must_exist=must_exist,
     )[0]
+
+
+def resolve_existing_study(session_id: str | None, chat_id: str | None = None) -> str:
+    """THE resolver for a tool that writes into or reads from a study it does not create (M1).
+
+    Same chain as ``_resolve_session`` (explicit id, request context, chat binding, project default),
+    with creation closed: an id naming no saved study is a ``STUDY_NOT_FOUND`` refusal carrying
+    candidates, never an empty study. Only ``start_session`` and the delineation tools create one.
+    Call it inside the tool's ``try`` so the refusal reaches the caller as a structured error.
+    """
+    return _resolve_session(session_id, chat_id, allow_auto_create=False, must_exist=True)
+
+
+def _study_not_found(sid: str) -> StudyNotFoundError:
+    try:
+        from ai_hydro.session.study_index import candidates_for
+
+        cands, _scope = candidates_for(_call_workspace(), limit=5)
+    except Exception as exc:
+        log.debug("candidate listing failed: %s", exc)
+        cands = []
+    return StudyNotFoundError(
+        f"No study {str(sid)[:80]!r} exists; nothing was recorded or created. This is not an empty study.",
+        recovery=("Check the id (a typo is the usual cause) or pick one of the candidates. "
+                  "A new study is created only explicitly: start_session, delineate_watershed or "
+                  "delineate_watershed_from_point."),
+        next_tools=["aihydro_chat_status", "aihydro_rebind_chat", "start_session",
+                    "delineate_watershed", "delineate_watershed_from_point"],
+        candidates=cands,
+    )
 
 
 def _resolve_session_with_rule(
@@ -225,6 +271,7 @@ def _resolve_session_with_rule(
     auto_create_hint: str | None = None,
     allow_auto_create: bool = True,
     allow_recent_fallback: bool = True,
+    must_exist: bool = False,
 ) -> tuple[str, str]:
     """``(session_id, rule)``; see ``_resolve_session`` for the chain."""
     sid, rule = _resolve_session_impl(
@@ -232,6 +279,11 @@ def _resolve_session_with_rule(
         auto_create_hint=auto_create_hint, allow_auto_create=allow_auto_create,
         allow_recent_fallback=allow_recent_fallback,
     )
+    if must_exist:
+        from ai_hydro.session.store import HydroSession
+
+        if not HydroSession.exists(sid):
+            raise _study_not_found(sid)
     try:
         from ai_hydro.session.run_records import note_session_resolution
 
@@ -1084,7 +1136,8 @@ def _legacy_data_shim(
         aihydro-data variable name (e.g. ``"streamflow"``, ``"precipitation"``).
     geometry : Any
         Geometry accepted by aihydro-data: shapely, GeoDataFrame, GeoJSON dict,
-        ``(lat, lon)`` tuple, bounding-box 4-tuple, or a USGS gauge-ID string.
+        ``{"lat", "lon"}`` dict, bounding-box, or a USGS gauge-ID string. The MCP tools refuse a bare
+        coordinate pair (no axis order); this internal shim does not check, callers must pass an unambiguous form.
     start, end : str
         ISO-8601 date strings.  Pass ``""`` for static products.
     **kw
@@ -1110,12 +1163,28 @@ def _legacy_data_shim(
 
 
 def _strip_forcing_arrays(data: dict) -> dict:
-    """Remove large daily arrays from forcing data, keeping per-variable means."""
+    """Remove large daily arrays from forcing data, keeping per-variable means.
+
+    Only DATE and NUMERIC arrays are dropped. A list of strings or records is metadata
+    (``variables``, ``_warnings``, ...) and is kept: dropping it silently
+    deleted the warnings that say a variable failed. Means are over the FINITE
+    days (a missing day is not zero); ``variable_coverage`` says how many days
+    each mean rests on.
+    """
+    import math
     compact: dict = {}
     var_means: dict = {}
+    coverage: dict = {}
     for k, v in data.items():
         if isinstance(v, list):
-            valid = [x for x in v if x is not None and isinstance(x, (int, float))]
+            if k != "dates" and v and all(isinstance(x, (str, dict)) for x in v):
+                compact[k] = v                       # variables, _warnings, ...
+                continue
+            valid = [x for x in v if isinstance(x, (int, float)) and not isinstance(x, bool)
+                     and math.isfinite(x)]
+            if k != "dates" and v:
+                coverage[k] = {"n_days": len(v), "n_finite": len(valid),
+                               "n_missing": len(v) - len(valid)}
             if valid:
                 var_means[f"{k}_mean"] = round(sum(valid) / len(valid), 4)
         else:
@@ -1123,4 +1192,6 @@ def _strip_forcing_arrays(data: dict) -> dict:
     compact.update(var_means)
     if var_means:
         compact["n_variables"] = len(var_means)
+    if coverage:
+        compact["variable_coverage"] = coverage
     return compact

@@ -256,8 +256,10 @@ def build_defensibility_report(
     claims = session.claims or {}
     promotion_rows: list[dict] = []
     n_claims = len(claims)
+    # Confirmatory = names THIS study's locked plan AND that plan was not locked after its analyses ran (R-04).
+    from ai_hydro.claims import prereg as _prereg
     n_confirmatory_claims = sum(
-        1 for c in claims.values() if c.get("prereg_id")
+        1 for c in claims.values() if _prereg.prereg_label(session, c) == "confirmatory"
     )
 
     if claims:
@@ -274,7 +276,12 @@ def build_defensibility_report(
             evidence_spans = c.get("evidence_spans", c.get("evidenceSpans", []))
             n_ev = len(evidence_spans) if isinstance(evidence_spans, list) else 0
             n_lim = len(c.get("limitations", []))
-            prereg_cell = f"✅ confirmatory" if c.get("prereg_id") else "○ exploratory"
+            prereg_cell = {
+                "confirmatory": "✅ confirmatory",
+                "post_hoc_plan": "○ exploratory (plan locked after its analyses ran)",
+                "unverified_prereg_id": "○ exploratory (prereg_id names no locked plan)",
+                "unverified_order": "○ unverified order (cites no run provably after the lock)",
+            }.get(_prereg.prereg_label(session, c), "○ exploratory")
             lines.append(
                 f"| `{cid[:16]}` | {icon} {status} | {ctype} | {conf} "
                 f"| {prereg_cell} | {n_ev} spans | {n_lim} | {stmt} |"
@@ -389,7 +396,7 @@ def build_defensibility_report(
     rows: list[dict] = []
     for run_id, entry in sorted(run_log.items()):
         tool = entry.get("tool_name", "?")
-        ts = entry.get("timestamp", "")[:10]
+        ts = (entry.get("timestamp") or "")[:10]
         for k, v in entry.get("key_outputs", {}).items():
             if k.startswith("_") or not isinstance(v, (int, float)):
                 continue
@@ -441,29 +448,33 @@ def build_defensibility_report(
             "",
         ]
 
-        # Derive executed tools from run_log
-        executed_tools: set[str] = {
-            entry.get("tool_name", "") for entry in run_log.values()
-            if entry.get("tool_name")
-        }
-        computed_slots: set[str] = set(session.computed_healthy())
+        statuses = _prereg.analysis_status(session, plan)
+        if _prereg.is_post_hoc(session, plan):
+            before = plan.get("planned_ran_before_lock") or [a["analysis"] for a in statuses if a["ran_before_lock"]]
+            lines += [
+                "> **Post-hoc plan.** This plan was locked after planned analyses had already run "
+                f"({', '.join(before) or 'see below'}). It does not establish that those analyses were "
+                "pre-planned, and no claim is confirmatory on it.",
+                "",
+            ]
 
         lines += [
             "| # | Planned Analysis | Executed |",
             "|---|-----------------|---------|",
         ]
-        for i, pa in enumerate(plan.get("planned_analyses", []), 1):
-            pa_lower = pa.lower().replace(" ", "_")
-            # Match if the planned analysis name appears in any executed tool name
-            # or matches a computed slot name
-            executed = any(
-                pa_lower in t.lower() or t.lower() in pa_lower
-                for t in executed_tools | computed_slots
-            )
+        for i, st in enumerate(statuses, 1):
+            executed = st["ran_after_lock"]          # exact tool/slot name, after locked_at (R-04)
             if executed:
                 n_executed_planned += 1
-            tick = "✅" if executed else "○ not yet run"
-            lines.append(f"| {i} | {pa} | {tick} |")
+            if executed:
+                tick = "✅"
+            elif st["ran_before_lock"]:
+                tick = "○ ran before the lock (not counted)"
+            elif st.get("unmatched"):
+                tick = "○ unmatched (names no tool or slot; judged by the runs each claim cites)"
+            else:
+                tick = "○ not yet run"
+            lines.append(f"| {i} | {st['analysis']} | {tick} |")
         lines.append("")
 
         n_not_run = n_planned_analyses - n_executed_planned

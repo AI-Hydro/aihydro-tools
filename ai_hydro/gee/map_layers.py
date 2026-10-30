@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from .auth import _import_ee
+from .dates import filter_end
 
 
 def _reduce_collection(collection: Any, reducer: str) -> Any:
@@ -49,7 +50,7 @@ def preview_layer(
         else:
             ee.Initialize()
 
-        collection = ee.ImageCollection(dataset_id).filterDate(start_date, end_date).select(band)
+        collection = ee.ImageCollection(dataset_id).filterDate(start_date, filter_end(end_date)).select(band)
         image = _reduce_collection(collection, reducer)
 
         bounds = [-180.0, -60.0, 180.0, 84.0]
