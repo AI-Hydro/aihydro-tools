@@ -3914,7 +3914,7 @@ def _source_calendar(data) -> str | None:
     """``"no_leap_dec31"`` when a product behind the forcing never holds 31 Dec of a leap year.
 
     GridMET (pygridmet) and Daymet have no such day; counting it missing would drop every leap-year
-    December from SPI. Read from the product registry (``skips_leap_dec31``), with the product-name
+    December from SPI. Read from the product registry (HyRiver GridMET/Daymet products), with the product-name
     prefix as the fallback for an older aihydro-data. None otherwise (the day stays a real gap).
     """
     names: list[str] = []
@@ -3925,9 +3925,10 @@ def _source_calendar(data) -> str | None:
         names += [p.strip() for p in str(data.get("product") or "").split("|") if p.strip()]
     for n in dict.fromkeys(names):
         try:
-            from aihydro_data._daily_validation import skips_leap_dec31
             from aihydro_data.products import get_product
-            if skips_leap_dec31(get_product(n)):
+            spec = get_product(n)
+            cfg = getattr(spec, "backend_config", None) or {}
+            if getattr(spec, "source", "") == "hyriver" and ("pygridmet_variable" in cfg or "pydaymet_variable" in cfg):
                 return "no_leap_dec31"
             continue
         except Exception:
