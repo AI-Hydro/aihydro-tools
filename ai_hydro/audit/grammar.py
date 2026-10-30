@@ -246,6 +246,26 @@ _LIST_INDEX_RE = re.compile(r"^[ \t]*(?:[-*+•][ \t]+)?\d{1,3}[.)][ \t]")
 # ("USGS 01031500", "gauge id 04085427", "COMID 22678241").
 _ID_KEYWORDS = {"usgs", "gauge", "gage", "station", "site", "comid", "hru", "nwis", "nhdplus", "catchment"}
 
+# USGS NWIS parameter / statistic codes are 5-digit zero-padded labels ("parameter 00060",
+# "statCd=00003"), not quantities.  Exempt only with the code keyword directly before (or
+# directly after) the number; a unit, sign, decimal or a metric word in that slot never qualifies.
+_DATA_CODE_KW = (r"(?:parameter(?:[\s_]*c(?:ode|d))?|param(?:eter)?[\s_]*c(?:ode|d)|param|pcode|p_code|parm[\s_]*cd|"
+                 r"statistic(?:[\s_]*c(?:ode|d))?|stat(?:istic)?[\s_]*c(?:ode|d)|stat|statcd|stat_cd)")
+_DATA_CODE_BEFORE_RE = re.compile(r"\b" + _DATA_CODE_KW + r"s?[\s:=#`*\"']{0,4}$", re.IGNORECASE)
+# Trailing form: full words only, and never in a sentence that names a metric.
+_DATA_CODE_AFTER_RE = re.compile(r"^[\s`*\"']{0,2}(?:parameter|statistic)\b", re.IGNORECASE)
+_PRE_WORD_RE = re.compile(r"([A-Za-z0-9_]+)[\s`*\"']*$")
+
+
+def _data_code_keyword_before(text: str, start: int) -> bool:
+    """Code keyword directly before the number, and not qualified by a metric word
+    ("peak statistic 01234" is a value of a peak statistic, not a code label)."""
+    m = _DATA_CODE_BEFORE_RE.search(text[max(0, start - 60):start])
+    if not m:
+        return False
+    pre = _PRE_WORD_RE.search(text[max(0, start - 60):start][:m.start()])
+    return not (pre and _METRIC_RE.search(pre.group(1)))
+
 # Word classes for integers.
 _META_NOUNS = {
     "attribute", "signature", "tool", "step", "issue", "item", "layer", "file",
@@ -748,6 +768,15 @@ def classify_numerics(
                 any(w in _ID_KEYWORDS for w in before[-2:]) or (after and after[0] in _ID_KEYWORDS)
             ):
                 done("exempt", "identifier"); continue
+
+        # USGS parameter / statistic codes: exactly 5 zero-padded digits, no unit/sign/decimal,
+        # with a code keyword beside it ("parameter 00060", "statistic 00003").
+        if (unit is None and re.fullmatch(r"0\d{4}", raw.strip())
+                and text[max(0, num.start - 1):num.start] not in ("+", "-", "\u2212", ".", "~", "\u2248")
+                and (_data_code_keyword_before(text, num.start)
+                     or (_DATA_CODE_AFTER_RE.match(text[num.end:num.end + 24])
+                         and _METRIC_RE.search(wtext[seg_lo:seg_hi]) is None))):
+            done("exempt", "data_code"); continue
 
         # meta-counts: 17 signatures, 60 attributes (integer, no unit, closed noun list,
         # and no metric word anywhere in the sentence: "peak 412 runs" is not a count)

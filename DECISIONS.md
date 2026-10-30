@@ -1,5 +1,20 @@
 # Decisions
 
+## 2026-10-30 - Data codes are exempt by keyword, not by shape (answer audit)
+
+Owner evidence: an answer was audited at "0/13 numbers traced", and two of the hard findings were the USGS parameter code `00060` and
+statistic code `00003` in "parameter 00060, statistic 00003 (daily mean)". A metric word within 40 characters ("daily mean") made
+them `quantity`.
+
+1. **Keyword plus shape, both required.** Exempt (reason `data_code`) only a number that is exactly 5 digits with a leading zero,
+   with a code keyword directly before or after it. Shape alone would exempt real values ("flow 00412"); a keyword alone would
+   exempt "parameter 412". The metric-word proximity rule stays and cannot override it, because the keyword names the number a label.
+2. **Never when quantity-shaped.** A unit, percent, decimal or sign leaves the number a quantity. A metric-value reading
+   ("discharge 00060", "discharge 00060 cfs") has no code keyword and so is not exempt.
+3. **HUC/EPSG/FIPS/NLCD were already exempt** (mask reason `code_label`); only tests were added.
+4. **Open, not changed here:** "7,305 daily values" classifies as an exempt `bare_integer`, not a `sample_size`, because "value" is
+   not in the sample-noun list. Adding it would tighten the audit for other answers, so it is left for a separate decision.
+
 ## 2026-10-29 - Map provenance is stamped by the server and the claim link carries no status (UX program Wave 1, T-M1)
 
 **Context.** Layers reach the host through a file drop, so the host cannot tell which call produced one. The old

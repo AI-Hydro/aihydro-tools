@@ -6,6 +6,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Answer audit: USGS parameter and statistic codes are no longer flagged as uncited quantities.** "parameter 00060, statistic 00003
+  (daily mean)" produced two hard `uncited_number` findings. A 5-digit zero-padded number is now exempt (reason `data_code`) only
+  when a code keyword (`parameter`, `param`, `pcode`, `parameter code`, `parameterCd`, `parm_cd`; `statistic`, `stat`, `statCd`,
+  `stat_cd`) sits directly before it, or the full word `parameter`/`statistic` directly after it in a sentence that names no metric. A metric word qualifying the keyword ("peak statistic 01234") blocks the exemption. A unit, sign, decimal, percent or a metric word in that slot ("discharge
+  00060 cfs") still leaves it a quantity. HUC, EPSG, FIPS and NLCD codes were already exempt and now have tests. No other
+  classification changes.
+
+---
+
 ## [2.8.3] - 2026-10-29 (UX program Wave 1: map provenance T-M1, project registry v2 T-P1, active-study context T-R1)
 
 The line stays on 2.8.x (owner decision, 2026-10-28). Three Wave 1 PRs ship together: map provenance (tools#16), project registry v2 (tools#15) and the active-study context resource (tools#17).
