@@ -26,6 +26,15 @@ ERA5-Land / GEOGLOWS for the wrong place, real-looking numbers for the wrong loc
 4. **Deprecated tool.** `fetch_streamflow_data` takes `start_date`/`end_date`. Rather than adding parameters, the existing arg-repair
    alias table gets the reverse pair (`start`->`start_date`, `end`->`end_date`), which applies only when the tool has no `start`/`end`.
 
+5. **Same validator for every coordinate (audit R-11, D43).** Selection is by parameter name, not a tool list. A bbox whose four
+   values are all within +/-90 is as ambiguous as a pair (`[47,-69,48,-68]` is a lat-first box in Antarctica or a lon-first box in
+   Maine), and a range check cannot tell them apart, so bare 4-lists are refused unless a value beyond 90 settles the axes; the
+   dict `{"west","south","east","north"}` is the explicit form. GeoJSON is trusted to be [lon, lat] (the spec), but each position is
+   range-checked, which catches projected metres; a lat-first GeoJSON position inside +/-90 is indistinguishable from a valid one and
+   is NOT detected. `outlet` keeps aihydro-data's (lat, lon) convention: it is range-checked in that order but has no dict form,
+   because the wrapper's signature must match aihydro-data's `outlet: tuple`; a swapped in-range outlet is not caught here, only by
+   the A2 gauge checks downstream.
+
 Consequence for callers: `data_fetch(variable, start, end, geometry=None, ...)` reordered its Python signature; MCP callers are unaffected.
 
 ## 2026-10-30 - Data codes are exempt by keyword, not by shape (answer audit)

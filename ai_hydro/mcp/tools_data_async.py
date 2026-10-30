@@ -147,11 +147,12 @@ def data_fetch_background(
                 "next_tools": ["data_validate_request"],
             }
 
-        from ai_hydro.mcp.geometry_boundary import check_geometry_arg
+        from ai_hydro.mcp.geometry_boundary import check_arguments, check_geometry_arg
 
         bad = check_geometry_arg(geometry, "data_fetch_background")
         if bad:
             return bad
+        geometry = check_arguments({"geometry": geometry}, "data_fetch_background")[0]["geometry"]
 
         # Gauge-first, resolved HERE (the runner is a detached process): the job config carries the
         # place the gauge resolved to, and a refusal never starts a job.

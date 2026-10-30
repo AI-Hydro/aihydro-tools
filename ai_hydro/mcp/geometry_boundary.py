@@ -10,6 +10,12 @@ as if it were the right one). The rule is therefore general and has no per-tool 
 * the unambiguous forms pass untouched: ``{"lat":..,"lon":..}``, GeoJSON, a 4-number bbox
   ``[minx, miny, maxx, maxy]`` (checked for range and order), WKT, a USGS gauge id.
 
+The same module range-checks every other coordinate an agent can pass: GeoJSON positions (a projected
+``[500000, 5200000]`` is refused), parameters named like a latitude / longitude (``lat``, ``outlet_lat``,
+``longitude`` ...) and the ``outlet`` pair. A bare 4-number bbox whose four values are all within +/-90 has the
+same ambiguity as a pair (``[47,-69,48,-68]`` is lat-first or lon-first) and is refused; the explicit form is
+``{"west","south","east","north"}``, which the boundary converts to a GeoJSON Polygon.
+
 ``check_geometry_arg`` is the single implementation. ``GeometryBoundaryMiddleware`` applies it to
 every tool call that supplies ``geometry`` or ``geometries`` (any tool, current or future,
 including tools registered by other packages), and the retaining ``data_fetch`` wrapper and
@@ -90,8 +96,26 @@ def _pair_error(a: float, b: float, tool: str) -> dict:
     )
 
 
+def _bbox_dict(w: float, so: float, e: float, n: float) -> str:
+    return json.dumps({"west": w, "south": so, "east": e, "north": n})
+
+
 def _check_bbox(v: list, tool: str) -> Optional[dict]:
     minx, miny, maxx, maxy = v
+    if all(abs(x) <= 90 for x in v):
+        a = (minx, miny, maxx, maxy)           # lon,lat,lon,lat (GeoJSON / shapely order)
+        b = (minx, miny, maxx, maxy)           # the same four numbers read as south, west, north, east
+        return _envelope(
+            "GEOMETRY_BBOX_AXIS_AMBIGUOUS",
+            f"bbox {v} has all four values within +/-90, so it is [west, south, east, north] "
+            f"(west={a[0]}, south={a[1]}, east={a[2]}, north={a[3]}) or lat-first "
+            f"(south={b[0]}, west={b[1]}, north={b[2]}, east={b[3]}); these are different places and no guess was made.",
+            "Resend as an explicit dict: " + _bbox_dict(*a) + " if the order is west,south,east,north, or "
+            + _bbox_dict(b[1], b[0], b[3], b[2]) + " if it is south,west,north,east.",
+            tool,
+            interpretations=[{"order": "west_south_east_north", "west": a[0], "south": a[1], "east": a[2], "north": a[3]},
+                             {"order": "south_west_north_east", "south": b[0], "west": b[1], "north": b[2], "east": b[3]}],
+        )
     if abs(miny) > 90 or abs(maxy) > 90 or abs(minx) > 180 or abs(maxx) > 180 or minx >= maxx or miny >= maxy:
         return _envelope(
             "GEOMETRY_BBOX_INVALID",
@@ -100,6 +124,40 @@ def _check_bbox(v: list, tool: str) -> Optional[dict]:
             "Resend as [west_lon, south_lat, east_lon, north_lat], or pass a GeoJSON Polygon.",
             tool,
         )
+    return None
+
+
+def _check_bbox_range(v: list, tool: str) -> dict:
+    return _envelope(
+        "GEOMETRY_BBOX_INVALID",
+        f"bbox {v} is not west<east, south<north in decimal degrees (latitudes within +/-90, longitudes within +/-180).",
+        "Resend as {\"west\":..,\"south\":..,\"east\":..,\"north\":..}, or pass a GeoJSON Polygon.", tool)
+
+
+def _check_positions(obj: Any, tool: str, _depth: int = 0) -> Optional[dict]:
+    """Range-check every GeoJSON position under ``obj`` as [lon, lat]: a projected or lat-first-and-out-of-range one is refused."""
+    if _depth > 12 or not isinstance(obj, (dict, list)):
+        return None
+    if isinstance(obj, dict):
+        for k in ("coordinates", "geometry", "geometries", "features"):
+            if k in obj:
+                err = _check_positions(obj[k], tool, _depth + 1)
+                if err:
+                    return err
+        return None
+    if len(obj) >= 2 and all(_is_num(x) for x in obj):
+        lon, lat = obj[0], obj[1]
+        if abs(lon) > 180 or abs(lat) > 90:
+            return _envelope(
+                "GEOMETRY_RANGE_INVALID",
+                f"GeoJSON position {list(obj[:2])} is not [lon, lat] in decimal degrees (EPSG:4326): longitude must be within "
+                "+/-180 and latitude within +/-90. Projected (metre) or swapped coordinates are not accepted.",
+                "Reproject to EPSG:4326 and send [lon, lat] positions.", tool)
+        return None
+    for x in obj:
+        err = _check_positions(x, tool, _depth + 1)
+        if err:
+            return err
     return None
 
 
@@ -127,6 +185,12 @@ def check_geometry_arg(value: Any, tool: str = "") -> Optional[dict]:
         return None
     if isinstance(value, str):
         s = value.strip()
+        if s.startswith("{"):
+            try:
+                parsed = json.loads(s)
+            except ValueError:
+                return None
+            return check_geometry_arg(parsed, tool) if isinstance(parsed, dict) else None
         if s.startswith("["):
             try:
                 parsed = json.loads(s)
@@ -138,8 +202,17 @@ def check_geometry_arg(value: Any, tool: str = "") -> Optional[dict]:
             return _pair_error(float(m.group(1)), float(m.group(2)), tool)
         return None
     if isinstance(value, dict):
-        if "type" in value:                       # GeoJSON
+        if {"west", "south", "east", "north"}.issubset(value):
+            nums = [value[k] for k in ("west", "south", "east", "north")]
+            if not all(_is_num(x) for x in nums):
+                return _envelope("GEOMETRY_BBOX_INVALID", "west/south/east/north must be numbers.",
+                                 'Resend as {"west":..,"south":..,"east":..,"north":..} in decimal degrees.', tool)
+            w, so, e, n = map(float, nums)
+            if abs(so) > 90 or abs(n) > 90 or abs(w) > 180 or abs(e) > 180 or w >= e or so >= n:
+                return _check_bbox_range(list((w, so, e, n)), tool)
             return None
+        if "type" in value:                       # GeoJSON
+            return _check_positions(value, tool)
         if {"lat", "lon"}.issubset(value):
             return _check_dict(value, tool)
         # a {label: geometry} mapping (``geometries``): every member is held to the same rule
@@ -165,24 +238,93 @@ def check_geometry_arg(value: Any, tool: str = "") -> Optional[dict]:
     return None
 
 
-def tools_taking_geometry(schemas: dict[str, set]) -> list[str]:
-    """Names of tools whose input schema has a geometry parameter (used by the scan test)."""
-    return sorted(n for n, props in schemas.items() if props & set(GEOMETRY_PARAMS))
+def param_kind(name: str) -> Optional[str]:
+    """What a tool parameter holds, from its name: 'geometry' | 'geojson' | 'outlet' | 'lat' | 'lon' | None.
+
+    Name-driven on purpose: a new tool that calls its parameter ``lat``, ``outlet_lon`` or ``watershed_geojson``
+    is held to the rule without being listed anywhere.
+    """
+    n = name.lower()
+    if n in GEOMETRY_PARAMS or n == "roi":
+        return "geometry"
+    if n == "geojson" or n.endswith("_geojson") or n.endswith("geojson"):
+        return "geojson"
+    if n == "outlet":
+        return "outlet"
+    if re.fullmatch(r"(?:.*_)?(?:lat|latitude)", n):
+        return "lat"
+    if re.fullmatch(r"(?:.*_)?(?:lon|lng|longitude)", n):
+        return "lon"
+    return None
+
+
+def tools_taking_coordinates(schemas: dict[str, set]) -> dict[str, list[str]]:
+    """``{tool: [params]}`` for every tool with a coordinate / geometry parameter (used by the scan test)."""
+    out = {n: sorted(p for p in props if param_kind(p)) for n, props in schemas.items()}
+    return {n: ps for n, ps in out.items() if ps}
+
+
+def _to_polygon(bb: dict) -> dict:
+    w, so, e, n = (float(bb[k]) for k in ("west", "south", "east", "north"))
+    return {"type": "Polygon", "coordinates": [[[w, so], [e, so], [e, n], [w, n], [w, so]]]}
+
+
+def check_coordinate_arg(name: str, value: Any, tool: str = "") -> Optional[dict]:
+    """Refusal envelope for one argument by its parameter name, else None (see ``param_kind``)."""
+    kind = param_kind(name)
+    if kind is None or value is None:
+        return None
+    if kind in ("geometry", "geojson"):
+        return check_geometry_arg(value, tool)
+    if kind in ("lat", "lon"):
+        try:
+            x = float(value)
+        except (TypeError, ValueError):
+            return None                         # not a number: the tool's own validation reports it
+        lim, what = (90.0, "latitude") if kind == "lat" else (180.0, "longitude")
+        if not (abs(x) <= lim):                 # also catches NaN
+            return _envelope(
+                "GEOMETRY_RANGE_INVALID",
+                f"{name}={value} is not a valid {what} (within +/-{lim:g} degrees, EPSG:4326).",
+                f"Resend {name} in decimal degrees within +/-{lim:g}; check latitude and longitude are not swapped.", tool)
+        return None
+    # outlet: documented as a (lat, lon) pair by aihydro-data. Its order is stated, so it is range-checked in that order
+    # (a swapped outlet has |second| > 90 only sometimes; the gauge-resolution layer refuses the rest).
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(_is_num(v) for v in value):
+        lat, lon = value
+        if abs(lat) > 90 or abs(lon) > 180:
+            return _envelope(
+                "GEOMETRY_RANGE_INVALID",
+                f"outlet={list(value)} is read as (lat, lon): latitude {lat} / longitude {lon} is out of range.",
+                "Send outlet as [lat, lon] in decimal degrees (latitude within +/-90, longitude within +/-180).", tool)
+    return None
+
+
+def check_arguments(args: dict, tool: str = "") -> tuple[dict, Optional[dict]]:
+    """``(arguments, refusal)`` for a whole call: every coordinate-like argument is checked, and an
+    explicit ``{"west","south","east","north"}`` geometry is converted to a GeoJSON Polygon."""
+    out = dict(args)
+    for key, val in args.items():
+        err = check_coordinate_arg(key, val, tool)
+        if err:
+            return args, err
+        if param_kind(key) == "geometry" and isinstance(val, dict) and {"west", "south", "east", "north"}.issubset(val):
+            out[key] = _to_polygon(val)
+    return out, None
 
 
 class GeometryBoundaryMiddleware(Middleware):
-    """FastMCP middleware: hold every tool's ``geometry`` / ``geometries`` argument to ``check_geometry_arg``."""
+    """FastMCP middleware: hold every coordinate / geometry argument of every tool to ``check_arguments``."""
 
     async def on_call_tool(self, context, call_next):  # type: ignore[override]
         msg = context.message
         args = getattr(msg, "arguments", None)
         if isinstance(args, dict):
-            tool = getattr(msg, "name", "") or ""
-            for key in GEOMETRY_PARAMS:
-                if key in args:
-                    err = check_geometry_arg(args[key], tool)
-                    if err:
-                        raise StructuredToolError(err)
+            fixed, err = check_arguments(args, getattr(msg, "name", "") or "")
+            if err:
+                raise StructuredToolError(err)
+            if fixed != args:
+                msg.arguments = fixed
         return await call_next(context)
 
 

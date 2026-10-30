@@ -308,11 +308,15 @@ def data_fetch(
         log.debug("data_fetch: no session resolved, call is not recorded (%s)", exc)
 
     from ai_hydro.mcp import gauge_identity as gi
-    from ai_hydro.mcp.geometry_boundary import check_geometry_arg
+    from ai_hydro.mcp.geometry_boundary import check_arguments, check_coordinate_arg, check_geometry_arg
 
     bad = check_geometry_arg(geometry, "data_fetch")
     if bad:
         return bad
+    bad = check_coordinate_arg("outlet", outlet, "data_fetch")
+    if bad:
+        return bad
+    geometry = check_arguments({"geometry": geometry}, "data_fetch")[0]["geometry"]
 
     resolved = gi.resolve_request(variable, geometry, product, gauge_id, sid, "data_fetch")
     if "refusal" in resolved:

@@ -22,6 +22,14 @@ refusal and was routed to modelled products for the wrong place.
   `GEOMETRY_AXIS_SWAPPED` (one value cannot be a latitude) states the only possible reading and still refuses. `{"lat","lon"}`, GeoJSON,
   a 4-number bbox (range and order checked: `GEOMETRY_BBOX_INVALID`), WKT and a gauge id pass. The tool schemas now tell the agent to use
   the dict form.
+- **Every coordinate gets the same validator (tool audit R-11, D43).** Parameters are classified by name (`geometry`, `geometries`,
+  `roi`, `*geojson`, `outlet`, `lat`/`latitude`/`*_lat`, `lon`/`lng`/`longitude`/`*_lon`), so a new tool is covered without being listed.
+  `register_feature(lat=-100, lon=500, outlet_lat=95)` and the like return `GEOMETRY_RANGE_INVALID`; GeoJSON positions (including
+  inside `*_geojson` strings and Feature collections) must be [lon, lat] within range, so projected coordinates such as
+  `[500000, 5200000]` are refused; `outlet` is range-checked in its documented (lat, lon) order. A bare 4-number bbox with all values
+  within +/-90 is axis-ambiguous like a pair (`GEOMETRY_BBOX_AXIS_AMBIGUOUS`, both readings and the fix); the explicit form is
+  `{"west","south","east","north"}`, converted to a GeoJSON Polygon at the boundary. A scan test fails if any tool with such a
+  parameter is not behind the validator.
 - **`data_fetch` and `data_fetch_background` need no geometry when a gauge names the place.** `gauge_id` (or a session BasinRef with a
   verified `usgs:` alias, or a session whose `site_id` is a USGS gauge) locates the request: the point comes from the USGS Water Data API
   monitoring-location record and is reported as `resolved_location` and recorded in the call's inputs. The request is still pinned to

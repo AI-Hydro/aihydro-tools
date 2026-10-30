@@ -22,7 +22,8 @@ from _usgs_replay import EMPTY, Replay, ok
 from aihydro_data.exceptions import TerminalSourceError
 from aihydro_data.sources import usgs_waterdata as uw
 
-from ai_hydro.mcp.geometry_boundary import GEOMETRY_PARAMS, check_geometry_arg
+from ai_hydro.mcp.geometry_boundary import (
+    GEOMETRY_PARAMS, check_arguments, check_coordinate_arg, check_geometry_arg, param_kind, tools_taking_coordinates)
 from ai_hydro.session import store
 from ai_hydro.session.chat_binding import ChatBindingStore
 from ai_hydro.session.store import HydroSession
@@ -112,7 +113,7 @@ def test_every_spelling_of_a_bare_pair_is_refused(form):
 
 
 @pytest.mark.parametrize("ok", [
-    None, {"lat": LAT, "lon": LON}, [-69.0, 47.0, -68.0, 48.0], "POINT (-68.5828 47.2375)", "01013500",
+    None, {"lat": LAT, "lon": LON}, [-120.0, 30.0, -110.0, 40.0], {"west": -69.0, "south": 47.0, "east": -68.0, "north": 48.0}, "POINT (-68.5828 47.2375)", "01013500",
     "USGS-01013500", {"type": "Point", "coordinates": [LON, LAT]},
     {"type": "Polygon", "coordinates": [[[-69, 47], [-68, 47], [-68, 48], [-69, 47]]]},
 ])
@@ -121,7 +122,7 @@ def test_unambiguous_forms_pass(ok):
 
 
 @pytest.mark.parametrize("bad", [
-    {"lat": 120.0, "lon": 10.0}, {"lat": "47", "lon": -68.0}, [-68.0, 47.0, -69.0, 48.0], [-69.0, 47.0, -68.0, 91.0],
+    {"lat": 120.0, "lon": 10.0}, {"lat": "47", "lon": -68.0}, [-130.0, 47.0, -120.0, 91.0], {"west": -68.0, "south": 47.0, "east": -69.0, "north": 48.0},
     [1, 2, 3],
 ])
 def test_invalid_explicit_forms_are_refused(bad):
@@ -324,3 +325,67 @@ def test_deprecated_streamflow_tool_with_start_end_is_repaired_on_its_real_schem
     props = set(tool.to_mcp_tool().inputSchema["properties"])
     fixed, _ = repair_arguments({"gauge_id": GAUGE, "start": "2020-01-01", "end": "2020-01-05"}, props, {})
     assert set(fixed) <= props and fixed["start_date"] == "2020-01-01" and fixed["end_date"] == "2020-01-05"
+
+
+# ----------------------------------------------------------------- audit R-11 / D43: every coordinate, one validator
+def test_lat_lon_parameters_are_range_checked_by_name():
+    for name, bad in (("lat", -100), ("lon", 500), ("outlet_lat", 95), ("outlet_lon", -181), ("max_lat", 91),
+                      ("latitude", "95"), ("longitude", 181)):
+        assert check_coordinate_arg(name, bad, "register_feature")["code"] == "GEOMETRY_RANGE_INVALID", name
+    for name, good in (("lat", 47.2), ("lon", -68.6), ("outlet_lat", 0), ("longitude", "-68.6"), ("lat", None), ("other", 999)):
+        assert check_coordinate_arg(name, good, "t") is None, name
+
+
+def test_outlet_is_range_checked_in_its_documented_lat_lon_order():
+    assert check_coordinate_arg("outlet", [LAT, LON])  is None
+    e = check_coordinate_arg("outlet", [LAT, 500.0], "data_fetch")
+    assert e["code"] == "GEOMETRY_RANGE_INVALID" and "(lat, lon)" in e["message"]
+    assert check_coordinate_arg("outlet", [-122.3, 47.6], "data_fetch")["code"] == "GEOMETRY_RANGE_INVALID"
+    from ai_hydro.mcp.tools_data_fetch import data_fetch
+
+    assert data_fetch("streamflow", START, END, geometry={"lat": LAT, "lon": LON}, outlet=[95.0, 10.0])["code"] == "GEOMETRY_RANGE_INVALID"
+
+
+def test_geojson_positions_are_range_checked():
+    proj = {"type": "Point", "coordinates": [500000, 5200000]}
+    assert check_geometry_arg(proj, "t")["code"] == "GEOMETRY_RANGE_INVALID"
+    feat = {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": proj}]}
+    assert check_geometry_arg(feat, "t")["code"] == "GEOMETRY_RANGE_INVALID"
+    assert check_geometry_arg(json.dumps(proj), "t")["code"] == "GEOMETRY_RANGE_INVALID"        # *_geojson string params
+    ok = {"type": "Polygon", "coordinates": [[[-69, 47], [-68, 47], [-68, 48], [-69, 47]]]}
+    assert check_geometry_arg(ok, "t") is None and check_geometry_arg(json.dumps(ok), "t") is None
+
+
+def test_a_bare_bbox_inside_90_is_axis_ambiguous_and_the_dict_form_is_converted():
+    e = check_geometry_arg([47.0, -69.0, 48.0, -68.0], "data_fetch")          # the audit's lat-first bbox
+    assert e["code"] == "GEOMETRY_BBOX_AXIS_AMBIGUOUS" and e["retryable"] is True and len(e["interpretations"]) == 2
+    assert '"west": 47.0' in e["recovery"] and '"west": -69.0' in e["recovery"]
+    fixed, err = check_arguments({"geometry": {"west": -69.0, "south": 47.0, "east": -68.0, "north": 48.0}}, "t")
+    assert err is None and fixed["geometry"]["type"] == "Polygon"
+    assert fixed["geometry"]["coordinates"][0][0] == [-69.0, 47.0] and fixed["geometry"]["coordinates"][0][2] == [-68.0, 48.0]
+
+
+def _bad_value(kind):
+    return {"geometry": [LON, LAT], "geojson": '{"type": "Point", "coordinates": [500000, 5200000]}',
+            "lat": 95.0, "lon": 500.0, "outlet": [95.0, 10.0]}[kind]
+
+
+def test_every_tool_with_a_coordinate_or_geometry_parameter_goes_through_the_validator(world):
+    """Scan of the live tool schemas: a new tool with such a parameter is covered by name, and this fails if it is not."""
+    import ai_hydro.mcp  # noqa: F401
+    from ai_hydro.mcp.app import mcp
+
+    schemas = {t.name: set((t.to_mcp_tool().inputSchema or {}).get("properties") or {})
+               for t in asyncio.run(mcp.list_tools())}
+    tools = tools_taking_coordinates(schemas)
+    assert {"register_feature", "delineate_watershed_from_point", "map_fly_to", "data_fetch", "show_on_map",
+            "gee.preview_layer", "fetch_forcing_data"} <= set(tools), sorted(tools)
+    for name, params in tools.items():
+        for p in params:
+            kind = param_kind(p)
+            value = _bad_value(kind)
+            if p == "geometries":
+                value = [value, value]
+            err, body, _ = call_tool(name, {p: value})
+            assert err and isinstance(body, dict) and str(body.get("code", "")).startswith("GEOMETRY_"), (name, p, body)
+            assert body["retryable"] is True and body["next_tools"] == [name]
