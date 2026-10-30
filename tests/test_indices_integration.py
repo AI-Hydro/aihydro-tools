@@ -399,7 +399,7 @@ class TestTrendPerYear:
     def test_seasonal_cycle_plus_trend_recovers_the_trend(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year
         t = _trend_per_year(_monthly_stats(lambda m, mo: _season(mo) + 0.05 * m, "2015-01-01", "2019-12-31"), "monthly")
-        assert t["slope_per_year"] == pytest.approx(0.05, rel=1e-6) and t["p_value"] < 0.001
+        assert t["slope_per_year"] == pytest.approx(0.05, rel=1e-6) and t["p_value"] < 0.05
 
     def test_seasonal_cycle_alone_is_not_a_trend(self):
         """Review null case: a pure annual cycle over 8 months or 24 months must not read as a trend."""
@@ -418,11 +418,43 @@ class TestTrendPerYear:
         t = _trend_per_year(stats, "monthly")
         assert len(stats) == 33 and t["slope_per_year"] == pytest.approx(0.12, rel=1e-6)
 
-    def test_a_season_with_fewer_than_two_values_gives_no_estimate(self):
+    def test_one_thin_month_does_not_refuse_the_whole_test(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year
         stats = _monthly_stats(lambda m, mo: 0.12 * m, "2021-01-01", "2022-12-31", skip={(2022, 6)})
         t = _trend_per_year(stats, "monthly")
-        assert t["slope_per_year"] is None and t["p_value"] is None and "[6]" in t["reason"]
+        assert t["slope_per_year"] == pytest.approx(0.12, rel=1e-9)
+        assert t["seasons_dropped"] == [6] and t["seasons_used"] == [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]
+
+    def test_too_few_usable_months_refuses_and_says_which(self):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        skip = {(2022, m) for m in range(1, 8)}                      # Jan-Jul have one value: 5 months usable
+        t = _trend_per_year(_monthly_stats(lambda m, mo: 0.12 * m, "2021-01-01", "2022-12-31", skip=skip), "monthly")
+        assert t["slope_per_year"] is None and t["p_value"] is None
+        assert "only 5" in t["reason"] and t["seasons_dropped"] == [1, 2, 3, 4, 5, 6, 7]
+
+    def test_yearly_clipped_years_are_dropped_and_reported(self):
+        import types, sys
+        import xarray as xr
+        from shapely.geometry import box
+        from ai_hydro.mcp import tools_indices as ti
+        got = []
+
+        def fetch(**kw):
+            got.append((kw["start"], kw["end"]))
+            return types.SimpleNamespace(data=xr.DataArray(np.full((3, 3), 0.5), dims=("y", "x")))
+
+        fake = types.ModuleType("aihydro_data"); fake.fetch = fetch
+        tr = types.ModuleType("aihydro_data.transforms.indices"); tr.compute_index = lambda *a, **k: None; tr.INDEX_REGISTRY = {}
+        with patch.dict(sys.modules, {"aihydro_data": fake, "aihydro_data.transforms.indices": tr}):
+            out = ti._fetch_and_compute_index(idx_key="NDVI", sensor="sentinel2", required_bands=[], watershed=box(0, 0, 1, 1),
+                                              start="2018-06-01", end="2021-03-31", frequency="yearly",
+                                              apply_cloud_mask=False, reg_entry={})
+            err = ti._fetch_and_compute_index(idx_key="NDVI", sensor="sentinel2", required_bands=[], watershed=box(0, 0, 1, 1),
+                                              start="2018-06-01", end="2018-12-31", frequency="yearly",
+                                              apply_cloud_mask=False, reg_entry={})
+        assert got == [("2019-01-01", "2019-12-31"), ("2020-01-01", "2020-12-31")]
+        assert [d["period"] for d in out["periods_dropped"]] == ["2018-06-01", "2021-01-01"]
+        assert out["n_periods_requested"] == 4 and err["code"] == "NO_COMPLETE_YEAR"
 
     def test_under_two_full_cycles_gives_no_estimate(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year
@@ -444,7 +476,38 @@ class TestTrendPerYear:
         from ai_hydro.mcp.tools_indices import _trend_per_year
         with patch.dict("sys.modules", {"pymannkendall": None}):
             t = _trend_per_year(_monthly_stats(lambda m, mo: 0.1 * m), "monthly")
-        assert "Hirsch & Slack (1984) is not included" in t["caveat"]
+        assert "NOT checked against the text" in t["caveat"] and "long-term persistence" in t["caveat"]
+
+    @staticmethod
+    def _sizes(gen, n=300):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        corr, indep = [], []
+        for _ in range(n):
+            X = gen()
+            stats = _monthly_stats(lambda m, mo, X=X: 0.0, "2015-01-01", "2024-12-31")
+            for k, r in enumerate(stats):
+                r["mean"] = float(X[k // 12, k % 12])
+            t = _trend_per_year(stats, "monthly")
+            corr.append(t["p_value"]); indep.append(t["p_value_assuming_independent_seasons"])
+        return float(np.mean(np.array(corr) < 0.05)), float(np.mean(np.array(indep) < 0.05))
+
+    def test_size_is_near_nominal_under_ar1_and_year_effects(self):
+        """The review's cases: AR(1) 0.6 inflated the independent-seasons test to 0.30, a year effect to 0.43."""
+        rng = np.random.default_rng(3)
+
+        def ar(phi, n=10):
+            e = rng.normal(size=n * 12 + 200)
+            x = np.zeros_like(e)
+            for t in range(1, e.size):
+                x[t] = phi * x[t - 1] + np.sqrt(1 - phi ** 2) * e[t]
+            return x[200:].reshape(n, 12)
+
+        white_c, _ = self._sizes(lambda: ar(0.0))
+        ar_c, ar_i = self._sizes(lambda: ar(0.6))
+        ye_c, ye_i = self._sizes(lambda: rng.normal(0, .03, (10, 12)) + rng.normal(0, .03, (10, 1)))
+        assert 0.02 <= white_c <= 0.10
+        assert 0.02 <= ar_c <= 0.12 and ar_i > 0.15          # corrected near nominal; the uncorrected test is not
+        assert 0.02 <= ye_c <= 0.12 and ye_i > 0.25
 
     def test_constant_series_has_no_defined_test(self):
         from ai_hydro.mcp.tools_indices import _trend_per_year

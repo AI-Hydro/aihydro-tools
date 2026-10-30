@@ -3709,7 +3709,7 @@ def separate_baseflow(
 
 
 @mcp.tool()
-def compute_flow_duration_curve(session_id: str | None = None) -> dict:
+def compute_flow_duration_curve(session_id: str | None = None, year_start_month: int | None = None) -> dict:
     """
     Compute the flow-duration curve, standard percentile flows, and the 7Q10
     design low flow from streamflow in the session. Writes session.flow_duration.
@@ -3725,6 +3725,9 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
     ----------
     session_id : str | None (optional)
         Research session identifier. Auto-resolved from chat context when omitted.
+    year_start_month : int | None
+        None (default): the 7Q10 uses the USGS climatic year (1 Apr-31 Mar). 1-12: a year starting that
+        month, labelled by the year it begins (Southern Hemisphere, monsoon regimes).
     """
     try:
         from ai_hydro.session import HydroSession
@@ -3740,7 +3743,8 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
         dates = data.get("dates") if isinstance(data, dict) else None
 
         fdc = flow_duration_curve(q)
-        low = seven_q10(q, dates=dates)
+        low = (seven_q10(q, dates=dates, year_type="custom_year", year_start_month=year_start_month)
+               if year_start_month is not None else seven_q10(q, dates=dates))
 
         # Persist full curve + summary to the session; return a compact summary.
         session.set("flow_duration", {
@@ -3799,6 +3803,7 @@ def compute_flood_frequency(
     method: str = "mle",
     year_type: str = "water_year",
     min_year_fraction: float | None = None,
+    year_start_month: int | None = None,
 ) -> dict:
     """
     Estimate design floods (return periods) from streamflow in the session via
@@ -3828,6 +3833,8 @@ def compute_flood_frequency(
     min_year_fraction : float | None
         Smallest observed fraction of a year's days for the year to count
         (default 0.95).
+    year_start_month : int | None
+        1-12: a year starting that month (label = start year); overrides year_type.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -3841,7 +3848,10 @@ def compute_flood_frequency(
             return _err
 
         dates = data.get("dates") if isinstance(data, dict) else None
+        if year_start_month is not None:
+            year_type = "custom_year"
         am = annual_maxima(q, dates=dates, year_type=year_type, min_fraction=min_year_fraction,
+                           year_start_month=year_start_month,
                            window=(data.get("start_date"), data.get("end_date"))
                            if isinstance(data, dict) else None)
         if am["n_years"] < 5:
@@ -3910,32 +3920,42 @@ def compute_flood_frequency(
         return _tool_error_to_dict(e)
 
 
-def _source_calendar(data) -> str | None:
-    """``"no_leap_dec31"`` when a product behind the forcing never holds 31 Dec of a leap year.
+def _product_skips_leap_dec31(name: str) -> bool:
+    """True when the registry says product ``name`` never holds 31 Dec of a leap year (HyRiver GridMET/Daymet)."""
+    try:
+        from aihydro_data.products import get_product
+        spec = get_product(name)
+        cfg = getattr(spec, "backend_config", None) or {}
+        return getattr(spec, "source", "") == "hyriver" and ("pygridmet_variable" in cfg or "pydaymet_variable" in cfg)
+    except Exception:
+        return False
 
-    GridMET (pygridmet) and Daymet have no such day; counting it missing would drop every leap-year
-    December from SPI. Read from the product registry (HyRiver GridMET/Daymet products), with the product-name
-    prefix as the fallback for an older aihydro-data. None otherwise (the day stays a real gap).
+
+def _source_calendar(data, columns=("prcp_mm",)) -> str | None:
+    """``"no_leap_dec31"`` only when EVERY column the statistic uses comes from a product that never holds
+    31 Dec of a leap year (GridMET via pygridmet, Daymet).
+
+    The day is absent from the balance if any input lacks it, but it is a forgivable absence only when
+    the product that lacks it is the one that CANNOT hold it: a real CHIRPS gap on that day must stay a gap.
+    So the calendar applies only if all of the statistic's columns (precipitation for SPI; precipitation and
+    PET for SPEI) share it. The product of each column is read from ``variable_provenance``; the forcing's
+    top-level ``product`` is used only if it names a single product. No product, no calendar (the safe direction:
+    the day counts as missing).
     """
-    names: list[str] = []
-    if isinstance(data, dict):
-        for v in (data.get("variable_provenance") or {}).values():
-            if isinstance(v, dict) and v.get("product"):
-                names.append(str(v["product"]))
-        names += [p.strip() for p in str(data.get("product") or "").split("|") if p.strip()]
-    for n in dict.fromkeys(names):
-        try:
-            from aihydro_data.products import get_product
-            spec = get_product(n)
-            cfg = getattr(spec, "backend_config", None) or {}
-            if getattr(spec, "source", "") == "hyriver" and ("pygridmet_variable" in cfg or "pydaymet_variable" in cfg):
-                return "no_leap_dec31"
-            continue
-        except Exception:
-            pass
-        if n.upper().startswith(("GRIDMET", "DAYMET")):
-            return "no_leap_dec31"
-    return None
+    if not isinstance(data, dict):
+        return None
+    prov = data.get("variable_provenance") or {}
+    top = [p.strip() for p in str(data.get("product") or "").split("|") if p.strip()]
+    names = []
+    for col in columns:
+        entry = prov.get(col)
+        name = entry.get("product") if isinstance(entry, dict) else None
+        if not name and len(top) == 1:
+            name = top[0]
+        if not name:
+            return None
+        names.append(str(name))
+    return "no_leap_dec31" if names and all(_product_skips_leap_dec31(n) for n in names) else None
 
 
 @mcp.tool()
@@ -4016,7 +4036,7 @@ def compute_drought_index(
             }
 
         index = index.lower()
-        _cal = _source_calendar(data)
+        _cal = _source_calendar(data, (("prcp_mm", "pet_mm") if index == "spei" else ("prcp_mm",)))
         if index == "spei":
             pet = _col(data, ("pet_mm", "pet", "pet_hargreaves_mm", "potential_evapotranspiration"))
             if pet is None:

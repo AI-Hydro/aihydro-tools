@@ -319,6 +319,7 @@ async def compute_spectral_index(
             d["n_periods_requested"] = result.get("n_periods_requested", len(time_axis))
             d["n_periods_served"] = len(period_stats)
             d["periods_failed"] = period_failures
+            d["periods_dropped"] = result.get("periods_dropped", [])
 
         # ── Store in session ─────────────────────────────────────────────
         try:
@@ -409,6 +410,27 @@ def _fetch_and_compute_index(
         periods = _yearly_periods(start, end)
     else:
         periods = [(start, end)]
+    n_requested = len(periods)
+    periods_dropped: list[dict] = []
+    if frequency == "yearly":
+        # A year clipped by `start`/`end` is not a year: its composite covers part of the season cycle, so
+        # its mean is not comparable with the others and would enter the trend as if it were. Drop and report.
+        full = []
+        for p_start, p_end in periods:
+            y = int(p_start[:4])
+            if p_start == f"{y}-01-01" and p_end == f"{y}-12-31":
+                full.append((p_start, p_end))
+            else:
+                periods_dropped.append({"period": p_start, "period_end": p_end,
+                                        "reason": "clipped year (does not span 1 Jan-31 Dec)"})
+        periods = full
+        if not periods:
+            return {
+                "error": f"No complete calendar year lies inside [{start}, {end}]; yearly frequency needs whole years.",
+                "code": "NO_COMPLETE_YEAR",
+                "recovery": "Widen the range to include at least one full year, or use frequency='monthly'.",
+                "next_tools": ["compute_spectral_index"],
+            }
 
     # ── Sensor → optical-reflectance product ─────────────────────────────
     # We fetch the *raw multi-band reflectance composite* (variable="optical")
@@ -557,7 +579,8 @@ def _fetch_and_compute_index(
         "time_axis": time_axis,
         "period_stats": period_stats,
         "period_failures": period_failures,
-        "n_periods_requested": len(periods),
+        "n_periods_requested": n_requested,
+        "periods_dropped": periods_dropped,
     }
 
 
@@ -596,6 +619,11 @@ def _yearly_periods(start: str, end: str) -> list[tuple[str, str]]:
     return periods
 
 
+#: A seasonal test uses the calendar months that have at least 2 values and is refused unless at least this many
+#: remain. ENGINEERING CHOICE (half the year), not sourced.
+_MIN_SEASONS = 6
+
+
 def _trend_per_year(period_stats: list[dict], frequency: str | None = None) -> dict:
     """Trend of the period means in index units PER YEAR, with the test and its limits stated.
 
@@ -608,16 +636,19 @@ def _trend_per_year(period_stats: list[dict], frequency: str | None = None) -> d
     Slack & Smith 1982), season = calendar month. Each season is compared only with itself, so the
     annual cycle - which dwarfs any trend in NDVI - cannot masquerade as one, and a failed month is a
     missing value in its own season. The test statistic is the sum over seasons of the Mann-Kendall
-    S, with the tie-corrected variance summed over seasons (the seasons are treated as independent:
-    the covariance term of Hirsch & Slack 1984 is NOT included). The slope is the median of all
-    within-season pairwise slopes, abscissa in decimal years at the period midpoint.
+    S, with the tie-corrected within-season variances plus the between-season covariance. Only calendar
+    months with at least 2 values take part (``seasons_used``); the test is refused when fewer than
+    ``_MIN_SEASONS`` remain. The slope is the median of all within-season pairwise slopes, abscissa in
+    decimal years at the period midpoint.
 
-    Neither serial correlation within a season nor correlation between seasons is handled, so the
-    p-value is optimistic for persistent series (stated in the result's ``caveat``).
+    p-value: the variance includes the between-season covariance of Hirsch & Slack (1984), so a year
+    effect shared by all months or AR(1) persistence does not inflate the test (size near nominal in
+    simulation; the covariance form was validated by simulation and NOT checked against the paper's text).
+    Long-term persistence and short records remain unhandled (stated in ``caveat``).
 
     Returns a dict that always has ``slope_per_year`` and ``p_value``; both are None with a ``reason``
     when the series cannot support the estimate: fewer than 4 periods (yearly); for a sub-annual
-    series, fewer than 2 full seasonal cycles or any of the 12 seasons with fewer than 2 values.
+    series, fewer than 2 full seasonal cycles or fewer than ``_MIN_SEASONS`` months with 2 or more values.
     """
     from datetime import date as _date
     from scipy import stats as _st
@@ -630,7 +661,7 @@ def _trend_per_year(period_stats: list[dict], frequency: str | None = None) -> d
         a = _date.fromisoformat(r["period"])
         b = _date.fromisoformat(r.get("period_end") or r["period"])
         mid = (a.toordinal() + b.toordinal()) / 2.0 / 365.2425
-        rows.append((mid, float(m), a.month, (b.toordinal() - a.toordinal()) + 1))
+        rows.append((mid, float(m), a.month, (b.toordinal() - a.toordinal()) + 1, a.year))
     base = {"slope_per_year": None, "p_value": None, "unit": "index units per year",
             "n_periods_used": len(rows), "seasonality_removed": False}
     seasonal = frequency == "monthly" or (frequency is None and rows and np.median([r[3] for r in rows]) < 300)
@@ -647,38 +678,71 @@ def _trend_per_year(period_stats: list[dict], frequency: str | None = None) -> d
                         "tie-corrected normal approximation otherwise)",
                 "caveat": "The p-value assumes independent observations; serial correlation is not handled."}
 
+    # year x season table of period means (NaN = no value); rows are the calendar year of the period start
+    by_year: dict[tuple[int, int], tuple[float, float]] = {}
+    for mid, val, month, _, yr in rows:
+        by_year[(yr, month)] = (mid, val)
+    years = sorted({k[0] for k in by_year})
     seasons: dict[int, list[tuple[float, float]]] = {}
-    for mid, val, month, _ in rows:
+    for (yr, month), (mid, val) in by_year.items():
         seasons.setdefault(month, []).append((mid, val))
-    short = sorted(m for m in range(1, 13) if len(seasons.get(m, [])) < 2)
-    cycles = max((len(v) for v in seasons.values()), default=0)
-    if cycles < 2 or short:
+    counts = {m: len(seasons.get(m, [])) for m in range(1, 13)}
+    used = sorted(m for m, c in counts.items() if c >= 2)
+    dropped = sorted(m for m in range(1, 13) if counts[m] < 2)
+    cycles = max(counts.values(), default=0)
+    if cycles < 2 or len(used) < _MIN_SEASONS:
         why = (f"fewer than 2 full seasonal cycles ({cycles} value(s) in the best-covered month)"
                if cycles < 2 else
-               f"calendar month(s) {short} have fewer than 2 values, so the seasonal test is undefined there")
-        return {**base, "estimator": None, "test": None, "reason": why,
-                "season_counts": {m: len(seasons.get(m, [])) for m in range(1, 13)}}
+               f"only {len(used)} calendar month(s) have 2 or more values (at least {_MIN_SEASONS} are needed); "
+               f"months with fewer than 2: {dropped}")
+        return {**base, "estimator": None, "test": None, "reason": why, "season_counts": counts,
+                "seasons_used": used, "seasons_dropped": dropped}
+    X = np.full((len(years), 12), np.nan)
+    for (yr, month), (mid, val) in by_year.items():
+        X[years.index(yr), month - 1] = val
     S = 0.0
     var = 0.0
     slopes: list[float] = []
-    for pts in seasons.values():
-        pts = sorted(pts)
+    for m in used:
+        pts = sorted(seasons[m])
         n = len(pts)
         for i in range(n):
             for j in range(i + 1, n):
                 S += float(np.sign(pts[j][1] - pts[i][1]))
                 slopes.append((pts[j][1] - pts[i][1]) / (pts[j][0] - pts[i][0]))
-        _, counts = np.unique([v for _, v in pts], return_counts=True)
-        var += (n * (n - 1) * (2 * n + 5) - float(np.sum(counts * (counts - 1) * (2 * counts + 5)))) / 18.0
-    if var <= 0:
-        return {**base, "estimator": None, "test": None, "reason": "all values are tied within every season"}
-    z = 0.0 if S == 0 else (S - np.sign(S)) / np.sqrt(var)
+        _, tcounts = np.unique([v for _, v in pts], return_counts=True)
+        var += (n * (n - 1) * (2 * n + 5) - float(np.sum(tcounts * (tcounts - 1) * (2 * tcounts + 5)))) / 18.0
+    # Between-season covariance (Hirsch & Slack 1984): years in which both seasons have a value.
+    cov = 0.0
+    for gi, g in enumerate(used):
+        for h in used[gi + 1:]:
+            ok = np.isfinite(X[:, g - 1]) & np.isfinite(X[:, h - 1])
+            k = int(ok.sum())
+            if k < 3:
+                continue
+            a_, b_ = X[ok, g - 1], X[ok, h - 1]
+            iu = np.triu_indices(k, 1)
+            kgh = float((np.sign(a_[None, :] - a_[:, None])[iu] * np.sign(b_[None, :] - b_[:, None])[iu]).sum())
+            cov += 2.0 * (kgh + 4.0 * float((_st.rankdata(a_) * _st.rankdata(b_)).sum()) - k * (k + 1) ** 2) / 3.0
+    var_total = var + cov
+    if var <= 0 or var_total <= 0:
+        return {**base, "estimator": None, "test": None, "season_counts": counts,
+                "seasons_used": used, "seasons_dropped": dropped,
+                "reason": ("all values are tied within every season" if var <= 0 else
+                           "the serial-dependence-corrected variance is not positive (series too short or too persistent)")}
+    z = 0.0 if S == 0 else (S - np.sign(S)) / np.sqrt(var_total)
+    z_indep = 0.0 if S == 0 else (S - np.sign(S)) / np.sqrt(var)
     return {**base, "slope_per_year": float(np.median(slopes)), "p_value": float(2.0 * _st.norm.sf(abs(z))),
+            "p_value_assuming_independent_seasons": float(2.0 * _st.norm.sf(abs(z_indep))),
+            "n_periods_used": int(sum(counts[m] for m in used)),
             "estimator": "seasonal Sen slope (Hirsch, Slack & Smith 1982): median of within-calendar-month pairwise slopes, "
                          "period midpoints in decimal years",
-            "test": "seasonal Kendall (Hirsch, Slack & Smith 1982), season = calendar month, tie-corrected variance summed "
-                    "over seasons, normal approximation with continuity correction",
+            "test": "seasonal Kendall (Hirsch, Slack & Smith 1982), season = calendar month; variance = tie-corrected "
+                    "within-season terms plus the between-season covariance of Hirsch & Slack (1984) over the years present in "
+                    "both seasons; normal approximation with continuity correction",
             "seasonality_removed": True,
-            "season_counts": {m: len(seasons[m]) for m in range(1, 13)},
-            "caveat": "Serial dependence is not handled: the covariance term of Hirsch & Slack (1984) is not included, "
-                      "so the p-value is optimistic for persistent series."}
+            "season_counts": counts, "seasons_used": used, "seasons_dropped": dropped,
+            "caveat": "The between-season covariance form (sigma_gh = (K_gh + 4*sum(R_ig*R_ih) - n*(n+1)^2)/3 over years present in "
+                      "both seasons) was validated by simulation (size near nominal for AR(1) and year-effect series), NOT checked "
+                      "against the text of Hirsch & Slack (1984). Not handled: long-term persistence, and records short enough "
+                      "(under about 8-10 years) that the normal approximation is poor."}

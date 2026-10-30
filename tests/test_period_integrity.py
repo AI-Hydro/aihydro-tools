@@ -385,7 +385,16 @@ def test_drought_tool_passes_the_source_calendar_for_gridmet(monkeypatch):
     s.set("forcing", {"data": {"n_days": len(d), "_data_file": path}, "meta": {}})
     s.save()
     assert _source_calendar({"product": "GRIDMET_PRECIP"}) == "no_leap_dec31"
-    assert _source_calendar({"product": "ERA5L_PRECIP | CHIRPS"}) is None
+    assert _source_calendar({"product": "ERA5L_PRECIP | CHIRPS"}) is None                 # not a single product
+    assert _source_calendar({}) is None and _source_calendar({"product": "GRIDMET_PRECIP | GRIDMET_PET"}) is None
+    # CHIRPS precipitation with GridMET PET: SPEI must NOT forgive a real CHIRPS gap on 31 Dec
+    mix = {"variable_provenance": {"prcp_mm": {"product": "CHIRPS"}, "pet_mm": {"product": "GRIDMET_PET"}}}
+    assert _source_calendar(mix, ("prcp_mm", "pet_mm")) is None
+    assert _source_calendar(mix, ("prcp_mm",)) is None                                    # SPI reads only precipitation
+    assert _source_calendar(mix, ("pet_mm",)) == "no_leap_dec31"
+    both = {"variable_provenance": {"prcp_mm": {"product": "GRIDMET_PRECIP"}, "pet_mm": {"product": "GRIDMET_PET"}}}
+    assert _source_calendar(both, ("prcp_mm", "pet_mm")) == "no_leap_dec31"
+    assert _source_calendar({"variable_provenance": {"pet_mm": {"product": "GRIDMET_PET"}}}, ("prcp_mm", "pet_mm")) is None
     r = compute_drought_index(SID, index="spi", scale_months=12)
     assert not r.get("error"), r
     assert r["months_excluded"] == [] and r["source_calendar"] == "no_leap_dec31"
@@ -417,3 +426,54 @@ def test_locked_q100_fixture_partial_years_inflate_the_design_flood():
     assert (old["n_years"], new["n_years"]) == (16, 14)
     assert levels(old)[100.0] == pytest.approx(988.1, abs=0.1) and levels(new)[100.0] == pytest.approx(688.2, abs=0.1)
     assert levels(old)[2.0] == pytest.approx(292.5, abs=0.1) and levels(new)[2.0] == pytest.approx(335.5, abs=0.1)
+
+
+def test_monthly_basis_for_temperature_and_the_80_percent_year_rule():
+    from ai_hydro.data.forcing import _mean_annual_temp, _mean_annual_total
+    d = pd.date_range("2001-01-01", "2010-12-31")
+    temp = pd.Series(10.0 + 10.0 * np.sin(2 * np.pi * (d.dayofyear.values - 110) / 365.25), index=d)
+    full, why = _mean_annual_temp(d, temp)
+    assert why is None and full == pytest.approx(10.0, abs=0.05)
+    cold_missing = temp.copy(); cold_missing[d.month.isin([12, 1, 2])] = np.nan
+    assert _mean_annual_temp(d, cold_missing)[0] is None                    # a plain mean would read warm
+    assert round(float(cold_missing.mean()), 1) > 11.5
+    # a month with data in 7 of 10 years (70%) is refused, in 8 of 10 (80%) it is accepted
+    for have, ok in ((7, False), (8, True)):
+        s = pd.Series(3.0, index=d)
+        s[(d.month == 7) & (d.year > 2000 + have)] = np.nan
+        v, reason = _mean_annual_total(d, s)
+        assert (v is not None) is ok, (have, reason)
+        if not ok:
+            assert "[7]" in reason and "80%" in reason and "by analogy" in reason
+
+
+def test_calculate_water_balance_metrics_uses_the_same_basis():
+    from ai_hydro.data.forcing import calculate_water_balance_metrics
+    d = pd.date_range("2001-01-01", "2010-12-31")
+    pr = pd.Series(np.where(d.month.isin([10, 11, 12, 1, 2, 3]), 5.0, 0.1), index=d)
+    pet = pd.Series(np.where(d.month.isin([4, 5, 6, 7, 8, 9]), 6.0, 1.0), index=d)
+    full = pd.DataFrame({"date": d, "prcp_mm": pr.values, "pet_mm": pet.values})
+    ok = calculate_water_balance_metrics(full)
+    assert ok["mean_annual_precip_mm"] == pytest.approx(float(pr.sum() / (len(d) / 365.25)), rel=2e-3)
+    gap = full.copy(); gap.loc[d.month.isin([6, 7, 8, 9]), "prcp_mm"] = np.nan
+    r = calculate_water_balance_metrics(gap)
+    assert r["mean_annual_precip_mm"] is None and "[6, 7, 8, 9]" in r["mean_annual_precip_reason"]
+    assert r["aridity_index"] is None                                      # never PET-full / precip-partial
+
+
+def test_year_start_month_is_exposed_on_the_flood_and_low_flow_tools():
+    from ai_hydro.mcp.tools_analysis import compute_flood_frequency, compute_flow_duration_curve
+    d = pd.date_range("1999-07-01", "2012-06-30", freq="D")                # 13 July-June years
+    q = np.full(d.size, 5.0)
+    for y in range(1999, 2012):
+        q[np.where(d == f"{y + 1}-01-15")[0][0]] = 100.0 + y - 1999       # austral-summer flood
+    s = HydroSession(SID)
+    path = store.write_session_data_file(SID, "sf_sh_t1p.json", {"dates": _iso(d), "q_cms": q.tolist(), "interval": "daily",
+                                                                  "start_date": "1999-07-01", "end_date": "2012-06-30"})
+    s.set("streamflow", {"data": {"interval": "daily", "_data_file": path}, "meta": {}})
+    s.save()
+    r = compute_flood_frequency(SID, year_start_month=7)
+    assert not r.get("error"), r
+    assert r["year_type"] == "custom_year" and r["years"] == list(range(1999, 2012)) and r["excluded_years"] == []
+    f = compute_flow_duration_curve(SID, year_start_month=7)
+    assert f["low_flow_year_type"] == "custom_year" and f["low_flow_years"] == list(range(1999, 2012))

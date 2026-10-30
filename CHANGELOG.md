@@ -70,13 +70,14 @@ watershed 0.3.0). CI is red until both are on PyPI.
   any trend. Now, for `frequency="monthly"`, the seasonal Kendall test and seasonal Sen slope (Hirsch, Slack & Smith 1982; season =
   calendar month), abscissa in decimal years, so a failed month is a missing value in its own season. Theil-Sen plus Mann-Kendall
   (scipy `kendalltau`: exact p for small samples without ties, tie-corrected normal approximation otherwise) remains for `yearly`
-  only. `trend_slope_per_year` and `p_value` are None with a `reason` when any calendar month has fewer than 2 values or the series
-  is under 2 full cycles. Serial dependence is NOT handled (the covariance term of Hirsch & Slack 1984 is not included); the
-  `trend` block says so. New: `n_periods_requested`, `n_periods_served`, `periods_failed`. `pymannkendall` is no longer used.
+  only. `trend_slope_per_year` and `p_value` are None with a `reason` when the series is under 2 full cycles or fewer than 6 calendar months have 2 or more values. The p-value includes the Hirsch & Slack (1984) between-season covariance (size near nominal in simulation under AR(1) and year effects;
+  the covariance form was validated by simulation, not checked against the paper's text); long-term persistence and short records are not
+  handled, and the `trend` block says so. Months with 2 or more values are used (`seasons_used`, `seasons_dropped`); refused only if fewer than 6
+  remain. A yearly series drops years clipped by `start`/`end` (`periods_dropped`); none left is `NO_COMPLETE_YEAR`. New: `n_periods_requested`, `n_periods_served`, `periods_failed`. `pymannkendall` is no longer used.
 - **D08 `compute_drought_index`.** Passes `min_month_fraction`; reports `months_excluded`, `n_months_complete`,
   `month_convention`. A record ending on the 3rd of a month no longer reports that month as the `latest` extreme (SPI-1 -3.09 on
   the audit series); a gap is NaN months, not zeros (2010-07 -1.83 -> None). Behaviour comes from aihydro-watershed. The tool passes `calendar='no_leap_dec31'` when a forcing product never holds 31 Dec of a
-  leap year (GridMET, Daymet), so leap Decembers are kept; the result reports `source_calendar`, `months_calendar_adjusted`,
+  leap year (GridMET, Daymet), so leap Decembers are kept (SPEI only when BOTH precipitation and PET come from such products; CHIRPS plus GridMET PET gets none); the result reports `source_calendar`, `months_calendar_adjusted`,
   `n_months_in_span`, `n_per_calendar_month`.
 - **D09 `compute_flood_frequency`.** New `year_type` (default `water_year`) and `min_year_fraction`; result states
   `statistic` ("annual maximum of daily mean discharge"), `year_convention`, `years`, `excluded_years`. The locked fixture
@@ -86,7 +87,7 @@ watershed 0.3.0). CI is red until both are on PyPI.
   `map_flood_inundation` records `discharge_statistic` so a daily-mean Q100 is not labelled a peak; `_design_rainfall_from_record`
   now uses complete water-year maxima (disclosed in the design-hydrograph notes; its depth can differ from earlier releases).
 - **D26 (part) `compute_flow_duration_curve`.** 7Q10 uses the climatic year and never windows across a missing day; result
-  carries `low_flow_year_type`, `low_flow_years`, `low_flow_excluded_years`, `low_flow_windows_per_year`, and the convention is stored in
+  carries `low_flow_year_type`, `low_flow_years`, `low_flow_excluded_years`, `low_flow_windows_per_year`, `year_start_month` (also on `compute_flood_frequency`), and the convention is stored in
   `session.flow_duration` meta. A year also needs 95% of its 7-day windows evaluable (see aihydro-watershed 0.3.0).
 - **D10 tool-side GEE extraction** (`ai_hydro/gee/timeseries.py`, `map_layers.py`): the same inclusive-end fix as aihydro-data.
 - **D11 `fetch_forcing_data`.** `_strip_forcing_arrays` kept only numeric summaries and deleted every list, including

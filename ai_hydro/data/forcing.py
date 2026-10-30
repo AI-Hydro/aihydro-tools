@@ -213,23 +213,34 @@ def calculate_water_balance_metrics(df: pd.DataFrame) -> Dict[str, float]:
             print("  Warning: Missing prcp_mm or pet_mm, cannot compute water balance")
             return stats
         
-        # Annual totals
-        n_years = len(df) / 365.25
-        stats['mean_annual_precip_mm'] = df['prcp_mm'].sum() / n_years
-        stats['mean_annual_pet_mm'] = df['pet_mm'].sum() / n_years
-        
-        # Aridity index
-        stats['aridity_index'] = stats['mean_annual_pet_mm'] / stats['mean_annual_precip_mm']
-        
+        # Annual totals on the monthly-climatology basis (a missing day is not a dry day, and a missing season
+        # does not re-weight the year); None + a reason when a calendar month is not usable.
+        dates = _dates_of(df)
+        stats['mean_annual_precip_mm'], p_why = _mean_annual_total(dates, df['prcp_mm'])
+        stats['mean_annual_pet_mm'], e_why = _mean_annual_total(dates, df['pet_mm'])
+        if p_why:
+            stats['mean_annual_precip_reason'] = p_why
+        if e_why:
+            stats['mean_annual_pet_reason'] = e_why
+
+        # Aridity index, from those same two totals
+        if (stats['mean_annual_precip_mm'] or 0) > 0 and stats['mean_annual_pet_mm'] is not None:
+            stats['aridity_index'] = stats['mean_annual_pet_mm'] / stats['mean_annual_precip_mm']
+        else:
+            stats['aridity_index'] = None
+
         # Temperature statistics
         if 'tavg_C' in df.columns:
-            stats['mean_annual_temp_C'] = df['tavg_C'].mean()
-        
-        # Precipitation characteristics
+            stats['mean_annual_temp_C'], t_why = _mean_annual_temp(dates, df['tavg_C'])
+            if t_why:
+                stats['mean_annual_temp_reason'] = t_why
+
+        # Precipitation characteristics, over the days that have a value
+        n_valid = int(df['prcp_mm'].notna().sum())
         wet_days = (df['prcp_mm'] > 1.0).sum()
-        stats['wet_days_per_year'] = wet_days / n_years
-        stats['wet_day_frequency'] = wet_days / len(df)
-        
+        stats['wet_day_frequency'] = wet_days / n_valid if n_valid else None
+        stats['wet_days_per_year'] = stats['wet_day_frequency'] * 365.25 if n_valid else None
+
         # Snow fraction (approximate: precip when temp <= 0°C)
         if 'tavg_C' in df.columns:
             snow_days = (df['tavg_C'] <= 0) & (df['prcp_mm'] > 0)
@@ -466,17 +477,17 @@ def generate_forcing_summary(
     summary += f"Variables: {', '.join([c for c in df.columns if c != 'date'])}\n\n"
     
     summary += "WATER BALANCE:\n"
-    if 'mean_annual_precip_mm' in stats:
+    if stats.get('mean_annual_precip_mm') is not None:
         summary += f"  Mean Annual Precipitation: {stats['mean_annual_precip_mm']:.1f} mm/year\n"
-    if 'mean_annual_pet_mm' in stats:
+    if stats.get('mean_annual_pet_mm') is not None:
         summary += f"  Mean Annual PET: {stats['mean_annual_pet_mm']:.1f} mm/year\n"
-    if 'aridity_index' in stats:
+    if stats.get('aridity_index') is not None:
         summary += f"  Aridity Index: {stats['aridity_index']:.2f}\n"
-    if 'mean_annual_temp_C' in stats:
+    if stats.get('mean_annual_temp_C') is not None:
         summary += f"  Mean Annual Temperature: {stats['mean_annual_temp_C']:.1f} °C\n\n"
     
     summary += "PRECIPITATION CHARACTERISTICS:\n"
-    if 'wet_days_per_year' in stats:
+    if stats.get('wet_days_per_year') is not None:
         summary += f"  Wet Days per Year: {stats['wet_days_per_year']:.0f}\n"
     if 'snow_fraction' in stats:
         summary += f"  Snow Fraction: {stats['snow_fraction']:.2f}\n\n"
@@ -490,30 +501,63 @@ def generate_forcing_summary(
 _MONTH_DAYS = (31.0, 28.25, 31.0, 30.0, 31.0, 30.0, 31.0, 31.0, 30.0, 31.0, 30.0, 31.0)
 
 
-def _mean_annual_total(dates, series) -> tuple:
-    """Mean annual total of a daily flux (mm/day -> mm/yr): ``(value | None, reason | None)``.
+#: A calendar month enters the annual basis only if at least this fraction of the years in the record have
+#: some data in it. WMO-No. 1203 s4.4.2 gives 80% for climate NORMALS; it is applied here by analogy (a
+#: record of a few years is not a normal), so treat it as a guard, not as a sourced rule for this quantity.
+_MIN_YEARS_WITH_DATA_PER_MONTH = 0.80
 
-    Sum over the 12 calendar months of (mean of the finite days in that month) x (days in the
-    month). A missing (NaN) day is neither a zero-flux day (the old ``sum / record length`` read 543
-    mm for 3 mm/day with half the year missing) nor, as a plain mean over the finite days would be,
-    a license to over-weight the observed season: if the missing days are one season, the mean of
-    the remaining days is that season's flux, not the year's (a missing dry season read +30%,
-    a missing wet season -45%, in the methods review's test). The monthly climatology weights each
-    calendar month by its length whatever the gaps are.
 
-    ``(None, reason)`` when a calendar month has no finite day at all: there is no honest annual
-    total from a record that never saw that month.
+def _monthly_climatology(dates, series) -> tuple:
+    """``(mean of finite days per calendar month as a Series indexed 1..12 | None, reason | None)``.
+
+    A month is usable when at least 80% of the years in which it occurs in the record have a finite day in it
+    (WMO-No. 1203 s4.4.2, by analogy; see ``_MIN_YEARS_WITH_DATA_PER_MONTH``).
     """
     d = pd.DatetimeIndex(pd.to_datetime(list(dates)))
     v = pd.to_numeric(pd.Series(np.asarray(series), index=d), errors="coerce")
-    v = v[np.isfinite(v)]
-    if v.empty:
+    if len(d) == 0:
+        return None, "empty record"
+    finite = v[np.isfinite(v)]
+    if finite.empty:
         return None, "no finite day"
-    clim = v.groupby(v.index.month).mean()
-    absent = [m for m in range(1, 13) if m not in clim.index]
-    if absent:
-        return None, f"calendar month(s) {absent} have no finite day"
+    span = pd.date_range(d.min().normalize(), d.max().normalize(), freq="D")
+    occurs = pd.Series(1, index=pd.MultiIndex.from_arrays([span.year, span.month])).groupby(level=[0, 1]).sum()
+    n_years = occurs.groupby(level=1).size()                       # years in which each month occurs in the span
+    have = finite.groupby([finite.index.year, finite.index.month]).size().groupby(level=1).size()
+    bad = []
+    for m in range(1, 13):
+        n_occ = int(n_years.get(m, 0))
+        n_have = int(have.get(m, 0))
+        if n_occ == 0 or n_have == 0 or n_have < _MIN_YEARS_WITH_DATA_PER_MONTH * n_occ - 1e-9:
+            bad.append(m)
+    if bad:
+        return None, (f"calendar month(s) {bad} have data in fewer than {_MIN_YEARS_WITH_DATA_PER_MONTH:.0%} of the "
+                      "years of the record (threshold from WMO-No. 1203 s4.4.2 for normals, applied by analogy)")
+    return finite.groupby(finite.index.month).mean(), None
+
+
+def _mean_annual_total(dates, series) -> tuple:
+    """Mean annual total of a daily flux (mm/day -> mm/yr): ``(value | None, reason | None)``.
+
+    Sum over the 12 calendar months of (mean of the finite days in that month) x (days in the month). A
+    missing (NaN) day is neither a zero-flux day (the old ``sum / record length`` read 543 mm for 3 mm/day with
+    half the days missing) nor, as a plain mean over the finite days would be, a license to over-weight the
+    observed season: with a missing dry season the plain mean read +48%, with a missing wet season -48% in the
+    methods review's test. The monthly climatology weights each calendar month by its length whatever the gaps
+    are. ``(None, reason)`` when a calendar month is not usable (see :func:`_monthly_climatology`).
+    """
+    clim, why = _monthly_climatology(dates, series)
+    if clim is None:
+        return None, why
     return float(sum(clim[m] * _MONTH_DAYS[m - 1] for m in range(1, 13))), None
+
+
+def _mean_annual_temp(dates, series) -> tuple:
+    """Mean annual temperature on the same monthly basis: ``(value | None, reason | None)``."""
+    clim, why = _monthly_climatology(dates, series)
+    if clim is None:
+        return None, why
+    return float(sum(clim[m] * _MONTH_DAYS[m - 1] for m in range(1, 13)) / 365.25), None
 
 
 def _dates_of(df: "pd.DataFrame"):
@@ -631,8 +675,10 @@ def fetch_forcing_data_result(
                 clean["mean_annual_pet_mm"] / clean["mean_annual_precip_mm"], 3
             )
         if tmmn_col and tmmx_col:
-            mean_k = float((df[tmmn_col].mean() + df[tmmx_col].mean()) / 2)
-            clean["mean_annual_temp_C"] = round(mean_k - 273.15, 2)
+            mean_k, why = _mean_annual_temp(_dates_of(df), (df[tmmn_col] + df[tmmx_col]) / 2)
+            clean["mean_annual_temp_C"] = round(mean_k - 273.15, 2) if mean_k is not None else None
+            if why:
+                clean["mean_annual_temp_reason"] = why
 
         return HydroResult(
             data=clean,
@@ -967,7 +1013,10 @@ def fetch_forcing_data_routed(
                                              or clean.get("mean_annual_pet_reason")
                                              or "precipitation total is not positive")
     if "tavg_C" in df.columns:
-        clean["mean_annual_temp_C"] = round(float(df["tavg_C"].mean()), 2)   # pandas mean skips NaN
+        v, why = _mean_annual_temp(df["date"], df["tavg_C"])
+        clean["mean_annual_temp_C"] = round(v, 2) if v is not None else None
+        if why:
+            clean["mean_annual_temp_reason"] = why
 
     from ai_hydro import __version__
     return HydroResult(
