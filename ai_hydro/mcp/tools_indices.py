@@ -82,7 +82,8 @@ async def compute_spectral_index(
     -------
     dict: index_name, data {mean, median, std, p10, p25, p75, p90, valid_px}, colormap, citation,
     use_case, threshold_hint, _files_saved, _map_layer, next_steps. Time-series mode adds
-    time_axis, period_means, trend_slope_per_year and p_value (None without pymannkendall).
+    time_axis, period_means, trend_slope_per_year (index units/YEAR, Theil-Sen), p_value, trend,
+    n_periods_requested/served, periods_failed (a failed period is a gap).
     """
     from ai_hydro.mcp.helpers import _resolve_session, _maybe_set_workspace
     from ai_hydro.session import HydroSession
@@ -281,16 +282,13 @@ async def compute_spectral_index(
         except Exception as _ve:
             log.warning("Visualization failed (non-fatal): %s", _ve)
 
-        # ── Mann-Kendall trend (time-series mode) ────────────────────────
-        trend_slope = None
-        trend_p = None
+        # ── Trend (time-series mode) ─────────────────────────────────────
+        # Fitted on the real time axis (period midpoints in decimal years), so a
+        # period that failed is a gap, not a neighbour. Units: index units / year.
+        trend = None
+        period_failures = result.get("period_failures", [])
         if time_axis and period_stats:
-            try:
-                means = [s["mean"] for s in period_stats if s["mean"] is not None]
-                if len(means) >= 4:
-                    trend_slope, trend_p = _mann_kendall_slope(means)
-            except Exception as _mke:
-                log.debug("Mann-Kendall failed (non-fatal): %s", _mke)
+            trend = _trend_per_year(period_stats)
 
         if ctx:
             await ctx.report_progress(progress=10, total=10)
@@ -315,8 +313,12 @@ async def compute_spectral_index(
         if time_axis:
             d["time_axis"] = time_axis
             d["period_means"] = [s.get("mean") for s in period_stats]
-            d["trend_slope_per_year"] = trend_slope
-            d["p_value"] = trend_p
+            d["trend_slope_per_year"] = trend["slope_per_year"] if trend else None
+            d["p_value"] = trend["p_value"] if trend else None
+            d["trend"] = trend
+            d["n_periods_requested"] = result.get("n_periods_requested", len(time_axis))
+            d["n_periods_served"] = len(period_stats)
+            d["periods_failed"] = period_failures
 
         # ── Store in session ─────────────────────────────────────────────
         try:
@@ -437,6 +439,7 @@ def _fetch_and_compute_index(
 
     period_das = []
     period_stats = []
+    period_failures: list[dict] = []
     time_axis = [] if frequency else None
 
     for p_start, p_end in periods:
@@ -504,6 +507,7 @@ def _fetch_and_compute_index(
                 valid = idx_da.values[np.isfinite(idx_da.values)]
                 period_stats.append({
                     "period": p_start,
+                    "period_end": p_end,
                     "mean": float(np.mean(valid)) if valid.size > 0 else None,
                     "n_pixels": int(valid.size),
                 })
@@ -525,7 +529,10 @@ def _fetch_and_compute_index(
                     ),
                     "next_tools": ["list_spectral_indices", "data_list_products"],
                 }
-            # Time-series mode: skip failed periods silently
+            # Time-series mode: a failed period is a GAP. It is recorded (never
+            # silently dropped) and the trend is fitted on the real time axis.
+            period_failures.append({"period": p_start, "period_end": p_end,
+                                    "reason": str(exc)[:200]})
 
     if not period_das:
         return {
@@ -549,6 +556,8 @@ def _fetch_and_compute_index(
         "index_da": final_da,
         "time_axis": time_axis,
         "period_stats": period_stats,
+        "period_failures": period_failures,
+        "n_periods_requested": len(periods),
     }
 
 
@@ -587,23 +596,44 @@ def _yearly_periods(start: str, end: str) -> list[tuple[str, str]]:
     return periods
 
 
-def _mann_kendall_slope(series: list[float]) -> tuple[float | None, float | None]:
-    """Compute Mann-Kendall trend slope (Theil-Sen) and p-value.
+def _trend_per_year(period_stats: list[dict]) -> dict | None:
+    """Theil-Sen slope and Mann-Kendall test of the period means, in index units PER YEAR.
 
-    Uses ``pymannkendall`` if available, otherwise falls back to a simple
-    linear-regression slope as a proxy.
+    The abscissa is the period midpoint in decimal years, so months that failed to
+    fetch leave a gap instead of shifting later months one step closer, and a
+    monthly series is not mislabelled (a slope per period is 12x a slope per year).
+
+    Estimator (always the same, never a fallback): ``scipy.stats.theilslopes``
+    (median of pairwise slopes) and ``scipy.stats.kendalltau`` of value against
+    time (the Mann-Kendall test; tie-corrected normal approximation). Neither
+    removes the seasonal cycle nor corrects for serial correlation; both are
+    stated in the result. Returns None when fewer than 4 periods have a mean.
     """
-    try:
-        import pymannkendall as mk
-        result = mk.original_test(series)
-        return float(result.slope), float(result.p)
-    except ImportError:
-        pass
-    # Linear regression fallback
-    try:
-        n = len(series)
-        x = np.arange(n, dtype=float)
-        slope = float(np.polyfit(x, series, 1)[0])
-        return slope, None
-    except Exception:
-        return None, None
+    from datetime import date as _date
+    from scipy import stats as _st
+
+    t, y = [], []
+    for r in period_stats:
+        m = r.get("mean")
+        if m is None or not np.isfinite(m):
+            continue
+        a = _date.fromisoformat(r["period"])
+        b = _date.fromisoformat(r.get("period_end") or r["period"])
+        mid = a.toordinal() + (b.toordinal() - a.toordinal()) / 2.0
+        t.append(mid / 365.2425)
+        y.append(float(m))
+    if len(y) < 4:
+        return None
+    slope = float(_st.theilslopes(y, t)[0])
+    p = float(_st.kendalltau(t, y).pvalue)
+    note = ("Seasonal cycle not removed" if len(y) > 12 else "Short series")
+    return {
+        "slope_per_year": slope,
+        "p_value": p,
+        "unit": "index units per year",
+        "estimator": "Theil-Sen (scipy.stats.theilslopes) on period midpoints in decimal years",
+        "test": "Mann-Kendall via scipy.stats.kendalltau (tie-corrected, no serial-correlation correction)",
+        "n_periods_used": len(y),
+        "seasonality_removed": False,
+        "caveat": f"{note}; the p-value assumes independent observations.",
+    }

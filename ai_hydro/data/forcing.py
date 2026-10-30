@@ -486,6 +486,20 @@ def generate_forcing_summary(
     return summary
 
 
+def _mean_annual_total(series: "pd.Series") -> Optional[float]:
+    """Mean annual total of a daily flux (mm/day -> mm/yr) over the days that HAVE a value.
+
+    ``mean(finite days) * 365.25``. A missing (NaN) day is not a zero-flux day: dividing a sum
+    that skips NaN by the full record length (the old rule) biased the total low by the missing
+    share (3 mm/day with half the year missing read 543 mm, not 1096). None when no day has a value.
+    """
+    vals = pd.to_numeric(series, errors="coerce")
+    vals = vals[np.isfinite(vals)]
+    if vals.empty:
+        return None
+    return float(vals.mean() * 365.25)
+
+
 def fetch_forcing_data_result(
     watershed_geojson: dict,
     start_date: str,
@@ -582,12 +596,13 @@ def fetch_forcing_data_result(
         tmmx_col = "tmmx" if "tmmx" in var_cols else None
 
         if pr_col:
-            annual_pr = float(df[pr_col].sum() / (len(df) / 365.25))
-            clean["mean_annual_precip_mm"] = round(annual_pr, 2)
+            annual_pr = _mean_annual_total(df[pr_col])
+            clean["mean_annual_precip_mm"] = round(annual_pr, 2) if annual_pr is not None else None
         if pet_col:
-            annual_pet = float(df[pet_col].sum() / (len(df) / 365.25))
-            clean["mean_annual_pet_mm"] = round(annual_pet, 2)
-        if pr_col and pet_col and clean.get("mean_annual_precip_mm", 0) > 0:
+            annual_pet = _mean_annual_total(df[pet_col])
+            clean["mean_annual_pet_mm"] = round(annual_pet, 2) if annual_pet is not None else None
+        if pr_col and pet_col and (clean.get("mean_annual_precip_mm") or 0) > 0 \
+                and clean.get("mean_annual_pet_mm") is not None:
             clean["aridity_index"] = round(
                 clean["mean_annual_pet_mm"] / clean["mean_annual_precip_mm"], 3
             )
@@ -752,6 +767,8 @@ def fetch_forcing_data_routed(
     products_used: list[str] = []
     sources_used: list[str] = []
     warnings_list: list[str] = []
+    variables_failed: list[dict] = []
+    variable_provenance: dict[str, dict] = {}
 
     for var in requested:
         if var not in _ADATA_ROUTES:
@@ -771,6 +788,8 @@ def fetch_forcing_data_routed(
             val_col = next((c for c in df_var.columns if c != "date"), None)
             if val_col is None:
                 warnings_list.append(f"{var}: empty DataFrame returned")
+                variables_failed.append({"variable": var, "output": out_col,
+                                         "reason": "empty DataFrame returned"})
                 continue
             df_var = df_var.rename(columns={val_col: out_col})
             df_var["date"] = pd.to_datetime(df_var["date"])
@@ -791,8 +810,24 @@ def fetch_forcing_data_routed(
             frames.append(df_var)
             products_used.append(result.product)
             sources_used.append(str(result.source))
+            # Per-variable provenance: which product served it, in what units, and whether the
+            # requested window was covered (the merged frame cannot tell variables apart).
+            variable_provenance[out_col] = {
+                "variable": adata_var,
+                "product": result.product,
+                "source": str(result.source),
+                "units": getattr(result, "units", "") or None,
+                "coverage_complete": getattr(result, "coverage_complete", None),
+                "days_missing_head": getattr(result, "days_missing_head", None),
+                "days_missing_tail": getattr(result, "days_missing_tail", None),
+                "days_missing_internal": getattr(result, "days_missing_internal", None),
+                "missing_ranges": list(getattr(result, "missing_ranges", []) or [])[:20],
+                "notes": [str(n) for n in (getattr(result, "notes", []) or [])][:10],
+            }
         except Exception as exc:
             warnings_list.append(f"{adata_var}: {exc}")
+            variables_failed.append({"variable": var, "output": out_col,
+                                     "product": pinned, "reason": str(exc)[:300]})
 
     # ── Supplement: CONUS-only GridMET vars (srad, vs, sph, …) ────────────
     conus_only_requested = [v for v in requested if v in _GRIDMET_ONLY_VARS]
@@ -818,8 +853,12 @@ def fetch_forcing_data_routed(
                 warnings_list.append(
                     f"CONUS-only variables skipped for non-CONUS basin: {conus_only_requested}"
                 )
+                variables_failed += [{"variable": v, "reason": "CONUS-only variable, basin outside CONUS"}
+                                     for v in conus_only_requested]
         except Exception as exc:
             warnings_list.append(f"CONUS-only fetch failed: {exc}")
+            variables_failed += [{"variable": v, "reason": f"CONUS-only fetch failed: {exc}"[:300]}
+                                 for v in conus_only_requested]
 
     # ── Guard ───────────────────────────────────────────────────────────────
     if not frames:
@@ -866,22 +905,33 @@ def fetch_forcing_data_routed(
     clean["source"]  = " | ".join(dict.fromkeys(sources_used))
     if warnings_list:
         clean["_warnings"] = warnings_list
+    # Asked-for versus served, by name. A variable that failed leaves a record, not a silent hole.
+    clean["variables_requested"] = [v for v in requested]
+    clean["variables_failed"] = variables_failed
+    clean["variable_provenance"] = variable_provenance
+    clean["forcing_complete"] = bool(
+        not variables_failed
+        and all(p.get("coverage_complete") is not False for p in variable_provenance.values())
+    )
 
-    # Summary stats
+    # Summary stats - means over the days that have a value (a NaN day is not a zero day).
+    for col, key in (("prcp_mm", "precip"), ("pet_mm", "pet")):
+        if col in df.columns:
+            n_fin = int(np.isfinite(pd.to_numeric(df[col], errors="coerce")).sum())
+            clean[f"{key}_n_finite_days"] = n_fin
+            clean[f"{key}_n_missing_days"] = int(len(df) - n_fin)
     if "prcp_mm" in df.columns:
-        clean["mean_annual_precip_mm"] = round(
-            float(df["prcp_mm"].sum() / (len(df) / 365.25)), 2
-        )
+        v = _mean_annual_total(df["prcp_mm"])
+        clean["mean_annual_precip_mm"] = round(v, 2) if v is not None else None
     if "pet_mm" in df.columns:
-        clean["mean_annual_pet_mm"] = round(
-            float(df["pet_mm"].sum() / (len(df) / 365.25)), 2
-        )
-    if clean.get("mean_annual_precip_mm", 0) > 0 and "mean_annual_pet_mm" in clean:
+        v = _mean_annual_total(df["pet_mm"])
+        clean["mean_annual_pet_mm"] = round(v, 2) if v is not None else None
+    if (clean.get("mean_annual_precip_mm") or 0) > 0 and clean.get("mean_annual_pet_mm") is not None:
         clean["aridity_index"] = round(
             clean["mean_annual_pet_mm"] / clean["mean_annual_precip_mm"], 3
         )
     if "tavg_C" in df.columns:
-        clean["mean_annual_temp_C"] = round(float(df["tavg_C"].mean()), 2)
+        clean["mean_annual_temp_C"] = round(float(df["tavg_C"].mean()), 2)   # pandas mean skips NaN
 
     from ai_hydro import __version__
     return HydroResult(

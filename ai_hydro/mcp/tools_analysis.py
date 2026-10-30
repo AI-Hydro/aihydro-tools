@@ -3191,6 +3191,15 @@ async def fetch_forcing_data(
                 "— load from _data_file when needed."
             ),
         }
+        # Substitution/failure record at the top of the response (D11): a variable that was asked
+        # for and not served, and any provider warning, must not be recoverable only from the file.
+        if d_data.get("_warnings"):
+            resp["_warnings"] = d_data["_warnings"]
+        if d_data.get("variables_failed"):
+            resp["variables_failed"] = d_data["variables_failed"]
+            resp["forcing_complete"] = False
+        elif "forcing_complete" in d_data:
+            resp["forcing_complete"] = d_data["forcing_complete"]
         reminder = _sync_reminder(session_id)
         if reminder:
             resp["_sync_required"] = reminder
@@ -3400,6 +3409,49 @@ def fetch_camels_us(
 # ============================================================================
 
 
+def _daily_streamflow_problem(data, slot, tool: str):
+    """Refuse a streamflow slot that is not a daily series (tool audit D12).
+
+    The baseflow filter, flow-duration curve, annual maxima and 7Q10 are daily-series statistics:
+    run on 15-minute samples they return a number (BFI 0.99) that means nothing. A slot is refused
+    when it declares ``interval`` other than "daily", or - whatever it declares - when the median
+    spacing of its dates is below one day. Returns an error dict, or None when the series is daily
+    (or carries nothing to check).
+    """
+    declared = None
+    for src in (data, slot, slot.get("data") if isinstance(slot, dict) else None):
+        if isinstance(src, dict) and src.get("interval") is not None:
+            declared = src.get("interval")
+            break
+    step_s = None
+    dates = data.get("dates") if isinstance(data, dict) else None
+    if isinstance(dates, (list, tuple)) and len(dates) > 2:
+        try:
+            import numpy as _np
+            import pandas as _pd
+            t = _pd.to_datetime(_pd.Series(list(dates[:5000])), errors="coerce").dropna()
+            if len(t) > 2:
+                step_s = float(_np.median(_np.diff(t.values).astype("timedelta64[s]").astype(float)))
+        except Exception:
+            step_s = None
+    sub_daily = step_s is not None and 0 < step_s < 20 * 3600
+    if (declared is not None and declared != "daily") or sub_daily:
+        return {
+            "error": True,
+            "code": "STREAMFLOW_NOT_DAILY",
+            "message": (f"{tool} works on a daily series, but the streamflow in this session is "
+                        f"interval={declared!r} with a median step of "
+                        f"{'unknown' if step_s is None else f'{step_s:.0f} s'}. Running it would apply a "
+                        "daily-calibrated method to sub-daily samples and return a number that looks valid."),
+            "recovery": "fetch_streamflow_data(..., interval='daily') (USGS daily mean values), "
+                        "or aggregate to daily means explicitly before analysis.",
+            "next_tools": ["fetch_streamflow_data"],
+            "interval": declared,
+            "median_step_s": step_s,
+        }
+    return None
+
+
 @mcp.tool()
 def separate_baseflow(
     session_id: str | None = None,
@@ -3508,6 +3560,10 @@ def separate_baseflow(
                 ),
                 "recovery": "Re-run fetch_streamflow_data and confirm it returns a 'q_cms' array.",
             }
+
+        _not_daily = _daily_streamflow_problem(data, sf, "separate_baseflow")
+        if _not_daily:
+            return _not_daily
 
         method = method.lower()
         warmup_bias = None
@@ -3664,6 +3720,10 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
                 "next_tools": ["fetch_streamflow_data"],
             }
 
+        _not_daily = _daily_streamflow_problem(data, sf, "compute_flow_duration_curve")
+        if _not_daily:
+            return _not_daily
+
         dates = data.get("dates") if isinstance(data, dict) else None
 
         fdc = flow_duration_curve(q)
@@ -3693,6 +3753,10 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
             "n_days": fdc["n_days"],
             "n_years_for_7q10": low["n_years"],
             "low_flow_note": low["note"],
+            "low_flow_year_type": low.get("year_type"),
+            "low_flow_year_convention": low.get("year_convention"),
+            "low_flow_years": low.get("years"),
+            "low_flow_excluded_years": low.get("excluded_years", []),
             "_note": "Full FDC (exceedance_prob + sorted_flows) stored in session.flow_duration.",
             "next_steps": [
                 {"tool": "compute_flood_frequency",
@@ -3712,6 +3776,8 @@ def compute_flood_frequency(
     session_id: str | None = None,
     distribution: str = "gumbel",
     method: str = "mle",
+    year_type: str = "water_year",
+    min_year_fraction: float | None = None,
 ) -> dict:
     """
     Estimate design floods (return periods) from streamflow in the session via
@@ -3719,6 +3785,11 @@ def compute_flood_frequency(
     returns return levels for 2–500 yr with bootstrap confidence intervals.
     Writes session.flood_frequency. Requires fetch_streamflow_data first and
     ≥10 years of daily data for a meaningful fit.
+
+    The series is the annual maximum of DAILY MEAN discharge, not the instantaneous
+    peak of Bulletin 17C, so levels are daily-mean levels. Years are water years
+    (1 Oct-30 Sep); a year with under 95% of its days observed (engineering default)
+    is excluded and listed in ``excluded_years``.
 
     Parameters
     ----------
@@ -3731,6 +3802,11 @@ def compute_flood_frequency(
     method : str
         'mle' (default; maximum likelihood) | 'mom' (method of moments).
         Ignored for lp3 (always method-of-moments on logs).
+    year_type : str
+        'water_year' (default) | 'calendar_year'.
+    min_year_fraction : float | None
+        Smallest observed fraction of a year's days for the year to count
+        (default 0.95).
     """
     try:
         from ai_hydro.session import HydroSession
@@ -3781,13 +3857,21 @@ def compute_flood_frequency(
                 "next_tools": ["fetch_streamflow_data"],
             }
 
+        _not_daily = _daily_streamflow_problem(data, sf, "compute_flood_frequency")
+        if _not_daily:
+            return _not_daily
+
         dates = data.get("dates") if isinstance(data, dict) else None
-        am = annual_maxima(q, dates=dates)
+        am = annual_maxima(q, dates=dates, year_type=year_type, min_fraction=min_year_fraction,
+                           window=(data.get("start_date"), data.get("end_date"))
+                           if isinstance(data, dict) else None)
         if am["n_years"] < 5:
             return {
                 "error": True,
                 "code": "INSUFFICIENT_RECORD",
-                "message": f"Only {am['n_years']} years of annual maxima; need ≥5 (≥10 recommended).",
+                "message": f"Only {am['n_years']} complete {am['year_type']}s of annual maxima; need ≥5 (≥10 recommended). "
+                           f"{len(am['excluded_years'])} year(s) were excluded as incomplete.",
+                "excluded_years": am["excluded_years"],
                 "recovery": "Fetch a longer streamflow record (≥10 years) before flood frequency analysis.",
                 "next_tools": ["fetch_streamflow_data"],
             }
@@ -3804,7 +3888,10 @@ def compute_flood_frequency(
             },
             "meta": {"tool": "compute_flood_frequency",
                      "dist": ffa["dist"], "method": ffa["method"],
-                     "n_years": ffa["n_years"]},
+                     "n_years": ffa["n_years"],
+                     "year_type": am["year_type"], "year_convention": am["year_convention"],
+                     "statistic": am["statistic"], "min_year_fraction": am["min_fraction"],
+                     "excluded_years": am["excluded_years"]},
         })
         session.save()
 
@@ -3816,6 +3903,12 @@ def compute_flood_frequency(
             "distribution": ffa["dist"],
             "method": ffa["method"],
             "n_years": ffa["n_years"],
+            "years": am["years"],
+            "year_type": am["year_type"],
+            "year_convention": am["year_convention"],
+            "statistic": am["statistic"],
+            "min_year_fraction": am["min_fraction"],
+            "excluded_years": am["excluded_years"],
             "headline_return_levels_cms": headline,
             "params": ffa["params"],
             "return_levels": ffa["return_levels"],
@@ -3839,6 +3932,7 @@ def compute_drought_index(
     session_id: str | None = None,
     index: str = "spi",
     scale_months: int = 3,
+    min_month_fraction: float | None = None,
 ) -> dict:
     """
     Compute a standardised drought index (SPI or SPEI) from forcing data in the
@@ -3856,6 +3950,12 @@ def compute_drought_index(
         the forcing data).
     scale_months : int
         Accumulation window in months (1, 3, 6, 12). Default 3.
+    min_month_fraction : float | None
+        Smallest observed fraction of a month's days for the month to be used.
+        Default 1.0 (every day; an engineering choice). A month below it - a
+        record that stops mid-month, a gap, a NaN day - is EXCLUDED, listed in
+        ``months_excluded``, and any accumulation window containing it is not
+        evaluated. Missing precipitation is never treated as 0.
     """
     try:
         from ai_hydro.session import HydroSession
@@ -3915,9 +4015,11 @@ def compute_drought_index(
                     "recovery": "Fetch forcing with PET (fetch_forcing_data includes GRIDMET/ERA5L PET), or use index='spi'.",
                     "next_tools": ["fetch_forcing_data"],
                 }
-            result = spei(precip, pet, dates, scale_months=scale_months)
+            result = spei(precip, pet, dates, scale_months=scale_months,
+                          min_month_fraction=min_month_fraction)
         elif index == "spi":
-            result = spi(precip, dates, scale_months=scale_months)
+            result = spi(precip, dates, scale_months=scale_months,
+                         min_month_fraction=min_month_fraction)
         else:
             return {
                 "error": True,
@@ -3937,7 +4039,9 @@ def compute_drought_index(
             "meta": {"tool": "compute_drought_index",
                      "index": result["index_name"],
                      "scale_months": result["scale_months"],
-                     "mean": result["mean"], "std": result["std"]},
+                     "mean": result["mean"], "std": result["std"],
+                     "months_excluded": result.get("months_excluded", []),
+                     "min_month_fraction": result.get("min_month_fraction")},
         })
         session.save()
 
@@ -3958,6 +4062,10 @@ def compute_drought_index(
             "index_name": result["index_name"],
             "scale_months": result["scale_months"],
             "n_months": result["n_months"],
+            "n_months_complete": result.get("n_months_complete"),
+            "months_excluded": result.get("months_excluded", []),
+            "min_month_fraction": result.get("min_month_fraction"),
+            "month_convention": result.get("month_convention"),
             "calibration_mean": result["mean"],
             "calibration_std": result["std"],
             "latest": latest,

@@ -1110,12 +1110,28 @@ def _legacy_data_shim(
 
 
 def _strip_forcing_arrays(data: dict) -> dict:
-    """Remove large daily arrays from forcing data, keeping per-variable means."""
+    """Remove large daily arrays from forcing data, keeping per-variable means.
+
+    Only DATE and NUMERIC arrays are dropped. A list of strings or records is metadata
+    (``variables``, ``_warnings``, ...) and is kept: dropping it silently
+    deleted the warnings that say a variable failed. Means are over the FINITE
+    days (a missing day is not zero); ``variable_coverage`` says how many days
+    each mean rests on.
+    """
+    import math
     compact: dict = {}
     var_means: dict = {}
+    coverage: dict = {}
     for k, v in data.items():
         if isinstance(v, list):
-            valid = [x for x in v if x is not None and isinstance(x, (int, float))]
+            if k != "dates" and v and all(isinstance(x, (str, dict)) for x in v):
+                compact[k] = v                       # variables, _warnings, ...
+                continue
+            valid = [x for x in v if isinstance(x, (int, float)) and not isinstance(x, bool)
+                     and math.isfinite(x)]
+            if k != "dates" and v:
+                coverage[k] = {"n_days": len(v), "n_finite": len(valid),
+                               "n_missing": len(v) - len(valid)}
             if valid:
                 var_means[f"{k}_mean"] = round(sum(valid) / len(valid), 4)
         else:
@@ -1123,4 +1139,6 @@ def _strip_forcing_arrays(data: dict) -> dict:
     compact.update(var_means)
     if var_means:
         compact["n_variables"] = len(var_means)
+    if coverage:
+        compact["variable_coverage"] = coverage
     return compact

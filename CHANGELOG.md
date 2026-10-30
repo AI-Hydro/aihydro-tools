@@ -6,6 +6,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed (tool audit T1-P, D07-D12)
+
+Requires the matching aihydro-watershed (`signatures.periods`) and aihydro-data (inclusive-end helper) releases for D08,
+D09 and D10 to take effect; the tool tests for those skip on an older aihydro-watershed.
+
+- **D07 `compute_spectral_index` trend.** `trend_slope_per_year` was the slope per time STEP (a monthly series rising
+  0.12/yr reported 0.01, a 12x error), fitted with failed months spliced out as consecutive steps, and silently became an
+  OLS slope with `p_value` None when `pymannkendall` was missing. It is now a Theil-Sen slope on the real time axis (period
+  midpoints in decimal years, so a failed month is a gap) with a Mann-Kendall p-value from scipy, always, and a `trend` block
+  names the estimator and test, its unit ("index units per year"), and that neither seasonality nor serial correlation is
+  handled. The result gains `n_periods_requested`, `n_periods_served` and `periods_failed` (period, reason); failed
+  periods were dropped without a trace. `pymannkendall` is no longer used.
+- **D08 `compute_drought_index`.** Passes `min_month_fraction`; reports `months_excluded`, `n_months_complete`,
+  `month_convention`. A record ending on the 3rd of a month no longer reports that month as the `latest` extreme (SPI-1 -3.09 on
+  the audit series); a gap is NaN months, not zeros (2010-07 -1.83 -> None). Behaviour comes from aihydro-watershed.
+- **D09 `compute_flood_frequency`.** New `year_type` (default `water_year`) and `min_year_fraction`; result states
+  `statistic` ("annual maximum of daily mean discharge"), `year_convention`, `years`, `excluded_years`. Audit series: Q100 988 -> 688
+  m3/s, Q2 292 -> 335 m3/s once the partial first and last years are excluded.
+- **D26 (part) `compute_flow_duration_curve`.** 7Q10 uses the climatic year and never windows across a missing day; result
+  carries `low_flow_year_type`, `low_flow_years`, `low_flow_excluded_years`.
+- **D10 tool-side GEE extraction** (`ai_hydro/gee/timeseries.py`, `map_layers.py`): the same inclusive-end fix as aihydro-data.
+- **D11 `fetch_forcing_data`.** `_strip_forcing_arrays` kept only numeric summaries and deleted every list, including
+  `_warnings` and `variables` (the response said "0 variables" and no failure). It now keeps lists of strings/records, adds
+  `variable_coverage` (finite days per variable), and the response carries top-level `_warnings`, `variables_failed`,
+  `forcing_complete`. The forcing data gains `variables_requested`, `variables_failed`, `variable_provenance` (per
+  variable: product, source, units, coverage_complete, missing ranges, notes). `mean_annual_precip_mm` / `mean_annual_pet_mm`
+  average over the days that have a value (3 mm/day with half the year NaN gave 543, now 1095.75); `precip_n_missing_days`
+  says how many were absent.
+- **D12 sub-daily data in daily tools.** `separate_baseflow`, `compute_flow_duration_curve` and `compute_flood_frequency`
+  refuse (`STREAMFLOW_NOT_DAILY`) a streamflow slot whose `interval` is not `daily` or whose dates are spaced under a day,
+  whatever its label. `fetch_streamflow_data` refuses an `interval` other than `daily`/`hourly` (`interval="monthly"` used to
+  return 15-minute data labelled monthly) and reports `median_step_s`; "hourly" is documented as instantaneous values at the gauge's step.
+
 ## [2.8.4] - 2026-10-30 (answer audit: USGS data codes)
 
 ### Fixed

@@ -21,7 +21,7 @@ def test_annual_maxima_extraction():
     q[100] = 100.0   # year 2000
     q[465] = 200.0   # year 2001
     q[830] = 150.0   # year 2002
-    out = annual_maxima(q, dates=dates)
+    out = annual_maxima(q, dates=dates, year_type="calendar_year")
     assert out["n_years"] == 3
     assert sorted(out["annual_max"]) == [100.0, 150.0, 200.0]
     assert out["years"] == [2000, 2001, 2002]

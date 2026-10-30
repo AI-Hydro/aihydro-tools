@@ -6,7 +6,7 @@ Covers:
   - compute_spectral_index: mocked fetch → correct response shape, GeoTIFF written,
     session slot registered, cache reuse returns _cached=True
   - Time-series helpers: _monthly_periods, _yearly_periods
-  - Mann-Kendall helper: fallback to linear regression when pymannkendall absent
+  - Trend helper: Theil-Sen per YEAR on the real time axis (no pymannkendall, no silent fallback)
   - Tool tier / domain registration sanity checks
 
 All tests are marked "not live" — no real data backends are called.
@@ -367,43 +367,64 @@ class TestPeriodHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Mann-Kendall helper
+# Trend helper (per YEAR, on the real time axis; tool audit D07)
 # ---------------------------------------------------------------------------
 
-class TestMannKendallSlope:
-    def test_returns_tuple_of_two(self):
-        from ai_hydro.mcp.tools_indices import _mann_kendall_slope
-        result = _mann_kendall_slope([0.1, 0.2, 0.3, 0.4, 0.5])
-        assert isinstance(result, tuple)
-        assert len(result) == 2
+def _monthly_stats(means=None, skip=(), slope_per_year=None):
+    """Period stats for the 24 months of 2021-2022, minus the months in ``skip``.
 
-    def test_positive_trend_positive_slope(self):
-        from ai_hydro.mcp.tools_indices import _mann_kendall_slope
-        slope, _ = _mann_kendall_slope([0.1, 0.2, 0.3, 0.4, 0.5])
-        assert slope is not None
-        assert slope > 0
+    Either explicit ``means`` or values exactly linear in time (``slope_per_year`` units per year,
+    evaluated at each month's midpoint), so the true slope is known.
+    """
+    from datetime import date
+    from ai_hydro.mcp.tools_indices import _monthly_periods
+    out = []
+    for k, (a, b) in enumerate(_monthly_periods("2021-01-01", "2022-12-31")):
+        if k in skip:
+            continue
+        if means is not None:
+            m = means[k]
+        else:
+            da, db = date.fromisoformat(a), date.fromisoformat(b)
+            m = slope_per_year * ((da.toordinal() + db.toordinal()) / 2.0) / 365.2425
+        out.append({"period": a, "period_end": b, "mean": m})
+    return out
+
+
+class TestTrendPerYear:
+    def test_a_series_rising_0_12_per_year_reports_0_12_not_0_01(self):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        t = _trend_per_year(_monthly_stats(slope_per_year=0.12))
+        assert t["slope_per_year"] == pytest.approx(0.12, rel=1e-9)     # a per-month slope would be 0.01
+        assert t["unit"] == "index units per year"
+        assert t["n_periods_used"] == 24
+        assert t["p_value"] < 0.001
+
+    def test_failed_months_are_gaps_not_spliced(self):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        skip = {2, 3, 4, 8, 9, 10, 11, 15, 16, 17, 20, 21, 22, 23}       # 14 failed, 10 served
+        stats = _monthly_stats(slope_per_year=0.12, skip=skip)
+        assert _trend_per_year(stats)["slope_per_year"] == pytest.approx(0.12, rel=1e-9)
+        # what the pre-fix code did with the same 10 values: consecutive integers, "per step"
+        served = [r["mean"] for r in stats]
+        spliced = np.polyfit(np.arange(len(served)), served, 1)[0]
+        assert spliced != pytest.approx(0.12, rel=0.1)           # a per-step slope, not per year
+
+    def test_estimator_is_named_and_does_not_depend_on_pymannkendall(self):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        with patch.dict("sys.modules", {"pymannkendall": None}):
+            t = _trend_per_year(_monthly_stats(means=[float(i) for i in range(24)]))
+        assert "Theil-Sen" in t["estimator"] and "Mann-Kendall" in t["test"]
+        assert t["p_value"] is not None and t["seasonality_removed"] is False
 
     def test_constant_series_zero_slope(self):
-        from ai_hydro.mcp.tools_indices import _mann_kendall_slope
-        slope, _ = _mann_kendall_slope([0.5, 0.5, 0.5, 0.5, 0.5])
-        assert slope is not None
-        assert abs(slope) < 1e-8
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        assert _trend_per_year(_monthly_stats(means=[0.5] * 24))["slope_per_year"] == pytest.approx(0.0, abs=1e-12)
 
-    def test_short_series_handled(self):
-        """Series with 2 elements should not raise."""
-        from ai_hydro.mcp.tools_indices import _mann_kendall_slope
-        slope, _ = _mann_kendall_slope([0.3, 0.6])
-        # May return None or a value — just must not raise
-        assert slope is None or isinstance(slope, float)
-
-    def test_fallback_when_pymannkendall_absent(self):
-        """If pymannkendall is not installed, linear regression is used."""
-        import sys
-        with patch.dict("sys.modules", {"pymannkendall": None}):
-            from ai_hydro.mcp.tools_indices import _mann_kendall_slope
-            slope, p = _mann_kendall_slope([0.1, 0.2, 0.3, 0.4, 0.5])
-        assert slope is not None
-        assert p is None  # linear fallback returns None for p-value
+    def test_fewer_than_four_periods_is_none(self):
+        from ai_hydro.mcp.tools_indices import _trend_per_year
+        assert _trend_per_year(_monthly_stats(means=[0.3, 0.6, 0.9] + [0.0] * 21, skip=set(range(3, 24)))) is None
+        assert _trend_per_year(_monthly_stats(means=[0.3, None, 0.6, None, 0.9, None] + [None] * 18)) is None
 
 
 # ---------------------------------------------------------------------------
