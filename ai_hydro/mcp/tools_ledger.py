@@ -393,6 +393,8 @@ def add_claim(
             scope=scope,
             limitations=limitations or [],
             evidence_spans=normalized_spans,
+            # Set BEFORE the status gate below: the comparison/forcing gates key on it (R-02).
+            comparison_ref=(comparison_ref or "").strip() or None,
         )
 
         claim_dict = claim.model_dump()
@@ -403,7 +405,6 @@ def add_claim(
         gate = _status_gate(session_id, claim_id, claim_dict, status, False)   # add_claim cannot assert it
         if gate is not None:
             return gate
-        claim_dict["comparison_ref"] = (comparison_ref or "").strip() or None
         if prereg_id:
             claim_dict["prereg_id"] = prereg_id
         if records:
