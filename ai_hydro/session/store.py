@@ -91,6 +91,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_hydro.registry.paths import home_path
+from ai_hydro.session import basin_identity as _bi
 
 log = logging.getLogger("ai_hydro.session")
 
@@ -914,6 +915,8 @@ class HydroSession:
         self.assumptions: dict[str, dict] = {}
         self.extra: dict[str, Any] = {}  # free-form metadata for phase extensions
         self._site_name_history: list[dict] = []
+        # Basin-dependent slots served unstamped by get() on this instance (see basin_identity).
+        self._unverified_reads: set[str] = set()
 
     # ------------------------------------------------------------------
     # Backward-compat: gauge_id → site_id
@@ -1073,17 +1076,114 @@ class HydroSession:
         by_feature = self._slots.get(slot)
         if not by_feature:
             return None
+        return self._resolve_slot(slot, by_feature, track=True)[1]
 
-        # 1. Try active feature (non-legacy)
+    def _resolve_slot(self, slot: str, by_feature: dict, *, track: bool = False
+                      ) -> tuple[str | None, dict | None]:
+        """``(feature_id, result)`` that ``get(slot)`` serves: the one slot loader.
+
+        The active feature's latest result first, then ``__legacy__``'s. For a
+        basin-dependent slot a result stamped for another basin is skipped (see
+        ``ai_hydro.session.basin_identity``); an unstamped one is served and reported by
+        ``unverified_slots``.
+        """
+        gated = slot in _bi.BASIN_DEPENDENT_SLOTS
+        candidates = []
         if self.active_feature_id and self.active_feature_id != _LEGACY_FEATURE_ID:
-            by_key = by_feature.get(self.active_feature_id, {})
-            result = _latest_result_in_feature(by_key)
-            if result is not None:
-                return result
+            candidates.append(self.active_feature_id)
+        candidates.append(_LEGACY_FEATURE_ID)
+        for fid in candidates:
+            result = _latest_result_in_feature(by_feature.get(fid, {}))
+            if result is None:
+                continue
+            if gated:
+                verdict = _bi.judge(result, self._expected_identity(fid))
+                if verdict == _bi.STALE:
+                    continue
+                if verdict == _bi.UNVERIFIED and track:
+                    self._unverified_reads.add(slot)
+            return fid, result
+        return None, None
 
-        # 2. Fall back to __legacy__
-        by_key = by_feature.get(_LEGACY_FEATURE_ID, {})
-        return _latest_result_in_feature(by_key)
+    # ------------------------------------------------------------------
+    # Basin identity (T1-B): which basin a stored result belongs to
+    # ------------------------------------------------------------------
+
+    def basin_identity(self) -> dict:
+        """Identity of the session's own basin: its watershed geometry digest and ``site_id``."""
+        by_key = self._slots.get("watershed", {}).get(_LEGACY_FEATURE_ID, {})
+        ws = _latest_result_in_feature(by_key)
+        digest = (_bi.identity_of(ws) or {}).get("geometry_digest") or _bi.watershed_slot_digest(ws)
+        return _bi.make_identity(digest, self.site_id)
+
+    def _expected_identity(self, feature_id: str) -> dict:
+        """Identity a result stored under ``feature_id`` must carry to be this feature's."""
+        if feature_id == _LEGACY_FEATURE_ID:
+            return self.basin_identity()
+        d = self._features.get(feature_id)
+        if not isinstance(d, dict):
+            return {}
+        gauge = (d.get("metadata") or {}).get("gauge_id")
+        return _bi.make_identity(_bi.geometry_digest(d.get("geojson")), gauge)
+
+    def drop_slot(self, slot: str) -> bool:
+        """Remove a whole product slot (every feature); True if it held anything."""
+        return bool(self._slots.pop(slot, None))
+
+    def identity_note(self) -> dict:
+        """``{"basin_identity": {...}}`` when this call read a basin-dependent slot that carries
+        no basin stamp, else ``{}``; consuming tools merge it into their result."""
+        if not self._unverified_reads:
+            return {}
+        return {"basin_identity": _bi.unverified_note(self._unverified_reads)}
+
+    def unverified_slots(self) -> list[str]:
+        """Basin-dependent slots served by ``get`` that carry no basin stamp (sessions written
+        before basin identity was recorded). They keep loading; they are flagged, never trusted
+        silently."""
+        out = []
+        for slot in sorted(_bi.BASIN_DEPENDENT_SLOTS & set(self._slots)):
+            fid, res = self._resolve_slot(slot, self._slots[slot], track=False)
+            if res is not None and _bi.judge(res, self._expected_identity(fid)) == _bi.UNVERIFIED:
+                out.append(slot)
+        return out
+
+    def _watershed_replaced(self, new_value: dict | None) -> None:
+        """Called before a new session ``watershed`` is stored: stamp it, and when it is a
+        different geometry than the one it replaces drop every result computed for the old
+        basin, along with ``site_id`` (the old gauge), so nothing of it answers for the new one."""
+        if not isinstance(new_value, dict):
+            return
+        prev = self.basin_identity()
+        prev_digest = prev.get("geometry_digest")
+        new_digest = _bi.watershed_slot_digest(new_value)
+        data = new_value.get("data") if isinstance(new_value.get("data"), dict) else {}
+        _bi.stamp(new_value, _bi.make_identity(new_digest, data.get("gauge_id")))
+        changed = bool(prev_digest and new_digest and prev_digest != new_digest)
+        expected = _bi.make_identity(new_digest, None)
+        dropped: list[str] = []
+        for slot in _bi.BASIN_DEPENDENT_SLOTS & set(self._slots):
+            by_key = self._slots[slot].get(_LEGACY_FEATURE_ID)
+            if not by_key:
+                continue
+            for key in [k for k, r in by_key.items()
+                        if r is not None and (changed or _bi.judge(r, expected) == _bi.STALE)]:
+                del by_key[key]
+                if slot not in dropped:
+                    dropped.append(slot)
+            if not by_key:
+                del self._slots[slot][_LEGACY_FEATURE_ID]
+        cleared_site = None
+        if changed and self.site_id and _bi.norm_gauge(self.site_id) != _bi.norm_gauge(data.get("gauge_id")):
+            cleared_site = self.site_id
+            self.site_id = ""
+            self.site_type = ""
+            self.site_name = ""
+        if changed:
+            log_ = self.extra.setdefault("basin_changes", [])
+            log_.append({"at": _now(), "from": prev_digest, "to": new_digest,
+                         "dropped_slots": sorted(dropped), "cleared_site_id": cleared_site})
+            del log_[:-20]
 
     # ------------------------------------------------------------------
     # Provenance (unchanged API — backward compat)
@@ -1258,7 +1358,22 @@ class HydroSession:
         params_key: str,
         value: dict | None,
     ) -> None:
-        """Store a result under (product, feature_id, params_key)."""
+        """Store a result under (product, feature_id, params_key).
+
+        A basin-dependent result is stamped with the identity of the basin it is stored
+        for (``meta.basin_identity``); a new session watershed invalidates what was
+        computed for the old one (``_watershed_replaced``).
+        """
+        if product == "watershed" and feature_id == _LEGACY_FEATURE_ID:
+            self._watershed_replaced(value)
+        elif product in _bi.BASIN_DEPENDENT_SLOTS and isinstance(value, dict):
+            inherited = sorted(self._unverified_reads - {product})
+            if inherited:
+                # Computed from a slot that cannot be tied to a basin: this result cannot be
+                # either, so the unverified state is carried forward, not laundered into a stamp.
+                _bi.stamp_unverified(value, inherited)
+            else:
+                _bi.stamp(value, self._expected_identity(feature_id))
         self._slots.setdefault(product, {}).setdefault(feature_id, {})[params_key] = value
         self._record_put_result_run(product, value)
 
@@ -1268,8 +1383,17 @@ class HydroSession:
         feature_id: str,
         params_key: str,
     ) -> dict | None:
-        """Retrieve a result. Returns None on cache miss."""
-        return self._slots.get(product, {}).get(feature_id, {}).get(params_key)
+        """Retrieve a result. Returns None on cache miss.
+
+        A basin-dependent result is served only when its stamp matches the basin it is
+        requested for: another basin's result and an unstamped one (written before basin
+        identity existed) are a miss, so the caller recomputes and stamps.
+        """
+        res = self._slots.get(product, {}).get(feature_id, {}).get(params_key)
+        if res is not None and product in _bi.BASIN_DEPENDENT_SLOTS \
+                and _bi.judge(res, self._expected_identity(feature_id)) != _bi.VERIFIED:
+            return None
+        return res
 
     def list_results(self, product: str) -> dict[str, list[str]]:
         """Return {feature_id: [params_key, ...]} for a product."""
@@ -1737,6 +1861,9 @@ class HydroSession:
             out["degraded"] = degraded
         if warnings:
             out["identity_warnings"] = warnings
+        unverified = self.unverified_slots()
+        if unverified:
+            out["basin_identity"] = _bi.unverified_note(unverified)
         return out
 
     def to_json(self) -> str:

@@ -89,6 +89,19 @@ log = logging.getLogger("ai_hydro.mcp")
 # C4: Feature-keyed cache helper (shared by all spatial tools)
 # ---------------------------------------------------------------------------
 
+class FeatureNotResolvedError(ValueError):
+    """``feature=`` names a feature that is not registered (carries the refusal envelope)."""
+
+    code = "FEATURE_NOT_RESOLVED"
+
+    def __init__(self, refusal: dict):
+        super().__init__(refusal.get("message", "feature not resolved"))
+        self.refusal = refusal
+
+    def to_dict(self) -> dict:
+        return dict(self.refusal)
+
+
 def _feature_cache_resolve(
     session,
     product: str,
@@ -101,9 +114,16 @@ def _feature_cache_resolve(
 
     Returns a tuple ``(feature_id, params_key, cache_hit_result, geojson_dict_or_none)``.
 
-    - ``cache_hit_result`` is the cached result dict if found, else ``None``.
+    - ``cache_hit_result`` is the cached result dict if found, else ``None``. The session
+      only serves a result stamped for the basin it is asked about (see
+      ``ai_hydro.session.basin_identity``), so a hit is always this basin's.
     - ``geojson_dict_or_none`` is the resolved watershed geometry (or ``None``
       if a ``geometry_geojson`` override was passed — the caller resolves it).
+
+    A ``feature_ref`` that is given must name a registered feature (id or name):
+    anything else raises ``FeatureNotResolvedError`` (refusal ``FEATURE_NOT_RESOLVED``)
+    rather than being answered with the session's own basin. With no ``feature_ref`` the
+    registry's active feature is used, else the session basin (``__legacy__``).
 
     The caller pattern::
 
@@ -114,31 +134,29 @@ def _feature_cache_resolve(
             return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
         watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
     """
-    from aihydro_core.features.registry import FeatureRegistry
-    from aihydro_core.primitives.errors import FeatureNotFoundError
     from aihydro_core.primitives.hashing import param_hash as _param_hash
 
     key = _param_hash(params)
-    registry = FeatureRegistry(session)
 
     if geometry_geojson:
         # Explicit raw-geom override → no stable feature_id; skip cache
         return "__override__", key, None, None
 
-    _feat = None
-    try:
-        _feat = registry.resolve(feature_ref)
-        feature_id = _feat.feature_id
-    except FeatureNotFoundError:
-        feature_id = "__legacy__"
+    if isinstance(feature_ref, str) and not feature_ref.strip():
+        feature_ref = None
+    if feature_ref is not None:
+        _feat, _err = _resolve_registered_feature(session, feature_ref)
+        if _err:
+            raise FeatureNotResolvedError(_err)
+    else:
+        _feat = _active_registered_feature(session)
+
+    if _feat is None:
+        feature_id, geom = "__legacy__", None   # caller falls back to _resolve_session_geometry
+    else:
+        feature_id, geom = _feat.feature_id, _feat.geojson
 
     cached = session.get_result(product, feature_id, key)
-
-    if _feat is not None and feature_id not in ("__override__", "__legacy__"):
-        geom = _feat.geojson
-    else:
-        geom = None  # caller falls back to _resolve_session_geometry
-
     return feature_id, key, cached, geom
 
 
@@ -215,9 +233,9 @@ def _feature_scope(feat) -> tuple[str | None, float | None]:
 
 
 def _feature_geom_key(feat) -> str:
-    """Short content hash of a feature's geometry, folded into cache keys."""
-    from aihydro_core.primitives.hashing import content_hash
-    return content_hash(feat.geometry_dict())[:12]
+    """Short content hash of a feature's geometry, folded into cache keys (the shared digest)."""
+    from ai_hydro.session.basin_identity import geometry_digest
+    return (geometry_digest(feat.geometry_dict()) or "")[:12]
 
 
 async def _batch_feature_run(
@@ -575,7 +593,11 @@ def _watershed_slug(name: str | None, lat: float, lon: float) -> str:
         slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in name.strip())
         slug = slug.strip("_")[:48] or "basin"
         return slug
-    return f"basin_{abs(lat):.3f}_{abs(lon):.3f}".replace(".", "p")
+    # Signed: southern/western points carry an "m" (minus) so (47.2, -68.6), (-47.2, 68.6) and
+    # (47.2, 68.6) are three names. A point with both coordinates >= 0 keeps its earlier name.
+    def _c(v: float) -> str:
+        return ("m" if v < 0 else "") + f"{abs(v):.3f}"
+    return f"basin_{_c(lat)}_{_c(lon)}".replace(".", "p")
 
 
 def _store_point_watershed(
@@ -1249,9 +1271,9 @@ def extract_hydrological_signatures(
         Feature id or name to extract signatures for. Omit to use the active
         feature or session watershed geometry.
     geometry_geojson : str, optional
-        Override watershed geometry as a GeoJSON string. Use when the session
-        geometry is wrong or when working directly with a delineated polygon
-        from delineate_watershed_from_point (e.g. global basins).
+        Override geometry (GeoJSON string); accepted only for the session's own
+        basin. For another basin: register_feature(geojson, name, gauge_id), then
+        feature=<id> (a raw geometry has no gauge, area or streamflow).
     precipitation : "auto" | "skip"
         "auto" (default) fetches precipitation and computes runoff_ratio /
         stream_elas only if the series is physically valid. "skip" makes no
@@ -1326,6 +1348,29 @@ def extract_hydrological_signatures(
                     "error": True, "code": "FEATURE_AREA_UNKNOWN",
                     "message": f"Feature '{_scoped.feature_id}' has no area and none could be computed from its geometry.",
                     "recovery": "Re-register the feature with area_km2=... or a valid polygon.",
+                }
+
+        # A raw geometry override carries no gauge, area or flow of its own. When it is not the
+        # session's basin the session's gauge, area and streamflow do not describe it, so the
+        # call is refused (it used to run forcing for the override on the session basin's flow).
+        if geometry_geojson:
+            try:
+                from ai_hydro.session.basin_identity import geometry_digest as _gd
+                _ov = _gd(json.loads(geometry_geojson) if isinstance(geometry_geojson, str)
+                          else geometry_geojson)
+            except Exception:
+                _ov = None      # unreadable JSON: the geometry resolver below reports it
+            _sess_d = session.basin_identity().get("geometry_digest")
+            if _ov and _sess_d and _ov != _sess_d:      # no known session geometry: nothing to contradict
+                return {
+                    "error": True, "code": "GEOMETRY_OVERRIDE_NOT_SESSION_BASIN",
+                    "message": (
+                        "geometry_geojson is not the session's basin, and a raw geometry carries no gauge, "
+                        "area or streamflow of its own; the session's gauge, area and streamflow belong to "
+                        "its own basin and were not used for it."),
+                    "recovery": (
+                        "Register the basin with its gauge, then name it: register_feature(geojson=<basin>, "
+                        "name=<id>, gauge_id=<USGS gauge id>), then extract_hydrological_signatures(feature=<id>)."),
                 }
 
         # Non-default only for the precipitation switch, so a "skip" result is never
@@ -1905,44 +1950,20 @@ async def compute_twi(
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
-        # ── C2: feature-keyed cache check ─────────────────────────────────
-        # Resolve the feature reference to get a stable feature_id for the
-        # three-level cache.  Falls back gracefully to the legacy single-
-        # geometry path so old sessions (no registered features) still work.
-        from aihydro_core.features.registry import FeatureRegistry
-        from aihydro_core.primitives.errors import FeatureNotFoundError
-        from aihydro_core.primitives.hashing import param_hash as _param_hash
-
-        _registry = FeatureRegistry(session)
+        # ── Feature-keyed cache check (one resolver for every feature-aware tool) ─
+        # feature= must name a registered feature; none given means the active feature,
+        # else the session basin. A cached TWI is served only for the basin it was
+        # computed for (the session checks the stamp in get_result).
         _twi_params = {"resolution": resolution}
-        _params_key = _param_hash(_twi_params)
-
-        # geometry_geojson override bypasses the registry (explicit raw geom)
-        if geometry_geojson:
-            # Treat as an on-the-fly feature; no cache (geometry has no stable id)
-            _feature_id = "__override__"
-            _cached = None
-        else:
-            try:
-                _feat = _registry.resolve(feature)  # None → active / single feature
-                _feature_id = _feat.feature_id
-                _cached = session.get_result("twi", _feature_id, _params_key)
-            except FeatureNotFoundError:
-                # No registered features yet — use legacy sentinel + watershed geom
-                _feature_id = "__legacy__"
-                _cached = session.get_result("twi", "__legacy__", _params_key)
-
+        _feature_id, _params_key, _cached, _geom = _feature_cache_resolve(
+            session, "twi", _twi_params, feature, geometry_geojson,
+        )
         if _cached is not None:
             return {**_cached, "_cache_hit": True, "feature_id": _feature_id}
 
         # ── Resolve the actual geometry to compute with ────────────────────
         # Priority: registry feature → geometry_geojson override → session watershed
-        if geometry_geojson:
-            watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
-        elif _feature_id not in ("__override__", "__legacy__"):
-            watershed_geojson = _feat.geojson  # type: ignore[possibly-undefined]
-        else:
-            watershed_geojson = _resolve_session_geometry(session_id, None)
+        watershed_geojson = _geom or _resolve_session_geometry(session_id, geometry_geojson)
         workspace = session.workspace_dir
         _used_fallback_workspace = False
         # Design A safety net: if still unset (session predates workspace
@@ -2167,8 +2188,30 @@ async def map_flood_inundation(
 
         from ai_hydro.analysis.inundation_drivers import resolve_inundation_discharge
 
+        # An explicitly named feature is its own basin: it must be registered (an unknown id
+        # is a refusal, never the session's basin), its geometry is the one mapped, and the
+        # session's own flow slots (flood frequency, design peak, streamflow) belong to the
+        # session basin, so they are not used for a different one.
+        _inund_fid = "__legacy__"
         if geometry_geojson:
             watershed_geojson = _resolve_session_geometry(session_id, geometry_geojson)
+        elif isinstance(feature, str) and feature.strip():
+            _scoped, _ferr = _resolve_registered_feature(session, feature)
+            if _ferr:
+                return _ferr
+            watershed_geojson = _scoped.geojson
+            _inund_fid = _scoped.feature_id
+            from ai_hydro.session.basin_identity import geometry_digest as _gd
+            if _gd(_scoped.geojson) != session.basin_identity().get("geometry_digest") \
+                    and discharge_m3s is None:
+                return {
+                    "error": True, "code": "FEATURE_DISCHARGE_REQUIRED",
+                    "message": (
+                        f"Feature '{_scoped.feature_id}' is not the session's basin; the session's flow "
+                        "slots (return period, design peak, streamflow peak) belong to the session basin "
+                        "and are not used for it."),
+                    "recovery": "Pass discharge_m3s=<peak discharge for this feature>.",
+                }
         else:
             watershed_geojson = _resolve_session_geometry(session_id, None)
 
@@ -2319,7 +2362,7 @@ async def map_flood_inundation(
                 "computed_at": _now_iso(),
             },
         }
-        session.put_result("inundation", "__legacy__", str(float(q)), d)
+        session.put_result("inundation", _inund_fid, str(float(q)), d)
         session.commit()
 
         if create_map:
@@ -3066,6 +3109,12 @@ async def fetch_forcing_data(
                 _feature_arg = None
         except Exception:
             pass
+        # A feature that is named must be registered: an unknown id is a refusal on both the
+        # kernel and the manual path (never the session's basin under another name).
+        if isinstance(_feature_arg, str) and _feature_arg.strip():
+            _, _ferr = _resolve_registered_feature(session, _feature_arg)
+            if _ferr:
+                return _ferr
         from ai_hydro.data.forcing import forcing_kernel as _fk
         _use_kernel = _fk is not None and not geometry_geojson and _feature_arg is not None
 
@@ -3569,6 +3618,7 @@ def separate_baseflow(
             result["kernel"] = "lyne_hollick_ladson2013"
         if warmup_bias:
             result["warmup_bias"] = warmup_bias
+        result.update(session.identity_note())
         session.set("baseflow", {
             "data": {
                 "bfi": bfi,
@@ -3687,6 +3737,7 @@ def compute_flow_duration_curve(session_id: str | None = None) -> dict:
         session.save()
 
         result = {
+            **session.identity_note(),
             "percentile_flows": fdc["percentile_flows"],
             "slope_fdc": round(fdc["slope_fdc"], 4) if fdc["slope_fdc"] == fdc["slope_fdc"] else None,
             "seven_q10_cms": low["seven_q10"],
@@ -3813,6 +3864,7 @@ def compute_flood_frequency(
                     for r in ffa["return_levels"]
                     if r["return_period"] in (2, 10, 100)}
         return {
+            **session.identity_note(),
             "distribution": ffa["dist"],
             "method": ffa["method"],
             "n_years": ffa["n_years"],
@@ -3955,6 +4007,7 @@ def compute_drought_index(
             latest = {"month": months[int(finite[-1])],
                       "value": round(float(arr[finite[-1]]), 2)}
         return {
+            **session.identity_note(),
             "index_name": result["index_name"],
             "scale_months": result["scale_months"],
             "n_months": result["n_months"],
@@ -4046,23 +4099,33 @@ async def fetch_soil_attributes_ssurgo(
         }
         _feature_cache_store(session, "ssurgo", _feature_id, _key, d,
                              citations=["ssurgo_gnatsgo"])
-        # Basin-mean values in the shape compute_soil_loss_rusle reads.
+        # Basin-mean values in the shape compute_soil_loss_rusle reads. That slot describes the
+        # session's own basin, so another feature's or an override geometry's values never
+        # overwrite it (RUSLE would read one basin's K for another).
+        from ai_hydro.session.basin_identity import geometry_digest as _gd
         session = _ensure_session(session_id)
-        session.set("soil", {
-            "data": {
-                "sand": summary.get("sand_pct_mean"),
-                "silt": summary.get("silt_pct_mean"),
-                "clay": summary.get("clay_pct_mean"),
-                "kw": summary.get("kw_mean"),
-                "kw_si": summary.get("kw_si_mean"),
-                "hsg_drained_pct": summary.get("hsg_drained_pct"),
-                "hsg_undrained_pct": summary.get("hsg_undrained_pct"),
-            },
-            "meta": {"tool": "fetch_soil_attributes_ssurgo",
-                     "product": summary.get("product")},
-        })
+        _sess_digest = session.basin_identity().get("geometry_digest")
+        _is_session_basin = _sess_digest is None or _gd(geojson) == _sess_digest
+        if _is_session_basin:
+            session.set("soil", {
+                "data": {
+                    "sand": summary.get("sand_pct_mean"),
+                    "silt": summary.get("silt_pct_mean"),
+                    "clay": summary.get("clay_pct_mean"),
+                    "kw": summary.get("kw_mean"),
+                    "kw_si": summary.get("kw_si_mean"),
+                    "hsg_drained_pct": summary.get("hsg_drained_pct"),
+                    "hsg_undrained_pct": summary.get("hsg_undrained_pct"),
+                },
+                "meta": {"tool": "fetch_soil_attributes_ssurgo",
+                         "product": summary.get("product")},
+            })
         session.save()
         d["feature_id"] = _feature_id
+        if not _is_session_basin:
+            d["soil_slot_written"] = False
+            d["_note"] = ("This geometry is not the session's basin, so the session soil slot "
+                          "(read by compute_soil_loss_rusle) was left unchanged.")
         d["next_steps"] = [
             {"tool": "create_cn_grid",
              "rationale": "Curve numbers from the same recorded hydrologic groups."},
