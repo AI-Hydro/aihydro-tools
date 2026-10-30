@@ -130,8 +130,6 @@ refusal and was routed to modelled products for the wrong place.
 - Tests that passed a bare `[lat, lon]` pair or a point several km from the gauge were changed to `{"lat","lon"}` at the gauge's recorded
   location (`tests/test_usgs_u3.py`, `test_series_tools.py`, `test_map_provenance.py`).
 
-### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
-
 ### Fixed
 
 - **Argument repair no longer changes what a call means (tool-integrity T1-A; audit D06, F20).** `area_m2=2.5e9` used to become
