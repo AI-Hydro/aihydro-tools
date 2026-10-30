@@ -377,12 +377,61 @@ def test_correct_outlet_inside_or_within_tolerance_reaches_the_router_as_lat_lon
     assert modelled["called"] == 2
 
 
-def test_batch_outlets_are_checked_per_label():
+def test_antimeridian_distance_uses_wrapped_longitudes_and_refuses_a_crossing_geometry():
+    from ai_hydro.mcp.geometry_boundary import check_outlet_matches_geometry
+    from ai_hydro.mcp.gauge_identity import AntimeridianGeometry, _distance_m
+
+    def box(w, so, e, n):
+        return {"type": "Polygon", "coordinates": [[[w, so], [e, so], [e, n], [w, n], [w, so]]]}
+
+    east = box(-179.95, 60.0, -179.5, 60.5)
+    # 179.99 and -179.95 are 0.06 degrees apart across the line (about 3.3 km at 60 N), not 359.94 degrees
+    assert _distance_m(east, 60.1, 179.99) == pytest.approx(3300, abs=300)
+    assert check_outlet_matches_geometry(east, [60.1, 179.99], "t") is None
+    # 179.95 is 0.1 degrees (about 5.6 km) from the polygon: refused as a real mismatch, not as a 359 degree one
+    e = check_outlet_matches_geometry(east, [60.1, 179.95], "t")
+    assert e["code"] == "GEOMETRY_OUTLET_MISMATCH" and e["distance_m"] < 7000
+    # a polygon written 179.5 .. -179.5 spans 359 degrees in planar lon/lat: refused with its own code, never mis-measured
+    crossing = box(179.5, 60.0, -179.5, 60.5)
+    with pytest.raises(AntimeridianGeometry):
+        _distance_m(crossing, 60.2, 0.0)
+    e = check_outlet_matches_geometry(crossing, [60.2, 0.0], "t")
+    assert e["code"] == "GEOMETRY_ANTIMERIDIAN_UNSUPPORTED" and e["retryable"] is True
+
+
+def test_valid_dict_outlet_through_mcp_reaches_the_router_as_lat_lon_list(world, modelled):
+    ok = {"variable": "streamflow", "geometry": MAINE, "start": START, "end": END}
+    err, body, _ = call_tool("data_fetch", {**ok, "outlet": {"lat": LAT, "lon": LON}})
+    assert modelled["called"] == 1 and list(modelled["outlet"]) == [LAT, LON], body
+    # a caller's bare pair is still refused, and never reaches the router
+    err, body, _ = call_tool("data_fetch", {**ok, "outlet": [LAT, LON]})
+    assert err and body["code"] == "GEOMETRY_AXIS_AMBIGUOUS" and modelled["called"] == 1
+    # the swapped dict too
+    err, body, _ = call_tool("data_fetch", {**ok, "outlet": {"lat": LON, "lon": LAT}})
+    assert err and body["code"] == "GEOMETRY_OUTLET_MISMATCH" and modelled["called"] == 1
+
+
+def test_outlet_is_sealed_in_the_call_inputs(world, monkeypatch):
+    import aihydro_data.mcp as adm
+    import ai_hydro.mcp.enforcement as enf
+    from ai_hydro.mcp.tools_data_fetch import data_fetch
+
+    monkeypatch.setattr(adm, "_data_fetch", lambda **k: {"variable": "streamflow", "data": {}})
+    box = {}
+    monkeypatch.setattr(enf, "post_run", lambda tool, sid, result, inputs=None: box.update(inputs=inputs) or result)
+    r = data_fetch("streamflow", START, END, geometry=MAINE, outlet={"lat": LAT, "lon": LON}, session_id="gb")
+    assert box["inputs"]["outlet"] == [LAT, LON]
+    assert box["inputs"]["resolved_place"]["bbox_order"] == "west,south,east,north"
+    data_fetch("streamflow", START, END, geometry=MAINE, session_id="gb")
+    assert "outlet" not in box["inputs"]
+
+
+def test_station_id_geometry_with_an_outlet_is_not_compared(world):
+    """A station id routes to an observation product, not to outlet snapping: nothing to compare the outlet with."""
     from ai_hydro.mcp.geometry_boundary import check_outlet_matches_geometry
 
-    geoms = {"a": MAINE, "b": MAINE}
-    assert check_outlet_matches_geometry(geoms, {"a": [LAT, LON], "b": [LON, LAT]}, "data_batch_fetch")["code"] == "GEOMETRY_OUTLET_MISMATCH"
-    assert check_outlet_matches_geometry(geoms, {"a": [LAT, LON]}, "data_batch_fetch") is None
+    assert check_outlet_matches_geometry("01013500", [10.0, 10.0], "t") is None
+    assert check_outlet_matches_geometry("USGS-01013500", [10.0, 10.0], "t") is None
 
 
 def test_every_result_echoes_the_resolved_place_and_session_gauge_is_noted(world, seen, modelled):
@@ -394,7 +443,8 @@ def test_every_result_echoes_the_resolved_place_and_session_gauge_is_noted(world
     assert q["bbox"] == [-68.7, 47.1, -68.4, 47.4] and q["region"] == "CONUS" and "centroid" in q
     # an in-order-but-wrong point is valid and undetectable, so the result must show where it went
     r = data_fetch("precipitation", START, END, geometry="POINT (47.2375 -68.5828)", session_id="gb")
-    assert r.get("resolved_place") is not None or r.get("code") == "CAPTURED"
+    assert r["resolved_place"] == {"lat": -68.5828, "lon": 47.2375, "region": "global"}      # the wrong spot is visible
+    assert q["bbox_order"] == "west,south,east,north"
     s = HydroSession.load("gb")
     s.site_id, s.site_type = GAUGE, "usgs_gauge"
     s.save()

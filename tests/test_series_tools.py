@@ -544,6 +544,9 @@ def test_data_fetch_wrapper_signature_is_a_superset_of_aihydro_data():
             assert ours[n].default is None and p.default is inspect.Parameter.empty
         else:
             assert ours[n].default == p.default, n
+        if n == "outlet":        # also takes {"lat","lon"} (converted at the boundary); the tuple form is unchanged
+            assert str(ours[n].annotation).startswith("tuple[float, float] | dict[str, float]")
+            continue
         assert ours[n].annotation == p.annotation, n
     # session_id is ours; gauge_id is ours until aihydro-data's own MCP data_fetch exposes it
     # (its pipeline fetch() takes it; the wrapper forwards it).

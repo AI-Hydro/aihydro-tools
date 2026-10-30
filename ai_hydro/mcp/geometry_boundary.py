@@ -23,6 +23,7 @@ including tools registered by other packages), and the retaining ``data_fetch`` 
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 from typing import Any, Optional
@@ -30,8 +31,15 @@ from typing import Any, Optional
 from fastmcp.server.middleware import Middleware
 
 from ai_hydro.mcp.errors import StructuredToolError
+from ai_hydro.mcp.gauge_identity import AntimeridianGeometry, _distance_m
 
 GEOMETRY_PARAMS = ("geometry", "geometries")
+
+#: True while a call that already went through ``check_arguments`` (the middleware) runs. The middleware is where an
+#: ``{"lat","lon"}`` outlet becomes the ``[lat, lon]`` list the tool signature takes, so a tool that sees a pair
+#: while this is set is looking at the converted value, not a caller's bare pair. A direct Python call has it unset and the
+#: wrapper validates and converts itself with the same functions.
+BOUNDARY_CHECKED: contextvars.ContextVar[bool] = contextvars.ContextVar("aihydro_boundary_checked", default=False)
 
 _NUM = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
 _PAIR_STRING = re.compile(rf"\s*\(?\s*({_NUM})\s*(?:,|\s)\s*({_NUM})\s*\)?\s*")
@@ -319,6 +327,13 @@ def outlet_pair(value: Any) -> Any:
     return value
 
 
+def antimeridian_refusal(exc: Exception, tool: str = "") -> dict:
+    return _envelope(
+        "GEOMETRY_ANTIMERIDIAN_UNSUPPORTED", str(exc),
+        "Split the geometry at +/-180 and make one call per side, or pass a geometry that does not cross the antimeridian.",
+        tool)
+
+
 def _tolerance_m() -> float:
     from ai_hydro.mcp.gauge_identity import _mismatch_limit_m
 
@@ -328,27 +343,21 @@ def _tolerance_m() -> float:
 def check_outlet_matches_geometry(geometry: Any, outlet: Any, tool: str = "") -> Optional[dict]:
     """``GEOMETRY_OUTLET_MISMATCH`` when ``outlet`` ([lat, lon]) is farther than the A2 5 km tolerance from ``geometry``
     (0 m when inside a polygon). The outlet drives GEOGLOWS / Open-Meteo snapping ahead of the polygon, so an outlet that is
-    a different place from the geometry would fetch modelled flow for it. A mapping is checked per label against a mapping
-    of geometries. Anything that cannot be coerced is left to the fetch's own error."""
+    a different place from the geometry would fetch modelled flow for it.of geometries is not compared. A station-id string is not compared either: it routes to an observation product, not to
+    outlet snapping. Anything that cannot be coerced is left to the fetch's own error."""
     if geometry is None or outlet is None:
         return None
     if isinstance(geometry, str) and not geometry.strip().upper().startswith(("POINT", "POLY", "MULTI", "LINE", "GEOMETRYC")):
         return None                                  # a gauge id / JSON string: no geometry to compare with here
     if isinstance(outlet, dict) and not {"lat", "lon"}.issubset(outlet):
-        if isinstance(geometry, dict) and "type" not in geometry:
-            for k, o in outlet.items():
-                if k in geometry:
-                    err = check_outlet_matches_geometry(geometry[k], o, tool)
-                    if err:
-                        return err
-        return None
+        return None                                  # a {label: outlet} mapping (data_batch_fetch): no per-label comparison
     pair = outlet_pair(outlet)
     if not (isinstance(pair, (list, tuple)) and len(pair) == 2 and all(_is_num(v) for v in pair)):
         return None
     try:
-        from ai_hydro.mcp.gauge_identity import _distance_m
-
         d = _distance_m(geometry, float(pair[0]), float(pair[1]))
+    except AntimeridianGeometry as exc:
+        return antimeridian_refusal(exc, tool)
     except Exception:
         return None
     tol = _tolerance_m()
@@ -405,6 +414,11 @@ class GeometryBoundaryMiddleware(Middleware):
                 raise StructuredToolError(err)
             if fixed != args:
                 msg.arguments = fixed
+            token = BOUNDARY_CHECKED.set(True)
+            try:
+                return await call_next(context)
+            finally:
+                BOUNDARY_CHECKED.reset(token)
         return await call_next(context)
 
 

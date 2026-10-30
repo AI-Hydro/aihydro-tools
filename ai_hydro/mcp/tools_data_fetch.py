@@ -290,33 +290,33 @@ def data_fetch(
     aggregation: str = "basin_mean",
     cache: bool = True,
     region: str | None = None,
-    outlet: tuple[float, float] | None = None,
+    outlet: tuple[float, float] | dict[str, float] | None = None,
     session_id: str | None = None,
     gauge_id: str | None = None,
 ) -> dict[str, Any]:
-    """Fetch a single hydrology variable for one geometry / time window.
+    """Fetch one hydrology variable for one geometry / time window.
 
     Args:
-        variable:    Canonical name ('precipitation', 'tmax', 'et', ...); see data_list_products().
+        variable:    Canonical name ('precipitation', 'tmax'); see data_list_products().
         start:       ISO-8601 start date, e.g. '2015-01-01'.
-        end:         ISO-8601 end date (inclusive).
+        end:         ISO-8601 end date, inclusive.
         geometry:    {"lat": 47.24, "lon": -68.58}, GeoJSON, [west, south, east, north] bbox or WKT. A bare
-                     [a, b] pair is REFUSED (GEOMETRY_AXIS_AMBIGUOUS). Optional for streamflow with gauge_id.
-        mode:        'auto' (router picks the product) or 'manual' (needs product=).
+                     [a, b] pair is REFUSED (GEOMETRY_AXIS_AMBIGUOUS). Optional with gauge_id.
+        outlet:      {"lat": .., "lon": ..}, within 5 km of geometry (GEOMETRY_OUTLET_MISMATCH); bare pair refused.
+        mode:        'auto' (router picks) or 'manual' (needs product=).
         product:     Product ID, e.g. 'CHIRPS'. Required for mode='manual'.
-        aggregation: 'basin_mean' (default, 1-D series) or 'raw_raster'.
+        aggregation: 'basin_mean' (default) or 'raw_raster'.
         cache:       True (default) uses the disk cache and retains the series.
-        session_id:  Session to record the call in; auto-resolved when omitted.
-        gauge_id:    streamflow only. USGS site number ('01013500'); outranks a BasinRef alias and an outlet.
-                     A geometry given must be within 5 km (GAUGE_LOCATION_MISMATCH). Polygon with no identity
-                     -> GAUGE_REQUIRED, ambiguous outlet -> GAUGE_AMBIGUOUS; refusals are final.
+        session_id:  Session to record in; auto-resolved when omitted.
+        gauge_id:    streamflow only. USGS site number ('01013500'); outranks a BasinRef alias and an outlet; a
+                     geometry must be within 5 km (GAUGE_LOCATION_MISMATCH). No identity -> GAUGE_REQUIRED,
+                     ambiguous outlet -> GAUGE_AMBIGUOUS; refusals are final.
 
     Returns:
-        Success: variable, product, source, data (head + shape), license, citation, next_steps, `_run_id` (the
-        `series` argument of summarize_series, detect_threshold_runs, compare_series, bootstrap_statistic).
-        Failure: error envelope.
+        Success: variable, product, source, resolved_place, data (head), license, citation, next_steps,
+        `_run_id` (the `series` argument of summarize_series, compare_series, bootstrap_statistic). Failure: error envelope.
 
-    Queued backends (GloFAS / HPC) raise USE_ASYNC_TOOL (use data_fetch_background).
+    Queued backends (GloFAS / HPC): USE_ASYNC_TOOL (use data_fetch_background).
     """
     sid = None
     try:
@@ -328,16 +328,19 @@ def data_fetch(
 
     from ai_hydro.mcp import gauge_identity as gi
     from ai_hydro.mcp.geometry_boundary import (
-        check_arguments, check_coordinate_arg, check_geometry_arg, check_outlet_matches_geometry, outlet_pair)
+        BOUNDARY_CHECKED, check_arguments, check_coordinate_arg, check_geometry_arg, check_outlet_matches_geometry, outlet_pair)
 
     bad = check_geometry_arg(geometry, "data_fetch")
     if bad:
         return bad
-    bad = check_coordinate_arg("outlet", outlet, "data_fetch")
-    if bad:
-        return bad
     geometry = check_arguments({"geometry": geometry}, "data_fetch")[0]["geometry"]
-    outlet = outlet_pair(outlet)
+    if not BOUNDARY_CHECKED.get():
+        # A direct Python call. Through MCP the middleware already refused a bare outlet pair and converted {"lat","lon"}
+        # to [lat, lon]; checking again here would read that conversion as a caller's bare pair.
+        bad = check_coordinate_arg("outlet", outlet, "data_fetch")
+        if bad:
+            return bad
+        outlet = outlet_pair(outlet)
 
     resolved = gi.resolve_request(variable, geometry, product, gauge_id, sid, "data_fetch")
     if "refusal" in resolved:
@@ -413,6 +416,8 @@ def data_fetch(
         "aggregation": aggregation, "cache": cache, "region": region,
     }
     inputs["resolved_place"] = place
+    if outlet is not None:
+        inputs["outlet"] = outlet            # it changes the modelled number (GEOGLOWS / Open-Meteo snap to it)
     if gauge_id is not None:
         inputs["gauge_id"] = gauge_id
     if isinstance(geometry, str):

@@ -91,8 +91,17 @@ def gauge_point(gauge_id: str) -> dict[str, Any]:
     return {"site": loc.site_id, "name": loc.name, "lat": loc.lat, "lon": loc.lon}
 
 
+class AntimeridianGeometry(ValueError):
+    """A geometry written across +/-180 (planar longitude span > 180 degrees): its distance cannot be computed on lon/lat."""
+
+
 def _distance_m(geometry: Any, lat: float, lon: float) -> float:
-    """Great-circle metres from the point to the nearest part of ``geometry`` (0 when inside it)."""
+    """Great-circle metres from the point to the nearest part of ``geometry`` (0 when inside it).
+
+    The point's longitude is shifted by 360 degrees to the copy nearest the geometry, so a point at 179.99 and a polygon
+    at -179.9 are neighbours, not 359 degrees apart. A geometry whose own longitude span exceeds 180 degrees was written across
+    the antimeridian (shapely is planar there); that raises ``AntimeridianGeometry`` instead of returning a wrong distance.
+    """
     import math
 
     from shapely.geometry import Point
@@ -101,6 +110,18 @@ def _distance_m(geometry: Any, lat: float, lon: float) -> float:
     from aihydro_data.geometry import coerce_geometry
 
     g = coerce_geometry(geometry)
+    if g.bounds is None:
+        raise ValueError("geometry has no bounds")
+    minx, _, maxx, _ = g.bounds
+    if maxx - minx > 180:
+        raise AntimeridianGeometry(
+            f"the geometry spans longitudes {minx:g} to {maxx:g}, so it crosses the antimeridian (or is not a basin); "
+            "distances to it cannot be computed on lon/lat.")
+    mid = (minx + maxx) / 2
+    while lon - mid > 180:
+        lon -= 360
+    while lon - mid < -180:
+        lon += 360
     p = Point(lon, lat)
     if g.intersects(p):
         return 0.0
@@ -190,6 +211,10 @@ def resolve_request(variable: str, geometry: Any, product: Optional[str], gauge_
             try:
                 pt = gauge_point(gauge_id)
                 dist = _distance_m(geometry, pt["lat"], pt["lon"])
+            except AntimeridianGeometry as exc:
+                from ai_hydro.mcp.geometry_boundary import antimeridian_refusal
+
+                return {"refusal": antimeridian_refusal(exc, tool)}
             except Exception as exc:                 # "could not look": skip this check, never guess
                 log.debug("gauge-first: location check skipped (%s)", exc)
             else:

@@ -32,6 +32,8 @@ refusal and was routed to modelled products for the wrong place.
   parameter is not behind the validator.
 - **A swapped `outlet` can no longer drive a modelled product.** A bare `outlet` pair is refused like a geometry pair (`{"lat","lon"}` is
   accepted and converted), and an outlet farther than 5 km from its geometry is `GEOMETRY_OUTLET_MISMATCH` (`data_fetch`, `data_batch_fetch`).
+- `outlet` is part of the sealed call inputs; `data_fetch(outlet=...)` is typed `tuple | {"lat","lon"}`. Distances to a geometry use longitudes
+  wrapped to the geometry, and a geometry written across +/-180 is refused (`GEOMETRY_ANTIMERIDIAN_UNSUPPORTED`) instead of mis-measured.
 - **Every `data_fetch` result echoes `resolved_place`** (lat, lon, region or bbox, centroid, region), also sealed in the call inputs; a
   session `site_id` / BasinRef that names the place adds a top-level `session_note`.
 - **`data_fetch` and `data_fetch_background` need no geometry when a gauge names the place.** `gauge_id` (or a session BasinRef with a
@@ -50,6 +52,38 @@ refusal and was routed to modelled products for the wrong place.
   moved after `start` / `end` and is optional (Python positional callers; MCP calls are by name). `data_fetch_background` also takes `session_id`.
 - Tests that passed a bare `[lat, lon]` pair or a point several km from the gauge were changed to `{"lat","lon"}` at the gauge's recorded
   location (`tests/test_usgs_u3.py`, `test_series_tools.py`, `test_map_provenance.py`).
+
+### Fixed (tool integrity T1-B: basin identity; audit findings D01-D05, D33, D46)
+
+- **A new basin in a used session is no longer answered with the old basin's numbers.** Every basin-dependent session result
+  (`streamflow`, `signatures`, `geomorphic`, `forcing`, `twi`, `cn`, `soil`, `ssurgo`, `baseflow`, `flow_duration`,
+  `flood_frequency`, `drought`, `design_hydrograph`, `soil_loss`, `inundation*`) is stamped `meta.basin_identity`
+  (`geometry_digest` + `gauge_id`). The session serves a cached result only when the stamp matches the basin it is asked about
+  (`get_result`), and a slot only when it is not stamped for another basin (`get`). Replacing the session watershed with a
+  different geometry drops every result held for the old basin, clears `site_id`/`site_type`/`site_name` (unless the new
+  watershed names the same gauge) and logs the change in `session.extra["basin_changes"]` (D01, D02: `compute_twi` returned the
+  old TWI as a cache hit; the signature kernel got the old gauge with the new area; flood frequency used the old gauge's flow).
+  `camels` and `model` are multi-basin by design and are not dropped.
+- **`feature=` binds or refuses.** `_feature_cache_resolve` now resolves through `_resolve_registered_feature`, so
+  `compute_twi`, `create_cn_grid`, `fetch_soil_attributes_ssurgo` and `fetch_forcing_data` refuse an unregistered id (or a raw
+  GeoJSON string) with `FEATURE_NOT_RESOLVED` instead of computing on the session basin (D03). `map_flood_inundation` maps the
+  registered feature's geometry; a feature that is not the session basin needs an explicit `discharge_m3s`
+  (`FEATURE_DISCHARGE_REQUIRED`) because the session's flow slots belong to the session basin (D04).
+- `extract_hydrological_signatures(geometry_geojson=<another basin>)` is refused (`GEOMETRY_OVERRIDE_NOT_SESSION_BASIN`): the
+  kernel used to get that geometry's forcing with the session basin's gauge, area and flow (D05). Register the basin with its
+  gauge and pass `feature=`.
+- `fetch_soil_attributes_ssurgo` writes the session `soil` slot (read by RUSLE) only for the session basin (D33).
+- `delineate_watershed_from_point` slugs carry the sign of each coordinate (`basin_47p237_m68p583`), so mirrored points no longer
+  share a session or file name (D46). Points with both coordinates >= 0 keep their earlier name; an auto-created session for a
+  southern or western point is named differently from before.
+
+### Existing sessions
+
+A slot or cache entry written before this release has no stamp. It is **unverified**, never silently trusted and never a crash:
+cache lookups treat it as a miss (the tool recomputes and stamps), slot consumers still read it, `session.summary()` lists it under
+`basin_identity`, the consuming tools (`separate_baseflow`, `compute_flow_duration_curve`, `compute_flood_frequency`,
+`compute_drought_index`) return a `basin_identity` block, and a result derived from it stays unverified
+(`meta.basin_identity_inputs_unverified`). Sealed run records and the run log are untouched.
 
 ---
 
