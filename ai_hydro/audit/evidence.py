@@ -216,7 +216,10 @@ def declared_unit(entry: dict, resolved_path: str) -> str | None:
 
     rec = entry.get("record") if isinstance(entry.get("record"), dict) else {}
     tool = entry.get("tool_name") or rec.get("tool")
-    if _su.is_signatures(slot=entry.get("slot"), tool=tool):
+    # Only for the value paths a signature number lives at: key_outputs.<sig> and evidence.uncertainty.<sig>.<value|ci_*>.
+    value_path = (len(parts) == 2 and parts[0] == "key_outputs") or \
+                 (len(parts) >= 4 and parts[0] == "evidence" and parts[1] == "uncertainty")
+    if value_path and _su.is_signatures(slot=entry.get("slot"), tool=tool):
         for f in fields:
             if f in _su.SIGNATURE_UNITS:
                 return _su.SIGNATURE_UNITS[f]

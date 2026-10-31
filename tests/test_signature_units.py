@@ -141,3 +141,14 @@ def test_units_survive_the_forty_key_cap():
     out = s._run_key_outputs({"data": {**big, "units": {"q_mean": "mm/day", **{f"f{i}": "x" for i in range(25)}}}})
     assert "units" in list(out)[0] and len(out["units"]) == 26         # first, and not cut at 20 either
     assert len([k for k in out if k != "units"]) == 40
+
+
+def test_the_fallback_applies_only_to_signature_value_paths():
+    from ai_hydro.audit.evidence import declared_unit
+
+    row = {"slot": "signatures", "tool_name": "extract_hydrological_signatures", "key_outputs": {"q_mean": 2.0, "x": {"q_mean": 3.0}},
+           "evidence": {"uncertainty": {"q_mean": {"value": 2.0, "ci_low": 1.8, "n": 7305}}}}
+    assert declared_unit(row, "key_outputs.q_mean") == "mm/day"
+    assert declared_unit(row, "evidence.uncertainty.q_mean.ci_low") == "mm/day"
+    assert declared_unit(row, "evidence.uncertainty.q_mean.n") is None          # a count, not a flow
+    assert declared_unit(row, "key_outputs.x.q_mean") is None                    # a nested field that merely shares a name
