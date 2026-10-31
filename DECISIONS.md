@@ -746,6 +746,34 @@ ADR-003 and ADR-006 rule out hosting a network; NLDI and Geoconnex already answe
    not carry it), so the order is by drainage area; the radius is a bound, not a measurement. It does not say whether a gauge is regulated
    or whether two basins are independent; a dams lookup (Geoconnex `dams`) and the nested-basin check are the next pieces and are not here.
 
+## 2026-10-31: `trace_lineage` over declared edges, with unknown kept apart from none (graph features, P1)
+
+The question "what depends on this run?" was answered by hand (the 2026-10-19 impact review). The graph report (`findings/graph-features-2026-10-31.md`)
+recommended a lineage query over existing records and no graph store (ADR-006: graphs are views).
+
+1. **No store.** A dict walk in `ai_hydro.session.lineage` over the run log and claims, built per call. A study has tens of runs.
+   A SQLite recursive CTE is the next step if a study ever has thousands.
+2. **Edges are only what is declared:** `record.parents`; `input_refs` whose `ref` is a run id; claim `evidence_spans` of type run.
+   Claim revision `supersedes` is a digest link inside one claim's chain, not a run edge, and is not walked.
+3. **"No parents" and "unknown" are different answers.** Sealed rows cannot be back-filled, and most producers declare no edge, so an
+   empty parent list is not a statement that there were no inputs. Each run node reports `edge_state` and `parents_known`; a completeness
+   flag is false if anything reached is unknown.
+4. **Edge coverage in current code (static, `ai_hydro/mcp`, 160 registered tools).** 19 tools read a session slot (the stored result of
+   an earlier tool). Of these only `extract_hydrological_signatures` declares the run it consumed (with a refusal reason when the slot does not
+   match). Declaring a parent: the four series tools (`summarize_series`,
+   `detect_threshold_runs`, `compare_series`, `bootstrap_statistic`; parent = the series run). `data_fetch` and `fetch_streamflow_data` declare the files they
+   retained, which are outputs, not inputs, and are roots by construction. Reading a slot with no declared edge: `separate_baseflow`, `compute_flow_duration_curve`,
+   `compute_flood_frequency`, `compute_drought_index`, `compute_soil_loss_rusle`, `compute_design_hydrograph`, `extract_geomorphic_parameters`,
+   `get_model_results`, `export_session`, `run_inundation_physics_validation`, and the validators `check_water_balance_consistency`,
+   `check_record_length`, `check_usgs_qualification_codes`, `check_stationarity`. `train_hydro_model`, `run_experiment` and `run_python` consume
+   data by other routes and were not classified statically. This is a static read of the code, not a measure of how often edges are missing in a
+   real study; a dynamic count over fresh end-to-end studies is still needed. Not fixed here: the fix is a general consume-declaration mechanism
+   (the slot read itself records the edge), not a `declare_lineage` call per tool.
+5. **Dependents are a lower bound.** Because those tools declare nothing, `downstream.nodes` can miss real dependents. `may_also_depend`
+   names the later runs that cannot be ruled out, so the answer to "what breaks if I change this?" is "these, and possibly these".
+6. **Tier 3, recorded.** It is a view, but the run-record coverage test requires new tools to be recorded rather than exempted; its own
+   rows are left out of dependents and coverage counts so that looking does not change what is seen.
+
 ## 2026-10-31: signature flows carry their unit wherever a value is printed (Q_mean bug)
 
 A study digest listed `q_mean = 2.01686` with no unit and the answer said "Q_mean 2.017 m3/s". The value is mm/day (m3/s * 86.4 /
@@ -794,3 +822,28 @@ recognises, or "day of water year", which the audit grammar has no entry for. `_
 A capped candidate list is not a complete answer: when more NLDI sites exist than the 80 checked, the result is `incomplete: true` with "candidate cap: N of M
 checked, nearest by straight-line distance", and the per-side excluded counts are `null` (they cannot be known for unchecked sites). Each request's timeout is
 `min(30 s, what is left of the 45 s deadline)`, so the deadline holds even when a service hangs.
+### Review revision (trace_lineage and the slot-read edge)
+
+- **The edge is recorded where the slot is read.** `HydroSession.get`/`get_result` call `run_records.note_slot_read(meta.run_id, meta.tool)`;
+  the recorder turns those into `record.parents` unless the call said `parent_unresolved` (signatures does when the slot does not match
+  its request: the generic read must not contradict that). It skips a tool reading its own previous output, tools that are not recorded
+  (status/view tools), and the run's own id. Under the server's worker pool the capture is a context variable shared by reference with the
+  worker thread; the only mutation is an append to a list guarded by a membership check (a duplicate would be harmless and is removed at
+  seal time).
+- **Measured, synthetic study** (one hand-seeded streamflow slot; `tests/test_slot_read_lineage.py`): `separate_baseflow`,
+  `compute_flow_duration_curve`, `compute_flood_frequency`, `check_record_length`, `check_stationarity` declared their input run 0 of 5
+  before, 5 of 5 after. The other slot-reading tools in the static list go through the same `get`; they were not each exercised, and
+  tools that read files or the network directly are not covered.
+- **`lineage_basis`** is the claim "every stored-result read of this call was declared", so a root with that value read no stored result.
+  It is withheld for arbitrary code. It is what lets the audit say "declared parents, none observed" instead of "unknown".
+- **trace_lineage:** a walk cut by `max_depth` or `max_nodes` is `complete: false` (`depth_or_size_limited`); `edge_state` counts run-valued
+  `input_refs`; `may_also_depend` compares parsed times (unparsable: kept); `max_nodes` is a parameter; each call seals its own run row.
+
+### Review revision 2 (acquires)
+
+`acquires = true` was under-inclusive, which made `declared_unobserved` flag chains that start at a geometry, terrain, forcing, land-surface or experiment
+tool. It is now on every open-world tool whose job is to bring external data in (twi, cn grid, spectral index, drought index, geomorphic parameters, GEE
+time series, flood inundation, all `lsh_*`, `merit_ensure_*`, `run_experiment`). `tests/test_lineage_check.py::test_every_open_world_tool_has_an_explicit_acquires_decision`
+lists every open-world non-code tool and fails for a new one until it is marked or listed with a reason (citation lookups, service checks, previews,
+`gauge_network_context`, and signatures, whose own fetch is internal and conditional so lineage follows its declared parent). `helpers._lean_key_outputs`
+now delegates to the store's `_run_key_outputs` (one 40-key rule); the unused `_record_run_log_entry` is removed with its test case.

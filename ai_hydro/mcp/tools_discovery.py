@@ -66,7 +66,7 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
                     "cancel_job", "list_jobs", "wait_for_job"),
     "persona":     ("get_researcher", "update_researcher", "log_researcher",
                     "write_research_interpretation"),
-    "ledger":      ("add_journal", "search_experiments",
+    "ledger":      ("add_journal", "search_experiments", "trace_lineage",
                     "add_journal_entry",   # alias present in some versions
                     "check_registry_staleness", "list_registry_claims"),
     "experiments": ("define_experiment", "run_experiment", "get_experiment_table"),
