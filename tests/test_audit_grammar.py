@@ -58,13 +58,15 @@ class TestSessionStudyAnswer:
         prose = (FIX / "answer.md").read_text(encoding="utf-8")
         rep = R.resolve_prose(prose, "01031500")
 
-        # 10 real quantities remain (was 29 "numbers"); 4 resolve cleanly
+        # 10 real quantities remain (was 29 "numbers"); 3 resolve cleanly. The 4th used to: "2.02 m3/s" for
+        # q_mean passed because this old row has no `units` map. q_mean is mm/day, so it is now a unit_mismatch.
         assert rep.total_numeric_count == 10
-        assert rep.cited_numeric_count == 4
-        assert rep.hard_count == 5 and rep.advisory_count == 1
+        assert rep.cited_numeric_count == 3
+        assert rep.hard_count == 6 and rep.advisory_count == 1
         assert rep.passed is False
+        assert [(v.kind, v.prose_value) for v in rep.violations if v.kind == "unit_mismatch"] == [("unit_mismatch", "2.02")]
         # hard findings first
-        assert [v.severity for v in rep.violations] == ["hard"] * 5 + ["advisory"]
+        assert [v.severity for v in rep.violations] == ["hard"] * 6 + ["advisory"]
 
     def test_no_identifier_code_or_count_false_positives(self, study):
         prose = (FIX / "answer.md").read_text(encoding="utf-8")

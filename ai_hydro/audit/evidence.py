@@ -210,6 +210,16 @@ def declared_unit(entry: dict, resolved_path: str) -> str | None:
                 u = _unit_str(sib.get(key)) if isinstance(sib, dict) else None
                 if u:
                     return u
+    # A signatures row written before the watershed emitted a `units` map has none. Its flows are mm/day,
+    # so "2.017 m3/s" must still be flagged: fall back to the signatures table for that row only.
+    from ai_hydro.science import signature_units as _su
+
+    rec = entry.get("record") if isinstance(entry.get("record"), dict) else {}
+    tool = entry.get("tool_name") or rec.get("tool")
+    if _su.is_signatures(slot=entry.get("slot"), tool=tool):
+        for f in fields:
+            if f in _su.SIGNATURE_UNITS:
+                return _su.SIGNATURE_UNITS[f]
     return None
 
 

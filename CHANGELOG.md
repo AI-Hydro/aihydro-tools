@@ -10,6 +10,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An old signatures row with no `units` map no longer lets "2.02 m3/s" through for `q_mean`.** `declared_unit` falls back to the signatures
+  table (mm/day for `q_mean`, `q_std`, `q5`, `q95`, `q_median`) for a row whose slot or tool is signatures and which records no unit; other rows are
+  untouched. The fixture of the original wrong answer (`tests/fixtures/audit_session_01031500`) now reports a `unit_mismatch` for it instead of
+  passing it. `units` is also kept first, and whole, in a result's `key_outputs` when the 40-key limit applies.
+### Fixed
+
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed
   `q_mean = 2.01686 [run:...]` with no unit, and an agent wrote "Q_mean 2.017 m3/s". The signature flows (`q_mean`, `q_std`, `q5`,
   `q95`, `q_median`) are basin-depth rates in mm/day, not discharge. The digest now prints the unit the run recorded, falling back to a
