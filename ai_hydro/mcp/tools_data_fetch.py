@@ -411,10 +411,10 @@ def data_fetch(
                      ambiguous outlet -> GAUGE_AMBIGUOUS; refusals are final.
 
     Returns:
-        Success: variable, product, source, resolved_place, data (head, and `summary`: n, period, mean, min, max,
-        units, missing days, qualifier counts), license, citation, next_steps, `_run_id` (the `series` argument of summarize_series, compare_series, bootstrap_statistic). Failure: error envelope.
+        Success: variable, product, source, resolved_place, data (head, `summary` stats), license, citation,
+        next_steps, `_run_id` (the `series` argument of summarize_series, compare_series, bootstrap_statistic). Failure: error envelope.
 
-    Queued backends (GloFAS / HPC): USE_ASYNC_TOOL (use data_fetch_background).
+    Queued (GloFAS/HPC): USE_ASYNC_TOOL (data_fetch_background).
     """
     from ai_hydro.mcp.helpers import StudyNotFoundError, _resolve_session
 
