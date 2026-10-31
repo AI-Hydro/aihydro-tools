@@ -671,3 +671,14 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+## 2026-10-31: `gauge_flowlines` writes the geometry to the workspace instead of returning it
+
+The map trace needs the river lines above and below a gauge. A 100 km upstream query for one Maine gauge returned 432 lines and 374 KB of GeoJSON; putting that in a
+tool result would cost the model's context for something only the map reads. The tool therefore writes one GeoJSON file to the study workspace (name carries gauge,
+direction, radius and the first 8 hex of its digest, so a different answer never overwrites an earlier file), the study recorder ties the file to the run, and
+`map_add_layer_from_run` shows it. Without a study the summary is returned and nothing is written, and says so.
+Bounds: two requests, a 40 s timeout each, an 8 MB response cap, 1500 features, 200 km. The 1500 cut keeps the first features in NLDI's order, which is not
+by distance; `truncated` and per-direction totals make that visible, and a smaller `distance_km` is the remedy. Length is computed along the coordinates (haversine),
+not read from the service. It carries no regulation or gauge-coverage meaning. It duplicates a small amount of HTTP handling with `gauge_network_context` (#32); fold
+both into one NLDI client once both are on main. Not done: simplification of coordinates for the map; trimming the first reach at the gauge's measure.

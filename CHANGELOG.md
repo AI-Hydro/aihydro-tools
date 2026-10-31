@@ -8,6 +8,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`gauge_flowlines`**: NHDPlus flowline geometry upstream (`UT`, all tributaries) and/or downstream (`DM`, main stem) of a USGS gauge within `distance_km`
+  (1-200, default 50), from NLDI; US only (another country's id, or one NLDI does not know, gives `available: false`). At most two requests, a response-size
+  cap and 1500 features (`truncated` says when it cut). The GeoJSON (NHDPlus COMID, direction, length from the coordinates) is written to the study workspace,
+  recorded with the run and kept out of the model's context; `map_add_layer_from_run(run_id=_run_id)` draws it. The result has counts, lengths, bbox, the file
+  and its SHA-256, request URLs and response digests, and a `limits` text. Tier 2; open-world, not read-only (network, and a file is written).
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed
