@@ -1476,6 +1476,14 @@ idempotentHint = true
 openWorldHint = false
 evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
+["gauge_network_context"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI, USGS Water Data API, Geoconnex reference gages); writes no session state; the only file written is the Geoconnex PID cache [calls: resolve_geoconnex_gage]"
+
 ["train_hydro_model"]
 source = "builtin"
 readOnlyHint = false

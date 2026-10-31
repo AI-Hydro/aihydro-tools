@@ -722,6 +722,29 @@ report infeasibility). Two small pieces on the tools side; the extension's promp
    and sealed in that call's record. Proposal for the extension: `attempt_completion` passes the same two fields through unchanged and
    shows `outcome` in the answer header. Not agreed with the extension engineer in this change; this is the tools-side half and the
    contract it proposes. `done` with `unmet` items is refused.
+## 2026-10-31: `gauge_network_context` is a thin federated read, in tools (graph features, P3)
+
+The agent had no tool for "what is upstream and downstream of this gauge", which the nested-basin check and the map trace both need.
+ADR-003 and ADR-006 rule out hosting a network; NLDI and Geoconnex already answer it.
+
+1. **Layer.** In aihydro-tools (`ai_hydro/data/gauge_network.py`, tool in `mcp/tools_gauge_network.py`), not aihydro-data. The question is
+   an agent-facing composition of three public services and a label; aihydro-data's job is to serve variables, and it already holds a
+   private NLDI/OGC client for gauge resolution that this does not need to reach into. It uses `requests` (a base dependency) with
+   an https host allow-list, no redirects and a fixed timeout, and reuses `aihydro_watershed.identity.resolve_geoconnex_gage` for the PID.
+   Dependencies stay downward (tools reads watershed). If a second consumer needs the same thing, move the client down then.
+2. **"Streamflow site" means a daily-mean discharge series, not an id shape.** NLDI's `nwissite` source returns every NWIS surface-water site
+   (in one 100 km query from 01013500: 30 sites, 22 with 15-digit lake-station ids, 1 with a daily discharge series). One Water Data API
+   `time-series-metadata` query (parameter 00060, statistic 00003) per 40 ids decides. The record begin and end come from the same query.
+3. **No local graph and no cache of the network.** Each call asks the services; the request URLs and response SHA-256 are returned so
+   the answer can be re-checked. The only file written is the existing Geoconnex PID cache. Offline replay of the answer is not provided.
+4. **US-only, said so.** Outside NLDI's coverage the answer is `available: false` with `US_ONLY` or `GAUGE_NOT_IN_NLDI`. The global
+   alternatives (MERIT-Basins reach tables, HydroRIVERS, HydroLAKES) need licence checks and local tables and were not started.
+5. **Annotation.** The annotation rules reserve `readOnlyHint` for tools that make no network call, so this is `readOnlyHint=false`,
+   `openWorldHint=true`, even though it changes nothing in the study. The lineage check counts an open-world, non-destructive run as having
+   acquired external data, which is right for this tool: its answer comes from the services.
+6. **What it does not claim.** Neighbours are listed by network position. Distance along the network is not returned (NLDI's site list does
+   not carry it), so the order is by drainage area; the radius is a bound, not a measurement. It does not say whether a gauge is regulated
+   or whether two basins are independent; a dams lookup (Geoconnex `dams`) and the nested-basin check are the next pieces and are not here.
 
 ## 2026-10-31: signature flows carry their unit wherever a value is printed (Q_mean bug)
 
@@ -754,3 +777,20 @@ recognises, or "day of water year", which the audit grammar has no entry for. `_
 - `resolve_passage_hash` falls back to a scan of the JSONL if FTS5 is unavailable: a hash lookup needs no ranking.
 - `index_passages` writes through private temp names (JSONL and SQLite), so two concurrent builds never share a path.
 - The benchmark harness restores the module paths it overrides, also on failure.
+### Review revision (gauge_network_context)
+
+- **Bounded and partial, never a bare error.** `Client` has a request budget (12) and a wall-clock deadline (45 s); a 429, a service fault, a spent
+  budget or a passed deadline stop the call where it is and the result returns what was gathered, `incomplete: true`, the reasons, and how many
+  candidates were not checked. Only an id that is not a USGS number or that NLDI does not know is a refusal (`available: false`). Candidates are
+  ordered by straight-line distance from the gauge (NLDI's list carries no along-network distance) and capped at 80 before the discharge check.
+- **Sealed so it can be cited.** The tool takes an optional `session_id`; with a study the result goes through `post_run`, and key_outputs keep
+  neighbours as dicts keyed by USGS id (20 per side, equal to what is shown), with URLs and digests as strings (key_outputs drops lists).
+- `API_USGS_PAT` goes to `api.waterdata.usgs.gov` only. The Geoconnex lookup's URL is listed in `request_urls` (its response digest is not
+  available through the existing resolver; a cached answer is marked by status). If `aihydro_watershed.identity` does not import, the gauge's PID
+  is `unavailable` and the rest is unaffected. The site-number pattern uses `[0-9]`, not `\d`.
+
+### Review revision 2 (gauge_network_context)
+
+A capped candidate list is not a complete answer: when more NLDI sites exist than the 80 checked, the result is `incomplete: true` with "candidate cap: N of M
+checked, nearest by straight-line distance", and the per-side excluded counts are `null` (they cannot be known for unchecked sites). Each request's timeout is
+`min(30 s, what is left of the 45 s deadline)`, so the deadline holds even when a service hangs.
