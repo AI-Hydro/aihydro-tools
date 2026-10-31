@@ -36,7 +36,7 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
                     "run_inundation_physics_validation", "get_inundation_physics_result",
                     "export_inundation_surrogate_dataset", "train_inundation_surrogate",
                     "get_inundation_surrogate_result"),
-    "streamflow":  ("fetch_streamflow", "separate_baseflow", "extract_hydrological",
+    "streamflow":  ("fetch_streamflow", "gauge_network_context", "separate_baseflow", "extract_hydrological",
                     "compute_flow_duration_curve", "compute_flood_frequency"),
     "forcing":     ("fetch_forcing", "compute_drought_index"),
     "camels":      ("fetch_camels",),

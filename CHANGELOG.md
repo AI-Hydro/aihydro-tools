@@ -8,6 +8,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`gauge_network_context`.** Streamgages upstream and downstream of a USGS gauge within `distance_km` (1-500, default 100) along the
+  river network, from NLDI navigation (`UT` above, `DM` down the main stem), kept only if the USGS Water Data API shows a daily-mean
+  discharge series (00060/00003) so lake and other NWIS sites are dropped and counted. Each gauge has name, location, USGS drainage
+  area (square miles, plus km2) and its ratio to the starting gauge, the daily-record begin and end, and the Geoconnex mainstem PID;
+  the starting gauge gets its Geoconnex gage PID. Every answer carries the request URLs and response digests and a `limits` text.
+  United States only: another country's id, or an id NLDI does not know, gives `available: false` with a code, not a guess. A neighbour is
+  a network fact, not evidence of independence or of no regulation. The tool changes nothing in the study; it makes network requests, so
+  it is annotated open-world and not read-only. Tier 2.
+  Bounded: at most 12 requests and 45 s per call, 80 candidates checked nearest-first (straight-line), 20 gauges per side. If a limit, an HTTP 429 or a
+  service fault stops it, the result carries what was gathered with `incomplete: true` and the reasons. `API_USGS_PAT` is sent as `X-Api-Key` to
+  `api.waterdata.usgs.gov` only. With a study, the answer is sealed: neighbours are a dict keyed by USGS id and the request URLs and response
+  digests are strings, so a marker can cite `key_outputs.upstream_gauges.USGS-0xxxxxxx.drainage_area_sqmi`.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed
