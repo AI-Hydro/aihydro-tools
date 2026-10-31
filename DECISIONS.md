@@ -683,3 +683,18 @@ on ranking, but the agent finds the passage to cite through it.
    looked, so demand is unproven too.
 5. **Not done:** `search_literature` (project-level document search in `tools_project.py`) is a different object (documents, not passages)
    and was left alone. No reranker, no embeddings; the plan adds those only if BM25 misses 20% of questions on the human set.
+
+## 2026-10-31: signature flows carry their unit wherever a value is printed (Q_mean bug)
+
+A study digest listed `q_mean = 2.01686` with no unit and the answer said "Q_mean 2.017 m3/s". The value is mm/day (m3/s * 86.4 /
+area_km2); the same fault applied to `q_std`, `q5`, `q95` and `q_median`. aihydro-watershed >= 0.3 already emits a `units` map, but the
+digest ignored it and older results never had one.
+
+1. The digest prints `value unit [run:...]`, with the unit adjacent to the number so the audit's unit check can see it. A dimensionless
+   field prints no unit, which keeps the existing line shape for baseflow_index and runoff_ratio.
+2. A tools-side table fills gaps for results from before the `units` map. It duplicates watershed's table on purpose (a missing
+   key must not turn into a missing unit) and a test pins the two together whenever the installed watershed has it.
+3. Sealed run rows are not rewritten (they are digest-bound); the digest supplies the unit at read time. New signatures runs seal the
+   `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
+4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
+   a different vocabulary ("-", "fraction of days"); it was not touched here.

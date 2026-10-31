@@ -170,7 +170,7 @@ def assert_no_bare_numbers(text: str, site_ids=("01031500",)):
     assert not bare_numbers(text, tuple(site_ids)), f"uncited numeric literals: {bare_numbers(text, tuple(site_ids))}"
     # independent of the grammar's classifier: no decimal anywhere outside a marker (a run marker
     # follows each value, so remove "value + marker" pairs first)
-    rest = re.sub(r"=\s*[-\d.e+]+\s*\[(?:run|claim):[^\]]*\]", " ", text)
+    rest = re.sub(r"=\s*[-\d.e+]+(?:\s+[^\s\[]+)?\s*\[(?:run|claim):[^\]]*\]", " ", text)
     rest = _strip_markers(rest)
     rest = re.sub(r"`[^`]*`|\bst_[0-9A-Za-z]+|\bprj_[0-9A-Za-z]+", " ", rest)      # code spans, minted ids
     rest = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", rest)                              # ISO dates
