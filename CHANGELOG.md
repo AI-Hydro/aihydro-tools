@@ -6,8 +6,79 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [2.8.6] - 2026-10-31 (units, fetch summaries, lineage, literature search)
 
+Unit labels on signatures, a data summary on every `data_fetch`, `trace_lineage`, BM25 literature search, `gauge_network_context`, and an
+advisory check for numbers with no observed-data lineage. The audit now flags the wrong unit on old signature rows too.
+
+
+### Changed
+
+- **A tool's reads of stored results are recorded as its parents, at the read.** `HydroSession.get` / `get_result` now tell the
+  recording middleware which run produced the slot value (`meta.run_id`), so every recorded tool that reads a stored result gets that
+  run in `record.parents` without declaring it. Skipped: a tool reading its own earlier output (a cache check), tools that are not
+  recorded (status and view tools), and any call that explicitly said `parent_unresolved` (that note wins). A recorded call that is not
+  arbitrary code also gets `record.extra.lineage_basis = "slot_reads"`, meaning every slot read went through this path (files read
+  directly are not covered). In a synthetic study, 0 of 5 slot-reading tools named their input run before and 5 of 5 do now.
+### Added
+
+- **`data_fetch` returns `data.summary`.** The result carried the first five rows and a row count, and no statistics, so an agent
+  that wanted a mean went to a deprecated tool that returned one. `data.summary` has `n_dates`, `n_finite`, `first_date`,
+  `last_date`, the requested window, `mean`, `min`, `max`, `units`, `n_missing_days` (calendar days in the window with no served
+  date; daily series only), `n_dates_without_value`, and, when aihydro-data reports them (USGS), the approval and qualifier counts.
+  `fraction_with_value` (finite values over the days the window spans) and `partial` (true below 1) say when a mean covers only part of the window (daily series; null for other timesteps). A `basis` string labels what the statistics are. The maths is `summarize_series`'s. It is about 650 characters with USGS counts.
+  `data.units` maps `mean`/`min`/`max` to the unit so `[run:<id>#key_outputs.summary.mean]` carries its unit through the audit. Nothing
+  already in the result was removed. With `cache=False` nothing is retained and there is no summary.
+### Fixed
+
+- **An old signatures row with no `units` map no longer lets "2.02 m3/s" through for `q_mean`.** `declared_unit` falls back to the signatures
+  table (mm/day for `q_mean`, `q_std`, `q5`, `q95`, `q_median`) for a row whose slot or tool is signatures and which records no unit; other rows are
+  untouched. The fixture of the original wrong answer (`tests/fixtures/audit_session_01031500`) now reports a `unit_mismatch` for it instead of
+  passing it. `units` is also kept first, and whole, in a result's `key_outputs` when the 40-key limit applies.
+### Changed
+
+- **Passage search is BM25 (SQLite FTS5), not substring overlap.** `search_passages` now ranks with FTS5 `bm25()` (English stemming,
+  any query word may match, rarer words count more). The old scorer counted substring hits divided by passage length with no IDF, so a
+  four-word passage of `flow`/`index` fragments outranked a real baseflow-index passage. `resolve_passage_hash` is a keyed lookup
+  instead of a scan. `passage_hash` is unchanged (a test pins two values from the previous implementation), as is
+  `passage_index.jsonl`. A derived `passage_index.sqlite3` beside it is written by `index_passages` and needs no new dependency. A search
+  never writes (the search and resolve tools are read-only): if the file is missing or older than the JSONL, the table is built in
+  memory for that call. `search_passages_tool` results gain `score`.
+- **Renamed `ai_hydro.knowledge.embeddings` to `ai_hydro.knowledge.passages`.** There were never embeddings; the module is keyword
+  search and says so. The old name still imports and is the same module object. This is keyword matching: a query of "discharge"
+  will not find a passage that says "streamflow".
+- A query with no usable word (empty, or only stop words) now returns nothing instead of the first passages in file order.
+
+### Added
+
+- `bench/literature/run.py`: compares BM25, a grep-style baseline and the retired scorer by Recall@k on a gold file. The seed gold set
+  (29 questions, agent-written from this repository's prose docs) is a harness check, not the decision set; see `bench/literature/README.md`.
+- **`trace_lineage` (read-only).** What produced a run or claim (`up`), and what depends on it (`down`), from edges the records
+  already carry: `record.parents`, run-valued `input_refs`, and a claim's run evidence spans. A plain Python walk
+  (`ai_hydro.session.lineage`); no graph store. It keeps "no parents" apart from "unknown": a fetch is an `acquisition_root`
+  (parents known, none); a sealed record with no parent and no reason is `undeclared`; `no_record`, `declared_unresolved` and
+  `not_in_log` are also unknown. `upstream.complete` and `downstream.complete` are true only when nothing on the walk is unknown;
+  `downstream.may_also_depend` lists later runs whose inputs are not declared. Tier 3, `readOnlyHint`.
+- **Answer audit: advisory `no_observed_lineage`.** When a cited run's sealed record shows no path to observed data, the audit adds
+  an advisory (never a block). Flagged: a run whose declared parents never fetched data, and a run of arbitrary code (`run_python`)
+  whose inputs the record cannot show. Declared parents count only when every run the walk ends at is recorded as having read no stored result (`record.extra.lineage_basis`); otherwise the lineage is unknown, which is counted in `lineage_unknown_count` and never flagged. Advisories are listed once per run id in `lineage_advisories`, outside `violations` and `advisory_count`. "Fetched data" is read from the tool annotation table, so no
+  tool names are listed (a new `acquires = true` key in the annotation table marks the true fetchers; open-world is not enough). What the audit accepts as evidence is unchanged. New report fields: `lineage_checked_count`,
+  `lineage_flagged_count`, `lineage_unknown_count`, `lineage_advisories`.
+- **`audit_interpretation(outcome=, unmet=)`.** `outcome` is `done | partial | infeasible`, with `unmet` listing what was not done.
+  It is validated and sealed in the audit call's own run record (`record.extra.completion_outcome`, `completion_unmet`). The extension's
+  `attempt_completion` is the intended caller; until it passes the fields, nothing changes.
+- **`gauge_network_context`.** Streamgages upstream and downstream of a USGS gauge within `distance_km` (1-500, default 100) along the
+  river network, from NLDI navigation (`UT` above, `DM` down the main stem), kept only if the USGS Water Data API shows a daily-mean
+  discharge series (00060/00003) so lake and other NWIS sites are dropped and counted. Each gauge has name, location, USGS drainage
+  area (square miles, plus km2) and its ratio to the starting gauge, the daily-record begin and end, and the Geoconnex mainstem PID;
+  the starting gauge gets its Geoconnex gage PID. Every answer carries the request URLs and response digests and a `limits` text.
+  United States only: another country's id, or an id NLDI does not know, gives `available: false` with a code, not a guess. A neighbour is
+  a network fact, not evidence of independence or of no regulation. The tool changes nothing in the study; it makes network requests, so
+  it is annotated open-world and not read-only. Tier 2.
+  Bounded: at most 12 requests and 45 s per call, 80 candidates checked nearest-first (straight-line), 20 gauges per side. If a limit, an HTTP 429 or a
+  service fault stops it, the result carries what was gathered with `incomplete: true` and the reasons. `API_USGS_PAT` is sent as `X-Api-Key` to
+  `api.waterdata.usgs.gov` only. With a study, the answer is sealed: neighbours are a dict keyed by USGS id and the request URLs and response
+  digests are strings, so a marker can cite `key_outputs.upstream_gauges.USGS-0xxxxxxx.drainage_area_sqmi`.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed

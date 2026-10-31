@@ -55,6 +55,12 @@
 # tests/test_tool_surface.py checks each class: `ui` tools only reach the map/preview command
 # writers (static scan plus an audit-hook run), and the vocabulary is closed.
 #
+#   acquires = true        the tool's job is to fetch external data (observations, forcing, attributes,
+#                          geometry) into the study. Read by the answer audit's lineage check to decide
+#                          whether a run "acquired data"; open-world alone does not mean that (a
+#                          citation lookup, a service status check, a network context query are
+#                          open-world and acquire no study data). -> _meta["aihydro/acquires"]
+#
 # `source` is the distribution that registers the tool (builtin = aihydro-tools); rows for an
 # optional plugin are only enforced when that plugin is importable.
 
@@ -305,6 +311,7 @@ evidence = "reads session slots (no network); writes derived session slot and/or
 
 ["compute_drought_index"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -337,6 +344,7 @@ evidence = "reads session slots (no network); writes derived session slot and/or
 
 ["compute_spectral_index"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -345,6 +353,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["compute_twi"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -393,6 +402,7 @@ evidence = "writes session state (feature registry / binding / archive flag); id
 
 ["create_cn_grid"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -401,6 +411,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["data_batch_fetch"]
 source = "aihydro-data"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -425,6 +436,7 @@ evidence = "aihydro-data local registry/cache inspection; no network, no writes 
 
 ["data_fetch"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -433,6 +445,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["data_fetch_background"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -489,6 +502,7 @@ evidence = "overwrites or removes researcher-authored session/profile/skill stat
 
 ["delineate_watershed"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -497,6 +511,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["delineate_watershed_from_point"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -569,6 +584,7 @@ evidence = "writes workspace files (scaffold/export); recomputed from session [c
 
 ["extract_geomorphic_parameters"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -585,6 +601,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["fetch_camels_us"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -593,6 +610,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["fetch_forcing_data"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -601,6 +619,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["fetch_soil_attributes_ssurgo"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -609,6 +628,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["fetch_streamflow_data"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -617,6 +637,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["gee.extract_timeseries"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -954,6 +975,7 @@ evidence = "static/local recipe metadata; no network, no writes [guard: no write
 
 ["lsh_attributes"]
 source = "aihydro-lsh"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -962,6 +984,7 @@ evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihy
 
 ["lsh_batch"]
 source = "aihydro-lsh"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -970,6 +993,7 @@ evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihy
 
 ["lsh_compare_to_ref"]
 source = "aihydro-lsh"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -978,6 +1002,7 @@ evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihy
 
 ["lsh_dynamic_attributes"]
 source = "aihydro-lsh"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -986,6 +1011,7 @@ evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihy
 
 ["lsh_events"]
 source = "aihydro-lsh"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1002,6 +1028,7 @@ evidence = "static/local recipe metadata; no network, no writes [guard: no write
 
 ["lsh_forcing"]
 source = "aihydro-lsh"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1010,6 +1037,7 @@ evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihy
 
 ["lsh_geomorphic_attributes"]
 source = "aihydro-lsh"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1070,6 +1098,7 @@ evidence = "writes a UI command file to the map command queue (replace-style com
 
 ["map_flood_inundation"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1078,6 +1107,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["map_flood_inundation_hydrograph"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1204,6 +1234,7 @@ evidence = "reads local MERIT cache; writes a map event file for the UI [calls: 
 
 ["merit_ensure_basin"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1212,6 +1243,7 @@ evidence = "network download of regional MERIT data into the data cache (downloa
 
 ["merit_ensure_basins_region"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1220,6 +1252,7 @@ evidence = "network download of regional MERIT data into the data cache (downloa
 
 ["merit_ensure_region"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1228,6 +1261,7 @@ evidence = "network download of regional MERIT data into the data cache (downloa
 
 ["merit_ensure_routing_region"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1343,6 +1377,7 @@ evidence = "starts a background job writing artifacts (new job_id per call) [cal
 
 ["run_experiment"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -1460,6 +1495,21 @@ destructiveHint = false
 idempotentHint = true
 openWorldHint = false
 evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
+
+["gauge_network_context"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI, USGS Water Data API, Geoconnex reference gages); writes no session state; the only file written is the Geoconnex PID cache [calls: resolve_geoconnex_gage]"
+["trace_lineage"]
+source = "builtin"
+readOnlyHint = true
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+evidence = "reads the study's run log and claims and walks recorded edges in memory; writes nothing [guard: no write, subprocess or network call found]"
 
 ["train_hydro_model"]
 source = "builtin"

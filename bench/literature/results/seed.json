@@ -1,0 +1,61 @@
+{
+  "n_questions": 29,
+  "n_passages": 178,
+  "n_docs": 22,
+  "questions_with_no_relevant_passage": [],
+  "recall_percent": {
+    "bm25": {
+      "recall@1": 62.1,
+      "recall@3": 79.3,
+      "recall@5": 86.2
+    },
+    "grep": {
+      "recall@1": 62.1,
+      "recall@3": 82.8,
+      "recall@5": 89.7
+    },
+    "legacy": {
+      "recall@1": 24.1,
+      "recall@3": 34.5,
+      "recall@5": 34.5
+    }
+  },
+  "bm25_minus_grep_at_5_points": -3.5,
+  "missed_at_5": {
+    "bm25": [
+      "S02",
+      "S03",
+      "S08",
+      "S18"
+    ],
+    "grep": [
+      "S02",
+      "S24",
+      "S26"
+    ],
+    "legacy": [
+      "S01",
+      "S04",
+      "S05",
+      "S08",
+      "S11",
+      "S12",
+      "S13",
+      "S14",
+      "S15",
+      "S16",
+      "S17",
+      "S18",
+      "S20",
+      "S22",
+      "S23",
+      "S25",
+      "S26",
+      "S27",
+      "S29"
+    ]
+  },
+  "gold": "gold_seed.json",
+  "code_commit": "ca6f651915c63526e666d84a07e97af7a70b9797",
+  "sqlite_version": "3.45.3"
+}

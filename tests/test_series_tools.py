@@ -671,3 +671,79 @@ def test_local_kge_ignores_pairs_with_nan():
     pred = np.array([1.1, np.nan, 3.8, 3.2, 5.1])
     keep = np.isfinite(pred)
     assert _kge(obs, pred) == pytest.approx(_kge(obs[keep], pred[keep]))
+
+
+# ------------------------------------------------- data_fetch returns a data summary (A3)
+
+def test_data_fetch_result_carries_a_labelled_compact_summary(serve, mcp_server):
+    vals = [3.0, 1.0, None, 7.0, 5.0, 9.0, 2.0]
+    d = days("2020-01-01", 10, skip=(4, 5, 8))               # 7 dates present of 10; one has no value
+    body = serve(d, vals, units="m3/s")
+    sm = body["data"]["summary"]
+    fin = np.array([3.0, 1.0, 7.0, 5.0, 9.0, 2.0])
+    assert sm["n_dates"] == 7 and sm["n_finite"] == 6 and sm["n_dates_without_value"] == 1
+    assert sm["n_missing_days"] == 3                         # calendar days with no served date
+    assert sm["mean"] == pytest.approx(fin.mean(), rel=1e-5)
+    assert (sm["min"], sm["max"]) == (1.0, 9.0)
+    assert sm["units"] == "m3/s" and sm["variable"] == "streamflow"
+    assert (sm["first_date"], sm["last_date"]) == ("2020-01-01", "2020-01-10")
+    assert "basis" in sm and len(json.dumps(sm)) < 1200      # compact, labelled
+    # the statistics are the ones summarize_series reports for the same run
+    err, out = run(mcp_server, "summarize_series", series=body["_run_id"])
+    assert sm["mean"] == pytest.approx(out["data"]["mean"], rel=1e-5)
+    assert sm["n_missing_days"] == out["data"]["n_missing_dates"]
+    # and they are sealed, with the unit the audit looks for next to the value
+    row = run_log()[body["_run_id"]]
+    assert row["key_outputs"]["summary"]["mean"] == sm["mean"]
+    from ai_hydro.audit.evidence import declared_unit, resolve_marker_path
+
+    found, val, path = resolve_marker_path(row, "key_outputs.summary.mean")
+    assert found and val == sm["mean"] and declared_unit(row, path) == "m3/s"
+
+
+def test_data_fetch_summary_is_absent_when_nothing_was_served_to_summarise(serve):
+    body = serve(days("2020-01-01", 4), [1.0, 2.0, 3.0, 4.0], cache=False)
+    assert "summary" not in body["data"] and body["data"]["series_retained"] is False
+
+
+def test_data_fetch_summary_carries_the_providers_quality_counts(serve, mcp_server, monkeypatch):
+    import aihydro_data._pipeline as pipeline
+
+    serve(days("2020-01-01", 4), [1.0, 2.0, 3.0, 4.0])      # installs the synthetic fetch; wrap it for the next call
+    real = pipeline.fetch
+
+    def with_quality(**kw):
+        res = real(**kw)
+        res.quality = {"approval_counts": {"Approved": 3, "Provisional": 1}, "qualifier_counts": {"ice": 1},
+                       "n_negative": 0, "provisional_fraction": 0.25, "n_rows": 4, "extra": "dropped"}
+        return res
+
+    monkeypatch.setattr(pipeline, "fetch", with_quality)
+    err, out, _ = call(mcp_server, "data_fetch", {
+        "variable": "streamflow", "geometry": {"lat": 41.0, "lon": -71.0}, "start": "2020-01-01",
+        "end": "2020-01-04", "session_id": SID})
+    assert not err and "error" not in out, out
+    q = out["data"]["summary"]["qualifier_counts"]
+    assert q["approval_counts"] == {"Approved": 3, "Provisional": 1} and q["provisional_fraction"] == 0.25
+    assert "extra" not in q and "n_rows" not in q
+
+
+def test_a_summary_over_a_partial_record_says_so(serve):
+    full = serve(days("2020-01-01", 5), [1.0, 2.0, 3.0, 4.0, 5.0])["data"]["summary"]
+    assert full["partial"] is False and full["fraction_with_value"] == 1.0
+    d = days("2020-01-01", 10, skip=(4, 5, 8))                 # 3 calendar days absent
+    part = serve(d, [3.0, 1.0, None, 7.0, 5.0, 9.0, 2.0])["data"]["summary"]
+    assert part["partial"] is True and part["n_missing_days"] == 3
+    assert part["fraction_with_value"] == pytest.approx(6 / 10)  # 6 finite values over the 10 days spanned
+    assert part["mean"] == pytest.approx(np.mean([3.0, 1.0, 7.0, 5.0, 9.0, 2.0]), rel=1e-5)
+
+
+def test_a_non_daily_series_gets_no_completeness_claim():
+    from ai_hydro.mcp.tools_data_fetch import _summary_from_payload
+
+    dates = ["2020-01-01", "2020-02-01", "2020-03-01"]
+    sm = _summary_from_payload({"dates": dates, "values": [1.0, None, 3.0], "units": "mm", "variable": "p",
+                                "value_column": "p", "timestep": "monthly"}, "2020-01-01", "2020-03-31")
+    assert sm["fraction_with_value"] is None and sm["partial"] is None and "n_missing_days" not in sm
+    assert sm["n_dates_without_value"] == 1 and sm["timestep"] == "monthly"
+    assert "daily series only" in sm["basis"] and "null for a series that is not daily" in sm["basis"]
