@@ -23,6 +23,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   table (mm/day for `q_mean`, `q_std`, `q5`, `q95`, `q_median`) for a row whose slot or tool is signatures and which records no unit; other rows are
   untouched. The fixture of the original wrong answer (`tests/fixtures/audit_session_01031500`) now reports a `unit_mismatch` for it instead of
   passing it. `units` is also kept first, and whole, in a result's `key_outputs` when the 40-key limit applies.
+### Changed
+
+- **Passage search is BM25 (SQLite FTS5), not substring overlap.** `search_passages` now ranks with FTS5 `bm25()` (English stemming,
+  any query word may match, rarer words count more). The old scorer counted substring hits divided by passage length with no IDF, so a
+  four-word passage of `flow`/`index` fragments outranked a real baseflow-index passage. `resolve_passage_hash` is a keyed lookup
+  instead of a scan. `passage_hash` is unchanged (a test pins two values from the previous implementation), as is
+  `passage_index.jsonl`. A derived `passage_index.sqlite3` beside it is written by `index_passages` and needs no new dependency. A search
+  never writes (the search and resolve tools are read-only): if the file is missing or older than the JSONL, the table is built in
+  memory for that call. `search_passages_tool` results gain `score`.
+- **Renamed `ai_hydro.knowledge.embeddings` to `ai_hydro.knowledge.passages`.** There were never embeddings; the module is keyword
+  search and says so. The old name still imports and is the same module object. This is keyword matching: a query of "discharge"
+  will not find a passage that says "streamflow".
+- A query with no usable word (empty, or only stop words) now returns nothing instead of the first passages in file order.
+
+### Added
+
+- `bench/literature/run.py`: compares BM25, a grep-style baseline and the retired scorer by Recall@k on a gold file. The seed gold set
+  (29 questions, agent-written from this repository's prose docs) is a harness check, not the decision set; see `bench/literature/README.md`.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed

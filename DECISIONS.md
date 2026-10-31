@@ -672,6 +672,32 @@ and reported them.
 4. **Labels, not judgements.** `basis` says the values are finite served values in `units`, not converted or area-normalised.
    The summary does not call a record long enough or complete.
 5. **Sealed.** `data.summary` is in `key_outputs`, so a marker can cite it; `data.units` carries the unit map the audit reads.
+## 2026-10-31: passage search is BM25 over FTS5, and the keep-or-delete test is still open (graph features, P2)
+
+`search_passages` scored passages by substring overlap divided by length (`embeddings.py`, no IDF), so short junk passages beat real ones
+(measured: a four-word passage scored 0.75 against 0.097 for the real baseflow-index passage). `[lit:<hash>]` resolution does not depend
+on ranking, but the agent finds the passage to cite through it.
+
+1. **One search path, hash unchanged.** The JSONL stays the index of record and `passage_hash` is untouched (claims bind it). A derived
+   SQLite file holds an FTS5 table and a hash-keyed table; only `index_passages` writes it, because `search_passages_tool` and
+   `resolve_passage` are annotated read-only (an earlier draft rebuilt the file on read and the read-only guard caught it). If it is missing or
+   stale, a read builds the table in memory for that call. Both `search_passages` and `resolve_passage_hash` read it; the old scorer is gone
+   from the product (a copy lives in `bench/literature/run.py` so the comparison can be re-run). The file is derived: deleting it loses nothing.
+2. **No new dependency.** FTS5 is part of the SQLite the interpreter ships (3.45.3 here). If a build lacks it, search raises a named error
+   and `[lit:<hash>]` resolution is the same error; nothing falls back to a second scorer.
+3. **Naming.** `embeddings.py` promised semantic matching. It is `passages.py` now, with a module alias for the old import path, and
+   the docstring and tool descriptions say "keyword search, not semantic".
+4. **The plan's kill test, as far as it can be run.** The plan: delete the index if grep over the text matches BM25 within 5 points at
+   Recall@5 on 30 to 50 human-written questions from real hydrology papers. That set does not exist and no hydrology paper is in this repository.
+   What was run: 29 questions written by an AI agent from this repo's prose docs (178 passages, 22 documents). Recall@5: BM25 86.2,
+   grep-style 89.7, retired scorer 34.5. BM25 is 3.5 points below grep (one question), so the kill rule would fire on this set. The set is
+   too small (one question is 3.4 points), not hydrology, and its author had read the passages, so it neither confirms nor refutes the plan's
+   hypothesis. The change is kept because the old scorer is measurably broken (34.5 against 86 to 90), the hash lookup is useful regardless,
+   and the cost is one small module. **Open:** run `bench/literature/run.py --gold <human set>`; if BM25 is within 5 points of grep, delete
+   `passages.py`' search and hand the agent the text, keeping only hash resolution. The index was empty on the owner's machine when the scout
+   looked, so demand is unproven too.
+5. **Not done:** `search_literature` (project-level document search in `tools_project.py`) is a different object (documents, not passages)
+   and was left alone. No reranker, no embeddings; the plan adds those only if BM25 misses 20% of questions on the human set.
 
 ## 2026-10-31: signature flows carry their unit wherever a value is printed (Q_mean bug)
 
@@ -697,3 +723,10 @@ The digest now prints mm/day, but a row written by an older watershed carries no
 `tests/test_study_context.assert_no_bare_numbers` no longer lets any word sit between a value and its marker: only a unit `audit.units.unit_after`
 recognises, or "day of water year", which the audit grammar has no entry for. `_run_key_outputs` puts `units` first and exempts it from the
 40-key and 20-item limits.
+### Review revision (passage search)
+
+- Decision: keep BM25. The kill-rule item stays open until a person writes the 30-50 question set; the seed result is committed at
+  `bench/literature/results/seed.json` with the code commit it was run on.
+- `resolve_passage_hash` falls back to a scan of the JSONL if FTS5 is unavailable: a hash lookup needs no ranking.
+- `index_passages` writes through private temp names (JSONL and SQLite), so two concurrent builds never share a path.
+- The benchmark harness restores the module paths it overrides, also on failure.

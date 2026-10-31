@@ -292,7 +292,7 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
                 tag = binding.lit_tag if hasattr(binding, "lit_tag") else binding.raw.strip("[]").split(":", 1)[-1]
                 # Try to resolve hash-format tags against the passage index
                 try:
-                    from ai_hydro.knowledge.embeddings import is_hash_format, resolve_passage_hash, PASSAGE_INDEX_PATH
+                    from ai_hydro.knowledge.passages import is_hash_format, resolve_passage_hash, PASSAGE_INDEX_PATH
                     if is_hash_format(tag):
                         if _passage_index_exists is None:
                             _passage_index_exists = PASSAGE_INDEX_PATH.exists()
@@ -313,7 +313,7 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
                                 ))
                         # else: index absent — treat as legacy lit tag, no advisory
                 except Exception:
-                    pass  # embeddings module unavailable; treat as legacy lit tag
+                    pass  # passages module unavailable; treat as legacy lit tag
                 cited_count += 1
                 continue
 
