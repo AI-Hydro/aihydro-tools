@@ -24,6 +24,7 @@ class AuditViolation(BaseModel):
         "lit_unresolvable",      # [lit:<hash>] hash not found in passage index
         "hollow_evidence",       # marker resolves to a run with no recorded outputs
         "unit_mismatch",         # prose unit differs from the unit the run declares
+        "no_observed_lineage",   # advisory: the cited run's record shows no path to observed data
     ]
     text_excerpt: str            # the prose snippet containing the violation
     marker_raw: str | None       # the raw marker string, if any
@@ -67,6 +68,12 @@ class AuditReport(BaseModel):
     # (identifier, code, date, year, meta_count, ...). Transparency, not findings.
     exempt_count: int = 0
     exempt_by_reason: dict[str, int] = {}
+    # Lineage check (advisory; never changes `passed`). Cited run values examined, how many were
+    # flagged `no_observed_lineage`, and how many could not be judged (unsealed or unresolved rows,
+    # or a run whose record simply declares no parent).
+    lineage_checked_count: int = 0
+    lineage_flagged_count: int = 0
+    lineage_unknown_count: int = 0
 
     def teaching_error(self) -> str:
         """

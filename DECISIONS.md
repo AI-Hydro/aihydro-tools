@@ -656,3 +656,22 @@ timeout and the final-answer audit timed out at 15 s.
   network tools beyond `wait_for_job` (the mechanism, `_CLASS_OF` / `_CLASS_LIMIT`, exists; only `wait` is populated); socket-level
   timeouts in the sibling data packages; a read-modify-write audit of the remaining slot writers (`tools_experiments`) beyond the leaf
   merge.
+
+## 2026-10-31: honest exit, part 1 -- an advisory lineage check and a completion outcome (N1)
+
+Agents asked for data that does not exist tend to produce numbers anyway (SciIntegrity-Bench: all seven models synthesised data rather than
+report infeasibility). Two small pieces on the tools side; the extension's prompt and `attempt_completion` change is separate.
+
+1. **The check is advisory and does not touch evidence acceptance.** `resolve_prose` accepts a value exactly as before (marker resolves,
+   value matches, unit agrees); the lineage walk runs after that and can only add an advisory. `audit/resolver.py` still never accepts a
+   suggested marker on the agent's behalf.
+2. **What is flagged is what the record positively shows.** Producer edges are incomplete (only `data_fetch`, the signatures tool and the
+   series tools declare parents), so "no declared parent" is *unknown*, not "none". Flagged: (a) declared and resolved parents with no data
+   acquisition among them; (b) `run_python`, which can read anything and records no input. Unknown (unsealed row, unresolved parent,
+   producer that declares no edge) is counted, not flagged. Flagging every undeclared edge would teach the agent to ignore the advisory.
+3. **"Acquired data" is a property of the tool**, from `tool_annotations.toml`: `openWorldHint` and not `destructiveHint`. A failed call
+   is not an acquisition. This is approximate (a citation lookup is open-world too) and says so in `session/lineage.py`.
+4. **Completion outcome field.** `outcome` in `done | partial | infeasible`, plus short `unmet` strings, passed to `audit_interpretation`
+   and sealed in that call's record. Proposal for the extension: `attempt_completion` passes the same two fields through unchanged and
+   shows `outcome` in the answer header. Not agreed with the extension engineer in this change; this is the tools-side half and the
+   contract it proposes. `done` with `unmet` items is refused.

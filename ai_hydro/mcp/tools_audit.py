@@ -17,10 +17,43 @@ from ai_hydro.mcp.helpers import _resolve_session, _tool_error_to_dict
 log = logging.getLogger("ai_hydro.mcp.audit")
 
 
+COMPLETION_OUTCOMES = ("done", "partial", "infeasible")
+_MAX_UNMET = 10
+_MAX_UNMET_CHARS = 200
+
+
+def record_completion_outcome(outcome: str | None, unmet: list[str] | None) -> dict | None:
+    """Validate the task's completion outcome and seal it in this call's run record (``record.extra``).
+
+    ``None`` when no outcome was given (older callers). An invalid value is a plain error, not a guess.
+    """
+    if outcome is None:
+        if unmet:
+            return {"error": True, "code": "INVALID_PARAMETER",
+                    "message": "unmet was given without outcome.",
+                    "recovery": f"Pass outcome as one of {list(COMPLETION_OUTCOMES)}."}
+        return None
+    if outcome not in COMPLETION_OUTCOMES:
+        return {"error": True, "code": "INVALID_PARAMETER",
+                "message": f"outcome must be one of {list(COMPLETION_OUTCOMES)}, got {outcome!r}.",
+                "recovery": "done: all of it. partial: some of it. infeasible: it could not be done."}
+    items = [str(u).strip()[:_MAX_UNMET_CHARS] for u in (unmet or []) if str(u).strip()][:_MAX_UNMET]
+    if outcome == "done" and items:
+        return {"error": True, "code": "INVALID_PARAMETER",
+                "message": "outcome 'done' cannot list unmet items.",
+                "recovery": "Use outcome 'partial' (or 'infeasible') when something was not done."}
+    from ai_hydro.session import run_records
+
+    run_records.declare_lineage(completion_outcome=outcome, **({"completion_unmet": items} if items else {}))
+    return {"outcome": outcome, **({"unmet": items} if items else {})}
+
+
 @mcp.tool()
 def audit_interpretation(
     session_id: str | None = None,
     prose: str = "",
+    outcome: str | None = None,
+    unmet: list[str] | None = None,
 ) -> dict:
     """
     Verify that every quantity in synthesis prose is bound to a run-log
@@ -42,6 +75,13 @@ def audit_interpretation(
       - claim exists in session ledger
       - claim status ∈ {tested, supported, weakly_supported}
 
+    Advisory only: a cited run whose record shows no path to observed data is flagged
+    no_observed_lineage. A run that declares no parent is not called fabricated; see
+    lineage_unknown_count.
+
+    outcome: "done", "partial" or "infeasible" (could not be done); unmet lists what was not done.
+    Sealed in this call's run record; it does not change the audit.
+
     Returns {passed, violations, numeric_coverage, ...}.
 
     Tier 1 — enforcement runs post_run() (quality_flags, _run_id) automatically.
@@ -59,6 +99,9 @@ def audit_interpretation(
             }
 
         from ai_hydro.audit import audit_prose
+        done = record_completion_outcome(outcome, unmet)
+        if done is not None and "error" in done:
+            return done
         report = audit_prose(prose, session_id)
 
         violations_raw = [v.model_dump() for v in report.violations]
@@ -75,7 +118,12 @@ def audit_interpretation(
             "hard_count": report.hard_count,
             "advisory_count": report.advisory_count,
             "exempt_by_reason": report.exempt_by_reason,
+            "lineage_checked_count": report.lineage_checked_count,
+            "lineage_flagged_count": report.lineage_flagged_count,
+            "lineage_unknown_count": report.lineage_unknown_count,
         }
+        if done:
+            result["completion_outcome"] = done
 
         if not report.passed:
             result["_note"] = (

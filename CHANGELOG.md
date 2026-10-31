@@ -8,6 +8,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Answer audit: advisory `no_observed_lineage`.** When a cited run's sealed record shows no path to observed data, the audit adds
+  an advisory (never a block). Flagged: a run whose declared parents never fetched data, and a run of arbitrary code (`run_python`)
+  whose inputs the record cannot show. A run that declares no parent is not called fabricated: the record cannot tell, and the report
+  counts it in `lineage_unknown_count`. "Fetched data" is read from the tool annotation table (open-world and not destructive), so no
+  tool names are listed. What the audit accepts as evidence is unchanged. New report fields: `lineage_checked_count`,
+  `lineage_flagged_count`, `lineage_unknown_count`.
+- **`audit_interpretation(outcome=, unmet=)`.** `outcome` is `done | partial | infeasible`, with `unmet` listing what was not done.
+  It is validated and sealed in the audit call's own run record (`record.extra.completion_outcome`, `completion_unmet`). The extension's
+  `attempt_completion` is the intended caller; until it passes the fields, nothing changes.
 ### Fixed
 
 - **`[run:<id>]` with no `#<field>` gets a specific fix hint.** It is still a hard `malformed_marker` that binds nothing; the
