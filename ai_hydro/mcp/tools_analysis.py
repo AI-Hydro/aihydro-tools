@@ -1709,11 +1709,15 @@ def extract_hydrological_signatures(
         # `reference_comparison` is the table the claim gate reads (run row: key_outputs.reference_comparison);
         # `camels_reference` is the summary (source + hash, period, area, forcing, climate context).
         if isinstance(_dd, dict) and _dd:
+            # A watershed that predates the `units` map still gets one: q_mean/q5/q95 are mm/day, not m3/s.
+            from ai_hydro.science.signature_units import with_units as _with_units
+            _dd.update(_with_units(_dd))
             from ai_hydro.science.camels_reference import build_camels_reference as _bcr
             _cref, _rcmp = _bcr(_dd, usgs_gauge_id, area_km2, start_date, end_date, session)
             _dd["camels_reference"] = _cref
             if _rcmp is not None:
-                _dd["reference_comparison"] = _rcmp
+                from ai_hydro.science.signature_units import annotate_comparison as _ann_cmp
+                _dd["reference_comparison"] = _ann_cmp(_rcmp)
         if _scoped is not None and isinstance(d.get("data"), dict):
             # Sealed with the result: which gauge and area these numbers describe.
             d["data"]["basin_gauge_id"] = _eff_gauge
