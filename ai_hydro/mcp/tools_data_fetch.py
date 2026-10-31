@@ -87,10 +87,46 @@ def _series_payload(fetched: Any, variable: str) -> dict | None:
         "aggregation_actual": getattr(fetched, "aggregation_actual", None) or None,
         "cache_key": getattr(fetched, "cache_key", None),
     }
-    others = [c for c in numeric if c != primary]
+    others = [c for c in numeric if c not in (primary,)]
     if others:
         payload["other_columns"] = {c: col(c) for c in others}
+    # USGS keeps a per-value approval (A approved / P provisional) and qualifier; a hydrograph draws provisional
+    # days differently, so the codes travel with the values instead of being dropped here.
+    for name in ("approval_code", "qualifier_code"):
+        codes = _code_column(df, name, keep)
+        if codes is not None:
+            payload[f"{name}s"] = codes
+    payload["information_class"] = information_class(
+        payload.get("product"), payload.get("source"), getattr(fetched, "site_resolution", None))
     return payload
+
+
+#: Products whose values are measured at a station. Anything not listed here or in `_MODEL_SOURCES` is
+#: "unclassified": the class is stated only where the product's nature is known, never guessed.
+_OBSERVATION_PRODUCTS = frozenset({"NWIS_STREAMFLOW"})
+_MODEL_SOURCES = frozenset({"cds_glofas", "geoglows_retro", "openmeteo_flood"})
+
+
+def information_class(product: Any = None, source: Any = None, site_resolution: Any = None) -> str:
+    """``observation`` (a station's measurement), ``model_simulation`` (a hydrological model's output) or
+    ``unclassified``. A hydrograph uses it to say what kind of line it draws."""
+    if site_resolution or (isinstance(product, str) and product in _OBSERVATION_PRODUCTS):
+        return "observation"
+    if isinstance(source, str) and source in _MODEL_SOURCES:
+        return "model_simulation"
+    return "unclassified"
+
+
+def _code_column(df: Any, name: str, keep: Any) -> list | None:
+    """A per-value string column (USGS approval / qualifier code) aligned with the kept dates, or None."""
+    import pandas as pd
+
+    if name not in df.columns:
+        return None
+    col = df.loc[keep.values, name] if len(df) == len(keep) else None
+    if col is None:
+        return None
+    return [None if (v is None or (isinstance(v, float) and pd.isna(v)) or v == "") else str(v) for v in col]
 
 
 def _safe(text: str) -> str:
@@ -119,6 +155,8 @@ def _retain(session_id: str, result: dict, variable: str, files_out: list | None
                   "spatial_support", "aggregation_actual"):
             if result.get(k) not in (None, ""):
                 payload[k] = result[k]
+        payload["information_class"] = information_class(
+            payload.get("product"), payload.get("source"), result.get("site_resolution"))
         from aihydro_core.records import digest as _digest
 
         name = f"series_{_safe(variable)}_{_digest(payload)[7:19]}.json"
@@ -147,6 +185,9 @@ def _retain(session_id: str, result: dict, variable: str, files_out: list | None
             "last_date": payload["dates"][-1],
             "file_digest": file_digest,
             "format": payload["schema"],
+            "information_class": payload["information_class"],
+            "has_approval_codes": "approval_codes" in payload,
+            "has_qualifier_codes": "qualifier_codes" in payload,
         }
     except Exception as exc:
         log.warning("data_fetch: could not retain the served series: %s", exc)

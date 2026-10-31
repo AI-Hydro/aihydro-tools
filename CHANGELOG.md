@@ -8,6 +8,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A retained series keeps its USGS codes and says what kind of line it is.** `data_fetch` now stores per-value `approval_codes` and `qualifier_codes`
+  (aligned with `dates`, `null` where absent) when the served frame has them, and `information_class`: `observation` (a station's measurement),
+  `model_simulation` (GloFAS, GEOGLOWS, Open-Meteo flood) or `unclassified`; a product is classed only where its nature is known. `load_run_series`
+  returns the codes, `retained_series` reports `has_approval_codes` / `has_qualifier_codes` / `information_class`, and the series tools echo
+  `information_class`. A hydrograph can then draw provisional days differently. Retained files written before this have no codes.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed

@@ -64,6 +64,7 @@ def _source_echo(rs, prefix: str = "") -> dict:
         f"{prefix}variable": rs.meta.get("variable"),
         f"{prefix}timestep": rs.meta.get("timestep"),
         f"{prefix}source": rs.meta.get("source"),
+        f"{prefix}information_class": rs.meta.get("information_class"),
     }
 
 
