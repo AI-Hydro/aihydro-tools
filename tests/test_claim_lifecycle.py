@@ -28,7 +28,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_REPO_ROOT", tmp_path)
     monkeypatch.setattr(registry, "REGISTRY_DIR", tmp_path / "registry")
     monkeypatch.setattr(registry, "CLAIMS_FILE", tmp_path / "registry" / "claims.jsonl")
-    monkeypatch.setattr("ai_hydro.knowledge.embeddings.PASSAGE_INDEX_PATH", tmp_path / "passages.jsonl")
+    monkeypatch.setattr("ai_hydro.knowledge.passages.PASSAGE_INDEX_PATH", tmp_path / "passages.jsonl")
 
 
 def run_row(run_id="r1", nse=0.8, ci_low=0.7):

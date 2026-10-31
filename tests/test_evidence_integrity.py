@@ -20,7 +20,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_REPO_ROOT", tmp_path)
     monkeypatch.setattr(registry, "REGISTRY_DIR", tmp_path / "registry")
     monkeypatch.setattr(registry, "CLAIMS_FILE", tmp_path / "registry" / "claims.jsonl")
-    monkeypatch.setattr("ai_hydro.knowledge.embeddings.PASSAGE_INDEX_PATH", tmp_path / "passages.jsonl")
+    monkeypatch.setattr("ai_hydro.knowledge.passages.PASSAGE_INDEX_PATH", tmp_path / "passages.jsonl")
 
 
 def result():
@@ -307,7 +307,7 @@ def test_deleted_dataset_detected(session):
 
 
 def test_paper_requires_intact_indexed_passage(session):
-    from ai_hydro.knowledge.embeddings import PASSAGE_INDEX_PATH, _passage_hash
+    from ai_hydro.knowledge.passages import PASSAGE_INDEX_PATH, _passage_hash
     text = "Synthetic methodological passage for a registry regression test."
     pid = _passage_hash(text)
     record = {"passage_hash": pid, "text": text, "doc_name": "fixture.md", "chunk_idx": 0}
