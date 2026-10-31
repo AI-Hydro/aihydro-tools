@@ -671,3 +671,14 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+## 2026-10-31: reference layers are snapshots, so they say when and where
+
+A gauge, dam or HUC layer is a public service's answer for one map view at one time. Without the time and the view it cannot be told from a stale layer or one
+for another extent, and the run record of the query did not exist (the CLI called the builders directly). Layers now carry `retrieved_at` and `query_bbox`, and
+the gauge and dam queries go through `recorded_call`. The gauge layer adds drainage area and the daily-discharge record because a map reader choosing a gauge needs
+both; the record costs one extra request per 40 gauges (about six for a full view of 250), and is `unknown` rather than `none` when that request fails.
+The drainage area is kept as the number USGS returns with a note that the unit is documented, not stated, plus a labelled km2 conversion. The record query uses
+two private helpers of `aihydro_data.sources.usgs_waterdata` (`_new_record`, `_paged_features`); a public paged-features function there would be the clean
+fix and is a change to a sibling package. Not done: the layer naming its run id (`recorded_call` does not return it); the NID query is not a USGS service, so it has
+no request URLs.

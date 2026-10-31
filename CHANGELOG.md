@@ -8,6 +8,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Reference layers say when and for which view.** The gauge (`nwis-gauges-view`), dam (`nid-dams-view`) and WBD layers carry `metadata.retrieved_at` (UTC) and
+  `metadata.query_bbox` (`west,south,east,north`, EPSG:4326); the gauge layer also carries the USGS request URLs. Each gauge point has its USGS
+  `drainage_area_raw` (with `drainage_area_unit_note`: the API does not state the unit; USGS documents square miles) and `drainage_area_km2_if_sqmi`, and its
+  daily-discharge record: `daily_discharge_record` is `yes` (with `daily_discharge_begin`/`_end`), `none` (asked, no daily-mean discharge series) or
+  `unknown` (the record query failed), never `none` for a failure. No area is invented where USGS states none.
+- **The map CLI's gauge and dam queries are recorded calls** (`gauges_in_view`, `dams_in_view`; optional `--session-id`): the sealed record has the
+  view, the counts and the retrieval time. The layer does not yet name the run that produced it.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed
