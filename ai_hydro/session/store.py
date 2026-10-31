@@ -719,6 +719,10 @@ def _synopsis_from_result(result: dict | None) -> dict:
             }
         else:
             synopsis[k] = v
+    from ai_hydro.science import signature_units as _su
+
+    if _su.is_signatures(tool=meta.get("tool")) and any(k in _su.SIGNATURE_UNITS for k in synopsis):
+        synopsis.update(_su.with_units(synopsis))       # an older result has no units map: q_mean is mm/day
     computed_at = meta.get("computed_at", "")
     synopsis["_computed_at"] = computed_at[:10] if computed_at else None
     synopsis["_tool"] = meta.get("tool")

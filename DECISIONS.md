@@ -675,3 +675,18 @@ report infeasibility). Two small pieces on the tools side; the extension's promp
    and sealed in that call's record. Proposal for the extension: `attempt_completion` passes the same two fields through unchanged and
    shows `outcome` in the answer header. Not agreed with the extension engineer in this change; this is the tools-side half and the
    contract it proposes. `done` with `unmet` items is refused.
+
+## 2026-10-31: signature flows carry their unit wherever a value is printed (Q_mean bug)
+
+A study digest listed `q_mean = 2.01686` with no unit and the answer said "Q_mean 2.017 m3/s". The value is mm/day (m3/s * 86.4 /
+area_km2); the same fault applied to `q_std`, `q5`, `q95` and `q_median`. aihydro-watershed >= 0.3 already emits a `units` map, but the
+digest ignored it and older results never had one.
+
+1. The digest prints `value unit [run:...]`, with the unit adjacent to the number so the audit's unit check can see it. A dimensionless
+   field prints no unit, which keeps the existing line shape for baseflow_index and runoff_ratio.
+2. A tools-side table fills gaps for results from before the `units` map. It duplicates watershed's table on purpose (a missing
+   key must not turn into a missing unit) and a test pins the two together whenever the installed watershed has it.
+3. Sealed run rows are not rewritten (they are digest-bound); the digest supplies the unit at read time. New signatures runs seal the
+   `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
+4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
+   a different vocabulary ("-", "fraction of days"); it was not touched here.
