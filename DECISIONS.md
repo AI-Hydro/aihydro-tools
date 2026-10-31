@@ -671,3 +671,13 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+## 2026-10-31: the audit knows the unit of a signatures value even when the row does not (follow-up to the Q_mean fix)
+
+The digest now prints mm/day, but a row written by an older watershed carries no `units` map, so `declared_unit` returned None and the audit let
+"Mean daily discharge: 2.02 m3/s" pass against it (the fixture of the original wrong answer did exactly that, and a test encoded it as a pass).
+`declared_unit` now falls back to `ai_hydro.science.signature_units` for a row whose `slot` is `signatures` or whose tool is
+`extract_hydrological_signatures`. That fixture test changed from 4 cited / 5 hard to 3 cited / 6 hard: the changed line is the point.
+`tests/test_study_context.assert_no_bare_numbers` no longer lets any word sit between a value and its marker: only a unit `audit.units.unit_after`
+recognises, or "day of water year", which the audit grammar has no entry for. `_run_key_outputs` puts `units` first and exempts it from the
+40-key and 20-item limits.

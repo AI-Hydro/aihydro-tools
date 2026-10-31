@@ -1621,16 +1621,20 @@ class HydroSession:
         if not isinstance(data, dict):
             return {}
         out: dict[str, Any] = {}
-        for key, item in data.items():
+        # `units` first and outside the cap: it is what tells a reader that q_mean is mm/day, and the
+        # 40-key limit must never be the thing that drops it.
+        ordered = sorted(data.items(), key=lambda kv: 0 if kv[0] == "units" else 1)
+        for key, item in ordered:
             if str(key).startswith("_"):
                 continue
             if isinstance(item, list):
                 out[f"{key}_n"] = len(item)
             elif isinstance(item, dict):
-                out[key] = {k: (len(v) if isinstance(v, list) else v) for k, v in list(item.items())[:20]}
+                keep = item.items() if key == "units" else list(item.items())[:20]      # the unit map is never cut
+                out[key] = {k: (len(v) if isinstance(v, list) else v) for k, v in keep}
             elif isinstance(item, (str, int, float, bool)) or item is None:
                 out[key] = item
-            if len(out) >= 40:
+            if len(out) >= 40 + ("units" in out):
                 break
         return out
 
