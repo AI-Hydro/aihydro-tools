@@ -141,9 +141,14 @@ def build_passage_index(paths: list[Path]) -> dict:
             records.append(json.dumps(rec, ensure_ascii=False))
 
     # Atomic write
-    tmp = PASSAGE_INDEX_PATH.with_suffix(".tmp")
-    tmp.write_text("\n".join(records) + ("\n" if records else ""))
-    os.replace(tmp, PASSAGE_INDEX_PATH)
+    fd, tmp_name = tempfile.mkstemp(prefix=PASSAGE_INDEX_PATH.stem + ".", suffix=".tmp", dir=KNOWLEDGE_DIR)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:        # a private temp name: two index_passages never share one
+            fh.write("\n".join(records) + ("\n" if records else ""))
+        os.replace(tmp, PASSAGE_INDEX_PATH)
+    finally:
+        tmp.unlink(missing_ok=True)
     _build_sidecar()
 
     return {
@@ -211,9 +216,10 @@ def _build_sidecar() -> None:
     if not PASSAGE_INDEX_PATH.exists():
         return
     path = _sidecar_path()
-    tmp = path.with_suffix(".sqlite3.tmp")
+    fd, tmp_name = tempfile.mkstemp(prefix=path.stem + ".", suffix=".sqlite3.tmp", dir=path.parent)
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
-        tmp.unlink(missing_ok=True)
         conn = _connect(tmp)
         try:
             _fill(conn, _stamp())
@@ -221,8 +227,9 @@ def _build_sidecar() -> None:
             conn.close()
         os.replace(tmp, path)
     except Exception as exc:                     # FTS5 missing, disk full, permissions
-        tmp.unlink(missing_ok=True)
         log.warning("passage search table not written: %s", exc)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _sidecar() -> sqlite3.Connection | None:
@@ -316,7 +323,11 @@ def search_passages(query: str, n: int = 5) -> list[PassageRecord]:
 
 def resolve_passage_hash(passage_hash: str) -> PassageRecord | None:
     """Look up a passage by its exact hash (keyed lookup; first indexed wins). None if not found."""
-    conn = _sidecar()
+    try:
+        conn = _sidecar()
+    except PassageSearchUnavailable:
+        # A hash lookup needs no ranking, so a Python without FTS5 can still resolve [lit:<hash>].
+        return next((r for r in load_all_passages() if r.get("passage_hash") == passage_hash), None)
     if conn is None:
         return None
     try:

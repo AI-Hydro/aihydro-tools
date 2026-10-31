@@ -698,3 +698,11 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+### Review revision (passage search)
+
+- Decision: keep BM25. The kill-rule item stays open until a person writes the 30-50 question set; the seed result is committed at
+  `bench/literature/results/seed.json` with the code commit it was run on.
+- `resolve_passage_hash` falls back to a scan of the JSONL if FTS5 is unavailable: a hash lookup needs no ranking.
+- `index_passages` writes through private temp names (JSONL and SQLite), so two concurrent builds never share a path.
+- The benchmark harness restores the module paths it overrides, also on failure.

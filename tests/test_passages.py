@@ -505,3 +505,34 @@ def test_the_old_module_name_is_the_same_module():
     import ai_hydro.knowledge.embeddings as old
 
     assert old is P
+
+
+@needs_fts5
+def test_hash_resolution_survives_a_python_without_fts5(lib, monkeypatch):
+    rec = P.search_passages("Kling-Gupta efficiency", n=1)[0]
+
+    def no_fts(*a, **k):
+        raise P.PassageSearchUnavailable("no fts5")
+    monkeypatch.setattr(P, "_sidecar", no_fts)
+    assert P.resolve_passage_hash(rec["passage_hash"])["doc_name"] == "other.md"
+    assert P.resolve_passage_hash("0" * 16) is None
+    with pytest.raises(P.PassageSearchUnavailable):
+        P.search_passages("baseflow")           # ranking really does need it
+
+
+@needs_fts5
+def test_concurrent_builds_do_not_share_a_temp_file(lib, monkeypatch):
+    import tempfile
+    names = []
+    real = tempfile.mkstemp
+
+    def spy(*a, **k):
+        fd, name = real(*a, **k)
+        names.append(name)
+        return fd, name
+    monkeypatch.setattr(tempfile, "mkstemp", spy)
+    docs = sorted((lib / "docs").glob("*.md"))
+    P.build_passage_index(docs)
+    P.build_passage_index(docs)
+    assert len(names) == len(set(names)) == 4                    # jsonl + sqlite per build, all distinct
+    assert not [p for p in lib.iterdir() if p.name.endswith(".tmp")]    # and cleaned up

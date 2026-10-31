@@ -67,6 +67,14 @@ def evaluate(gold: dict, ks=(1, 3, 5)) -> dict:
     from ai_hydro.knowledge import passages as P
 
     files = corpus_files(gold["corpus"])
+    saved = (P.KNOWLEDGE_DIR, P.PASSAGE_INDEX_PATH)
+    try:
+        return _evaluate(P, gold, files, ks)
+    finally:
+        P.KNOWLEDGE_DIR, P.PASSAGE_INDEX_PATH = saved
+
+
+def _evaluate(P, gold: dict, files: list, ks) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         P.KNOWLEDGE_DIR = Path(tmp)
         P.PASSAGE_INDEX_PATH = Path(tmp) / "passage_index.jsonl"
@@ -103,6 +111,16 @@ def evaluate(gold: dict, ks=(1, 3, 5)) -> dict:
         }
 
 
+def _git_head() -> str | None:
+    import subprocess
+
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                              check=True).stdout.strip()
+    except Exception:
+        return None
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--gold", default=str(ROOT / "bench/literature/gold_seed.json"))
@@ -112,6 +130,8 @@ def main(argv=None) -> int:
     gold = json.loads(Path(args.gold).read_text(encoding="utf-8"))
     res = evaluate(gold)
     res["gold"] = str(Path(args.gold).name)
+    res["code_commit"] = _git_head()
+    res["sqlite_version"] = __import__("sqlite3").sqlite_version
     print(json.dumps(res, indent=2))
     if args.json:
         Path(args.json).write_text(json.dumps(res, indent=2), encoding="utf-8")
