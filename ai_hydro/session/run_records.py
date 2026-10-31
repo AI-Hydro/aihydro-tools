@@ -403,6 +403,10 @@ class CallCapture:
 
     rows: List[Tuple[str, str, str]] = dataclasses.field(default_factory=list)  # (session, run, writer)
     parents: List[str] = dataclasses.field(default_factory=list)
+    #: Run ids of the stored results the tool read through ``HydroSession.get``/``get_result`` (see
+    #: ``note_slot_read``). Kept apart from ``parents`` so an explicit "this slot was not consumed"
+    #: (``parent_unresolved``) can win over them.
+    slot_parents: List[str] = dataclasses.field(default_factory=list)
     input_refs: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
     notes: Dict[str, Any] = dataclasses.field(default_factory=dict)
     failed_rows: List[Tuple[str, str, str, str]] = dataclasses.field(default_factory=list)  # (session, run, writer, reason)
@@ -561,6 +565,25 @@ def note_row_refused(session_id: str, run_id: str, writer: str, outcome: str) ->
     capture = _CAPTURE.get()
     if capture is not None:
         capture.refused_rows.append((session_id, run_id, writer or "unknown", outcome))
+
+
+def note_slot_read(run_id: Optional[str], produced_by_tool: Optional[str] = None) -> None:
+    """The running tool read a stored study result that run ``run_id`` produced.
+
+    Called from ``HydroSession.get`` / ``get_result``, so the edge is recorded where the data is read
+    and no tool has to remember to declare it. No-op outside a recorded call, for tools that are not
+    recorded (status and view tools), and when the tool reads its own earlier output (a cache check).
+    """
+    capture = _CAPTURE.get()
+    if capture is None or not isinstance(run_id, str) or not run_id:
+        return
+    tool = capture.call.get("tool")
+    if tool and not is_recorded_tool(tool):
+        return
+    if produced_by_tool and produced_by_tool == tool:
+        return
+    if run_id not in capture.slot_parents:
+        capture.slot_parents.append(run_id)
 
 
 def declare_lineage(
@@ -1184,11 +1207,16 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
             # Seal the privacy-scrubbed body (what the store will keep), so
             # extra.entry_digest matches the stored row.
             entry = store._scrub_row_body(sid, entry)
+            parents = list(capture.parents)
+            if not capture.notes.get("parent_unresolved"):
+                parents += [p for p in dict.fromkeys(capture.slot_parents) if p not in parents and p != rid]
+            if "lineage_basis" not in extra and _slot_reads_cover(tool):
+                extra["lineage_basis"] = LINEAGE_BASIS
             record = build_run_record(
                 run_id=rid, tool=tool, session_id=sid, arguments=arguments,
                 result=result, status=status,
-                parents=([*capture.parents, reuse_ctx["origin_id"]]
-                         if reuse_ctx and created and reuse_ctx["origin_id"] else capture.parents),
+                parents=([*parents, reuse_ctx["origin_id"]]
+                         if reuse_ctx and created and reuse_ctx["origin_id"] else parents),
                 input_refs=capture.input_refs, extra=extra, entry=entry,
                 output_skip_reason=skip_reason, known_errors=known,
             )
@@ -1443,6 +1471,21 @@ RECORD_EXEMPT: Dict[str, str] = {
         "set_active_feature",
     )},
 }
+
+
+#: ``record.extra["lineage_basis"]``: every read of a stored study result by the tool went through
+#: ``note_slot_read``. It does not cover files a tool reads directly, so it is withheld for tools
+#: that run arbitrary code. Read by ``ai_hydro.session.lineage`` (same value).
+LINEAGE_BASIS = "slot_reads"
+
+
+def _slot_reads_cover(tool: str) -> bool:
+    try:
+        from ai_hydro.session.lineage import _annotation_classes
+
+        return tool not in _annotation_classes()[1]
+    except Exception:
+        return False
 
 
 def is_recorded_tool(name: str) -> bool:
