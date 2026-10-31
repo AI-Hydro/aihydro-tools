@@ -128,7 +128,7 @@ def test_real_fetch_then_signatures_records_parent_edge_and_series_digest(world)
 
     child = _rows()[sigs["_run_id"]]["record"]
     assert child["tool"] == "extract_hydrological_signatures"
-    assert child["parents"] == [slot_run]
+    assert child["parents"][0] == slot_run and all(p.startswith("watershed.") for p in child["parents"][1:])  # the explicit edge first; the generic slot read adds the watershed it also used
     refs = {r["ref"]: r for r in child["input_refs"]}
     assert refs[slot_run] == {"ref": slot_run, "digest": parent["output_digest"], "role": "served_data"}
     assert refs[f"{slot_run}#q_cms"]["digest"] == digest(q_stored)
