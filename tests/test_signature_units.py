@@ -16,6 +16,7 @@ import pytest
 from binding_helpers import CHAT_A, make_study, read_resource
 
 from ai_hydro.science import signature_units as su
+from ai_hydro.session.store import HydroSession
 from ai_hydro.session.chat_binding import get_binding_store
 from ai_hydro.session.project_registry import get_project_registry
 
@@ -95,3 +96,59 @@ def test_comparison_rows_carry_their_unit():
     assert t["q_mean"]["unit"] == "mm/day" and t["baseflow_index"]["unit"] == "dimensionless"
     assert t["q95"]["unit"] == "mm d-1" and "unit" not in t["not_a_signature"]
     assert su.annotate_comparison(None) is None and su.annotate_comparison({"table": None}) == {"table": None}
+
+
+def test_the_digest_helper_accepts_only_units_the_audit_recognises():
+    from test_study_context import _strip_value_unit_marker_pairs as strip
+
+    ok = "- q_mean = 2.01686 mm/day [run:a.b#key_outputs.q_mean]\n- hfd_mean = 181 day of water year [run:a.b#key_outputs.hfd_mean]"
+    assert "2.01686" not in strip(ok) and "181" not in strip(ok)
+    bad = "- q_mean = 2.01686 furlongs [run:a.b#key_outputs.q_mean]"
+    assert "2.01686" in strip(bad)
+
+
+def test_hfd_mean_prints_with_its_unit_and_still_passes_the_bare_number_check(ws):
+    from test_study_context import assert_no_bare_numbers
+
+    prj = _study(ws, {"hfd_mean": 181.0, "q_mean": 2.0, "zero_q_freq": 0.0})
+    text = _digest(prj)
+    assert re.search(r"hfd_mean = 181 day of water year \[run:", text), text
+    assert re.search(r"q_mean = 2 mm/day \[run:", text)
+    assert_no_bare_numbers(text)
+
+
+def test_an_old_signatures_row_with_no_units_map_still_flags_m3_per_s(monkeypatch):
+    """Without the table fallback `declared_unit` returned None for such a row and "2.017 m3/s" passed."""
+    from ai_hydro.audit import resolver as R
+
+    old = {"s1": {"slot": "signatures", "tool_name": "extract_hydrological_signatures",
+                  "key_outputs": {"q_mean": 2.0169, "baseflow_index": 0.44}}}
+    monkeypatch.setattr(R, "_load_run_log", lambda s: old)
+    monkeypatch.setattr(R, "_load_claims", lambda s: {})
+    rep = R.resolve_prose("Mean daily discharge: 2.02 m3/s [run:s1#key_outputs.q_mean].", "01031500")
+    assert [v.kind for v in rep.violations] == ["unit_mismatch"] and not rep.passed
+    ok = R.resolve_prose("Mean daily depth 2.02 mm/day [run:s1#key_outputs.q_mean].", "01031500")
+    assert ok.passed
+    # a row of another tool is not given signature units
+    other = {"s1": {"slot": "streamflow", "tool_name": "summarize_series", "key_outputs": {"q_mean": 2.0169}}}
+    monkeypatch.setattr(R, "_load_run_log", lambda s: other)
+    assert R.resolve_prose("Mean 2.02 m3/s [run:s1#key_outputs.q_mean].", "01031500").passed
+
+
+def test_units_survive_the_forty_key_cap():
+    big = {f"k{i:02d}": float(i) for i in range(60)}
+    s = HydroSession("capcheck")
+    out = s._run_key_outputs({"data": {**big, "units": {"q_mean": "mm/day", **{f"f{i}": "x" for i in range(25)}}}})
+    assert "units" in list(out)[0] and len(out["units"]) == 26         # first, and not cut at 20 either
+    assert len([k for k in out if k != "units"]) == 40
+
+
+def test_the_fallback_applies_only_to_signature_value_paths():
+    from ai_hydro.audit.evidence import declared_unit
+
+    row = {"slot": "signatures", "tool_name": "extract_hydrological_signatures", "key_outputs": {"q_mean": 2.0, "x": {"q_mean": 3.0}},
+           "evidence": {"uncertainty": {"q_mean": {"value": 2.0, "ci_low": 1.8, "n": 7305}}}}
+    assert declared_unit(row, "key_outputs.q_mean") == "mm/day"
+    assert declared_unit(row, "evidence.uncertainty.q_mean.ci_low") == "mm/day"
+    assert declared_unit(row, "evidence.uncertainty.q_mean.n") is None          # a count, not a flow
+    assert declared_unit(row, "key_outputs.x.q_mean") is None                    # a nested field that merely shares a name
