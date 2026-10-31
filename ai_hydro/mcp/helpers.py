@@ -659,51 +659,11 @@ def _result_to_dict(result: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 def _lean_key_outputs(result_dict: dict) -> dict:
-    """Extract small, JSON-safe key outputs for replay/provenance panels."""
-    data = result_dict.get("data") if isinstance(result_dict.get("data"), dict) else result_dict
-    out: dict[str, Any] = {}
-    if not isinstance(data, dict):
-        return out
-    for key, value in data.items():
-        if key.startswith("_"):
-            continue
-        if isinstance(value, list):
-            out[f"{key}_n"] = len(value)
-        elif isinstance(value, dict):
-            out[key] = {k: (len(v) if isinstance(v, list) else v) for k, v in list(value.items())[:20]}
-        elif isinstance(value, (str, int, float, bool)) or value is None:
-            out[key] = value
-        if len(out) >= 40:
-            break
-    return out
+    """Small, JSON-safe key outputs of a result. One implementation, shared with the session store's put_result
+    writer (``HydroSession._run_key_outputs``), so the two rows for a result can never disagree on the 40-key rule."""
+    from ai_hydro.session.store import HydroSession
 
-
-def _record_run_log_entry(session: Any, slot: str, result_dict: dict, tool_name: str | None = None) -> None:
-    """Write a deterministic run-log entry for a stored result (identical rewrites are no-ops)."""
-    raw_meta = result_dict.get("meta")
-    meta = raw_meta if isinstance(raw_meta, dict) else {}
-    resolved_tool = tool_name or meta.get("tool") or slot
-    timestamp = meta.get("computed_at") or datetime.now(timezone.utc).isoformat()
-    digest_src = json.dumps(
-        {"slot": slot, "tool": resolved_tool, "timestamp": timestamp, "outputs": _lean_key_outputs(result_dict)},
-        sort_keys=True,
-        default=str,
-    )
-    run_id = result_dict.get("run_id") or f"{slot}.{hashlib.sha1(digest_src.encode('utf-8')).hexdigest()[:12]}"
-    entry = {
-        "run_id": run_id,
-        "tool_name": resolved_tool,
-        "session_id": session.session_id,
-        "timestamp": timestamp,
-        "key_outputs": _lean_key_outputs(result_dict),
-        "slot": slot,
-    }
-    from ai_hydro.session.evidence import capture_result_evidence
-    entry["evidence"] = capture_result_evidence(result_dict)
-    # One row, written directly: re-sending the whole log would touch every
-    # existing (possibly sealed) row for no reason.
-    from ai_hydro.session.store import _run_log_record
-    _run_log_record(session.session_id, run_id, entry, writer="helpers")
+    return HydroSession._run_key_outputs(None, result_dict)  # type: ignore[arg-type]  # uses no instance state
 
 
 def _session_store(

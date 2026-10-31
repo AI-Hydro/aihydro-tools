@@ -1209,7 +1209,7 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
             entry = store._scrub_row_body(sid, entry)
             parents = list(capture.parents)
             if not capture.notes.get("parent_unresolved"):
-                parents += [p for p in capture.slot_parents if p not in parents and p != rid]
+                parents += [p for p in dict.fromkeys(capture.slot_parents) if p not in parents and p != rid]
             if "lineage_basis" not in extra and _slot_reads_cover(tool):
                 extra["lineage_basis"] = LINEAGE_BASIS
             record = build_run_record(

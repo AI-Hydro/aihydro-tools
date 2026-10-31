@@ -77,7 +77,7 @@ def test_only_true_fetchers_acquire_data():
               "fetch_forcing_data", "fetch_camels_us", "fetch_soil_attributes_ssurgo",
               "delineate_watershed", "delineate_watershed_from_point"):
         assert rows[n].get("acquires") is True, n
-    for n in ("gee.status", "delineation_doctor", "run_experiment", "lookup_citation", "get_citation_by_doi"):
+    for n in ("gee.status", "delineation_doctor", "lookup_citation", "get_citation_by_doi"):
         assert rows[n].get("acquires") is not True, n
     assert all(r["acquires"] is True for r in rows.values() if "acquires" in r)
 
@@ -188,3 +188,29 @@ def test_outcome_is_sealed_in_the_audit_calls_run_record(env, mcp_server):
 
     err, body, _ = call(mcp_server, "audit_interpretation", {"session_id": SID, "prose": "x", "outcome": "finished"})
     assert body.get("code") == "INVALID_PARAMETER"
+
+
+#: Open-world, non-code tools that deliberately do NOT acquire study data, each with the reason. Every other
+#: open-world tool must say `acquires = true`. A new network tool fails this test until someone decides.
+NOT_ACQUIRING = {
+    "delineation_doctor": "environment check; returns no data a result rests on",
+    "gee.status": "service status",
+    "gee.preview_layer": "draws a preview; produces no study data",
+    "get_citation_by_doi": "citation lookup",
+    "lookup_citation": "citation lookup",
+    "gauge_network_context": "network context query (neighbouring gauges); its numbers are not inputs to analyses",
+    "extract_hydrological_signatures": "its own fetch is internal and conditional; lineage follows its declared parent",
+}
+
+
+def test_every_open_world_tool_has_an_explicit_acquires_decision():
+    from ai_hydro.mcp.tool_surface import load_annotation_rows
+
+    rows = load_annotation_rows()
+    undecided = sorted(n for n, r in rows.items()
+                       if r.get("openWorldHint") and not r.get("destructiveHint")
+                       and r.get("acquires") is not True and n not in NOT_ACQUIRING)
+    assert not undecided, f"decide acquires = true, or list with a reason in NOT_ACQUIRING: {undecided}"
+    for n in NOT_ACQUIRING:
+        if n in rows:
+            assert rows[n].get("acquires") is not True, n

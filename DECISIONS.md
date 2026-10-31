@@ -741,3 +741,12 @@ digest ignored it and older results never had one.
   It is withheld for arbitrary code. It is what lets the audit say "declared parents, none observed" instead of "unknown".
 - **trace_lineage:** a walk cut by `max_depth` or `max_nodes` is `complete: false` (`depth_or_size_limited`); `edge_state` counts run-valued
   `input_refs`; `may_also_depend` compares parsed times (unparsable: kept); `max_nodes` is a parameter; each call seals its own run row.
+
+### Review revision 2 (acquires)
+
+`acquires = true` was under-inclusive, which made `declared_unobserved` flag chains that start at a geometry, terrain, forcing, land-surface or experiment
+tool. It is now on every open-world tool whose job is to bring external data in (twi, cn grid, spectral index, drought index, geomorphic parameters, GEE
+time series, flood inundation, all `lsh_*`, `merit_ensure_*`, `run_experiment`). `tests/test_lineage_check.py::test_every_open_world_tool_has_an_explicit_acquires_decision`
+lists every open-world non-code tool and fails for a new one until it is marked or listed with a reason (citation lookups, service checks, previews,
+`gauge_network_context`, and signatures, whose own fetch is internal and conditional so lineage follows its declared parent). `helpers._lean_key_outputs`
+now delegates to the store's `_run_key_outputs` (one 40-key rule); the unused `_record_run_log_entry` is removed with its test case.

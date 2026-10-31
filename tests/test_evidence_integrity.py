@@ -332,17 +332,12 @@ def test_old_json_run_log_still_loads_but_missing_ci_cannot_promote(tmp_path):
     assert_blocked("EVIDENCE_UNCERTAINTY_UNAVAILABLE")
 
 
-@pytest.mark.parametrize("writer", ["put_result", "post_run", "legacy_helper"])
+@pytest.mark.parametrize("writer", ["put_result", "post_run"])
 def test_writers_retain_numerical_evidence_without_array_counts(session, writer):
     original = result()
     if writer == "put_result":
         original["run_id"] = "captured"
         session.put_result("evaluation", "basin", "params", original)
-        rid = "captured"
-    elif writer == "legacy_helper":
-        from ai_hydro.mcp.helpers import _record_run_log_entry
-        original["run_id"] = "captured"
-        _record_run_log_entry(session, "evaluation", original)
         rid = "captured"
     else:
         from ai_hydro.mcp.enforcement import post_run

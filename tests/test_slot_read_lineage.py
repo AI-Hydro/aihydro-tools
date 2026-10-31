@@ -125,3 +125,14 @@ def test_a_claim_chain_is_still_traceable_after_the_change(env, mcp_server):
     lin = L.trace_to_observed(rows, sid)
     # the producer here is a hand-seeded slot row with no sealed record, so the honest answer is unknown
     assert lin.state == L.UNKNOWN and producer in " ".join(lin.reasons)
+
+
+def test_concurrent_reads_of_one_slot_name_the_producer_once(env, mcp_server):
+    producer = seed(env)
+    cap, tok = rr.begin_capture(tool="separate_baseflow")
+    try:
+        cap.slot_parents.extend([producer, producer])           # what two racing worker threads can leave behind
+        parents = list(dict.fromkeys(cap.slot_parents))
+        assert parents == [producer]
+    finally:
+        rr.end_capture(tok)
