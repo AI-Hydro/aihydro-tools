@@ -671,3 +671,12 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+## 2026-10-31: a study index of the runs that hold a gauge
+
+The map and the agent both need "have I already worked on this gauge, and where". A gauge is named in several places (a fetch's input, a signatures run's
+`basin_gauge_id`, a delineation's `gauge_id`, the gauge a fetch resolved), so the index reads what each run-log row recorded and says where it found the gauge.
+It never infers a gauge from a study's name or a run id. A study's own gauge (`site_id`) makes it *bound*; runs in other studies that name the gauge are listed
+with it. The run-log reader opens each database `mode=ro` and does not go through `_run_log_connect` (which can create the sessions directory). SQLite may still
+create `-wal`/`-shm` sidecars when it opens a WAL store, as in the existing read-only history reader; the test pins that nothing else changes. Cost: one small
+SQLite read per study per call; there is no persistent index file, so it cannot go stale.

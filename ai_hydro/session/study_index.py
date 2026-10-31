@@ -342,3 +342,107 @@ def by_artifact(path: str, workspace: str | None = None) -> dict[str, Any]:
         result["rule"] = RULE_HEURISTIC
         result["candidates"] = [candidate(s) for s in found]
     return result
+
+
+# ---------------------------------------------------------------------------
+# Which studies, and which runs in them, hold a gauge
+# ---------------------------------------------------------------------------
+
+_GAUGE_KEYS = ("gauge_id", "basin_gauge_id", "site_id", "streamflow_site", "gauge")
+_USGS_ID = re.compile(r"^(?:USGS-)?([0-9]{8,15})$")
+
+
+def _norm_gauge(value: Any) -> str | None:
+    m = _USGS_ID.match(str(value or "").strip())
+    return m.group(1) if m else None
+
+
+def gauges_of_row(row: dict[str, Any]) -> dict[str, str]:
+    """``{gauge number: where in the row it was named}`` for a run-log row.
+
+    Read from what the row recorded (its key outputs, its inputs and the place a fetch resolved), never from the
+    run id or the prose. A gauge a row does not name is not guessed from its study."""
+    found: dict[str, str] = {}
+
+    def add(value: Any, where: str) -> None:
+        g = _norm_gauge(value)
+        if g and g not in found:
+            found[g] = where
+
+    ko = row.get("key_outputs") if isinstance(row.get("key_outputs"), dict) else {}
+    for k in _GAUGE_KEYS:
+        add(ko.get(k), f"key_outputs.{k}")
+    inputs = row.get("inputs") if isinstance(row.get("inputs"), dict) else {}
+    for k in _GAUGE_KEYS:
+        add(inputs.get(k), f"inputs.{k}")
+    place = inputs.get("resolved_place") if isinstance(inputs.get("resolved_place"), dict) else {}
+    add(place.get("gauge"), "inputs.resolved_place.gauge")
+    sr = ko.get("site_resolution") if isinstance(ko.get("site_resolution"), dict) else {}
+    add(sr.get("site"), "key_outputs.site_resolution.site")
+    return found
+
+
+def _read_run_rows(study_id: str) -> dict[str, dict[str, Any]]:
+    """``{run_id: row}`` from the study's run-log database, opened read-only (no create, no pragma, no directory made).
+
+    A study with no database has no runs (``{}``). Raises ``sqlite3.Error`` / ``OSError`` if one exists and cannot be read."""
+    import sqlite3
+
+    from ai_hydro.session import store as _store
+
+    path = _store._run_log_db_path(study_id)
+    if not path.exists():
+        return {}
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        out: dict[str, dict[str, Any]] = {}
+        for run_id, entry_json in conn.execute("SELECT run_id, entry_json FROM runs ORDER BY timestamp"):
+            try:
+                row = json.loads(entry_json) if entry_json else {}
+            except ValueError:
+                row = {}
+            out[run_id] = row if isinstance(row, dict) else {}
+        return out
+    finally:
+        conn.close()
+
+
+def runs_holding_gauge(gauge_id: str, *, include_hidden: bool = False, max_runs_per_study: int = 50) -> dict[str, Any]:
+    """Studies that are bound to ``gauge_id`` or hold runs that name it, with those runs.
+
+    ``bound`` is the study's own gauge (its ``site_id``); ``runs`` are the rows that name the gauge, each with where. A study
+    whose run log cannot be read is listed with ``run_log_readable: false``: unknown, not empty.
+    """
+    g = _norm_gauge(gauge_id)
+    if g is None:
+        return {"gauge": None, "error": "not a USGS site number", "studies": []}
+    studies: list[dict[str, Any]] = []
+    for summary in study_summaries(include_hidden=include_hidden):
+        sid = summary["study_id"]
+        bound = _norm_gauge(summary.get("site_id")) == g
+        readable = True
+        try:
+            rows = _read_run_rows(sid)
+        except Exception:
+            rows, readable = {}, False
+        hits = []
+        for rid, row in rows.items():
+            if not isinstance(row, dict):
+                continue
+            where = gauges_of_row(row).get(g)
+            if where:
+                rec = row.get("record") if isinstance(row.get("record"), dict) else {}
+                hits.append({"run_id": rid, "tool": rec.get("tool") or row.get("tool_name"), "slot": row.get("slot"),
+                             "timestamp": row.get("timestamp"), "named_in": where})
+        if not (bound or hits):
+            continue
+        hits.sort(key=lambda h: str(h["timestamp"] or ""), reverse=True)
+        studies.append({
+            "study_id": sid, "label": summary["label"], "bound_to_gauge": bound,
+            "workspace_dir": summary.get("workspace_dir"), "last_run": summary.get("last_run"),
+            "run_log_readable": readable, "n_runs_naming_gauge": len(hits),
+            "runs": hits[:max_runs_per_study], "runs_truncated": len(hits) > max_runs_per_study,
+        })
+    studies.sort(key=lambda s: (not s["bound_to_gauge"], -s["n_runs_naming_gauge"], str(s["study_id"])))
+    return {"gauge": g, "n_studies": len(studies), "studies": studies,
+            "basis": "run rows that name the gauge in their outputs, inputs or resolved place; a study's own gauge is its site_id"}

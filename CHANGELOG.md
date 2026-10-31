@@ -8,6 +8,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`find_studies_for_gauge`** (read-only, tier 3): the studies on this machine that are bound to a USGS gauge or hold runs that name it, with those runs (id, tool,
+  slot, time, and where the gauge appears: key outputs, inputs or resolved place; never guessed from a name). A study whose run log cannot be read is listed as
+  unreadable, not empty. Reads each run log directly in read-only mode. The same index can answer the map's "this gauge has N runs in M studies".
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed
