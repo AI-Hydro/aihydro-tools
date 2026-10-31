@@ -10,6 +10,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed
+  `q_mean = 2.01686 [run:...]` with no unit, and an agent wrote "Q_mean 2.017 m3/s". The signature flows (`q_mean`, `q_std`, `q5`,
+  `q95`, `q_median`) are basin-depth rates in mm/day, not discharge. The digest now prints the unit the run recorded, falling back to a
+  table (`ai_hydro/science/signature_units.py`, pinned to aihydro-watershed's `SIGNATURE_UNITS` by a test) for results that have no
+  `units` map; dimensionless values print as before. `synopsis_for_llm`, the workspace `signatures_*.json` and the sealed result gain the
+  same `units` map when the watershed did not supply one. Sealed rows already written are not changed.
 - **`[run:<id>]` with no `#<field>` gets a specific fix hint.** It is still a hard `malformed_marker` that binds nothing; the
   message now says the value beside it was not checked, and the hint gives the marker to write.
 
