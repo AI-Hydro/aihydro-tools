@@ -10,6 +10,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`trace_lineage` (read-only).** What produced a run or claim (`up`), and what depends on it (`down`), from edges the records
+  already carry: `record.parents`, run-valued `input_refs`, and a claim's run evidence spans. A plain Python walk
+  (`ai_hydro.session.lineage`); no graph store. It keeps "no parents" apart from "unknown": a fetch is an `acquisition_root`
+  (parents known, none); a sealed record with no parent and no reason is `undeclared`; `no_record`, `declared_unresolved` and
+  `not_in_log` are also unknown. `upstream.complete` and `downstream.complete` are true only when nothing on the walk is unknown;
+  `downstream.may_also_depend` lists later runs whose inputs are not declared. Tier 3, `readOnlyHint`.
 - **Answer audit: advisory `no_observed_lineage`.** When a cited run's sealed record shows no path to observed data, the audit adds
   an advisory (never a block). Flagged: a run whose declared parents never fetched data, and a run of arbitrary code (`run_python`)
   whose inputs the record cannot show. A run that declares no parent is not called fabricated: the record cannot tell, and the report

@@ -33,6 +33,7 @@ from ai_hydro.mcp import tools_data_async  # noqa: F401  — data_fetch_backgrou
 from ai_hydro.mcp import tools_audit       # noqa: F401  — v1.8.0: audit_interpretation (Answer Auditor)
 from ai_hydro.mcp import tools_experiments # noqa: F401  — v2.1.0: define_experiment, run_experiment, get_experiment_table
 from ai_hydro.mcp import tools_skeptic    # noqa: F401  — v2.3.0: run_skeptic (adversarial second-pass referee)
+from ai_hydro.mcp import tools_lineage    # noqa: F401  — trace_lineage (read-only provenance view)
 from ai_hydro.mcp import tools_series     # noqa: F401  — summarize_series, detect_threshold_runs, compare_series, bootstrap_statistic, measure_feature
 
 # ── Tier 1 post-run validator registrations ───────────────────────────────
