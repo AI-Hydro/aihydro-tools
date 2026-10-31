@@ -657,6 +657,22 @@ timeout and the final-answer audit timed out at 15 s.
   timeouts in the sibling data packages; a read-modify-write audit of the remaining slot writers (`tools_experiments`) beyond the leaf
   merge.
 
+## 2026-10-31: `data_fetch` returns a data summary, computed in tools (A3)
+
+The first-party `data_fetch` result had `data = {type, rows, columns, head[5]}` and nothing to say what the series was like. In a
+recorded session the agent called the deprecated `fetch_streamflow_data`, whose result had `q_mean_cms`, `q_min_cms` and `q_max_cms`,
+and reported them.
+
+1. **Layer.** `aihydro-data` is not changed. It returns the frame; the statistics are descriptive and need the retained series that the
+   tools wrapper already reads from aihydro-data's cache entry. Dependencies stay downward (tools reads data, never the reverse).
+2. **One implementation.** The numbers come from `series_ops.summarize`, the code behind `summarize_series`, and a test pins that the
+   two agree on the same run. It is not a second statistics routine that could drift.
+3. **Not slimmed.** The result still carries `product_identity`, `site_resolution` and `common_pitfalls`; trimming them is a separate
+   change with its own test. This adds about 650 characters.
+4. **Labels, not judgements.** `basis` says the values are finite served values in `units`, not converted or area-normalised.
+   The summary does not call a record long enough or complete.
+5. **Sealed.** `data.summary` is in `key_outputs`, so a marker can cite it; `data.units` carries the unit map the audit reads.
+
 ## 2026-10-31: signature flows carry their unit wherever a value is printed (Q_mean bug)
 
 A study digest listed `q_mean = 2.01686` with no unit and the answer said "Q_mean 2.017 m3/s". The value is mm/day (m3/s * 86.4 /
