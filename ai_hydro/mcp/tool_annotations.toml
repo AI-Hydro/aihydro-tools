@@ -44,6 +44,14 @@
 #   effect = "ui"          the tool only queues a command for the map/preview host (a one-shot file
 #                          in map_commands/ or preview_commands/) and reads session/catalog state;
 #                          it writes no session, claim, workspace file or network. -> _meta["aihydro/effect"]
+#   effect = "lookup"      the tool asks a public reference service a question (a citation by title or
+#                          DOI) and returns the answer. It changes no study state, claim, ledger or
+#                          profile; the only file it may write is its own response cache; what it sends
+#                          is the query text. Hints are unchanged: it is NOT readOnlyHint (it makes a
+#                          network call and writes the cache, which the read-only rule above forbids),
+#                          so a host that shows only readOnlyHint tools in a read-only mode still hides
+#                          it. A host that wants to let Plan mode verify a citation reads this class
+#                          instead. -> _meta["aihydro/effect"]
 #   requiresConsent = true the tool records or changes facts about the researcher (profile,
 #                          observations); a host should ask the person first.
 #                          -> _meta["aihydro/requiresConsent"]
@@ -641,6 +649,7 @@ evidence = "Earth Engine network call; writes GEE provenance/output files under 
 
 ["get_citation_by_doi"]
 source = "builtin"
+effect = "lookup"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -938,6 +947,7 @@ evidence = "appends to the session/project/registry (notes, journal, plan, draft
 
 ["lookup_citation"]
 source = "builtin"
+effect = "lookup"
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true

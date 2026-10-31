@@ -8,6 +8,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`effect = "lookup"` annotation class** (served as `_meta["aihydro/effect"]`) for `lookup_citation` and `get_citation_by_doi`: a pure question to a public
+  reference service that changes no study state and writes only its own response cache. Their hints are unchanged (`readOnlyHint=false`, `openWorldHint=true`),
+  so a host's read-only rule is not weakened; a host that wants Plan mode to verify a citation reads the class instead.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed

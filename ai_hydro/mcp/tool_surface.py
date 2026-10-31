@@ -45,7 +45,7 @@ META_KEYS = {
     "requiresConsent": "aihydro/requiresConsent",
     "audience": "aihydro/audience",
 }
-META_VALUES = {"effect": {"ui"}, "audience": {"host"}}
+META_VALUES = {"effect": {"ui", "lookup"}, "audience": {"host"}}
 
 HOT_MODE_NOTE = (
     "TOOL SURFACE: this server lists only the common tools (tools/list). Many more exist: "
