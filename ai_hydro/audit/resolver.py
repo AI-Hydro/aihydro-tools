@@ -190,6 +190,35 @@ def _suggest_marker(raw: str, category: str, run_log: dict, unit: str | None = N
     return f"[run:{rid}#{path}]", 1
 
 
+def lineage_check(run_log: dict, run_id: str, cache: dict) -> tuple[str, tuple[str, str] | None]:
+    """``(state, (message, fix_hint) | None)``; the advice is set when the record shows no path to observed data.
+
+    No advice also covers "cannot tell" (an unsealed row, an unresolved parent, or a producer that records no
+    parents although it may have read data): absence of a declared edge is not evidence of fabrication.
+    Flagged: a complete walk with declared parents that reached no data acquisition, and a run of
+    arbitrary code (``run_python``), whose inputs the record cannot see.
+    """
+    from ai_hydro.session import lineage as _lin
+
+    lin = cache.get(run_id)
+    if lin is None:
+        lin = cache[run_id] = _lin.trace_to_observed(run_log, run_id)
+    row = run_log.get(run_id)
+    if lin.state == _lin.DECLARED_UNOBSERVED:
+        return lin.state, (
+            f"Run {run_id!r} declares {lin.walked - 1} ancestor run(s) and none of them fetched observed data, "
+            f"so this value has no recorded path to an observation.",
+            "If it was computed from observed data, re-run it so the fetch is its declared input; if the "
+            "data was assumed or synthesised, say so in the answer instead of presenting the value as a result.")
+    if lin.state == _lin.UNDECLARED and _lin.runs_arbitrary_code(row):
+        return lin.state, (
+            f"Run {run_id!r} ran arbitrary code, and its record links no input to it, so it cannot show whether "
+            f"this value came from observed data or from data made up in the script.",
+            "Say where the input came from (the fetch run, by id). If it was synthetic or assumed, "
+            "state that in the answer and do not present the value as an observation.")
+    return lin.state, None
+
+
 def _closest_fields(path: str, entry: dict) -> list[str]:
     leaf = path.rsplit(".", 1)[-1]
     return difflib.get_close_matches(leaf, available_fields(entry), n=3, cutoff=0.6)
@@ -253,6 +282,9 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
         lit_span_count = 0
         lit_resolved_count = 0
         lit_advisories: list[AuditViolation] = []
+        lineage_cache: dict[str, Any] = {}
+        lineage_advisories: list[AuditViolation] = []
+        lineage_checked = lineage_flagged = lineage_unknown = 0
 
         # ── 1. Numeric-level checks ─────────────────────────────────────────
         for cn in classified:
@@ -402,6 +434,23 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
 
             cited_count += 1
 
+            # Advisory only: where does the cited run's own record say it came from? This never
+            # decides whether the value is accepted (it was, just above); it tells the reader when
+            # the record shows no path to observed data.
+            if advisory or rpath.split(".", 1)[0] == "inputs":
+                continue            # a method parameter or an echoed argument is not a measured value
+            if run_id in lineage_cache:
+                continue                    # one judgement per run id, however many values cite it
+            lin_state, lv = lineage_check(run_log, run_id, lineage_cache)
+            lineage_checked += 1
+            if lv is not None:
+                lineage_flagged += 1
+                lineage_advisories.append(_violation(
+                    "no_observed_lineage", context, binding, cn, lv[0], lv[1], severity="advisory",
+                    stored=stored, resolved=rpath))
+            elif lin_state != "observed":
+                lineage_unknown += 1
+
         # ── 1b. Marker-shaped brackets that fail the strict grammar ──────────
         for ms, me, mraw in find_malformed_markers(prose):
             pathless = _PATHLESS_RUN_RE.fullmatch(mraw)
@@ -476,6 +525,10 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
             advisory_count=len(violations) - hard,
             exempt_count=sum(exempt.values()),
             exempt_by_reason=dict(exempt),
+            lineage_advisories=lineage_advisories,
+            lineage_checked_count=lineage_checked,
+            lineage_flagged_count=lineage_flagged,
+            lineage_unknown_count=lineage_unknown,
         )
 
     except Exception as exc:

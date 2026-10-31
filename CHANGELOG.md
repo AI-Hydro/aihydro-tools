@@ -8,6 +8,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Answer audit: advisory `no_observed_lineage`.** When a cited run's sealed record shows no path to observed data, the audit adds
+  an advisory (never a block). Flagged: a run whose declared parents never fetched data, and a run of arbitrary code (`run_python`)
+  whose inputs the record cannot show. Declared parents count only when every run the walk ends at is recorded as having read no stored result (`record.extra.lineage_basis`); otherwise the lineage is unknown, which is counted in `lineage_unknown_count` and never flagged. Advisories are listed once per run id in `lineage_advisories`, outside `violations` and `advisory_count`. "Fetched data" is read from the tool annotation table, so no
+  tool names are listed (a new `acquires = true` key in the annotation table marks the true fetchers; open-world is not enough). What the audit accepts as evidence is unchanged. New report fields: `lineage_checked_count`,
+  `lineage_flagged_count`, `lineage_unknown_count`, `lineage_advisories`.
+- **`audit_interpretation(outcome=, unmet=)`.** `outcome` is `done | partial | infeasible`, with `unmet` listing what was not done.
+  It is validated and sealed in the audit call's own run record (`record.extra.completion_outcome`, `completion_unmet`). The extension's
+  `attempt_completion` is the intended caller; until it passes the fields, nothing changes.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed

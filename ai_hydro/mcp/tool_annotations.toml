@@ -55,6 +55,12 @@
 # tests/test_tool_surface.py checks each class: `ui` tools only reach the map/preview command
 # writers (static scan plus an audit-hook run), and the vocabulary is closed.
 #
+#   acquires = true        the tool's job is to fetch external data (observations, forcing, attributes,
+#                          geometry) into the study. Read by the answer audit's lineage check to decide
+#                          whether a run "acquired data"; open-world alone does not mean that (a
+#                          citation lookup, a service status check, a network context query are
+#                          open-world and acquire no study data). -> _meta["aihydro/acquires"]
+#
 # `source` is the distribution that registers the tool (builtin = aihydro-tools); rows for an
 # optional plugin are only enforced when that plugin is importable.
 
@@ -401,6 +407,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["data_batch_fetch"]
 source = "aihydro-data"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -425,6 +432,7 @@ evidence = "aihydro-data local registry/cache inspection; no network, no writes 
 
 ["data_fetch"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -433,6 +441,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["data_fetch_background"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -489,6 +498,7 @@ evidence = "overwrites or removes researcher-authored session/profile/skill stat
 
 ["delineate_watershed"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -497,6 +507,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["delineate_watershed_from_point"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -585,6 +596,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["fetch_camels_us"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -593,6 +605,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["fetch_forcing_data"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -601,6 +614,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["fetch_soil_attributes_ssurgo"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
@@ -609,6 +623,7 @@ evidence = "network fetch; writes session slot + workspace files (derived, recom
 
 ["fetch_streamflow_data"]
 source = "builtin"
+acquires = true
 readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
