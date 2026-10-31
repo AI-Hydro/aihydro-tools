@@ -726,3 +726,13 @@ def test_data_fetch_summary_carries_the_providers_quality_counts(serve, mcp_serv
     q = out["data"]["summary"]["qualifier_counts"]
     assert q["approval_counts"] == {"Approved": 3, "Provisional": 1} and q["provisional_fraction"] == 0.25
     assert "extra" not in q and "n_rows" not in q
+
+
+def test_a_summary_over_a_partial_record_says_so(serve):
+    full = serve(days("2020-01-01", 5), [1.0, 2.0, 3.0, 4.0, 5.0])["data"]["summary"]
+    assert full["partial"] is False and full["fraction_with_value"] == 1.0
+    d = days("2020-01-01", 10, skip=(4, 5, 8))                 # 3 calendar days absent
+    part = serve(d, [3.0, 1.0, None, 7.0, 5.0, 9.0, 2.0])["data"]["summary"]
+    assert part["partial"] is True and part["n_missing_days"] == 3
+    assert part["fraction_with_value"] == pytest.approx(6 / 10)  # 6 finite values over the 10 days spanned
+    assert part["mean"] == pytest.approx(np.mean([3.0, 1.0, 7.0, 5.0, 9.0, 2.0]), rel=1e-5)

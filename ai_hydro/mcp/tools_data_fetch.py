@@ -96,7 +96,8 @@ def _series_payload(fetched: Any, variable: str) -> dict | None:
 #: Statistics are of the served values as they are: no unit conversion, no area normalisation.
 _SUMMARY_BASIS = ("descriptive statistics of the finite served values in `units` (arithmetic mean/min/max; "
                   "no conversion or area normalisation); missing days are calendar days in the requested "
-                  "window with no served date")
+                  "window with no served date; fraction_with_value is finite values over the days the "
+                  "window spans, and partial is true when it is below 1")
 
 
 def _summary_from_payload(payload: dict, start: str, end: str, quality: Any = None) -> dict | None:
@@ -137,8 +138,13 @@ def _summary_from_payload(payload: dict, start: str, end: str, quality: Any = No
         }
         if daily:
             out["n_missing_days"] = st["n_missing_dates"]
+            expected = st["expected_calendar_days"]
         else:
             out["timestep"] = payload.get("timestep")
+            expected = st["n"]
+        # A mean over a partial record is not a mean over the window: say so beside the number.
+        out["fraction_with_value"] = r6(st["n_finite"] / expected) if expected else None
+        out["partial"] = bool(expected) and (st["n_finite"] < expected)
         if isinstance(quality, dict) and quality:
             q = {k: quality[k] for k in ("approval_counts", "qualifier_counts", "n_negative", "provisional_fraction")
                  if k in quality}
