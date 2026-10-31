@@ -15,7 +15,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `q95`, `q_median`) are basin-depth rates in mm/day, not discharge. The digest now prints the unit the run recorded, falling back to a
   table (`ai_hydro/science/signature_units.py`, pinned to aihydro-watershed's `SIGNATURE_UNITS` by a test) for results that have no
   `units` map; dimensionless values print as before. `synopsis_for_llm`, the workspace `signatures_*.json` and the sealed result gain the
-  same `units` map when the watershed did not supply one. Sealed rows already written are not changed.
+  same `units` map when the watershed did not supply one, and each row of `reference_comparison.table` carries a `unit`. Sealed rows already written are not changed.
 - **`[run:<id>]` with no `#<field>` gets a specific fix hint.** It is still a hard `malformed_marker` that binds nothing; the
   message now says the value beside it was not checked, and the hint gives the marker to write.
 

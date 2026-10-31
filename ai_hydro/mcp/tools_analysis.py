@@ -1716,7 +1716,8 @@ def extract_hydrological_signatures(
             _cref, _rcmp = _bcr(_dd, usgs_gauge_id, area_km2, start_date, end_date, session)
             _dd["camels_reference"] = _cref
             if _rcmp is not None:
-                _dd["reference_comparison"] = _rcmp
+                from ai_hydro.science.signature_units import annotate_comparison as _ann_cmp
+                _dd["reference_comparison"] = _ann_cmp(_rcmp)
         if _scoped is not None and isinstance(d.get("data"), dict):
             # Sealed with the result: which gauge and area these numbers describe.
             d["data"]["basin_gauge_id"] = _eff_gauge

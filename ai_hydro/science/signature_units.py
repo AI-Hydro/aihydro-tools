@@ -66,3 +66,18 @@ def with_units(data: dict) -> dict:
     if all(k in have for k in want):
         return data
     return {**data, "units": {**have, **want}}
+
+
+def annotate_comparison(rcmp: Any) -> Any:
+    """Put each signature's unit on its row of a ``reference_comparison`` table (in place; returns it).
+
+    The rows hold ``value``, ``reference`` and ``diff`` for CAMELS signatures; for q_mean, q5 and q95
+    those are mm/day and the table never said so. A row that already has a ``unit`` is left alone.
+    """
+    table = rcmp.get("table") if isinstance(rcmp, dict) else None
+    if isinstance(table, dict):
+        for name, row in table.items():
+            u = SIGNATURE_UNITS.get(name)
+            if isinstance(row, dict) and u and "unit" not in row:
+                row["unit"] = u
+    return rcmp

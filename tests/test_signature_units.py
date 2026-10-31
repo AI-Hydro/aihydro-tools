@@ -84,3 +84,14 @@ def test_table_matches_the_installed_watershed():
     if theirs is None:
         pytest.skip("installed aihydro-watershed predates SIGNATURE_UNITS")
     assert su.SIGNATURE_UNITS == dict(theirs)
+
+
+def test_comparison_rows_carry_their_unit():
+    rcmp = {"table": {"q_mean": {"value": 2.0, "reference": 1.8}, "baseflow_index": {"value": 0.4},
+                      "q95": {"value": 8.0, "unit": "mm d-1"}, "not_a_signature": {"value": 1}}}
+    out = su.annotate_comparison(rcmp)
+    assert out is rcmp
+    t = rcmp["table"]
+    assert t["q_mean"]["unit"] == "mm/day" and t["baseflow_index"]["unit"] == "dimensionless"
+    assert t["q95"]["unit"] == "mm d-1" and "unit" not in t["not_a_signature"]
+    assert su.annotate_comparison(None) is None and su.annotate_comparison({"table": None}) == {"table": None}
