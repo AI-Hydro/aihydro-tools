@@ -55,6 +55,9 @@ from .grammar import (
 from .models import AuditReport, AuditViolation
 from .units import units_conflict
 
+#: ``[run:<id>]`` with no ``#<field>``: well formed in every way but the path, so the hint can name it.
+_PATHLESS_RUN_RE = re.compile(r"\[run:([^\s#\]]+)\]")
+
 log = logging.getLogger("ai_hydro.audit.resolver")
 
 # Claim statuses that are acceptable for a cited-as-fact assertion.
@@ -401,16 +404,21 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
 
         # ── 1b. Marker-shaped brackets that fail the strict grammar ──────────
         for ms, me, mraw in find_malformed_markers(prose):
+            pathless = _PATHLESS_RUN_RE.fullmatch(mraw)
             violations.append(AuditViolation(
                 kind="malformed_marker",
                 text_excerpt=_context_window(prose, ms, me),
                 marker_raw=mraw,
                 prose_value=None,
                 stored_value=None,
-                message=f"{mraw!r} looks like a citation marker but does not match the grammar, "
-                        f"so it binds nothing.",
-                fix_hint="Use exactly [run:<run_id>#<key_outputs.field>], [claim:<claim_id>] or "
-                         "[lit:<tag>] (one token, no spaces), placed after the value it cites.",
+                message=(f"{mraw!r} names a run but no output field, so it binds nothing and the "
+                         f"value beside it is not checked." if pathless else
+                         f"{mraw!r} looks like a citation marker but does not match the grammar, "
+                         f"so it binds nothing."),
+                fix_hint=(f"Add the field the value came from: [run:{pathless.group(1)}#<key_outputs.field>], "
+                          f"placed after the value it cites." if pathless else
+                          "Use exactly [run:<run_id>#<key_outputs.field>], [claim:<claim_id>] or "
+                          "[lit:<tag>] (one token, no spaces), placed after the value it cites."),
                 severity="hard",
             ))
 
