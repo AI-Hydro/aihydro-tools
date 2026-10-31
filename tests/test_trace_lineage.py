@@ -160,3 +160,43 @@ def test_view_rows_are_left_out_of_dependents_and_coverage():
     log["v1"] = row("v1", "trace_lineage", ts="2026-10-01T00:00:09")
     t = L.trace(log, claims, "q1", "down")
     assert [x["id"] for x in t["downstream"]["may_also_depend"]] == ["late"] and t["edge_coverage"]["runs"] == 5
+
+
+def test_a_walk_cut_by_depth_is_not_complete():
+    log = {f"r{i}": row(f"r{i}", "summarize_series", parents=[f"r{i+1}"]) for i in range(6)}
+    log["r6"] = row("r6", "data_fetch")
+    short = L.trace(log, {}, "r0", "up", max_depth=2)["upstream"]
+    assert short["complete"] is False and short["depth_or_size_limited"] is True and len(short["nodes"]) == 2
+    full = L.trace(log, {}, "r0", "up", max_depth=10)["upstream"]
+    assert full["complete"] is True and full["depth_or_size_limited"] is False
+    # exactly at the depth where nothing further exists is not a cut
+    assert L.trace(log, {}, "r0", "up", max_depth=6)["upstream"]["complete"] is True
+    d = L.trace(log, {}, "r6", "down", max_depth=2)["downstream"]
+    assert d["complete"] is False and d["depth_or_size_limited"] is True
+
+
+def test_edge_state_sees_run_valued_input_refs():
+    log = {"q1": row("q1", "data_fetch"), "s1": row("s1", "summarize_series", refs=["q1"])}
+    assert L.edge_state(log["s1"], set(log)) == L.DECLARED and L.edge_state(log["s1"]) == L.DECLARED
+    f = row("f1", "summarize_series", refs=["session-data:x.json"])
+    f["record"]["input_refs"][0]["role"] = "other"
+    assert L.edge_state(f, set(log)) == L.UNDECLARED
+    assert L.trace(log, {}, "s1", "up")["node"]["parents_known"] is True
+
+
+def test_dependents_compare_real_times_and_keep_a_run_when_a_time_cannot_be_read():
+    log = {"q1": row("q1", "data_fetch", ts="2026-10-01T10:00:00+00:00"),
+           "early": row("early", "compute_flow_duration_curve", ts="2026-10-01T09:00:00Z"),
+           "late": row("late", "compute_flow_duration_curve", ts="2026-10-01T05:00:00-07:00"),    # 12:00 UTC
+           "naive": row("naive", "compute_flow_duration_curve", ts="2026-10-01T11:00:00"),
+           "junk": row("junk", "compute_flow_duration_curve", ts="not a time")}
+    ids_ = {x["id"] for x in L.trace(log, {}, "q1", "down")["downstream"]["may_also_depend"]}
+    assert ids_ == {"late", "naive", "junk"}
+
+
+def test_max_nodes_is_exposed_and_validated(serve, mcp_server):
+    fetch = serve(days("2020-01-01", 3), [1.0, 2.0, 3.0])["_run_id"]
+    err, out = run(mcp_server, "trace_lineage", node=fetch, max_nodes=5)
+    assert not err and out["found"]
+    err, bad = run(mcp_server, "trace_lineage", node=fetch, max_nodes=0)
+    assert bad["code"] == "INVALID_PARAMETER"

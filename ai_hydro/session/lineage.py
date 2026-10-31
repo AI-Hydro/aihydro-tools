@@ -36,7 +36,7 @@ _CLASSES: tuple[FrozenSet[str], FrozenSet[str]] | None = None
 #: ``record.extra["lineage_basis"]`` value written by the recording middleware when every read of a
 #: study slot by the tool was declared as a parent. A run with this value and no parent read no
 #: stored study result; a run without it says nothing about what it read.
-LINEAGE_BASIS = "slot_reads"
+from ai_hydro.session.run_records import LINEAGE_BASIS  # noqa: E402  (one definition; see run_records)
 
 
 def _annotation_classes() -> tuple[FrozenSet[str], FrozenSet[str]]:
@@ -153,13 +153,22 @@ NOT_IN_LOG = "not_in_log"                    # named as a parent or evidence, bu
 KNOWN_COMPLETE = (DECLARED, ACQUISITION_ROOT)
 
 
-def edge_state(row: Any) -> str:
-    """Classify what ``row`` says about its own inputs (see the constants above)."""
+def edge_state(row: Any, run_ids: Any = None) -> str:
+    """Classify what ``row`` says about its own inputs (see the constants above).
+
+    ``declared`` when the record lists parents or run-valued ``input_refs`` (a ref that names a run in
+    ``run_ids``; without ``run_ids``, any ``served_data`` ref counts).
+    """
     rec = record_of(row)
     if rec is None:
         return NO_RECORD
     if rec.get("parents"):
         return DECLARED
+    for ref in rec.get("input_refs") or []:
+        r = ref.get("ref") if isinstance(ref, dict) else None
+        if isinstance(r, str) and r != rec.get("run_id") and (
+                r in run_ids if run_ids is not None else ref.get("role") == "served_data"):
+            return DECLARED
     extra = rec.get("extra") if isinstance(rec.get("extra"), dict) else {}
     if extra.get("parent_unresolved"):
         return DECLARED_UNRESOLVED
@@ -200,6 +209,17 @@ def claim_evidence(claim: Any) -> List[tuple]:
 #: This view's own run rows (one per call) are not results anything depends on; they are left out of
 #: ``may_also_depend`` and of the coverage counts so that looking does not change what is seen.
 VIEW_TOOLS = frozenset({"trace_lineage"})
+
+
+def _when(text: str) -> Any:
+    """An aware datetime for an ISO timestamp (naive means UTC), or None if it cannot be parsed."""
+    from datetime import datetime, timezone
+
+    try:
+        d = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
 def _stamp(row: Any) -> str:
@@ -252,7 +272,7 @@ def trace(run_log: Dict[str, Any], claims: Dict[str, Any], node: str, direction:
     def describe(k: str, i: str) -> Dict[str, Any]:
         if k == "run":
             row = run_log.get(i)
-            st = edge_state(row) if row is not None else NOT_IN_LOG
+            st = edge_state(row, run_ids) if row is not None else NOT_IN_LOG
             d = {"id": i, "kind": "run", "tool": tool_of(row) if row is not None else None, "edge_state": st,
                  "parents_known": st in KNOWN_COMPLETE, "recorded_at": _stamp(row) or None}
             if row is not None and (record_of(row) or {}).get("status") not in (None, "ok"):
@@ -276,6 +296,7 @@ def trace(run_log: Dict[str, Any], claims: Dict[str, Any], node: str, direction:
     def walk(up: bool) -> Dict[str, Any]:
         nonlocal truncated
         nodes: List[Dict[str, Any]] = []
+        cut = False
         seen = {key(kind, nid)}
         frontier = [(kind, nid, 0)]
         unknown: List[str] = []
@@ -283,8 +304,6 @@ def trace(run_log: Dict[str, Any], claims: Dict[str, Any], node: str, direction:
             unknown.append(start["id"])
         while frontier:
             k, i, depth = frontier.pop(0)
-            if depth >= max_depth:
-                continue
             if up:
                 if k == "run":
                     nxt = [("run", p, via) for p, via in run_parents(run_log.get(i), run_ids)]
@@ -295,13 +314,16 @@ def trace(run_log: Dict[str, Any], claims: Dict[str, Any], node: str, direction:
             else:
                 nxt = [(ck, (cid[6:] if ck == "claim" else cid), via) for cid, ck, via in children.get(i, [])] \
                     if k == "run" else []
+            if depth >= max_depth:
+                cut = cut or any(key(nk, ni) not in seen for nk, ni, _v in nxt)
+                continue
             for nk, ni, via in nxt:
                 kk = key(nk, ni)
                 if kk in seen:
                     continue
                 if len(nodes) >= max_nodes:
                     truncated = True
-                    return {"nodes": nodes, "unknown": unknown}
+                    return {"nodes": nodes, "unknown": unknown, "cut": True}
                 seen.add(kk)
                 d = describe(nk, ni)
                 d.update(depth=depth + 1, via=via)
@@ -309,11 +331,12 @@ def trace(run_log: Dict[str, Any], claims: Dict[str, Any], node: str, direction:
                 if up and d["kind"] == "run" and not d["parents_known"]:
                     unknown.append(d["id"])
                 frontier.append((nk, ni, depth + 1))
-        return {"nodes": nodes, "unknown": unknown}
+        return {"nodes": nodes, "unknown": unknown, "cut": cut}
 
     if direction in ("up", "both"):
         up = walk(True)
-        out["upstream"] = {"nodes": up["nodes"], "complete": not up["unknown"] and not truncated,
+        out["upstream"] = {"nodes": up["nodes"], "complete": not up["unknown"] and not up["cut"],
+                           "depth_or_size_limited": up["cut"],
                            "parents_unknown_at": up["unknown"]}
     if direction in ("down", "both"):
         dn = walk(False)
@@ -324,13 +347,15 @@ def trace(run_log: Dict[str, Any], claims: Dict[str, Any], node: str, direction:
             for rid, row in run_log.items():
                 if rid in reached or tool_of(row) in VIEW_TOOLS:
                     continue
-                st = edge_state(row)
+                st = edge_state(row, run_ids)
                 if st in KNOWN_COMPLETE:
                     continue
-                if t0 and _stamp(row) and _stamp(row) < t0:
-                    continue                        # recorded before this node existed: cannot depend on it
+                a, b = _when(_stamp(row)), _when(t0)
+                if a is not None and b is not None and a < b:
+                    continue            # recorded before this node existed: cannot depend on it (unparsable: kept)
                 later.append({"id": rid, "tool": tool_of(row), "edge_state": st})
-        out["downstream"] = {"nodes": dn["nodes"], "complete": not later and not truncated,
+        out["downstream"] = {"nodes": dn["nodes"], "complete": not later and not dn["cut"],
+                             "depth_or_size_limited": dn["cut"],
                              "may_also_depend": later[:50], "may_also_depend_n": len(later)}
     cov: Dict[str, int] = {}
     n_runs = 0
@@ -338,7 +363,7 @@ def trace(run_log: Dict[str, Any], claims: Dict[str, Any], node: str, direction:
         if tool_of(row) in VIEW_TOOLS:
             continue
         n_runs += 1
-        st = edge_state(row)
+        st = edge_state(row, run_ids)
         cov[st] = cov.get(st, 0) + 1
     out["edge_coverage"] = {"runs": n_runs, **cov}
     if truncated:

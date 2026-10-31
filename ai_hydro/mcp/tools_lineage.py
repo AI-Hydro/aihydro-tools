@@ -24,6 +24,7 @@ def trace_lineage(
     node: str,
     direction: str = "both",
     max_depth: int = 8,
+    max_nodes: int = 200,
     session_id: str | None = None,
 ) -> dict:
     """
@@ -37,9 +38,10 @@ def trace_lineage(
     So are no_record (legacy row), declared_unresolved (the producer said it could not name its
     parent) and not_in_log.
 
-    upstream.complete is true only if no node reached has unknown parents. downstream.complete is
-    true only if no later run has undeclared inputs; may_also_depend lists those runs. Use it
-    before re-running or retracting something, and say "unknown" where it says so.
+    upstream.complete is true only if no node reached has unknown parents and the walk was not cut by
+    max_depth or max_nodes. downstream.complete is true only if no later run has undeclared inputs
+    and the walk was not cut; may_also_depend lists those runs. Use it before re-running or
+    retracting something, and say "unknown" where it says so. Each call seals its own run row.
 
     Returns {found, node, upstream, downstream, edge_coverage}.
     """
@@ -50,6 +52,9 @@ def trace_lineage(
         if not isinstance(max_depth, int) or isinstance(max_depth, bool) or not 1 <= max_depth <= 50:
             return {"error": True, "code": "INVALID_PARAMETER",
                     "message": f"max_depth must be an integer from 1 to 50, got {max_depth!r}."}
+        if not isinstance(max_nodes, int) or isinstance(max_nodes, bool) or not 1 <= max_nodes <= 1000:
+            return {"error": True, "code": "INVALID_PARAMETER",
+                    "message": f"max_nodes must be an integer from 1 to 1000, got {max_nodes!r}."}
         session_id = _resolve_session(
             session_id, None, allow_auto_create=False, allow_recent_fallback=False, must_exist=True)
         from ai_hydro.session import HydroSession
@@ -57,7 +62,7 @@ def trace_lineage(
 
         session = HydroSession.load(session_id)
         out = lineage.trace(dict(session.get("_run_log") or {}), dict(session.claims or {}),
-                            node, direction, max_depth)
+                            node, direction, max_depth, max_nodes)
         return {"session_id": session_id, **out}
     except Exception as e:
         log.error("trace_lineage failed: %s", e)

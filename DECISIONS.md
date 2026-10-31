@@ -724,3 +724,20 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+### Review revision (trace_lineage and the slot-read edge)
+
+- **The edge is recorded where the slot is read.** `HydroSession.get`/`get_result` call `run_records.note_slot_read(meta.run_id, meta.tool)`;
+  the recorder turns those into `record.parents` unless the call said `parent_unresolved` (signatures does when the slot does not match
+  its request: the generic read must not contradict that). It skips a tool reading its own previous output, tools that are not recorded
+  (status/view tools), and the run's own id. Under the server's worker pool the capture is a context variable shared by reference with the
+  worker thread; the only mutation is an append to a list guarded by a membership check (a duplicate would be harmless and is removed at
+  seal time).
+- **Measured, synthetic study** (one hand-seeded streamflow slot; `tests/test_slot_read_lineage.py`): `separate_baseflow`,
+  `compute_flow_duration_curve`, `compute_flood_frequency`, `check_record_length`, `check_stationarity` declared their input run 0 of 5
+  before, 5 of 5 after. The other slot-reading tools in the static list go through the same `get`; they were not each exercised, and
+  tools that read files or the network directly are not covered.
+- **`lineage_basis`** is the claim "every stored-result read of this call was declared", so a root with that value read no stored result.
+  It is withheld for arbitrary code. It is what lets the audit say "declared parents, none observed" instead of "unknown".
+- **trace_lineage:** a walk cut by `max_depth` or `max_nodes` is `complete: false` (`depth_or_size_limited`); `edge_state` counts run-valued
+  `input_refs`; `may_also_depend` compares parsed times (unparsable: kept); `max_nodes` is a parameter; each call seals its own run row.

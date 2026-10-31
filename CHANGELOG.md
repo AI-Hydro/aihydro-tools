@@ -8,6 +8,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A tool's reads of stored results are recorded as its parents, at the read.** `HydroSession.get` / `get_result` now tell the
+  recording middleware which run produced the slot value (`meta.run_id`), so every recorded tool that reads a stored result gets that
+  run in `record.parents` without declaring it. Skipped: a tool reading its own earlier output (a cache check), tools that are not
+  recorded (status and view tools), and any call that explicitly said `parent_unresolved` (that note wins). A recorded call that is not
+  arbitrary code also gets `record.extra.lineage_basis = "slot_reads"`, meaning every slot read went through this path (files read
+  directly are not covered). In a synthetic study, 0 of 5 slot-reading tools named their input run before and 5 of 5 do now.
 ### Added
 
 - **`trace_lineage` (read-only).** What produced a run or claim (`up`), and what depends on it (`down`), from edges the records
