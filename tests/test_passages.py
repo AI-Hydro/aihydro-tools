@@ -1,5 +1,5 @@
 """
-Tests for ai_hydro/knowledge/embeddings.py — Phase 2.4 literature grounding.
+Tests for ai_hydro/knowledge/passages.py — Phase 2.4 literature grounding.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ai_hydro.knowledge.embeddings import (
+from ai_hydro.knowledge.passages import (
     PASSAGE_WORDS,
     PASSAGE_OVERLAP,
     _passage_hash,
@@ -131,7 +131,7 @@ class TestBuildPassageIndex(unittest.TestCase):
 
     def _patch_index_path(self):
         return mock.patch(
-            "ai_hydro.knowledge.embeddings.PASSAGE_INDEX_PATH",
+            "ai_hydro.knowledge.passages.PASSAGE_INDEX_PATH",
             self._index_path,
         )
 
@@ -196,7 +196,7 @@ class TestLoadAndSearch(unittest.TestCase):
 
     def _patch_index_path(self):
         return mock.patch(
-            "ai_hydro.knowledge.embeddings.PASSAGE_INDEX_PATH",
+            "ai_hydro.knowledge.passages.PASSAGE_INDEX_PATH",
             self._index_path,
         )
 
@@ -252,7 +252,7 @@ class TestResolvePassageHash(unittest.TestCase):
 
     def _patch_index_path(self):
         return mock.patch(
-            "ai_hydro.knowledge.embeddings.PASSAGE_INDEX_PATH",
+            "ai_hydro.knowledge.passages.PASSAGE_INDEX_PATH",
             self._index_path,
         )
 
@@ -321,7 +321,7 @@ class TestAuditorLitResolution(unittest.TestCase):
 
     def _patch_index_path(self):
         return mock.patch(
-            "ai_hydro.knowledge.embeddings.PASSAGE_INDEX_PATH",
+            "ai_hydro.knowledge.passages.PASSAGE_INDEX_PATH",
             self._index_path,
         )
 
@@ -385,3 +385,107 @@ class TestAuditorLitResolution(unittest.TestCase):
         self.assertEqual(report.lit_span_count, 1)
         # Non-hash format: no resolution attempt, no advisory
         self.assertEqual(report.lit_advisories, [])
+
+
+# ---------------------------------------------------------------------------
+# BM25 ranking (SQLite FTS5) -- pytest style
+# ---------------------------------------------------------------------------
+
+import sqlite3
+
+import pytest
+
+from ai_hydro.knowledge import passages as P
+
+try:
+    sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(x)")
+    _HAS_FTS5 = True
+except sqlite3.OperationalError:
+    _HAS_FTS5 = False
+
+needs_fts5 = pytest.mark.skipif(not _HAS_FTS5, reason="this SQLite has no FTS5")
+
+
+@pytest.fixture
+def lib(tmp_path, monkeypatch):
+    """A tiny library whose passages are SYNTHETIC text written for these tests."""
+    monkeypatch.setattr(P, "KNOWLEDGE_DIR", tmp_path)
+    monkeypatch.setattr(P, "PASSAGE_INDEX_PATH", tmp_path / "passage_index.jsonl")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    # one real-looking passage on the topic, one short passage that only repeats generic words
+    (docs / "bfi.md").write_text(
+        "The baseflow index is the long-term ratio of baseflow to total streamflow. "
+        "Recursive digital filters separate the slow component of the hydrograph from quickflow. "
+        "A filter parameter near 0.925 is common for daily data. " + "Further text. " * 40)
+    (docs / "junk.md").write_text("workflow overflow flow index flow index flow index")
+    (docs / "other.md").write_text("Kling-Gupta efficiency combines correlation, bias and variability ratios. " * 12)
+    P.build_passage_index(sorted(docs.glob("*.md")))
+    return tmp_path
+
+
+@needs_fts5
+def test_bm25_ranks_the_real_passage_above_a_short_junk_one(lib):
+    """The substring-overlap scorer put a four-word passage of 'flow'/'index' fragments first."""
+    top = P.search_passages("baseflow index", n=3)
+    assert top[0]["doc_name"] == "bfi.md"
+    assert top[0]["score"] > 0 and all(top[0]["score"] > r["score"] for r in top[1:])
+
+
+@needs_fts5
+def test_search_is_stemmed_ranked_and_deterministic(lib):
+    a = P.search_passages("separating baseflows", n=3)
+    assert a and a[0]["doc_name"] == "bfi.md"            # 'separating' ~ 'separate', 'baseflows' ~ 'baseflow'
+    assert a == P.search_passages("separating baseflows", n=3)
+    assert [r["score"] for r in a] == sorted((r["score"] for r in a), reverse=True)
+
+
+@needs_fts5
+def test_search_does_not_match_a_synonym_it_is_keyword_not_semantic(lib):
+    assert P.search_passages("discharge", n=3) == []
+
+
+@needs_fts5
+def test_query_with_no_usable_word_returns_nothing(lib):
+    assert P.search_passages("the of a", n=3) == [] and P.search_passages("", n=3) == []
+    assert P.search_passages('"unbalanced quote OR (', n=3) is not None      # FTS syntax characters are not interpreted
+
+
+@needs_fts5
+def test_hash_lookup_is_keyed_and_unchanged_by_the_ranking_method(lib):
+    rec = P.search_passages("Kling-Gupta efficiency", n=1)[0]
+    got = P.resolve_passage_hash(rec["passage_hash"])
+    assert got["text"] == rec["text"] and got["doc_name"] == "other.md"
+    assert P.resolve_passage_hash("0" * 16) is None
+    # passage_hash is the unchanged SHA-256[:16] of normalised text
+    assert rec["passage_hash"] == P._passage_hash(rec["text"])
+    # pinned from the pre-FTS5 implementation (origin/main 733d83a): hashes in stored claims must not move
+    assert P._passage_hash("KGE is a widely used metric.") == "19639d48af1beb4a"
+    assert P._passage_hash("The baseflow index is the long-term ratio of baseflow to total streamflow.") == "d6a14d912da0e99e"
+
+
+@needs_fts5
+def test_search_table_is_derived_and_rebuilt_when_the_jsonl_changes_or_the_table_is_deleted(lib):
+    side = P._sidecar_path()
+    assert side.exists()
+    side.unlink()
+    assert P.search_passages("baseflow", n=1)[0]["doc_name"] == "bfi.md"        # rebuilt on demand
+    assert side.exists()
+    # the JSONL is the record: append a passage by hand and the next search sees it
+    rec = dict(P.load_all_passages()[0], passage_hash="a" * 16, doc_name="added.md",
+               text="tidal backwater affects stage discharge ratings")
+    with open(P.PASSAGE_INDEX_PATH, "a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    assert P.search_passages("backwater", n=1)[0]["doc_name"] == "added.md"
+    assert P.resolve_passage_hash("a" * 16)["doc_name"] == "added.md"
+
+
+def test_absent_index_is_empty_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(P, "PASSAGE_INDEX_PATH", tmp_path / "none.jsonl")
+    assert P.search_passages("anything") == [] and P.resolve_passage_hash("a" * 16) is None
+
+
+def test_the_old_module_name_is_the_same_module():
+    import ai_hydro.knowledge.embeddings as old
+
+    assert old is P

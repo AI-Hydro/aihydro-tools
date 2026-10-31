@@ -162,7 +162,7 @@ def index_passages(papers_dir: str | None = None) -> dict:
 
     Splits each .md/.txt/.bib document into ~200-word passages, computes a
     deterministic passage_hash (SHA-256[:16]) for each, and writes the index
-    to ~/.aihydro/knowledge/passage_index.jsonl.
+    to ~/.aihydro/knowledge/passage_index.jsonl (plus a derived search table beside it).
 
     passage_hash can be used as EvidenceSpan(source_type="paper",
     source_id=passage_hash) to create verifiable literature citations, and as
@@ -173,7 +173,7 @@ def index_passages(papers_dir: str | None = None) -> dict:
     """
     try:
         from pathlib import Path as _Path
-        from ai_hydro.knowledge.embeddings import build_passage_index
+        from ai_hydro.knowledge.passages import build_passage_index
 
         if papers_dir:
             root = _Path(papers_dir).expanduser().resolve()
@@ -216,7 +216,8 @@ def index_passages(papers_dir: str | None = None) -> dict:
 @mcp.tool()
 def search_passages_tool(query: str, n: int = 5) -> dict:
     """
-    Query the passage index by keyword and return the top-n matching passages.
+    Keyword search (BM25) of the passage index; returns the top-n passages. Not semantic: it matches
+    the words you give (stemmed), so use the paper's own terms ("streamflow" will not find "discharge").
 
     Each result includes a passage_hash suitable for use in EvidenceSpan
     (source_type="paper", source_id=passage_hash) and as [lit:passage_hash]
@@ -225,7 +226,7 @@ def search_passages_tool(query: str, n: int = 5) -> dict:
     Run index_passages first to build the index.
     """
     try:
-        from ai_hydro.knowledge.embeddings import search_passages, PASSAGE_INDEX_PATH
+        from ai_hydro.knowledge.passages import search_passages, PASSAGE_INDEX_PATH
 
         if not PASSAGE_INDEX_PATH.exists():
             return {
@@ -244,6 +245,7 @@ def search_passages_tool(query: str, n: int = 5) -> dict:
                     "passage_hash": r["passage_hash"],
                     "doc_name": r["doc_name"],
                     "chunk_idx": r["chunk_idx"],
+                    "score": r.get("score"),
                     "excerpt": r["text"][:300] + ("…" if len(r["text"]) > 300 else ""),
                     "cite_as": f"[lit:{r['passage_hash']}]",
                     "evidence_span": {
@@ -268,7 +270,7 @@ def resolve_passage(passage_hash: str) -> dict:
     interpretation corresponds to a real indexed passage.
     """
     try:
-        from ai_hydro.knowledge.embeddings import resolve_passage_hash, PASSAGE_INDEX_PATH
+        from ai_hydro.knowledge.passages import resolve_passage_hash, PASSAGE_INDEX_PATH
 
         if not PASSAGE_INDEX_PATH.exists():
             return {

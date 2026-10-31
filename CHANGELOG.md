@@ -8,6 +8,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Passage search is BM25 (SQLite FTS5), not substring overlap.** `search_passages` now ranks with FTS5 `bm25()` (English stemming,
+  any query word may match, rarer words count more). The old scorer counted substring hits divided by passage length with no IDF, so a
+  four-word passage of `flow`/`index` fragments outranked a real baseflow-index passage. `resolve_passage_hash` is a keyed lookup
+  instead of a scan. `passage_hash` is unchanged (a test pins two values from the previous implementation), as is
+  `passage_index.jsonl`. A derived `passage_index.sqlite3` beside it is built by `index_passages`, rebuilt on demand if the JSONL
+  changes or the file is deleted, and needs no new dependency. `search_passages_tool` results gain `score`.
+- **Renamed `ai_hydro.knowledge.embeddings` to `ai_hydro.knowledge.passages`.** There were never embeddings; the module is keyword
+  search and says so. The old name still imports and is the same module object. This is keyword matching: a query of "discharge"
+  will not find a passage that says "streamflow".
+- A query with no usable word (empty, or only stop words) now returns nothing instead of the first passages in file order.
+
+### Added
+
+- `bench/literature/run.py`: compares BM25, a grep-style baseline and the retired scorer by Recall@k on a gold file. The seed gold set
+  (29 questions, agent-written from this repository's prose docs) is a harness check, not the decision set; see `bench/literature/README.md`.
 ### Fixed
 
 - **`[run:<id>]` with no `#<field>` gets a specific fix hint.** It is still a hard `malformed_marker` that binds nothing; the
