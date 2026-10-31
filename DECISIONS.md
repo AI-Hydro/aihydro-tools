@@ -669,8 +669,14 @@ report infeasibility). Two small pieces on the tools side; the extension's promp
    series tools declare parents), so "no declared parent" is *unknown*, not "none". Flagged: (a) declared and resolved parents with no data
    acquisition among them; (b) `run_python`, which can read anything and records no input. Unknown (unsealed row, unresolved parent,
    producer that declares no edge) is counted, not flagged. Flagging every undeclared edge would teach the agent to ignore the advisory.
-3. **"Acquired data" is a property of the tool**, from `tool_annotations.toml`: `openWorldHint` and not `destructiveHint`. A failed call
-   is not an acquisition. This is approximate (a citation lookup is open-world too) and says so in `session/lineage.py`.
+3. **"Acquired data" is the explicit `acquires = true` key** in `tool_annotations.toml`, on the true fetchers (data_fetch, data_batch_fetch,
+   data_fetch_background, fetch_streamflow_data, fetch_forcing_data, fetch_camels_us, fetch_soil_attributes_ssurgo, the delineate tools).
+   Open-world is not enough: a citation lookup, `gee.status`, `delineation_doctor`, `run_experiment` and `gauge_network_context` are
+   open-world and acquire no study data. A failed call is not an acquisition. A table that cannot be read is not cached.
+   **Review revision:** declared parents are flagged only when every run the walk ends at is recorded as having read no stored study
+   result (`record.extra.lineage_basis = slot_reads`, written by the recorder when each slot read is declared); otherwise the lineage is unknown.
+   `summarize_series` over `separate_baseflow` is therefore not flagged. Advisories are one per run id, outside `advisory_count`. A truncated
+   `unmet` list is reported as truncated.
 4. **Completion outcome field.** `outcome` in `done | partial | infeasible`, plus short `unmet` strings, passed to `audit_interpretation`
    and sealed in that call's record. Proposal for the extension: `attempt_completion` passes the same two fields through unchanged and
    shows `outcome` in the answer header. Not agreed with the extension engineer in this change; this is the tools-side half and the
@@ -703,3 +709,18 @@ recommended a lineage query over existing records and no graph store (ADR-006: g
    names the later runs that cannot be ruled out, so the answer to "what breaks if I change this?" is "these, and possibly these".
 6. **Tier 3, recorded.** It is a view, but the run-record coverage test requires new tools to be recorded rather than exempted; its own
    rows are left out of dependents and coverage counts so that looking does not change what is seen.
+
+## 2026-10-31: signature flows carry their unit wherever a value is printed (Q_mean bug)
+
+A study digest listed `q_mean = 2.01686` with no unit and the answer said "Q_mean 2.017 m3/s". The value is mm/day (m3/s * 86.4 /
+area_km2); the same fault applied to `q_std`, `q5`, `q95` and `q_median`. aihydro-watershed >= 0.3 already emits a `units` map, but the
+digest ignored it and older results never had one.
+
+1. The digest prints `value unit [run:...]`, with the unit adjacent to the number so the audit's unit check can see it. A dimensionless
+   field prints no unit, which keeps the existing line shape for baseflow_index and runoff_ratio.
+2. A tools-side table fills gaps for results from before the `units` map. It duplicates watershed's table on purpose (a missing
+   key must not turn into a missing unit) and a test pins the two together whenever the installed watershed has it.
+3. Sealed run rows are not rewritten (they are digest-bound); the digest supplies the unit at read time. New signatures runs seal the
+   `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
+4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
+   a different vocabulary ("-", "fraction of days"); it was not touched here.

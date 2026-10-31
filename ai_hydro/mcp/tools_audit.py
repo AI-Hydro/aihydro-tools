@@ -37,15 +37,20 @@ def record_completion_outcome(outcome: str | None, unmet: list[str] | None) -> d
         return {"error": True, "code": "INVALID_PARAMETER",
                 "message": f"outcome must be one of {list(COMPLETION_OUTCOMES)}, got {outcome!r}.",
                 "recovery": "done: all of it. partial: some of it. infeasible: it could not be done."}
-    items = [str(u).strip()[:_MAX_UNMET_CHARS] for u in (unmet or []) if str(u).strip()][:_MAX_UNMET]
+    full = [str(u).strip() for u in (unmet or []) if str(u).strip()]
+    items = [u[:_MAX_UNMET_CHARS] for u in full][:_MAX_UNMET]
+    truncated = len(full) > _MAX_UNMET or any(len(u) > _MAX_UNMET_CHARS for u in full[:_MAX_UNMET])
     if outcome == "done" and items:
         return {"error": True, "code": "INVALID_PARAMETER",
                 "message": "outcome 'done' cannot list unmet items.",
                 "recovery": "Use outcome 'partial' (or 'infeasible') when something was not done."}
     from ai_hydro.session import run_records
 
-    run_records.declare_lineage(completion_outcome=outcome, **({"completion_unmet": items} if items else {}))
-    return {"outcome": outcome, **({"unmet": items} if items else {})}
+    run_records.declare_lineage(
+        completion_outcome=outcome, **({"completion_unmet": items} if items else {}),
+        **({"completion_unmet_truncated": True, "completion_unmet_total": len(full)} if truncated else {}))
+    return {"outcome": outcome, **({"unmet": items} if items else {}),
+            **({"unmet_truncated": True, "unmet_total": len(full)} if truncated else {})}
 
 
 @mcp.tool()
@@ -75,8 +80,8 @@ def audit_interpretation(
       - claim exists in session ledger
       - claim status ∈ {tested, supported, weakly_supported}
 
-    Advisory only: a cited run whose record shows no path to observed data is flagged
-    no_observed_lineage. A run that declares no parent is not called fabricated; see
+    Advisory only: a cited run whose record shows no path to observed data is listed once
+    in lineage_advisories (not in violations or advisory_count). A run that declares no parent is not called fabricated; see
     lineage_unknown_count.
 
     outcome: "done", "partial" or "infeasible" (could not be done); unmet lists what was not done.
@@ -118,6 +123,7 @@ def audit_interpretation(
             "hard_count": report.hard_count,
             "advisory_count": report.advisory_count,
             "exempt_by_reason": report.exempt_by_reason,
+            "lineage_advisories": [v.model_dump() for v in report.lineage_advisories],
             "lineage_checked_count": report.lineage_checked_count,
             "lineage_flagged_count": report.lineage_flagged_count,
             "lineage_unknown_count": report.lineage_unknown_count,

@@ -7,19 +7,19 @@ Three honest outcomes, never collapsed:
 
 ``observed``             the run, or a run it declares as a parent (transitively), acquired external data.
 ``declared_unobserved``  every run on the walk has a sealed record, parents are declared and resolved,
-                         and none acquired external data.
-``undeclared``           the walk ended at a run with no declared parent that did not itself acquire data.
-                         The record cannot say where its inputs came from; that is not "none".
+                         none acquired external data, and every run the walk ended at is positively known
+                         to have read no stored study result (``lineage_basis``).
+``undeclared``           the walk ended at a run that declares no parent, did not itself acquire data, and
+                         does not say it read nothing. The record cannot say where its inputs came from;
+                         that is not "none".
 ``unknown``              a row is missing, unsealed, or says its parent could not be resolved
                          (``extra.parent_unresolved``). Nothing can be concluded.
 
 "Acquired external data" is a property of the tool, read from the one annotation table
-(``tool_annotations.toml``): open-world (it calls a service) and not destructive (it does not run
-arbitrary code). No tool names are listed here.
+(``tool_annotations.toml``): the explicit ``acquires = true`` key. No tool names are listed here.
 """
 from __future__ import annotations
 
-import functools
 from dataclasses import dataclass, field
 from typing import Any, Dict, FrozenSet, List, Optional
 
@@ -31,18 +31,34 @@ UNKNOWN = "unknown"
 MAX_NODES = 500          # a study has tens of runs; this only bounds a corrupt or cyclic log
 
 
-@functools.lru_cache(maxsize=1)
+_CLASSES: tuple[FrozenSet[str], FrozenSet[str]] | None = None
+
+#: ``record.extra["lineage_basis"]`` value written by the recording middleware when every read of a
+#: study slot by the tool was declared as a parent. A run with this value and no parent read no
+#: stored study result; a run without it says nothing about what it read.
+LINEAGE_BASIS = "slot_reads"
+
+
 def _annotation_classes() -> tuple[FrozenSet[str], FrozenSet[str]]:
-    """``(acquiring tools, arbitrary-code tools)`` from the annotation table; empty if it cannot be read."""
+    """``(tools that acquire data, arbitrary-code tools)`` from the annotation table.
+
+    Acquiring is the explicit ``acquires = true`` key, not open-world: a citation lookup, a service
+    status check or a network context query are open-world and acquire no study data. A table that
+    cannot be read gives empty sets for this call and is not cached, so a later call retries.
+    """
+    global _CLASSES
+    if _CLASSES is not None:
+        return _CLASSES
     try:
         from ai_hydro.mcp.tool_surface import load_annotation_rows
 
         rows = load_annotation_rows()
     except Exception:
         return frozenset(), frozenset()
-    acquiring = frozenset(n for n, r in rows.items() if r.get("openWorldHint") and not r.get("destructiveHint"))
+    acquiring = frozenset(n for n, r in rows.items() if r.get("acquires") is True)
     code = frozenset(n for n, r in rows.items() if r.get("openWorldHint") and r.get("destructiveHint"))
-    return acquiring, code
+    _CLASSES = (acquiring, code)
+    return _CLASSES
 
 
 def record_of(row: Any) -> Optional[dict]:
@@ -108,12 +124,17 @@ def trace_to_observed(run_log: Dict[str, Any], run_id: str) -> Lineage:
             if p not in seen:
                 seen[p] = rid
                 queue.append(p)
+    if queue:                                             # stopped at the size limit, not at the end of the graph
+        return Lineage(UNKNOWN, walked=len(seen), reasons=reasons + [f"walk stopped at {MAX_NODES} runs"])
     if reasons:
         return Lineage(UNKNOWN, walked=len(seen), reasons=reasons)
-    if len(seen) > 1:
-        return Lineage(DECLARED_UNOBSERVED, walked=len(seen), path=list(seen), root_tool=tool_of(run_log.get(ends[0])) if ends else None)
-    return Lineage(UNDECLARED, walked=1, path=[run_id], root_tool=tool_of(run_log.get(run_id)),
-                   reasons=["the record declares no parent and the tool did not acquire data itself"])
+    known_none = bool(ends) and all(
+        ((record_of(run_log.get(e)) or {}).get("extra") or {}).get("lineage_basis") == LINEAGE_BASIS for e in ends)
+    if len(seen) > 1 and known_none:
+        return Lineage(DECLARED_UNOBSERVED, walked=len(seen), path=list(seen),
+                       root_tool=tool_of(run_log.get(ends[0])))
+    return Lineage(UNDECLARED, walked=len(seen), path=list(seen), root_tool=tool_of(run_log.get(ends[0])) if ends else None,
+                   reasons=["a run on the walk declares no parent and does not say it read no stored result"])
 
 
 # --------------------------------------------------------------------------- #

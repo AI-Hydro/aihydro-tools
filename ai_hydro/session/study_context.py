@@ -34,6 +34,8 @@ import re
 from decimal import Decimal
 from typing import Any
 
+from ai_hydro.science import signature_units as _sig_units
+
 log = logging.getLogger("ai_hydro.session.study_context")
 
 PROFILE_MAX_BYTES = 1024
@@ -256,11 +258,18 @@ def _key_results(session_id: str, healthy_slots: list[str]) -> list[str]:
             lines.append(f"- {slot}: stale pointer [run:{run_id}] (the record no longer verifies; re-run)")
             continue
         n = 0
-        for key, val in (entry.get("key_outputs") or {}).items():
+        ko = entry.get("key_outputs") or {}
+        # A bare "q_mean = 2.017" reads as m3/s; the signature flows are mm/day. Print the unit
+        # the row recorded, else the signatures table, so no value is shown without one.
+        units = ko.get("units") if isinstance(ko.get("units"), dict) else {}
+        if _sig_units.is_signatures(slot=entry.get("slot"), tool=entry.get("tool_name")):
+            units = _sig_units.units_for(ko, units)
+        for key, val in ko.items():
             text = _scalar(val)
             if text is None or not _marker_safe(str(key)):
                 continue
-            lines.append(f"- {key} = {text} [run:{run_id}#key_outputs.{key}]")
+            unit = _sig_units.display_unit(units.get(key) if isinstance(units.get(key), str) else None)
+            lines.append(f"- {key} = {text}{' ' + neutralise(unit) if unit else ''} [run:{run_id}#key_outputs.{key}]")
             n += 1
             if n >= MAX_VALUES_PER_RUN:
                 break

@@ -26,7 +26,10 @@ def audit(prose, log, monkeypatch):
 
 
 def kinds(rep):
-    return [v.kind for v in rep.violations]
+    return [v.kind for v in rep.violations] + [v.kind for v in rep.lineage_advisories]
+
+
+NONE_READ = {"lineage_basis": L.LINEAGE_BASIS}      # the recorder saw every slot read; there were none
 
 
 def test_value_traced_to_a_fetch_is_not_flagged(monkeypatch):
@@ -40,18 +43,67 @@ def test_value_traced_to_a_fetch_is_not_flagged(monkeypatch):
 
 
 def test_declared_parents_that_never_fetched_data_are_flagged_as_advisory(monkeypatch):
-    log = {"c1": row("c1", "summarize_series"), "s1": row("s1", "summarize_series", parents=["c1"], ko={"mean": 3.5})}
+    log = {"c1": row("c1", "summarize_series", extra=NONE_READ),
+           "s1": row("s1", "summarize_series", parents=["c1"], ko={"mean": 3.5})}
     rep = audit("The mean is 3.5 [run:s1#key_outputs.mean].", log, monkeypatch)
-    (v,) = [v for v in rep.violations if v.kind == "no_observed_lineage"]
-    assert v.severity == "advisory" and "s1" in v.message
+    (v,) = rep.lineage_advisories
+    assert v.kind == "no_observed_lineage" and v.severity == "advisory" and "s1" in v.message
     assert rep.passed                                   # advisory: the value is still accepted
-    assert rep.hard_count == 0 and rep.advisory_count == 1 and rep.lineage_flagged_count == 1
+    assert rep.hard_count == 0 and rep.lineage_flagged_count == 1
+    assert rep.advisory_count == 0 and rep.violations == []       # kept out of the ordinary advisory count
+
+
+def test_a_series_tool_over_a_producer_that_declares_nothing_is_unknown_not_flagged(monkeypatch):
+    """summarize_series with parent separate_baseflow: the baseflow run may have read the fetch."""
+    log = {"b1": row("b1", "separate_baseflow", ko={"bfi": 0.4}),
+           "s1": row("s1", "summarize_series", parents=["b1"], ko={"mean": 3.5})}
+    rep = audit("The mean is 3.5 [run:s1#key_outputs.mean].", log, monkeypatch)
+    assert rep.lineage_advisories == [] and rep.lineage_unknown_count == 1
+    assert L.trace_to_observed(log, "s1").state == L.UNDECLARED
+
+
+def test_one_advisory_per_run_id_however_many_values_cite_it(monkeypatch):
+    log = {"p1": row("p1", "run_python", ko={"a": 12.5, "b": 7.25})}
+    rep = audit("Mean 12.5 [run:p1#key_outputs.a] and spread 7.25 [run:p1#key_outputs.b].", log, monkeypatch)
+    assert len(rep.lineage_advisories) == 1
+    assert (rep.lineage_checked_count, rep.lineage_flagged_count) == (1, 1) and rep.advisory_count == 0
+
+
+def test_only_true_fetchers_acquire_data():
+    from ai_hydro.mcp.tool_surface import load_annotation_rows
+
+    rows = load_annotation_rows()
+    for n in ("data_fetch", "data_batch_fetch", "data_fetch_background", "fetch_streamflow_data",
+              "fetch_forcing_data", "fetch_camels_us", "fetch_soil_attributes_ssurgo",
+              "delineate_watershed", "delineate_watershed_from_point"):
+        assert rows[n].get("acquires") is True, n
+    for n in ("gee.status", "delineation_doctor", "run_experiment", "lookup_citation", "get_citation_by_doi"):
+        assert rows[n].get("acquires") is not True, n
+    assert all(r["acquires"] is True for r in rows.values() if "acquires" in r)
+
+
+def test_a_failed_annotation_read_is_not_cached(monkeypatch):
+    import ai_hydro.mcp.tool_surface as ts
+
+    monkeypatch.setattr(L, "_CLASSES", None)
+    monkeypatch.setattr(ts, "load_annotation_rows", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    assert L._annotation_classes() == (frozenset(), frozenset()) and L._CLASSES is None
+    monkeypatch.undo()
+    assert "data_fetch" in L._annotation_classes()[0]
+
+
+def test_a_walk_cut_at_the_size_limit_is_unknown(monkeypatch):
+    monkeypatch.setattr(L, "MAX_NODES", 5)
+    log = {f"r{i}": row(f"r{i}", "summarize_series", parents=[f"r{i+1}"]) for i in range(20)}
+    log["r20"] = row("r20", "summarize_series", extra=NONE_READ)
+    lin = L.trace_to_observed(log, "r0")
+    assert lin.state == L.UNKNOWN and "stopped" in lin.reasons[-1]
 
 
 def test_arbitrary_code_with_no_declared_input_is_flagged(monkeypatch):
     log = {"p1": row("p1", "run_python", ko={"mean_q": 12.5})}
     rep = audit("The mean flow is 12.5 [run:p1#key_outputs.mean_q].", log, monkeypatch)
-    (v,) = [v for v in rep.violations if v.kind == "no_observed_lineage"]
+    (v,) = rep.lineage_advisories
     assert "arbitrary code" in v.message and rep.passed
 
 
@@ -76,7 +128,8 @@ def test_unsealed_row_unresolved_parent_and_missing_parent_are_unknown(monkeypat
 
 
 def test_a_failed_fetch_is_not_an_acquisition():
-    log = {"q1": row("q1", "data_fetch", status="error"), "s1": row("s1", "summarize_series", parents=["q1"])}
+    log = {"q1": row("q1", "data_fetch", status="error", extra=NONE_READ),
+           "s1": row("s1", "summarize_series", parents=["q1"])}
     assert L.trace_to_observed(log, "s1").state == L.DECLARED_UNOBSERVED
 
 
@@ -89,7 +142,7 @@ def test_echoed_inputs_and_method_parameters_are_not_checked(monkeypatch):
 
 def test_a_cycle_terminates():
     log = {"a": row("a", "summarize_series", parents=["b"]), "b": row("b", "summarize_series", parents=["a"])}
-    assert L.trace_to_observed(log, "a").state == L.DECLARED_UNOBSERVED
+    assert L.trace_to_observed(log, "a").state == L.UNDECLARED          # no terminal run: nothing is known to be none
 
 
 def test_the_check_does_not_change_what_is_accepted(monkeypatch):
@@ -110,6 +163,8 @@ def test_completion_outcome_validation():
     assert rec(None, None) is None
     assert rec("done", None) == {"outcome": "done"}
     assert rec("partial", ["no 2010-2015 data", " "]) == {"outcome": "partial", "unmet": ["no 2010-2015 data"]}
+    cut = rec("partial", ["u"] * 12)
+    assert cut["unmet_truncated"] is True and cut["unmet_total"] == 12 and len(cut["unmet"]) == 10
     for bad in (("finished", None), ("done", ["x"]), (None, ["x"])):
         r = rec(*bad)
         assert r["error"] is True and r["code"] == "INVALID_PARAMETER"

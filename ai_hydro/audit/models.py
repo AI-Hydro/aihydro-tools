@@ -68,9 +68,11 @@ class AuditReport(BaseModel):
     # (identifier, code, date, year, meta_count, ...). Transparency, not findings.
     exempt_count: int = 0
     exempt_by_reason: dict[str, int] = {}
-    # Lineage check (advisory; never changes `passed`). Cited run values examined, how many were
+    # Lineage check (advisory; never changes `passed`). Distinct cited runs examined, how many were
     # flagged `no_observed_lineage`, and how many could not be judged (unsealed or unresolved rows,
     # or a run whose record simply declares no parent).
+    # One advisory per flagged run id, kept apart from `violations` so `advisory_count` stays what it was.
+    lineage_advisories: list[AuditViolation] = []
     lineage_checked_count: int = 0
     lineage_flagged_count: int = 0
     lineage_unknown_count: int = 0

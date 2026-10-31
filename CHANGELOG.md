@@ -18,15 +18,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `downstream.may_also_depend` lists later runs whose inputs are not declared. Tier 3, `readOnlyHint`.
 - **Answer audit: advisory `no_observed_lineage`.** When a cited run's sealed record shows no path to observed data, the audit adds
   an advisory (never a block). Flagged: a run whose declared parents never fetched data, and a run of arbitrary code (`run_python`)
-  whose inputs the record cannot show. A run that declares no parent is not called fabricated: the record cannot tell, and the report
-  counts it in `lineage_unknown_count`. "Fetched data" is read from the tool annotation table (open-world and not destructive), so no
-  tool names are listed. What the audit accepts as evidence is unchanged. New report fields: `lineage_checked_count`,
-  `lineage_flagged_count`, `lineage_unknown_count`.
+  whose inputs the record cannot show. Declared parents count only when every run the walk ends at is recorded as having read no stored result (`record.extra.lineage_basis`); otherwise the lineage is unknown, which is counted in `lineage_unknown_count` and never flagged. Advisories are listed once per run id in `lineage_advisories`, outside `violations` and `advisory_count`. "Fetched data" is read from the tool annotation table, so no
+  tool names are listed (a new `acquires = true` key in the annotation table marks the true fetchers; open-world is not enough). What the audit accepts as evidence is unchanged. New report fields: `lineage_checked_count`,
+  `lineage_flagged_count`, `lineage_unknown_count`, `lineage_advisories`.
 - **`audit_interpretation(outcome=, unmet=)`.** `outcome` is `done | partial | infeasible`, with `unmet` listing what was not done.
   It is validated and sealed in the audit call's own run record (`record.extra.completion_outcome`, `completion_unmet`). The extension's
   `attempt_completion` is the intended caller; until it passes the fields, nothing changes.
 ### Fixed
 
+- **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed
+  `q_mean = 2.01686 [run:...]` with no unit, and an agent wrote "Q_mean 2.017 m3/s". The signature flows (`q_mean`, `q_std`, `q5`,
+  `q95`, `q_median`) are basin-depth rates in mm/day, not discharge. The digest now prints the unit the run recorded, falling back to a
+  table (`ai_hydro/science/signature_units.py`, pinned to aihydro-watershed's `SIGNATURE_UNITS` by a test) for results that have no
+  `units` map; dimensionless values print as before. `synopsis_for_llm`, the workspace `signatures_*.json` and the sealed result gain the
+  same `units` map when the watershed did not supply one, and each row of `reference_comparison.table` carries a `unit`. Sealed rows already written are not changed.
 - **`[run:<id>]` with no `#<field>` gets a specific fix hint.** It is still a hard `malformed_marker` that binds nothing; the
   message now says the value beside it was not checked, and the hint gives the marker to write.
 
