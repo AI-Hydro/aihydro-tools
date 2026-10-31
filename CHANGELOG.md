@@ -8,6 +8,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`data_fetch` returns `data.summary`.** The result carried the first five rows and a row count, and no statistics, so an agent
+  that wanted a mean went to a deprecated tool that returned one. `data.summary` has `n_dates`, `n_finite`, `first_date`,
+  `last_date`, the requested window, `mean`, `min`, `max`, `units`, `n_missing_days` (calendar days in the window with no served
+  date; daily series only), `n_dates_without_value`, and, when aihydro-data reports them (USGS), the approval and qualifier counts.
+  `fraction_with_value` (finite values over the days the window spans) and `partial` (true below 1) say when a mean covers only part of the window (daily series; null for other timesteps). A `basis` string labels what the statistics are. The maths is `summarize_series`'s. It is about 650 characters with USGS counts.
+  `data.units` maps `mean`/`min`/`max` to the unit so `[run:<id>#key_outputs.summary.mean]` carries its unit through the audit. Nothing
+  already in the result was removed. With `cache=False` nothing is retained and there is no summary.
 ### Fixed
 
 - **An old signatures row with no `units` map no longer lets "2.02 m3/s" through for `q_mean`.** `declared_unit` falls back to the signatures
