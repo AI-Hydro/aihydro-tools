@@ -31,7 +31,7 @@ AREAS = {ORIGIN: 100.0, "USGS-01000300": 40.0, "USGS-01000400": 25.0, "USGS-0100
 
 
 def fake_get(calls=None, *, missing=(), status=200, drop_area=()):
-    def get(url, params):
+    def get(url, params, timeout=None):
         if calls is not None:
             calls.append((url, dict(params or {})))
         if status != 200:
@@ -134,7 +134,7 @@ def test_a_429_part_way_keeps_what_was_confirmed():
     inner = fake_get()
     n = {"i": 0}
 
-    def get(url, params):
+    def get(url, params, timeout=None):
         n["i"] += 1
         return (429, b"{}") if url.endswith("monitoring-locations/items") else inner(url, params)
     r = run(client=gn.Client(get))
@@ -161,6 +161,9 @@ def test_candidates_are_checked_nearest_first_and_capped(monkeypatch):
         SERIES["USGS-01000999"] = ("2000-01-01", "2020-01-01"); AREAS["USGS-01000999"] = 5.0
         r = run()
         assert r["candidates_nldi_total"] > gn.MAX_CANDIDATES and r["candidates_not_checked"] > 0
+        assert r["incomplete"] is True and "candidate cap: 80 of" in r["incomplete_reasons"]
+        assert "nearest by straight-line distance" in r["incomplete_reasons"]
+        assert r["upstream_excluded_without_daily_discharge"] is None and r["downstream_excluded_without_daily_discharge"] is None
         assert "USGS-01000999" in r["upstream_gauges"]                  # the near one made the cut, the far ones did not
         assert list(r["upstream_gauges"])[0] == "USGS-01000999"          # and sorts first
     finally:
@@ -269,3 +272,22 @@ def test_neighbours_are_sealed_and_citable_through_the_real_handler(env, mcp_ser
     assert found and val == 3.0
     found, _v, _p = resolve_marker_path(row, "key_outputs.gauge.drainage_area_sqmi")
     assert found
+
+
+def test_each_request_timeout_is_what_is_left_of_the_deadline():
+    seen = []
+    inner = fake_get()
+
+    def get(url, params, timeout=None):
+        seen.append(timeout)
+        return inner(url, params)
+    run(client=gn.Client(get, deadline_s=12.0))
+    assert seen and all(0 < t <= 12.0 for t in seen) and max(seen) <= 12.0
+    seen.clear()
+    run(client=gn.Client(get, deadline_s=500.0))
+    assert max(seen) == 30.0                                   # never more than 30 s per request
+
+
+def test_when_all_candidates_are_checked_the_counts_are_known(monkeypatch):
+    r = run()
+    assert r["incomplete"] is False and r["candidates_not_checked"] == 0 and r["upstream_excluded_without_daily_discharge"] == 1

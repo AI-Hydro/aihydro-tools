@@ -129,9 +129,11 @@ class Client:
     def json(self, url: str, params: Optional[Mapping[str, Any]] = None, *, not_found_ok: bool = False) -> Optional[dict]:
         if len(self.request_urls) >= self.max_requests:
             raise NetworkLookupError("BUDGET_EXHAUSTED", f"request budget of {self.max_requests} spent", retryable=True)
-        if time.monotonic() - self._t0 > self.deadline_s:
+        remaining = self.deadline_s - (time.monotonic() - self._t0)
+        if remaining <= 0:
             raise NetworkLookupError("DEADLINE_EXCEEDED", f"{self.deadline_s:.0f} s deadline passed", retryable=True)
-        status, body = self._get(url, params)
+        # a request may not outlive the deadline: its own timeout is what is left of it, at most 30 s
+        status, body = self._get(url, params, timeout=min(30.0, remaining))
         self.request_urls.append(url + ("?" + urlencode(params) if params else ""))
         self.response_sha256.append(hashlib.sha256(body).hexdigest())
         if status == 404 and not_found_ok:
@@ -328,7 +330,11 @@ def gauge_network(site: str, distance_km: int = DEFAULT_DISTANCE_KM, *, client: 
 
     u_rows, u_excl, u_cut = side(up)
     d_rows, d_excl, d_cut = side(down)
-    if prog.incomplete and prog.unchecked:
+    capped = max(0, n_cand_total - len(cand))
+    if capped:
+        prog.reasons.append(f"candidate cap: {len(cand)} of {n_cand_total} checked, nearest by straight-line distance")
+    not_checked = prog.unchecked + capped
+    if not_checked:
         u_excl = d_excl = None                           # not knowable: some candidates were never checked
 
     gx: Dict[str, Any] = {"status": "unavailable", "pid": None}
@@ -348,7 +354,7 @@ def gauge_network(site: str, distance_km: int = DEFAULT_DISTANCE_KM, *, client: 
         "incomplete_reasons": " | ".join(prog.reasons),
         "candidates_nldi_total": n_cand_total,
         "candidates_checked": len(cand) - prog.unchecked,
-        "candidates_not_checked": prog.unchecked + max(0, n_cand_total - MAX_CANDIDATES),
+        "candidates_not_checked": not_checked,
         "candidate_order": "straight-line distance from the gauge, nearest first",
         "gauge": {
             "usgs_id": origin, "name": o_loc.get("monitoring_location_name") or o_props.get("name"),

@@ -707,3 +707,9 @@ digest ignored it and older results never had one.
 - `API_USGS_PAT` goes to `api.waterdata.usgs.gov` only. The Geoconnex lookup's URL is listed in `request_urls` (its response digest is not
   available through the existing resolver; a cached answer is marked by status). If `aihydro_watershed.identity` does not import, the gauge's PID
   is `unavailable` and the rest is unaffected. The site-number pattern uses `[0-9]`, not `\d`.
+
+### Review revision 2 (gauge_network_context)
+
+A capped candidate list is not a complete answer: when more NLDI sites exist than the 80 checked, the result is `incomplete: true` with "candidate cap: N of M
+checked, nearest by straight-line distance", and the per-side excluded counts are `null` (they cannot be known for unchecked sites). Each request's timeout is
+`min(30 s, what is left of the 45 s deadline)`, so the deadline holds even when a service hangs.
