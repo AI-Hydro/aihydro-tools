@@ -6,7 +6,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [2.8.6] - 2026-10-31 (units, fetch summaries, lineage, literature search)
+
+Unit labels on signatures, a data summary on every `data_fetch`, `trace_lineage`, BM25 literature search, `gauge_network_context`, and an
+advisory check for numbers with no observed-data lineage. The audit now flags the wrong unit on old signature rows too.
+
 
 ### Changed
 
