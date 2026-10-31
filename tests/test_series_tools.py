@@ -736,3 +736,14 @@ def test_a_summary_over_a_partial_record_says_so(serve):
     assert part["partial"] is True and part["n_missing_days"] == 3
     assert part["fraction_with_value"] == pytest.approx(6 / 10)  # 6 finite values over the 10 days spanned
     assert part["mean"] == pytest.approx(np.mean([3.0, 1.0, 7.0, 5.0, 9.0, 2.0]), rel=1e-5)
+
+
+def test_a_non_daily_series_gets_no_completeness_claim():
+    from ai_hydro.mcp.tools_data_fetch import _summary_from_payload
+
+    dates = ["2020-01-01", "2020-02-01", "2020-03-01"]
+    sm = _summary_from_payload({"dates": dates, "values": [1.0, None, 3.0], "units": "mm", "variable": "p",
+                                "value_column": "p", "timestep": "monthly"}, "2020-01-01", "2020-03-31")
+    assert sm["fraction_with_value"] is None and sm["partial"] is None and "n_missing_days" not in sm
+    assert sm["n_dates_without_value"] == 1 and sm["timestep"] == "monthly"
+    assert "daily series only" in sm["basis"] and "null for a series that is not daily" in sm["basis"]
