@@ -355,6 +355,10 @@ def cmd_wbd_layers(args: argparse.Namespace) -> dict[str, Any]:
         max_lat=args.max_lat,
         huc_level=args.huc_level,
     )
+    if None not in (args.min_lon, args.min_lat, args.max_lon, args.max_lat):
+        from ai_hydro.data.hydro_search import stamp_query
+
+        stamp_query(layers, (args.min_lon, args.min_lat, args.max_lon, args.max_lat))
     return {
         "ok": len(layers) > 0,
         "type": "wbd_layers",
@@ -407,6 +411,24 @@ def cmd_search_hydrology(args: argparse.Namespace) -> dict[str, Any]:
     return out
 
 
+def _layer_query(*, build: Any, with_problems: bool = False, session_id: str | None = None, **view: Any) -> dict[str, Any]:
+    """Run a reference-layer builder and describe the answer for the run record (counts, view, retrieval time)."""
+    problems: list = []
+    layers = build(problems=problems, **view) if with_problems else build(**view)
+    first = (layers[0].get("metadata") or {}) if layers else {}
+    return {
+        "layers": layers,
+        "problems": problems,
+        "data": {
+            "n_layers": len(layers),
+            "n_features": sum(int((l.get("metadata") or {}).get("feature_count") or 0) for l in layers),
+            "query_bbox": first.get("query_bbox") or f"{view['min_lon']},{view['min_lat']},{view['max_lon']},{view['max_lat']}",
+            "retrieved_at": first.get("retrieved_at"),
+            "n_problems": len(problems),
+        },
+    }
+
+
 def cmd_gauges_in_view(args: argparse.Namespace) -> dict[str, Any]:
     from ai_hydro.data.hydro_search import gauges_in_view_layer
     from ai_hydro.data.wbd_layers import is_conus_point
@@ -425,17 +447,16 @@ def cmd_gauges_in_view(args: argparse.Namespace) -> dict[str, Any]:
             "layers": [],
             "message": "Map bounding box (min/max lon/lat) is required.",
         }
-    problems: list = []
-    layers = gauges_in_view_layer(
-        min_lon=args.min_lon,
-        min_lat=args.min_lat,
-        max_lon=args.max_lon,
-        max_lat=args.max_lat,
-        lat=args.lat,
-        lon=args.lon,
-        limit=args.limit,
-        problems=problems,
-    )
+    # Called directly (not through the MCP server), so record it explicitly: the layer is a snapshot of a public
+    # service for one view, and the run record is what says which view, when, and what came back.
+    from ai_hydro.session.run_records import recorded_call
+
+    out = recorded_call(
+        "gauges_in_view", lambda **kw: _layer_query(build=gauges_in_view_layer, with_problems=True, **kw),
+        session_id=getattr(args, "session_id", None),
+        min_lon=args.min_lon, min_lat=args.min_lat, max_lon=args.max_lon, max_lat=args.max_lat,
+        lat=args.lat, lon=args.lon, limit=args.limit)
+    layers, problems = out["layers"], out["problems"]
     if problems and not layers:
         p0 = problems[0]
         return {
@@ -474,15 +495,13 @@ def cmd_dams_in_view(args: argparse.Namespace) -> dict[str, Any]:
             "layers": [],
             "message": "Map bounding box (min/max lon/lat) is required.",
         }
-    layers = dams_in_view_layer(
-        min_lon=args.min_lon,
-        min_lat=args.min_lat,
-        max_lon=args.max_lon,
-        max_lat=args.max_lat,
-        lat=args.lat,
-        lon=args.lon,
-        limit=args.limit,
-    )
+    from ai_hydro.session.run_records import recorded_call
+
+    layers = recorded_call(
+        "dams_in_view", lambda **kw: _layer_query(build=dams_in_view_layer, **kw),
+        session_id=getattr(args, "session_id", None),
+        min_lon=args.min_lon, min_lat=args.min_lat, max_lon=args.max_lon, max_lat=args.max_lat,
+        lat=args.lat, lon=args.lon, limit=args.limit)["layers"]
     return {
         "ok": len(layers) > 0,
         "type": "dams_in_view",
@@ -577,6 +596,7 @@ def main(argv: list[str] | None = None) -> int:
     p_gauges.add_argument("--min-lat", type=float, required=True)
     p_gauges.add_argument("--max-lon", type=float, required=True)
     p_gauges.add_argument("--max-lat", type=float, required=True)
+    p_gauges.add_argument("--session-id", default=None)
     p_gauges.add_argument("--limit", type=int, default=250)
 
     p_dams = sub.add_parser("dams-in-view")
@@ -586,6 +606,7 @@ def main(argv: list[str] | None = None) -> int:
     p_dams.add_argument("--min-lat", type=float, required=True)
     p_dams.add_argument("--max-lon", type=float, required=True)
     p_dams.add_argument("--max-lat", type=float, required=True)
+    p_dams.add_argument("--session-id", default=None)
     p_dams.add_argument("--limit", type=int, default=150)
 
     args = parser.parse_args(argv)

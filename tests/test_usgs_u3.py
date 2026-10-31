@@ -829,3 +829,72 @@ def test_gauge_area_pass_raises_no_flag(world, monkeypatch, tmp_path):
     row = _sealed_row(monkeypatch, tmp_path, "01013500", "1989-10-01", "2009-09-30", 2253.0)
     assert row["evidence"]["data"]["gauge_area_check"] == "pass"
     assert "gauge_area_check" not in {f["validator"] for f in (row["_response_flags"] or [])}
+
+
+# --------------------------------------------------------------- reference layers say when and where; gauges carry area and record
+def _sites_doc(ids_areas):
+    feats = [{"type": "Feature", "geometry": {"type": "Point", "coordinates": [-68.5 + i * 0.01, 47.2]},
+              "properties": {"id": f"USGS-{sid}", "monitoring_location_name": f"Site {sid}", "site_type_code": "ST",
+                             "drainage_area": area, "hydrologic_unit_code": "01010003"}}
+             for i, (sid, area) in enumerate(ids_areas)]
+    return json.dumps({"type": "FeatureCollection", "features": feats, "links": []}).encode()
+
+
+def test_gauge_layer_carries_area_record_view_and_time(world):
+    import ai_hydro.data.hydro_search as hs
+
+    sites = _sites_doc([("01013500", 870.0), ("01013600", None), ("01013700", 12.5)])
+    series = json.dumps({"features": [{"properties": {"monitoring_location_id": "USGS-01013500", "parameter_code": "00060",
+                                                      "statistic_id": "00003", "begin": "1903-07-29", "end": "2026-10-28"}}],
+                         "links": []}).encode()
+    world.override = lambda url, params: ok(json.loads(sites)) if "monitoring-locations" in url else (
+        ok(json.loads(series)) if "time-series-metadata" in url else None)
+    layers = hs.gauges_in_view_layer(min_lon=-68.7, min_lat=47.1, max_lon=-68.4, max_lat=47.4, lat=47.2, lon=-68.5)
+    (layer,) = layers
+    md = layer["metadata"]
+    assert md["query_bbox"] == "-68.700000,47.100000,-68.400000,47.400000" and md["retrieved_at"].endswith("Z")
+    assert "west,south,east,north" in md["query_bbox_order"]
+    props = {f["properties"]["site_no"]: f["properties"] for f in layer["geojson"]["features"]}
+    a = props["01013500"]
+    assert a["drainage_area_raw"] == 870.0 and a["drainage_area_km2_if_sqmi"] == pytest.approx(2253.3, abs=0.1)
+    assert "square miles" in a["drainage_area_unit_note"]
+    assert (a["daily_discharge_record"], a["daily_discharge_begin"], a["daily_discharge_end"]) == ("yes", "1903-07-29", "2026-10-28")
+    assert "drainage_area_raw" not in props["01013600"]                      # no area stated: nothing invented
+    assert props["01013600"]["daily_discharge_record"] == "none"             # asked, and it has no daily discharge series
+
+
+def test_a_failed_record_query_is_unknown_not_none(world):
+    import ai_hydro.data.hydro_search as hs
+
+    sites = _sites_doc([("01013500", 870.0)])
+    world.override = lambda url, params: ok(json.loads(sites)) if "monitoring-locations" in url else (
+        (503, {}, b"{}") if "time-series-metadata" in url else None)
+    (layer,) = hs.gauges_in_view_layer(min_lon=-68.7, min_lat=47.1, max_lon=-68.4, max_lat=47.4, lat=47.2, lon=-68.5)
+    assert layer["geojson"]["features"][0]["properties"]["daily_discharge_record"] == "unknown"
+
+
+def test_dam_and_huc_layers_are_stamped_with_view_and_time():
+    import ai_hydro.data.hydro_search as hs
+
+    layers = hs.stamp_query([{"id": "x", "metadata": {"source": "nid"}}, {"id": "y"}], (-70.0, 40.0, -69.0, 41.0))
+    for l in layers:
+        assert l["metadata"]["query_bbox"] == "-70.000000,40.000000,-69.000000,41.000000" and l["metadata"]["retrieved_at"].endswith("Z")
+    assert layers[0]["metadata"]["source"] == "nid"
+
+
+def test_cli_gauge_and_dam_queries_are_recorded_calls(world, monkeypatch):
+    import argparse
+    from ai_hydro import hydro_map_cli as cli
+    from ai_hydro.session import run_records as rr
+
+    seen = []
+    real = rr.recorded_call
+    monkeypatch.setattr(rr, "recorded_call", lambda tool, fn, **kw: seen.append((tool, sorted(kw))) or real(tool, fn, **kw))
+    sites = _sites_doc([("01013500", 870.0)])
+    world.override = lambda url, params: ok(json.loads(sites)) if "monitoring-locations" in url else ok({"features": [], "links": []})
+    a = argparse.Namespace(min_lon=-68.7, min_lat=47.1, max_lon=-68.4, max_lat=47.4, lat=47.2, lon=-68.5, limit=50, session_id="u3")
+    out = cli.cmd_gauges_in_view(a)
+    assert out["ok"] and out["layers"][0]["metadata"]["retrieved_at"]
+    assert seen[0][0] == "gauges_in_view" and "session_id" in seen[0][1]
+    rows = [r for r in (HydroSession.load("u3").get("_run_log") or {}).values() if (r.get("record") or {}).get("tool") == "gauges_in_view"]
+    assert rows, "the gauge query left no run record"

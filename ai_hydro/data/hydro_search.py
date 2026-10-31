@@ -298,6 +298,64 @@ def search_hydrology(
     return hits[:limit]
 
 
+SQMI_TO_KM2 = 2.589988110336
+_DISCHARGE_CHUNK = 40
+
+
+def stamp_query(layers: list[dict[str, Any]], bbox: tuple[float, float, float, float], *,
+                request_urls: list[str] | None = None) -> list[dict[str, Any]]:
+    """Record, on each reference layer, when it was retrieved and for which view (in place; returns ``layers``).
+
+    A reference layer is a snapshot of a public service for one map view; without these two facts it cannot be told
+    from a stale one or from a different extent. Metadata values are strings."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    west, south, east, north = (float(v) for v in bbox)
+    for layer in layers:
+        md = layer.setdefault("metadata", {})
+        md["retrieved_at"] = now
+        md["query_bbox"] = f"{west:.6f},{south:.6f},{east:.6f},{north:.6f}"
+        md["query_bbox_order"] = "west,south,east,north (EPSG:4326)"
+        if request_urls:
+            md["request_urls"] = "\n".join(request_urls)
+    return layers
+
+
+def daily_discharge_records(site_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """``{USGS-id: {"begin", "end"}}`` for the sites with a daily-mean discharge series (00060/00003).
+
+    One request per 40 sites. Any failure returns what was gathered so far; the caller then leaves the record
+    unstated for the rest, never "none"."""
+    try:
+        from aihydro_data.sources import usgs_waterdata as uw
+    except ImportError:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(site_ids), _DISCHARGE_CHUNK):
+        chunk = site_ids[i:i + _DISCHARGE_CHUNK]
+        try:
+            rec = uw._new_record()
+            feats = uw._paged_features(f"{uw.BASE}/collections/time-series-metadata/items",
+                                       {"monitoring_location_id": ",".join(chunk), "parameter_code": "00060",
+                                        "statistic_id": "00003", "limit": 1000, "f": "json"}, rec)
+        except Exception as e:                      # noqa: BLE001 - a missing record must not hide the gauges
+            log.warning("gauges_in_view record query failed: %s", e)
+            return out
+        for f in feats:
+            p = f.get("properties") or {}
+            sid = p.get("monitoring_location_id")
+            if not sid or p.get("parameter_code") != "00060" or p.get("statistic_id") != "00003":
+                continue
+            cur = out.setdefault(sid, {"begin": None, "end": None})
+            b, e = p.get("begin"), p.get("end")
+            cur["begin"] = b if cur["begin"] is None or (b and b < cur["begin"]) else cur["begin"]
+            cur["end"] = e if cur["end"] is None or (e and e > cur["end"]) else cur["end"]
+        for sid in chunk:
+            out.setdefault(sid, None)               # asked and answered: no daily discharge series
+    return {k: v for k, v in out.items()}
+
+
 def gauges_in_view_layer(
     *,
     min_lon: float,
@@ -338,20 +396,35 @@ def gauges_in_view_layer(
     if not sites:
         return []
 
-    sites = sites[: max(1, min(limit, _MAX_GAUGES_IN_VIEW))]
+    upstream = getattr(sites, "upstream", None) or {}
+    sites = list(sites)[: max(1, min(limit, _MAX_GAUGES_IN_VIEW))]
+    records = daily_discharge_records([f"USGS-{_site_no(loc)}" for loc in sites])
     features: list[dict[str, Any]] = []
     for loc in sites:
         site_no = _site_no(loc)
         name = str(loc.name or site_no)
+        props: dict[str, Any] = {"site_no": site_no, "name": name, "label": f"{site_no} — {name}"}
+        da = getattr(loc, "drainage_area_raw", None)
+        if isinstance(da, (int, float)) and da > 0:
+            # USGS documents square miles; the API does not state the unit, so the raw number and that caveat
+            # travel together and the km2 value is labelled as a conversion of it.
+            props["drainage_area_raw"] = float(da)
+            props["drainage_area_unit_note"] = str(getattr(loc, "drainage_area_units", "") or "")
+            props["drainage_area_km2_if_sqmi"] = round(float(da) * SQMI_TO_KM2, 1)
+        rec = records.get(f"USGS-{site_no}", "unknown")
+        if rec == "unknown":
+            props["daily_discharge_record"] = "unknown"           # the record query failed: not "none"
+        elif rec is None:
+            props["daily_discharge_record"] = "none"              # asked: no daily-mean discharge series
+        else:
+            props["daily_discharge_record"] = "yes"
+            props["daily_discharge_begin"] = rec.get("begin")
+            props["daily_discharge_end"] = rec.get("end")
         features.append(
             {
                 "type": "Feature",
                 "geometry": {"type": "Point", "coordinates": [float(loc.lon), float(loc.lat)]},
-                "properties": {
-                    "site_no": site_no,
-                    "name": name,
-                    "label": f"{site_no} — {name}",
-                },
+                "properties": props,
             }
         )
 
@@ -359,7 +432,7 @@ def gauges_in_view_layer(
         return []
 
     geojson = {"type": "FeatureCollection", "features": features}
-    return [
+    return stamp_query([
         {
             "id": "nwis-gauges-view",
             "name": f"USGS gauges in view ({len(features)})",
@@ -371,7 +444,7 @@ def gauges_in_view_layer(
                 "feature_count": str(len(features)),
             },
         }
-    ]
+    ], (min_lon, min_lat, max_lon, max_lat), request_urls=list(upstream.get("request_urls") or []) or None)
 
 
 _MAX_DAMS_IN_VIEW = 150
@@ -435,7 +508,7 @@ def dams_in_view_layer(
         return []
 
     geojson = {"type": "FeatureCollection", "features": features}
-    return [
+    return stamp_query([
         {
             "id": "nid-dams-view",
             "name": f"NID dams in view ({len(features)})",
@@ -447,4 +520,4 @@ def dams_in_view_layer(
                 "feature_count": str(len(features)),
             },
         }
-    ]
+    ], (min_lon, min_lat, max_lon, max_lat))
