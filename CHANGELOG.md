@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **`[run:<id>]` with no `#<field>` gets a specific fix hint.** It is still a hard `malformed_marker` that binds nothing; the
+  message now says the value beside it was not checked, and the hint gives the marker to write.
+
+### Tests
+
+- `aihydro_chat_status` answers only for the calling chat: a test through the MCP handler pins the `CHAT_ID_MISMATCH` refusal
+  (the guard itself shipped in 2.8.2).
+
 ## [2.8.5] - 2026-10-31 (tool integrity Wave T1)
 
 Tool integrity Wave T1: fixes across the data, study, modelling and statistics tools from the 2026-10-30 audit, plus a

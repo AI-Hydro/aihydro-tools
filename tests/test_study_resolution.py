@@ -318,3 +318,13 @@ def test_start_session_never_rehomes_a_study_into_another_workspace(ws, tmp_path
     assert get_binding_store().lookup_study(CHAT_A) is None
     assert HydroSession.load("B").workspace_dir == str(ws2)                  # unchanged on disk
     assert body["workspace_dir"] == str(ws2)
+
+
+def test_chat_status_answers_only_for_the_calling_chat(ws):
+    """A model cannot read another chat's binding by passing its id; the audit reads this tool."""
+    make_study("s1", workspace=str(ws))
+    call("aihydro_rebind_chat", {"study_id": "s1"}, meta=ctx(CHAT_A, ws))
+    _, own = call("aihydro_chat_status", {}, meta=ctx(CHAT_A, ws))
+    assert own["bound"] is True and own["chat_id"] == CHAT_A
+    _, other = call("aihydro_chat_status", {"chat_id": CHAT_A}, meta=ctx(CHAT_B, ws))
+    assert other["code"] == "CHAT_ID_MISMATCH" and "study_id" not in other

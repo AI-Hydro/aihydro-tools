@@ -737,3 +737,19 @@ def test_data_code_does_not_launder_neighbours():
 ])
 def test_huc_epsg_fips_nlcd_codes_exempt(txt, raw):
     assert (raw, "exempt", "code_label") in _cats(txt)
+
+
+class TestPathlessRunHint:
+    """``[run:<id>]`` stays a hard malformed marker; only the hint gets specific (audit review 2026-10-31)."""
+
+    def test_names_the_missing_field_and_stays_hard(self, monkeypatch):
+        rep = _a("Area is 774.15 km2 [run:watershed.0b124654840f].", monkeypatch)
+        hit = [v for v in rep.violations if v.kind == "malformed_marker"]
+        assert hit and hit[0].severity == "hard" and rep.passed is False
+        assert "[run:watershed.0b124654840f#<key_outputs.field>]" in hit[0].fix_hint
+        assert "not checked" in hit[0].message
+
+    def test_other_malformed_markers_keep_the_general_hint(self, monkeypatch):
+        rep = _a("Skill is high [run:r1#key_outputs.nse 0.61].", monkeypatch)
+        hit = [v for v in rep.violations if v.kind == "malformed_marker"]
+        assert hit and "Use exactly" in hit[0].fix_hint
