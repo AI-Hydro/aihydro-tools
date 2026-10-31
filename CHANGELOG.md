@@ -18,6 +18,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   United States only: another country's id, or an id NLDI does not know, gives `available: false` with a code, not a guess. A neighbour is
   a network fact, not evidence of independence or of no regulation. The tool changes nothing in the study; it makes network requests, so
   it is annotated open-world and not read-only. Tier 2.
+  Bounded: at most 12 requests and 45 s per call, 80 candidates checked nearest-first (straight-line), 20 gauges per side. If a limit, an HTTP 429 or a
+  service fault stops it, the result carries what was gathered with `incomplete: true` and the reasons. `API_USGS_PAT` is sent as `X-Api-Key` to
+  `api.waterdata.usgs.gov` only. With a study, the answer is sealed: neighbours are a dict keyed by USGS id and the request URLs and response
+  digests are strings, so a marker can cite `key_outputs.upstream_gauges.USGS-0xxxxxxx.drainage_area_sqmi`.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed

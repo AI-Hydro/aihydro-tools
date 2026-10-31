@@ -695,3 +695,15 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+### Review revision (gauge_network_context)
+
+- **Bounded and partial, never a bare error.** `Client` has a request budget (12) and a wall-clock deadline (45 s); a 429, a service fault, a spent
+  budget or a passed deadline stop the call where it is and the result returns what was gathered, `incomplete: true`, the reasons, and how many
+  candidates were not checked. Only an id that is not a USGS number or that NLDI does not know is a refusal (`available: false`). Candidates are
+  ordered by straight-line distance from the gauge (NLDI's list carries no along-network distance) and capped at 80 before the discharge check.
+- **Sealed so it can be cited.** The tool takes an optional `session_id`; with a study the result goes through `post_run`, and key_outputs keep
+  neighbours as dicts keyed by USGS id (20 per side, equal to what is shown), with URLs and digests as strings (key_outputs drops lists).
+- `API_USGS_PAT` goes to `api.waterdata.usgs.gov` only. The Geoconnex lookup's URL is listed in `request_urls` (its response digest is not
+  available through the existing resolver; a cached answer is marked by status). If `aihydro_watershed.identity` does not import, the gauge's PID
+  is `unavailable` and the rest is unaffected. The site-number pattern uses `[0-9]`, not `\d`.
