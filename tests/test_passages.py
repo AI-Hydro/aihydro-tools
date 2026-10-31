@@ -465,12 +465,12 @@ def test_hash_lookup_is_keyed_and_unchanged_by_the_ranking_method(lib):
 
 
 @needs_fts5
-def test_search_table_is_derived_and_rebuilt_when_the_jsonl_changes_or_the_table_is_deleted(lib):
+def test_search_never_writes_the_derived_table_it_is_built_in_memory_when_missing_or_stale(lib):
     side = P._sidecar_path()
-    assert side.exists()
+    assert side.exists()                               # written by build_passage_index
     side.unlink()
-    assert P.search_passages("baseflow", n=1)[0]["doc_name"] == "bfi.md"        # rebuilt on demand
-    assert side.exists()
+    assert P.search_passages("baseflow", n=1)[0]["doc_name"] == "bfi.md"
+    assert not side.exists()                           # a read-only call wrote nothing
     # the JSONL is the record: append a passage by hand and the next search sees it
     rec = dict(P.load_all_passages()[0], passage_hash="a" * 16, doc_name="added.md",
                text="tidal backwater affects stage discharge ratings")
@@ -478,6 +478,22 @@ def test_search_table_is_derived_and_rebuilt_when_the_jsonl_changes_or_the_table
         fh.write(json.dumps(rec) + "\n")
     assert P.search_passages("backwater", n=1)[0]["doc_name"] == "added.md"
     assert P.resolve_passage_hash("a" * 16)["doc_name"] == "added.md"
+    assert not side.exists()
+    # a stale file (built from older JSONL) is ignored, not trusted and not rewritten
+    P._build_sidecar()
+    with open(P.PASSAGE_INDEX_PATH, "a") as fh:
+        fh.write(json.dumps(dict(rec, passage_hash="b" * 16, text="levee overtopping")) + "\n")
+    before = side.stat().st_mtime_ns
+    assert P.search_passages("overtopping", n=1)[0]["passage_hash"] == "b" * 16
+    assert side.stat().st_mtime_ns == before
+
+
+@needs_fts5
+def test_rebuilding_the_index_rewrites_the_table(lib):
+    side = P._sidecar_path()
+    side.unlink()
+    P.build_passage_index(sorted((lib / "docs").glob("*.md")))
+    assert side.exists() and P.search_passages("baseflow", n=1)[0]["doc_name"] == "bfi.md"
 
 
 def test_absent_index_is_empty_not_an_error(tmp_path, monkeypatch):

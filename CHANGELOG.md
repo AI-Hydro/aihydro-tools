@@ -14,8 +14,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   any query word may match, rarer words count more). The old scorer counted substring hits divided by passage length with no IDF, so a
   four-word passage of `flow`/`index` fragments outranked a real baseflow-index passage. `resolve_passage_hash` is a keyed lookup
   instead of a scan. `passage_hash` is unchanged (a test pins two values from the previous implementation), as is
-  `passage_index.jsonl`. A derived `passage_index.sqlite3` beside it is built by `index_passages`, rebuilt on demand if the JSONL
-  changes or the file is deleted, and needs no new dependency. `search_passages_tool` results gain `score`.
+  `passage_index.jsonl`. A derived `passage_index.sqlite3` beside it is written by `index_passages` and needs no new dependency. A search
+  never writes (the search and resolve tools are read-only): if the file is missing or older than the JSONL, the table is built in
+  memory for that call. `search_passages_tool` results gain `score`.
 - **Renamed `ai_hydro.knowledge.embeddings` to `ai_hydro.knowledge.passages`.** There were never embeddings; the module is keyword
   search and says so. The old name still imports and is the same module object. This is keyword matching: a query of "discharge"
   will not find a passage that says "streamflow".

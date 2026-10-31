@@ -14,8 +14,9 @@ Two files, one source of truth:
 
 * ``passage_index.jsonl`` (one JSON object per line, atomic writes) is the index of record.
 * ``passage_index.sqlite3`` beside it is a derived search table (FTS5 + a keyed hash lookup). It
-  carries the size and mtime of the JSONL it was built from and is rebuilt from the JSONL when
-  they differ, so it can be deleted at any time. A single code path ranks (``search_passages``)
+  carries the size and mtime of the JSONL it was built from. ``index_passages`` writes it; a search
+  never does: if it is missing or stale the search table is built in memory from the JSONL for that
+  call (read-only tools stay read-only), so it can be deleted at any time. A single code path ranks (``search_passages``)
   and a single one resolves a hash (``resolve_passage_hash``).
 
 Formerly ``ai_hydro.knowledge.embeddings`` (a name that promised more than the code did); that
@@ -181,65 +182,77 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+_SCHEMA = (
+    "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);"
+    "CREATE TABLE passages(id INTEGER PRIMARY KEY, passage_hash TEXT NOT NULL, doc_name TEXT,"
+    " chunk_idx INTEGER, text TEXT, source_path TEXT, indexed_at TEXT);"
+    "CREATE INDEX passages_hash ON passages(passage_hash);"
+    "CREATE VIRTUAL TABLE passages_fts USING fts5("
+    " text, content='passages', content_rowid='id', tokenize='porter unicode61');"
+)
+
+
+def _fill(conn: sqlite3.Connection, stamp: str) -> None:
+    conn.executescript(_SCHEMA)
+    conn.executemany(
+        "INSERT INTO passages(passage_hash, doc_name, chunk_idx, text, source_path, indexed_at)"
+        " VALUES (?,?,?,?,?,?)",
+        [(r.get("passage_hash"), r.get("doc_name"), r.get("chunk_idx"), r.get("text", ""),
+          r.get("source_path"), r.get("indexed_at")) for r in load_all_passages()],
+    )
+    conn.execute("INSERT INTO passages_fts(passages_fts) VALUES('rebuild')")
+    conn.execute("INSERT INTO meta VALUES('jsonl_stamp', ?)", (stamp,))
+    conn.commit()
+
+
 def _build_sidecar() -> None:
-    """Rebuild the search table from the JSONL, atomically. Never raises: a failure leaves the old
-    table (or none) and the next read tries again."""
+    """Write the search table beside the JSONL (atomically). Only ``build_passage_index`` calls this, so
+    the read paths never write. Never raises: a failure leaves the old table (or none)."""
     if not PASSAGE_INDEX_PATH.exists():
         return
     path = _sidecar_path()
     tmp = path.with_suffix(".sqlite3.tmp")
     try:
         tmp.unlink(missing_ok=True)
-        stamp = _stamp()
         conn = _connect(tmp)
         try:
-            conn.executescript(
-                "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);"
-                "CREATE TABLE passages(id INTEGER PRIMARY KEY, passage_hash TEXT NOT NULL, doc_name TEXT,"
-                " chunk_idx INTEGER, text TEXT, source_path TEXT, indexed_at TEXT);"
-                "CREATE INDEX passages_hash ON passages(passage_hash);"
-                "CREATE VIRTUAL TABLE passages_fts USING fts5("
-                " text, content='passages', content_rowid='id', tokenize='porter unicode61');"
-            )
-            conn.executemany(
-                "INSERT INTO passages(passage_hash, doc_name, chunk_idx, text, source_path, indexed_at)"
-                " VALUES (?,?,?,?,?,?)",
-                [(r.get("passage_hash"), r.get("doc_name"), r.get("chunk_idx"), r.get("text", ""),
-                  r.get("source_path"), r.get("indexed_at")) for r in load_all_passages()],
-            )
-            conn.execute("INSERT INTO passages_fts(passages_fts) VALUES('rebuild')")
-            conn.execute("INSERT INTO meta VALUES('jsonl_stamp', ?)", (stamp,))
-            conn.commit()
+            _fill(conn, _stamp())
         finally:
             conn.close()
         os.replace(tmp, path)
-    except sqlite3.OperationalError as exc:
+    except Exception as exc:                     # FTS5 missing, disk full, permissions
         tmp.unlink(missing_ok=True)
-        log.warning("passage search table not built: %s", exc)
-    except Exception as exc:                     # pragma: no cover - disk full, permissions
-        tmp.unlink(missing_ok=True)
-        log.warning("passage search table not built: %s", exc)
+        log.warning("passage search table not written: %s", exc)
 
 
 def _sidecar() -> sqlite3.Connection | None:
-    """Connection to an up-to-date search table, rebuilding it first if the JSONL moved. None if there is no index."""
+    """A connection to an up-to-date search table, or None if there is no index.
+
+    Reading never writes: if the file beside the JSONL is missing, stale (the JSONL changed since it was
+    built) or unusable, the table is built in memory from the JSONL for this call. ``index_passages``
+    (``build_passage_index``) is what writes the file.
+    """
     if not PASSAGE_INDEX_PATH.exists():
         return None
+    stamp = _stamp()
     path = _sidecar_path()
-    for attempt in (0, 1):
-        if path.exists():
-            conn = _connect(path)
-            try:
-                row = conn.execute("SELECT value FROM meta WHERE key='jsonl_stamp'").fetchone()
-                if row is not None and row[0] == _stamp():
-                    return conn
-            except sqlite3.Error:
-                pass
-            conn.close()
-        if attempt == 0:
-            _build_sidecar()
-    raise PassageSearchUnavailable(
-        "the passage search table could not be built (SQLite FTS5 may be missing in this Python)")
+    if path.exists():
+        conn = _connect(path)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key='jsonl_stamp'").fetchone()
+            if row is not None and row[0] == stamp:
+                return conn
+        except sqlite3.Error:
+            pass
+        conn.close()
+    mem = _connect(Path(":memory:"))
+    try:
+        _fill(mem, stamp)
+    except sqlite3.OperationalError as exc:
+        mem.close()
+        raise PassageSearchUnavailable(
+            f"the passage search table could not be built (SQLite FTS5 may be missing in this Python): {exc}") from exc
+    return mem
 
 
 # ---------------------------------------------------------------------------

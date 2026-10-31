@@ -664,7 +664,9 @@ timeout and the final-answer audit timed out at 15 s.
 on ranking, but the agent finds the passage to cite through it.
 
 1. **One search path, hash unchanged.** The JSONL stays the index of record and `passage_hash` is untouched (claims bind it). A derived
-   SQLite file holds an FTS5 table and a hash-keyed table. Both `search_passages` and `resolve_passage_hash` read it; the old scorer is gone
+   SQLite file holds an FTS5 table and a hash-keyed table; only `index_passages` writes it, because `search_passages_tool` and
+   `resolve_passage` are annotated read-only (an earlier draft rebuilt the file on read and the read-only guard caught it). If it is missing or
+   stale, a read builds the table in memory for that call. Both `search_passages` and `resolve_passage_hash` read it; the old scorer is gone
    from the product (a copy lives in `bench/literature/run.py` so the comparison can be re-run). The file is derived: deleting it loses nothing.
 2. **No new dependency.** FTS5 is part of the SQLite the interpreter ships (3.45.3 here). If a build lacks it, search raises a named error
    and `[lit:<hash>]` resolution is the same error; nothing falls back to a second scorer.
