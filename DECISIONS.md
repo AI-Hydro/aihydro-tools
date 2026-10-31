@@ -671,3 +671,15 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+## 2026-10-31: citation lookups get a `lookup` class, not `readOnlyHint=true`
+
+Plan mode should be able to verify a citation, and an agent should not invent one. `lookup_citation` and `get_citation_by_doi` ask Crossref, Semantic Scholar
+and DataCite and cache the answer under `~/.aihydro/citations/`. The annotation rules reserve `readOnlyHint` for tools that write nothing and make no network
+call; these do both, so marking them read-only would make the hint untrue and weaken the explorer's READ rule for every host that trusts it.
+
+Decision: a new optional vocabulary value, `effect = "lookup"`, with the hints left honest (`readOnlyHint=false`, `destructiveHint=false`, `openWorldHint=true`).
+It says: the tool only asks a question of a public reference service, changes no study, claim, ledger or profile state, and writes only its own response cache.
+A test pins the class to exactly these two tools, pins their hints, and checks that their code path reaches no session or ledger writer. Hosts opt in by
+reading `aihydro/effect`; one that ignores it behaves as before. `gauge_network_context` (a network read of public services) could take the class when its PR
+lands; it is not added here because the tool is not on main. The extension's use of the class is separate work.

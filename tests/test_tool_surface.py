@@ -414,7 +414,7 @@ def test_representative_tools_of_each_class():
 
 _META_PREFIX = "aihydro/"
 _VOCAB_KEYS = ("effect", "requiresConsent", "audience")
-_VOCAB_VALUES = {"effect": {"ui"}, "audience": {"host"}}
+_VOCAB_VALUES = {"effect": {"ui", "lookup"}, "audience": {"host"}}
 _SESSION_WRITERS = {"save", "_ensure_session", "_resolve_session", "_workspace_write", "HydroSession",
                     "add_note", "record_change", "set_slot", "write_ledger_event"}
 _COMMAND_WRITERS = {"write_map_command", "write_preview_command", "mkdir", "write_text"}
@@ -590,3 +590,18 @@ def test_class_membership_is_stable_for_the_audited_lists():
         "preview_address_comment", "preview_focus_cell", "preview_revise_section",
     }
     assert _rows_with("requiresConsent") == {"log_researcher_observation", "update_researcher_profile"}
+
+
+def test_lookup_class_is_citations_only_and_does_not_weaken_read_only():
+    """`effect = "lookup"` names the pure reference queries; none of them is readOnlyHint, none destructive."""
+    assert _rows_with("effect", "lookup") == {"lookup_citation", "get_citation_by_doi"}
+    for n in _rows_with("effect", "lookup"):
+        r = ROWS[n]
+        assert r["readOnlyHint"] is False and r["openWorldHint"] is True and r["destructiveHint"] is False, n
+    listed = {t.name: t for t in _run(_client_list())}
+    assert listed["lookup_citation"].meta["aihydro/effect"] == "lookup"
+    assert listed["lookup_citation"].annotations.readOnlyHint is False
+    # a lookup may write only its response cache: no session, claim or ledger writer in its code path
+    for n in ("lookup_citation", "get_citation_by_doi"):
+        bad = _static_violations(_registered()[n].fn) - {"mkdir", "write_text", "urlopen"}
+        assert not (bad & (_SESSION_WRITERS | {"save", "record_change", "write_ledger_event", "add_claim"})), (n, bad)
