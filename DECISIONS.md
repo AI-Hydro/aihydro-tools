@@ -669,8 +669,14 @@ report infeasibility). Two small pieces on the tools side; the extension's promp
    series tools declare parents), so "no declared parent" is *unknown*, not "none". Flagged: (a) declared and resolved parents with no data
    acquisition among them; (b) `run_python`, which can read anything and records no input. Unknown (unsealed row, unresolved parent,
    producer that declares no edge) is counted, not flagged. Flagging every undeclared edge would teach the agent to ignore the advisory.
-3. **"Acquired data" is a property of the tool**, from `tool_annotations.toml`: `openWorldHint` and not `destructiveHint`. A failed call
-   is not an acquisition. This is approximate (a citation lookup is open-world too) and says so in `session/lineage.py`.
+3. **"Acquired data" is the explicit `acquires = true` key** in `tool_annotations.toml`, on the true fetchers (data_fetch, data_batch_fetch,
+   data_fetch_background, fetch_streamflow_data, fetch_forcing_data, fetch_camels_us, fetch_soil_attributes_ssurgo, the delineate tools).
+   Open-world is not enough: a citation lookup, `gee.status`, `delineation_doctor`, `run_experiment` and `gauge_network_context` are
+   open-world and acquire no study data. A failed call is not an acquisition. A table that cannot be read is not cached.
+   **Review revision:** declared parents are flagged only when every run the walk ends at is recorded as having read no stored study
+   result (`record.extra.lineage_basis = slot_reads`, written by the recorder when each slot read is declared); otherwise the lineage is unknown.
+   `summarize_series` over `separate_baseflow` is therefore not flagged. Advisories are one per run id, outside `advisory_count`. A truncated
+   `unmet` list is reported as truncated.
 4. **Completion outcome field.** `outcome` in `done | partial | infeasible`, plus short `unmet` strings, passed to `audit_interpretation`
    and sealed in that call's record. Proposal for the extension: `attempt_completion` passes the same two fields through unchanged and
    shows `outcome` in the answer header. Not agreed with the extension engineer in this change; this is the tools-side half and the

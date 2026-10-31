@@ -413,7 +413,7 @@ def test_representative_tools_of_each_class():
 # ── T-A1: annotation vocabulary (effect / requiresConsent / audience), data only ─────────────
 
 _META_PREFIX = "aihydro/"
-_VOCAB_KEYS = ("effect", "requiresConsent", "audience")
+_VOCAB_KEYS = ("effect", "requiresConsent", "audience", "acquires")
 _VOCAB_VALUES = {"effect": {"ui"}, "audience": {"host"}}
 _SESSION_WRITERS = {"save", "_ensure_session", "_resolve_session", "_workspace_write", "HydroSession",
                     "add_note", "record_change", "set_slot", "write_ledger_event"}
@@ -435,6 +435,8 @@ def test_every_tool_has_a_row_and_the_vocabulary_is_closed():
                 assert row[key] in allowed, (name, key, row[key])
         if "requiresConsent" in row:
             assert row["requiresConsent"] is True, name        # absence means false; never write false
+        if "acquires" in row:
+            assert row["acquires"] is True, name
     assert set(_registered()) <= set(ROWS)
 
 

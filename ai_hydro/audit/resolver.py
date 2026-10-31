@@ -283,6 +283,7 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
         lit_resolved_count = 0
         lit_advisories: list[AuditViolation] = []
         lineage_cache: dict[str, Any] = {}
+        lineage_advisories: list[AuditViolation] = []
         lineage_checked = lineage_flagged = lineage_unknown = 0
 
         # ── 1. Numeric-level checks ─────────────────────────────────────────
@@ -438,11 +439,13 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
             # the record shows no path to observed data.
             if advisory or rpath.split(".", 1)[0] == "inputs":
                 continue            # a method parameter or an echoed argument is not a measured value
+            if run_id in lineage_cache:
+                continue                    # one judgement per run id, however many values cite it
             lin_state, lv = lineage_check(run_log, run_id, lineage_cache)
             lineage_checked += 1
             if lv is not None:
                 lineage_flagged += 1
-                violations.append(_violation(
+                lineage_advisories.append(_violation(
                     "no_observed_lineage", context, binding, cn, lv[0], lv[1], severity="advisory",
                     stored=stored, resolved=rpath))
             elif lin_state != "observed":
@@ -522,6 +525,7 @@ def resolve_prose(prose: str, session_id: str) -> AuditReport:
             advisory_count=len(violations) - hard,
             exempt_count=sum(exempt.values()),
             exempt_by_reason=dict(exempt),
+            lineage_advisories=lineage_advisories,
             lineage_checked_count=lineage_checked,
             lineage_flagged_count=lineage_flagged,
             lineage_unknown_count=lineage_unknown,
