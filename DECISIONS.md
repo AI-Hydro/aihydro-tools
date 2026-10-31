@@ -671,3 +671,12 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+## 2026-10-31: the retained series keeps USGS codes and an information class
+
+`_series_payload` kept the primary value column and dropped the frame's `approval_code` and `qualifier_code`, so a hydrograph from a retained series could not
+tell provisional from approved days. They are now carried as string lists aligned with `dates` (`null` for none); the streamflow slot's own combined
+`qualification_codes` is unchanged. `information_class` is a three-valued label (`observation` / `model_simulation` / `unclassified`) from the product id,
+the backend id and the presence of a gauge resolution. Only products whose nature is certain are classed (NWIS; GloFAS, GEOGLOWS and Open-Meteo flood);
+gridded precipitation, reanalysis and remote sensing are `unclassified` until aihydro-data declares a class on the product spec, which is where it belongs.
+It is part of the retained file, so the file digest (and name) differ from an earlier fetch of the same series.

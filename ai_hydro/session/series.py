@@ -45,6 +45,7 @@ _META_KEYS = {
     "spatial_support": ("spatial_support",),
     "aggregation_actual": ("aggregation_actual",),
     "value_column": ("value_column",),
+    "information_class": ("information_class",),
 }
 
 
@@ -71,6 +72,9 @@ class RunSeries:
     file_digest: Optional[str] = None
     recorded_statistics: dict = field(default_factory=dict)   # aggregate-only: the row's key_outputs
     lineage_declared: bool = False
+    #: Per-value USGS codes aligned with `dates` ("A"/"P"... and qualifier tokens), when the file holds them.
+    approval_codes: list = field(default_factory=list)
+    qualifier_codes: list = field(default_factory=list)
 
 
 def retain_series(session_id: str, filename: str, payload: dict) -> Optional[tuple[str, str]]:
@@ -186,6 +190,10 @@ def load_run_series(session_id: str, run_id: str, *, declare: bool = True) -> Ru
     out.dates = body["dates"]
     out.values = body[values_key]
     out.meta = {k: _first(body, keys) for k, keys in _META_KEYS.items()}
+    for attr in ("approval_codes", "qualifier_codes"):
+        v = body.get(attr)
+        if isinstance(v, list) and len(v) == len(out.dates):
+            setattr(out, attr, v)
     out.file_ref = retained["path"]
     out.file_digest = actual
     if declare and edge:
