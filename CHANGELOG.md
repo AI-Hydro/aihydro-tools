@@ -93,6 +93,16 @@ advisory check for numbers with no observed-data lineage. The audit now flags th
   `model_simulation` (GloFAS, GEOGLOWS, Open-Meteo flood) or `unclassified`; a product is classed only where its nature is known. `load_run_series`
   returns the codes, `retained_series` reports `has_approval_codes` / `has_qualifier_codes` / `information_class`, and the series tools echo
   `information_class`. A hydrograph can then draw provisional days differently. Retained files written before this have no codes.
+
+### Changed
+
+- **Reference layers say when and for which view.** The gauge (`nwis-gauges-view`), dam (`nid-dams-view`) and WBD layers carry `metadata.retrieved_at` (UTC) and
+  `metadata.query_bbox` (`west,south,east,north`, EPSG:4326); the gauge layer also carries the USGS request URLs, including the discharge-record queries. Each gauge point has its USGS
+  `drainage_area_raw` (with `drainage_area_unit_note`: the API does not state the unit; USGS documents square miles) and `drainage_area_km2_if_sqmi`, and its
+  daily-discharge record: `daily_discharge_record` is `yes` (with `daily_discharge_begin`/`_end`), `none` (asked, no daily-mean discharge series) or
+  `unknown` (the record query failed), never `none` for a failure. No area is invented where USGS states none.
+- **The map CLI's gauge and dam queries are recorded calls** (`gauges_in_view`, `dams_in_view`): the sealed record has the
+  view, the counts and the retrieval time. **Recording needs `--session-id`** (the extension must pass it); without one the call is unrecorded and leaves no row. The layer does not yet name the run that produced it.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed

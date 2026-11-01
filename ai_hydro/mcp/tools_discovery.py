@@ -191,6 +191,8 @@ def _example_value(name: str, spec: dict):
         return "<session_id>"
     if lname in ("start", "end") or lname.endswith("_date"):
         return "2024-01-01"
+    if lname == "gauge_id" or lname.endswith("_gauge_id"):
+        return "01031500"                  # a real-shaped USGS site number: a placeholder is refused before the tool does anything
     if "lat" in lname:
         return 28.22
     if "lon" in lname:
