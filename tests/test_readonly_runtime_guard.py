@@ -156,7 +156,20 @@ def test_read_only_tools_have_no_side_effects_at_runtime(fixture_home, record_ne
     assert after == before, sorted(str(p) for p in set(after) ^ set(before) | {p for p in after if after[p] != before.get(p)})
 
 
-def test_mutation_every_mislabelled_writer_is_caught(fixture_home, record_network):
+def test_mutation_every_mislabelled_writer_is_caught():
+    """Runs the check in a fresh interpreter, so it cannot depend on which tests ran before it.
+
+    A mislabelled writer is "caught" by the events its first call produces; module-level caches and lazy imports warmed by an
+    earlier test in the same process would otherwise change what the call does. The child runs ``test_mutation_child``."""
+    import subprocess
+
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"{Path(__file__)}::test_mutation_child"],
+                       env={**os.environ, "AIHYDRO_GUARD_CHILD": "1"}, capture_output=True, text=True, timeout=900)
+    assert r.returncode == 0, (r.stdout[-4000:] + r.stderr[-1500:])
+
+
+@pytest.mark.skipif(os.environ.get("AIHYDRO_GUARD_CHILD") != "1", reason="runs inside test_mutation_every_mislabelled_writer_is_caught")
+def test_mutation_child(fixture_home, record_network):
     """Relabel each non-read-only tool as read-only: the static or the runtime guard must flag it.
 
     The runtime pass calls only the tools the static guard misses, with schema example arguments

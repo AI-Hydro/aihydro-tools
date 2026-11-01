@@ -859,6 +859,9 @@ def test_gauge_layer_carries_area_record_view_and_time(world):
     assert a["drainage_area_raw"] == 870.0 and a["drainage_area_km2_if_sqmi"] == pytest.approx(2253.3, abs=0.1)
     assert "square miles" in a["drainage_area_unit_note"]
     assert (a["daily_discharge_record"], a["daily_discharge_begin"], a["daily_discharge_end"]) == ("yes", "1903-07-29", "2026-10-28")
+    assert "time-series-metadata" in md["request_urls"] and "monitoring-locations" in md["request_urls"]   # the record query is listed too
+    from aihydro_data.sources.usgs_waterdata import SQMI_TO_KM2
+    assert a["drainage_area_km2_if_sqmi"] == round(870.0 * SQMI_TO_KM2, 1)          # one constant, from aihydro-data
     assert "drainage_area_raw" not in props["01013600"]                      # no area stated: nothing invented
     assert props["01013600"]["daily_discharge_record"] == "none"             # asked, and it has no daily discharge series
 

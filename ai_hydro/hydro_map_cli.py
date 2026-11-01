@@ -448,7 +448,8 @@ def cmd_gauges_in_view(args: argparse.Namespace) -> dict[str, Any]:
             "message": "Map bounding box (min/max lon/lat) is required.",
         }
     # Called directly (not through the MCP server), so record it explicitly: the layer is a snapshot of a public
-    # service for one view, and the run record is what says which view, when, and what came back.
+    # service for one view, and the run record is what says which view, when, and what came back. Recording needs a
+    # study: pass --session-id (the extension should); without one the call is counted as unrecorded and leaves no row.
     from ai_hydro.session.run_records import recorded_call
 
     out = recorded_call(
@@ -596,7 +597,7 @@ def main(argv: list[str] | None = None) -> int:
     p_gauges.add_argument("--min-lat", type=float, required=True)
     p_gauges.add_argument("--max-lon", type=float, required=True)
     p_gauges.add_argument("--max-lat", type=float, required=True)
-    p_gauges.add_argument("--session-id", default=None)
+    p_gauges.add_argument("--session-id", default=None, help="study to record the query in; without it nothing is recorded")
     p_gauges.add_argument("--limit", type=int, default=250)
 
     p_dams = sub.add_parser("dams-in-view")
@@ -606,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
     p_dams.add_argument("--min-lat", type=float, required=True)
     p_dams.add_argument("--max-lon", type=float, required=True)
     p_dams.add_argument("--max-lat", type=float, required=True)
-    p_dams.add_argument("--session-id", default=None)
+    p_dams.add_argument("--session-id", default=None, help="study to record the query in; without it nothing is recorded")
     p_dams.add_argument("--limit", type=int, default=150)
 
     args = parser.parse_args(argv)

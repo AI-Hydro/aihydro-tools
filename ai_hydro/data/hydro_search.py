@@ -298,7 +298,6 @@ def search_hydrology(
     return hits[:limit]
 
 
-SQMI_TO_KM2 = 2.589988110336
 _DISCHARGE_CHUNK = 40
 
 
@@ -322,11 +321,11 @@ def stamp_query(layers: list[dict[str, Any]], bbox: tuple[float, float, float, f
     return layers
 
 
-def daily_discharge_records(site_ids: list[str]) -> dict[str, dict[str, Any]]:
+def daily_discharge_records(site_ids: list[str], urls_out: list[str] | None = None) -> dict[str, dict[str, Any]]:
     """``{USGS-id: {"begin", "end"}}`` for the sites with a daily-mean discharge series (00060/00003).
 
     One request per 40 sites. Any failure returns what was gathered so far; the caller then leaves the record
-    unstated for the rest, never "none"."""
+    unstated for the rest, never "none". ``urls_out`` (optional) receives the request URLs, so the layer can list them."""
     try:
         from aihydro_data.sources import usgs_waterdata as uw
     except ImportError:
@@ -341,7 +340,11 @@ def daily_discharge_records(site_ids: list[str]) -> dict[str, dict[str, Any]]:
                                         "statistic_id": "00003", "limit": 1000, "f": "json"}, rec)
         except Exception as e:                      # noqa: BLE001 - a missing record must not hide the gauges
             log.warning("gauges_in_view record query failed: %s", e)
+            if urls_out is not None:
+                urls_out.extend(rec.get("request_urls") or [])
             return out
+        if urls_out is not None:
+            urls_out.extend(rec.get("request_urls") or [])
         for f in feats:
             p = f.get("properties") or {}
             sid = p.get("monitoring_location_id")
@@ -385,8 +388,9 @@ def gauges_in_view_layer(
         raise ImportError("aihydro-data is required for gauges-in-view") from e
 
     try:
-        sites = list(uw.get_monitoring_locations(
-            bbox=[min_lon, min_lat, max_lon, max_lat], site_type_code="ST"))
+        located = uw.get_monitoring_locations(bbox=[min_lon, min_lat, max_lon, max_lat], site_type_code="ST")
+        sites = list(located)
+        upstream = getattr(located, "upstream", None) or {}
     except Exception as e:
         log.warning("gauges_in_view USGS query failed: [%s] %s", getattr(e, "code", type(e).__name__), e)
         if problems is not None:
@@ -396,9 +400,11 @@ def gauges_in_view_layer(
     if not sites:
         return []
 
-    upstream = getattr(sites, "upstream", None) or {}
-    sites = list(sites)[: max(1, min(limit, _MAX_GAUGES_IN_VIEW))]
-    records = daily_discharge_records([f"USGS-{_site_no(loc)}" for loc in sites])
+    sites = sites[: max(1, min(limit, _MAX_GAUGES_IN_VIEW))]
+    from aihydro_data.sources.usgs_waterdata import SQMI_TO_KM2       # one conversion constant, owned by aihydro-data
+
+    record_urls: list[str] = []
+    records = daily_discharge_records([f"USGS-{_site_no(loc)}" for loc in sites], record_urls)
     features: list[dict[str, Any]] = []
     for loc in sites:
         site_no = _site_no(loc)
@@ -444,7 +450,7 @@ def gauges_in_view_layer(
                 "feature_count": str(len(features)),
             },
         }
-    ], (min_lon, min_lat, max_lon, max_lat), request_urls=list(upstream.get("request_urls") or []) or None)
+    ], (min_lon, min_lat, max_lon, max_lat), request_urls=[*(upstream.get("request_urls") or []), *record_urls] or None)
 
 
 _MAX_DAMS_IN_VIEW = 150

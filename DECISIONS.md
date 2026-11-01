@@ -682,3 +682,11 @@ The drainage area is kept as the number USGS returns with a note that the unit i
 two private helpers of `aihydro_data.sources.usgs_waterdata` (`_new_record`, `_paged_features`); a public paged-features function there would be the clean
 fix and is a change to a sibling package. Not done: the layer naming its run id (`recorded_call` does not return it); the NID query is not a USGS service, so it has
 no request URLs.
+
+### Review revision (reference layers)
+
+The km2 conversion uses aihydro-data's `SQMI_TO_KM2` (one constant, not a copy). The layer's `request_urls` now include the discharge-record queries, and the
+earlier version never listed the monitoring-locations URL at all (the result object's request record was dropped when the sites were turned into a list); a test
+now asserts both are listed. Recording the gauge and dam queries needs `--session-id`; without it the call is counted as unrecorded and leaves no row, which the
+changelog and the CLI help now say. `test_mutation_every_mislabelled_writer_is_caught` runs its check in a fresh interpreter (`test_mutation_child`), so what it
+catches cannot depend on which tests warmed module-level caches or lazy imports before it.
