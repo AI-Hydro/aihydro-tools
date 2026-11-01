@@ -166,11 +166,43 @@ def _strip_markers(text: str) -> str:
     return re.sub(r"\[(?:run|claim|lit):[^\]]*\]", " ", text)
 
 
+_PAIR_RE = re.compile(r"=\s*[-\d.e+]+")
+_MARKER_AT = re.compile(r"\s*\[(?:run|claim):[^\]]*\]")
+_EXTRA_UNITS = ("day of water year",)      # the one unit the audit grammar has no table entry for
+
+
+def _strip_value_unit_marker_pairs(text: str) -> str:
+    """Remove ``= value [unit] [marker]`` pairs. The unit must be one ``audit.units.unit_after`` recognises
+    (or a listed extra); any other word between a value and its marker is left in, so the test then fails."""
+    from ai_hydro.audit.units import unit_after
+
+    out, pos = [], 0
+    for m in _PAIR_RE.finditer(text):
+        if m.start() < pos:
+            continue
+        end = m.end()
+        tail = text[end:].lstrip(" ")
+        extra = next((e for e in _EXTRA_UNITS if tail.startswith(e)), None)     # longest phrase first: "day" alone is a unit too
+        if extra:
+            end = text.index(extra, end) + len(extra)
+        else:
+            u = unit_after(text, end)
+            if u is not None:
+                end = text.index(u, end) + len(u)
+        mk = _MARKER_AT.match(text, end)
+        if mk:
+            out.append(text[pos:m.start()])
+            out.append(" ")
+            pos = mk.end()
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def assert_no_bare_numbers(text: str, site_ids=("01031500",)):
     assert not bare_numbers(text, tuple(site_ids)), f"uncited numeric literals: {bare_numbers(text, tuple(site_ids))}"
     # independent of the grammar's classifier: no decimal anywhere outside a marker (a run marker
     # follows each value, so remove "value + marker" pairs first)
-    rest = re.sub(r"=\s*[-\d.e+]+(?:\s+[^\s\[]+)?\s*\[(?:run|claim):[^\]]*\]", " ", text)
+    rest = _strip_value_unit_marker_pairs(text)
     rest = _strip_markers(rest)
     rest = re.sub(r"`[^`]*`|\bst_[0-9A-Za-z]+|\bprj_[0-9A-Za-z]+", " ", rest)      # code spans, minted ids
     rest = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", " ", rest)                              # ISO dates

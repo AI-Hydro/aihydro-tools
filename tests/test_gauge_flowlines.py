@@ -6,6 +6,7 @@ import json
 import pytest
 
 from test_series_tools import SID, call, env, mcp_server, run_log  # noqa: F401  (fixtures)
+from ai_hydro.data import gauge_network as gn
 from ai_hydro.data import nldi_flowlines as nf
 from ai_hydro.session.store import HydroSession
 
@@ -19,8 +20,12 @@ UT = [line(1, -68.0, 47.0), line(2, -68.1, 47.1), line(2, -68.1, 47.1), line(3, 
 DM = [line(10, -67.9, 46.9, n=4)]
 
 
+def cl(get, **kw):
+    return gn.Client(get, max_requests=2, deadline_s=kw.pop("deadline_s", 45.0), bytes_cap=nf.MAX_RESPONSE_BYTES, **kw)
+
+
 def fake(calls=None, *, status=200, missing=False, ut=None, dm=None, big=False):
-    def get(url, params, timeout=None):
+    def get(url, params, timeout=None, bytes_cap=None):
         if calls is not None:
             calls.append((url, dict(params or {})))
         if missing:
@@ -33,7 +38,7 @@ def fake(calls=None, *, status=200, missing=False, ut=None, dm=None, big=False):
 
 
 def test_both_directions_summary_lengths_and_geometry():
-    out = nf.gauge_flowlines("01031500", "both", 50, get=fake())
+    out = nf.gauge_flowlines("01031500", "both", 50, client=cl(fake()))
     s, gj = out["summary"], out["geojson"]
     assert s["available"] and s["direction"] == "both" and s["distance_km"] == 50
     assert s["directions"]["upstream"]["n_flowlines"] == 3                       # the repeated comid counted once
@@ -47,27 +52,29 @@ def test_both_directions_summary_lengths_and_geometry():
 
 def test_one_direction_makes_one_request_and_a_distance_is_always_sent():
     calls = []
-    out = nf.gauge_flowlines("01031500", "upstream", 25, get=fake(calls))
+    out = nf.gauge_flowlines("01031500", "upstream", 25, client=cl(fake(calls)))
     assert len(calls) == 1 and "/UT/flowlines" in calls[0][0] and calls[0][1]["distance"] == 25
     calls.clear()
-    nf.gauge_flowlines("01031500", "both", 25, get=fake(calls))
+    nf.gauge_flowlines("01031500", "both", 25, client=cl(fake(calls)))
     assert len(calls) == 2 and all(c[1]["distance"] == 25 for c in calls)
     s = out["summary"]
     assert len(s["request_urls"].splitlines()) == 1 and len(s["response_sha256"].split()) == 1 and isinstance(s["request_urls"], str)
 
 
-def test_the_feature_cap_truncates_and_says_so():
+def test_the_cap_is_per_direction_so_a_big_upstream_cannot_push_the_main_stem_out():
     many = [line(100 + i, -68.0, 47.0 + i * 0.001) for i in range(30)]
-    out = nf.gauge_flowlines("01031500", "upstream", 10, max_features=10, get=fake(ut=many))
-    s = out["summary"]
-    assert s["truncated"] is True and s["n_features_total"] == 30 and s["n_features_returned"] == 10 == len(out["geojson"]["features"])
+    out = nf.gauge_flowlines("01031500", "both", 10, max_features=10, client=cl(fake(ut=many)))
+    s, gj = out["summary"], out["geojson"]
+    assert s["truncated"] is True and s["n_features_total"] == 31 and s["n_features_returned"] == 11 == len(gj["features"])
     assert s["directions"]["upstream"]["n_flowlines"] == 30 and s["directions"]["upstream"]["n_flowlines_returned"] == 10
+    assert s["directions"]["upstream"]["truncated"] is True and s["directions"]["downstream"]["truncated"] is False
+    assert [f["properties"]["direction"] for f in gj["features"]].count("downstream") == 1        # the main stem survived
 
 
 def test_non_line_and_empty_geometry_is_skipped_and_an_empty_answer_has_no_bbox():
     bad = [{"type": "Feature", "properties": {"nhdplus_comid": 5}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
            {"type": "Feature", "properties": {"nhdplus_comid": 6}, "geometry": {"type": "LineString", "coordinates": [[0, 0]]}}]
-    s = nf.gauge_flowlines("01031500", "upstream", 5, get=fake(ut=bad))["summary"]
+    s = nf.gauge_flowlines("01031500", "upstream", 5, client=cl(fake(ut=bad)))["summary"]
     assert s["n_features_returned"] == 0 and s["bbox"] is None
 
 
@@ -77,35 +84,65 @@ def test_us_only_unknown_gauge_and_service_trouble():
             nf.parse_gauge_id(bad)
         assert e.value.code == "US_ONLY"
     with pytest.raises(nf.NotAvailable) as e:
-        nf.gauge_flowlines("01031500", "both", 5, get=fake(missing=True))
+        nf.gauge_flowlines("01031500", "both", 5, client=cl(fake(missing=True)))
     assert e.value.code == "GAUGE_NOT_IN_NLDI"
     for status, code in ((429, "RATE_LIMITED"), (503, "SERVICE_ERROR"), (400, "HTTP_ERROR")):
-        with pytest.raises(nf.LookupFailed) as e:
-            nf.gauge_flowlines("01031500", "both", 5, get=fake(status=status))
+        with pytest.raises(nf.NetworkLookupError) as e:
+            nf.gauge_flowlines("01031500", "both", 5, client=cl(fake(status=status)))
         assert e.value.code == code and e.value.retryable == (status != 400)
-    for kw in ({"direction": "sideways"}, {"distance_km": 0}, {"distance_km": 201}, {"distance_km": True}, {"max_features": 0}):
+    for kw in ({"direction": "sideways"}, {"distance_km": 0}, {"distance_km": 201}, {"distance_km": True}, {"max_features": 0}, {"max_features": 751}):
         with pytest.raises(ValueError):
-            nf.gauge_flowlines("01031500", **{"direction": "both", "distance_km": 5, **kw}, get=fake())
+            nf.gauge_flowlines("01031500", **{"direction": "both", "distance_km": 5, **kw}, client=cl(fake()))
 
 
-def test_the_default_getter_refuses_other_hosts_and_oversize_bodies(monkeypatch):
-    with pytest.raises(nf.LookupFailed) as e:
-        nf._default_get("https://example.com/x", None)
-    assert e.value.code == "HOST_NOT_ALLOWED"
+def test_one_deadline_covers_both_requests_and_each_timeout_is_what_is_left():
+    seen = []
+    inner = fake()
+
+    def get(url, params, timeout=None, bytes_cap=None):
+        seen.append((timeout, bytes_cap))
+        return inner(url, params)
+    nf.gauge_flowlines("01031500", "both", 5, client=cl(get, deadline_s=12.0))
+    assert len(seen) == 2 and all(0 < t <= 12.0 and cap == nf.MAX_RESPONSE_BYTES for t, cap in seen)
+    with pytest.raises(nf.NetworkLookupError) as e:
+        nf.gauge_flowlines("01031500", "both", 5, client=cl(fake(), deadline_s=-1.0))
+    assert e.value.code == "DEADLINE_EXCEEDED"
+    with pytest.raises(nf.NetworkLookupError) as e:
+        nf.gauge_flowlines("01031500", "both", 5, client=gn.Client(fake(), max_requests=1, bytes_cap=100))
+    assert e.value.code == "BUDGET_EXHAUSTED"
+
+
+def test_the_shared_getter_caps_the_body_and_always_closes_the_response(monkeypatch):
     import requests
 
+    closed = []
+
     class Raw:
-        def read(self, n, decode_content=True):
-            return b"x" * n
+        def __init__(self, n):
+            self.n = n
+
+        def read(self, k, decode_content=True):
+            return b"x" * min(k, self.n)
 
     class R:
         status_code = 200
-        raw = Raw()
 
-    monkeypatch.setattr(requests, "get", lambda *a, **k: R())
-    with pytest.raises(nf.LookupFailed) as e:
-        nf._default_get(nf.NLDI_BASE + "/nwissite/USGS-1/navigation/UT/flowlines", None)
-    assert e.value.code == "RESPONSE_TOO_LARGE"
+        def __init__(self, n):
+            self.raw, self.content = Raw(n), b"{}"
+
+        def close(self):
+            closed.append(1)
+
+    url = nf.NLDI_BASE + "/nwissite/USGS-1/navigation/UT/flowlines"
+    monkeypatch.setattr(requests, "get", lambda *a, **k: R(500))
+    with pytest.raises(gn.NetworkLookupError) as e:
+        gn._default_get(url, None, bytes_cap=100)
+    assert e.value.code == "RESPONSE_TOO_LARGE" and closed == [1]
+    monkeypatch.setattr(requests, "get", lambda *a, **k: R(50))
+    assert gn._default_get(url, None, bytes_cap=100) == (200, b"x" * 50) and closed == [1, 1]
+    with pytest.raises(gn.NetworkLookupError) as e:
+        gn._default_get("https://example.com/x", None)
+    assert e.value.code == "HOST_NOT_ALLOWED"
 
 
 # ---------------------------------------------------------------- the tool
@@ -116,7 +153,7 @@ def test_tool_writes_geometry_to_the_workspace_records_it_and_keeps_it_out_of_th
     s = HydroSession.load(SID)
     s.workspace_dir = str(ws)
     s.save()
-    monkeypatch.setattr(nf, "_default_get", fake())
+    monkeypatch.setattr(gn, "_default_get", fake())
     err, body, _ = call(mcp_server, "gauge_flowlines", {"gauge_id": "USGS-01031500", "direction": "both", "distance_km": 20, "session_id": SID})
     assert not err and body["data"]["available"] is True, body
     d = body["data"]
@@ -139,7 +176,7 @@ def test_tool_without_a_study_returns_the_summary_and_says_nothing_was_written(m
     from ai_hydro.mcp import tools_flowlines as t
 
     fn = t.gauge_flowlines.fn if hasattr(t.gauge_flowlines, "fn") else t.gauge_flowlines
-    monkeypatch.setattr(nf, "_default_get", fake())
+    monkeypatch.setattr(gn, "_default_get", fake())
     out = fn("01031500", "upstream", 10)
     assert out["data"]["geometry_file"] is None and "pass session_id" in out["data"]["geometry_note"]
 
@@ -150,9 +187,30 @@ def test_tool_typed_answers(env, mcp_server, monkeypatch):
     fn = t.gauge_flowlines.fn if hasattr(t.gauge_flowlines, "fn") else t.gauge_flowlines
     out = fn("GB-39001")
     assert out["available"] is False and out["code"] == "US_ONLY"
-    monkeypatch.setattr(nf, "_default_get", fake(missing=True))
+    monkeypatch.setattr(gn, "_default_get", fake(missing=True))
     assert fn("01031500", session_id=SID)["code"] == "GAUGE_NOT_IN_NLDI"
-    monkeypatch.setattr(nf, "_default_get", fake(status=503))
+    monkeypatch.setattr(gn, "_default_get", fake(status=503))
     out = fn("01031500", session_id=SID)
     assert out["error"] is True and out["retryable"] is True
     assert fn("01031500", "diagonal")["code"] == "INVALID_PARAMETER"
+
+
+def test_a_flowline_run_goes_to_the_map_through_map_add_layer_from_run(env, mcp_server, monkeypatch, tmp_path):
+    """The workspace file the tool wrote is the run's geometry artifact; the map tool finds it by run id."""
+    ws = tmp_path / "ws2"
+    ws.mkdir()
+    s = HydroSession.load(SID)
+    s.workspace_dir = str(ws)
+    s.save()
+    monkeypatch.setattr(gn, "_default_get", fake())
+    err, body, _ = call(mcp_server, "gauge_flowlines", {"gauge_id": "01031500", "distance_km": 20, "session_id": SID})
+    assert not err and body["data"]["geometry_file"], body
+    err, added, _ = call(mcp_server, "map_add_layer_from_run", {"session_id": SID, "run_id": body["_run_id"]})
+    assert not err and added.get("error") is not True and added.get("code") != "NO_GEOMETRY_ARTIFACT", added
+
+
+def test_the_tool_is_in_the_same_discovery_domain_as_gauge_network_context():
+    from ai_hydro.mcp.tools_discovery import _DOMAIN_PREFIXES
+
+    dom = [d for d, pre in _DOMAIN_PREFIXES.items() if "gauge_network_context" in pre]
+    assert dom and all("gauge_flowlines" in _DOMAIN_PREFIXES[d] for d in dom)

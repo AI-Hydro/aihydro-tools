@@ -24,7 +24,7 @@ def gauge_flowlines(gauge_id: str, direction: str = "both", distance_km: int = 5
 
     US only (NLDI, NHDPlus V2); another country's id or an id NLDI does not know gives available=false.
     direction: "upstream" (all tributaries), "downstream" (main stem) or "both". distance_km 1-200 (default 50).
-    At most two requests and 1500 features. The GeoJSON (COMID, direction, length per line) is written to the
+    At most two requests and 750 features per direction. The GeoJSON (COMID, direction, length per line) is written to the
     study workspace, recorded with this run, and not returned: show it with map_add_layer_from_run(run_id=_run_id).
     Returns counts, lengths, bbox, truncated, geometry_file, request URLs and digests. Lines say nothing about
     regulation or gauge coverage. Changes nothing else in the study; makes network requests.
@@ -37,7 +37,7 @@ def gauge_flowlines(gauge_id: str, direction: str = "both", distance_km: int = 5
             out = nf.gauge_flowlines(site, direction, distance_km)
         except nf.NotAvailable as exc:
             return {"available": False, "code": exc.code, "message": exc.message, "limits": nf.LIMITS}
-        except nf.LookupFailed as exc:
+        except nf.NetworkLookupError as exc:
             return {"error": True, "code": exc.code, "message": exc.message, "retryable": exc.retryable}
         except ValueError as exc:
             return {"error": True, "code": "INVALID_PARAMETER", "message": str(exc)}
