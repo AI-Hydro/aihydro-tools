@@ -118,6 +118,17 @@ def _retained_file_of(record: dict) -> Optional[dict]:
     return None
 
 
+def _attach_codes(out: RunSeries, body: dict, run_id: str) -> None:
+    """Put the file's per-value USGS codes on ``out`` when they line up with its dates; log (not silently drop) when they do not."""
+    for attr in ("approval_codes", "qualifier_codes"):
+        v = body.get(attr)
+        if isinstance(v, list) and len(v) == len(out.dates):
+            setattr(out, attr, v)
+        elif v is not None:
+            log.warning("retained series of run %s: %s dropped (%s entries for %s dates)", run_id, attr,
+                        len(v) if isinstance(v, list) else type(v).__name__, len(out.dates))
+
+
 def load_run_series(session_id: str, run_id: str, *, declare: bool = True) -> RunSeries:
     """Resolve ``run_id`` to its retained series (or its recorded statistics).
 
@@ -190,10 +201,7 @@ def load_run_series(session_id: str, run_id: str, *, declare: bool = True) -> Ru
     out.dates = body["dates"]
     out.values = body[values_key]
     out.meta = {k: _first(body, keys) for k, keys in _META_KEYS.items()}
-    for attr in ("approval_codes", "qualifier_codes"):
-        v = body.get(attr)
-        if isinstance(v, list) and len(v) == len(out.dates):
-            setattr(out, attr, v)
+    _attach_codes(out, body, run_id)
     out.file_ref = retained["path"]
     out.file_digest = actual
     if declare and edge:

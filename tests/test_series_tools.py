@@ -719,3 +719,19 @@ def test_a_series_without_codes_has_none(serve):
     body = serve(days("2020-01-01", 4), [1.0, 2.0, 3.0, 4.0])
     ret = body["data"]["retained_series"]
     assert ret["has_approval_codes"] is False and ret["has_qualifier_codes"] is False
+
+
+def test_codes_that_do_not_line_up_with_the_dates_are_dropped_with_a_warning(caplog):
+    import logging
+    from ai_hydro.session.series import RunSeries, _attach_codes
+
+    out = RunSeries(run_id="r1", session_id=SID, tool="data_fetch", values_available=True, dates=["2020-01-01", "2020-01-02"])
+    with caplog.at_level(logging.WARNING, logger="ai_hydro.session.series"):
+        _attach_codes(out, {"approval_codes": ["A"], "qualifier_codes": [None, "ice"]}, "r1")
+    assert out.approval_codes == [] and out.qualifier_codes == [None, "ice"]
+    msgs = [r.getMessage() for r in caplog.records]
+    assert len(msgs) == 1 and "approval_codes dropped (1 entries for 2 dates)" in msgs[0] and "r1" in msgs[0]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="ai_hydro.session.series"):
+        _attach_codes(out, {}, "r1")                          # a file without codes is not a mismatch
+    assert not caplog.records
