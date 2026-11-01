@@ -206,7 +206,10 @@ def test_a_flowline_run_goes_to_the_map_through_map_add_layer_from_run(env, mcp_
     err, body, _ = call(mcp_server, "gauge_flowlines", {"gauge_id": "01031500", "distance_km": 20, "session_id": SID})
     assert not err and body["data"]["geometry_file"], body
     err, added, _ = call(mcp_server, "map_add_layer_from_run", {"session_id": SID, "run_id": body["_run_id"]})
-    assert not err and added.get("error") is not True and added.get("code") != "NO_GEOMETRY_ARTIFACT", added
+    assert not err and added.get("error") is not True, added
+    assert added["ok"] is True and added["hash_checked"] is True                 # queued, and the file matched the digest the run recorded
+    assert added["run_id"] == body["_run_id"] and added["provenance"]["_run_id"] == body["_run_id"]
+    assert body["data"]["geometry_file"] in str(added["artifact_id"])           # the artifact the map tool used is the file the tool wrote
 
 
 def test_the_tool_is_in_the_same_discovery_domain_as_gauge_network_context():
