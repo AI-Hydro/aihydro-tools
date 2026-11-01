@@ -151,3 +151,22 @@ def test_default_scope_is_the_current_workspace_and_paths_are_never_absolute(env
 def test_workspace_scope_without_a_workspace_says_how_to_widen(env, mcp_server):
     err, body, _ = call(mcp_server, "find_studies_for_gauge", {"gauge_id": "01013500", "session_id": SID})
     assert body["code"] == "NO_WORKSPACE_SCOPE" and "scope='all'" in body["recovery"]
+
+
+def test_a_read_that_hits_a_moving_checkpoint_is_retried_once(env, monkeypatch):
+    import sqlite3
+
+    study("s-fish", "01013500", [("q.1", {"tool_name": "data_fetch", "key_outputs": {"gauge_id": "01013500"}})])
+    real, calls = sqlite3.connect, []
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.DatabaseError("database disk image is malformed")
+        return real(*a, **k)
+    monkeypatch.setattr(sqlite3, "connect", flaky)
+    assert list(si._read_run_rows("s-fish")) == ["q.1"] and len(calls) == 2
+    calls.clear()
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: (_ for _ in ()).throw(sqlite3.DatabaseError("still bad")))
+    (s,) = si.runs_holding_gauge("01013500", include_hidden=True)["studies"]
+    assert s["run_log_readable"] is False                                  # twice is enough: unknown, not empty

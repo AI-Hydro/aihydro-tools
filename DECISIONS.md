@@ -693,3 +693,6 @@ SQLite read per study per call; there is no persistent index file, so it cannot 
   (`to_ref` would give a `session-data:` prefix for a directory, which is not a reference to anything; the name is what a reader needs).
 - **Cost.** An SQL `LIKE` on the id's digits (leading zeros dropped, so an integer-typed id still matches) means a row is parsed only if it could hold the id; at
   most 50 studies are listed, bound ones first, with `studies_truncated`. A bare integer is read as a station number only from 1,000,000 up.
+
+A concurrent checkpoint by a writer can move pages under an `immutable=1` read, so a study can read as unreadable (`run_log_readable: false`) for that call even though
+its log is fine. The reader retries once on `sqlite3.DatabaseError` before giving up, and an unreadable study is reported as unknown, never as empty.

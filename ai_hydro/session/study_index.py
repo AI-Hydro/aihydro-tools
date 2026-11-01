@@ -410,18 +410,24 @@ def _read_run_rows(study_id: str, needle: str | None = None) -> dict[str, dict[s
     if not path.exists():
         return {}
     sql = "SELECT run_id, entry_json FROM runs" + (" WHERE entry_json LIKE ?" if needle else "") + " ORDER BY timestamp"
-    conn = sqlite3.connect(path.resolve().as_uri() + "?immutable=1", uri=True, timeout=5)
+    def once() -> dict[str, dict[str, Any]]:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?immutable=1", uri=True, timeout=5)
+        try:
+            out: dict[str, dict[str, Any]] = {}
+            for run_id, entry_json in conn.execute(sql, (f"%{needle}%",) if needle else ()):
+                try:
+                    row = json.loads(entry_json) if entry_json else {}
+                except ValueError:
+                    row = {}
+                out[run_id] = row if isinstance(row, dict) else {}
+            return out
+        finally:
+            conn.close()
+
     try:
-        out: dict[str, dict[str, Any]] = {}
-        for run_id, entry_json in conn.execute(sql, (f"%{needle}%",) if needle else ()):
-            try:
-                row = json.loads(entry_json) if entry_json else {}
-            except ValueError:
-                row = {}
-            out[run_id] = row if isinstance(row, dict) else {}
-        return out
-    finally:
-        conn.close()
+        return once()
+    except sqlite3.DatabaseError:        # a writer's checkpoint moved pages under an immutable read: look once more
+        return once()
 
 
 MAX_STUDIES = 50
