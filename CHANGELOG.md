@@ -79,6 +79,12 @@ advisory check for numbers with no observed-data lineage. The audit now flags th
   service fault stops it, the result carries what was gathered with `incomplete: true` and the reasons. `API_USGS_PAT` is sent as `X-Api-Key` to
   `api.waterdata.usgs.gov` only. With a study, the answer is sealed: neighbours are a dict keyed by USGS id and the request URLs and response
   digests are strings, so a marker can cite `key_outputs.upstream_gauges.USGS-0xxxxxxx.drainage_area_sqmi`.
+
+### Added
+
+- **`effect = "lookup"` annotation class** (served as `_meta["aihydro/effect"]`) for `lookup_citation` and `get_citation_by_doi`: a pure question to a public
+  reference service that changes no study state and writes only its own response cache. Their hints are unchanged (`readOnlyHint=false`, `openWorldHint=true`),
+  so a host's read-only rule is not weakened; a host that wants Plan mode to verify a citation reads the class instead.
 ### Fixed
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed

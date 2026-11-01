@@ -847,3 +847,15 @@ time series, flood inundation, all `lsh_*`, `merit_ensure_*`, `run_experiment`).
 lists every open-world non-code tool and fails for a new one until it is marked or listed with a reason (citation lookups, service checks, previews,
 `gauge_network_context`, and signatures, whose own fetch is internal and conditional so lineage follows its declared parent). `helpers._lean_key_outputs`
 now delegates to the store's `_run_key_outputs` (one 40-key rule); the unused `_record_run_log_entry` is removed with its test case.
+
+## 2026-10-31: citation lookups get a `lookup` class, not `readOnlyHint=true`
+
+Plan mode should be able to verify a citation, and an agent should not invent one. `lookup_citation` and `get_citation_by_doi` ask Crossref, Semantic Scholar
+and DataCite and cache the answer under `~/.aihydro/citations/`. The annotation rules reserve `readOnlyHint` for tools that write nothing and make no network
+call; these do both, so marking them read-only would make the hint untrue and weaken the explorer's READ rule for every host that trusts it.
+
+Decision: a new optional vocabulary value, `effect = "lookup"`, with the hints left honest (`readOnlyHint=false`, `destructiveHint=false`, `openWorldHint=true`).
+It says: the tool only asks a question of a public reference service, changes no study, claim, ledger or profile state, and writes only its own response cache.
+A test pins the class to exactly these two tools, pins their hints, and checks that their code path reaches no session or ledger writer. Hosts opt in by
+reading `aihydro/effect`; one that ignores it behaves as before. `gauge_network_context` (a network read of public services) could take the class when its PR
+lands; it is not added here because the tool is not on main. The extension's use of the class is separate work.
