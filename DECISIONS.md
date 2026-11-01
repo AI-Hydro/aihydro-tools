@@ -859,3 +859,12 @@ It says: the tool only asks a question of a public reference service, changes no
 A test pins the class to exactly these two tools, pins their hints, and checks that their code path reaches no session or ledger writer. Hosts opt in by
 reading `aihydro/effect`; one that ignores it behaves as before. `gauge_network_context` (a network read of public services) could take the class when its PR
 lands; it is not added here because the tool is not on main. The extension's use of the class is separate work.
+
+## 2026-10-31: the retained series keeps USGS codes and an information class
+
+`_series_payload` kept the primary value column and dropped the frame's `approval_code` and `qualifier_code`, so a hydrograph from a retained series could not
+tell provisional from approved days. They are now carried as string lists aligned with `dates` (`null` for none); the streamflow slot's own combined
+`qualification_codes` is unchanged. `information_class` is a three-valued label (`observation` / `model_simulation` / `unclassified`) from the product id,
+the backend id and the presence of a gauge resolution. Only products whose nature is certain are classed (NWIS; GloFAS, GEOGLOWS and Open-Meteo flood);
+gridded precipitation, reanalysis and remote sensing are `unclassified` until aihydro-data declares a class on the product spec, which is where it belongs.
+It is part of the retained file, so the file digest (and name) differ from an earlier fetch of the same series.
