@@ -186,6 +186,9 @@ def test_the_usgs_key_goes_to_the_usgs_data_host_only(monkeypatch):
         status_code = 200
         content = b"{}"
 
+        def close(self):
+            pass
+
     monkeypatch.setattr(requests, "get", lambda url, **kw: seen.append((url, kw["headers"])) or R())
     monkeypatch.setenv("API_USGS_PAT", "k")
     gn._default_get("https://api.waterdata.usgs.gov/ogcapi/v1/x", None)

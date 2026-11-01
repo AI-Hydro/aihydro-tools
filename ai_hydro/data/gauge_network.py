@@ -87,7 +87,10 @@ def parse_gauge_id(gauge_id: str) -> str:
     return m.group(1)
 
 
-def _default_get(url: str, params: Optional[Mapping[str, Any]], timeout: float = 30.0) -> Tuple[int, bytes]:
+def _default_get(url: str, params: Optional[Mapping[str, Any]], timeout: float = 30.0,
+                 bytes_cap: Optional[int] = None) -> Tuple[int, bytes]:
+    """One GET. ``bytes_cap`` bounds the body (read streamed; more than the cap is ``RESPONSE_TOO_LARGE``); the response is
+    always closed."""
     import requests
 
     host = urlparse(url).hostname
@@ -99,13 +102,23 @@ def _default_get(url: str, params: Optional[Mapping[str, Any]], timeout: float =
         headers["X-Api-Key"] = key
     last: Optional[Exception] = None
     for _attempt in (0, 1):                                    # one retry for a connection fault or a 5xx
+        r = None
         try:
-            r = requests.get(url, params=params, headers=headers, timeout=timeout, allow_redirects=False)
+            r = requests.get(url, params=params, headers=headers, timeout=timeout, allow_redirects=False,
+                             stream=bytes_cap is not None)
             if r.status_code >= 500 and _attempt == 0:
                 continue
-            return r.status_code, r.content
+            if bytes_cap is None:
+                return r.status_code, r.content
+            body = r.raw.read(bytes_cap + 1, decode_content=True)
+            if len(body) > bytes_cap:
+                raise NetworkLookupError("RESPONSE_TOO_LARGE", f"{host} answered with more than {bytes_cap} bytes; ask for less")
+            return r.status_code, body
         except requests.exceptions.RequestException as exc:
             last = exc
+        finally:
+            if r is not None:
+                r.close()
     raise NetworkLookupError("SERVICE_UNREACHABLE", f"cannot reach {host}: {type(last).__name__}", retryable=True)
 
 
@@ -118,9 +131,9 @@ class Client:
     """
 
     def __init__(self, get: Optional[Callable[..., Tuple[int, bytes]]] = None, *,
-                 max_requests: int = MAX_REQUESTS, deadline_s: float = DEADLINE_S):
+                 max_requests: int = MAX_REQUESTS, deadline_s: float = DEADLINE_S, bytes_cap: Optional[int] = None):
         self._get = get or _default_get
-        self.max_requests, self.deadline_s = max_requests, deadline_s
+        self.max_requests, self.deadline_s, self.bytes_cap = max_requests, deadline_s, bytes_cap
         self._t0 = time.monotonic()
         self.request_urls: List[str] = []
         self.response_sha256: List[str] = []
@@ -133,7 +146,8 @@ class Client:
         if remaining <= 0:
             raise NetworkLookupError("DEADLINE_EXCEEDED", f"{self.deadline_s:.0f} s deadline passed", retryable=True)
         # a request may not outlive the deadline: its own timeout is what is left of it, at most 30 s
-        status, body = self._get(url, params, timeout=min(30.0, remaining))
+        extra = {} if self.bytes_cap is None else {"bytes_cap": self.bytes_cap}      # only a getter that is asked for a cap sees the keyword
+        status, body = self._get(url, params, timeout=min(30.0, remaining), **extra)
         self.request_urls.append(url + ("?" + urlencode(params) if params else ""))
         self.response_sha256.append(hashlib.sha256(body).hexdigest())
         if status == 404 and not_found_ok:

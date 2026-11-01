@@ -789,6 +789,17 @@ digest ignored it and older results never had one.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
 
+## 2026-10-31: `gauge_flowlines` writes the geometry to the workspace instead of returning it
+
+The map trace needs the river lines above and below a gauge. A 100 km upstream query for one Maine gauge returned 432 lines and 374 KB of GeoJSON; putting that in a
+tool result would cost the model's context for something only the map reads. The tool therefore writes one GeoJSON file to the study workspace (name carries gauge,
+direction, radius and the first 8 hex of its digest, so a different answer never overwrites an earlier file), the study recorder ties the file to the run, and
+`map_add_layer_from_run` shows it. Without a study the summary is returned and nothing is written, and says so.
+Bounds: two requests, a 40 s timeout each, an 8 MB response cap, 1500 features, 200 km. The 1500 cut keeps the first features in NLDI's order, which is not
+by distance; `truncated` and per-direction totals make that visible, and a smaller `distance_km` is the remedy. Length is computed along the coordinates (haversine),
+not read from the service. It carries no regulation or gauge-coverage meaning. It duplicates a small amount of HTTP handling with `gauge_network_context` (#32); fold
+both into one NLDI client once both are on main. Not done: simplification of coordinates for the map; trimming the first reach at the gauge's measure.
+
 ## 2026-10-31: the audit knows the unit of a signatures value even when the row does not (follow-up to the Q_mean fix)
 
 The digest now prints mm/day, but a row written by an older watershed carries no `units` map, so `declared_unit` returned None and the audit let
@@ -912,3 +923,13 @@ SQLite read per study per call; there is no persistent index file, so it cannot 
 
 A concurrent checkpoint by a writer can move pages under an `immutable=1` read, so a study can read as unreadable (`run_log_readable: false`) for that call even though
 its log is fine. The reader retries once on `sqlite3.DatabaseError` before giving up, and an unreadable study is reported as unknown, never as empty.
+
+### Review revision (gauge_flowlines)
+
+- `gauge_flowlines` does **not** acquire observations: it is listed in `NOT_ACQUIRING` ("reference geometry for the map; not an input to analyses"), so a chain
+  that starts at a flowline run is never counted as resting on observed data.
+- It now shares `gauge_network`'s parser, errors and `Client` instead of carrying its own: one wall-clock deadline for the whole call (45 s, each request's timeout
+  bounded by what is left), a request budget of 2, a body cap passed to the shared getter (which streams the body, refuses more than the cap with
+  `RESPONSE_TOO_LARGE`, and closes the response in a `finally`). The feature cap is per direction (750 each), so a large tributary network cannot push the
+  downstream main stem out of the answer. It sits in the same discovery domain as `gauge_network_context`. A test sends a flowline run through
+  `map_add_layer_from_run`.

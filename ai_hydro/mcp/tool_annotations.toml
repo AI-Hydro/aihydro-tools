@@ -1506,6 +1506,14 @@ idempotentHint = true
 openWorldHint = false
 evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
+["gauge_flowlines"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = true
+evidence = "network fetch (NLDI flowlines) and one GeoJSON file written to the study workspace; writes no session slot, claim or ledger entry [calls: nldi_flowlines, write_workspace_file]"
+
 ["find_studies_for_gauge"]
 source = "builtin"
 readOnlyHint = true
