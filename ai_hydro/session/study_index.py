@@ -353,6 +353,11 @@ _USGS_ID = re.compile(r"^(?:USGS-)?([0-9]{8,15})$")
 
 
 def _norm_gauge(value: Any) -> str | None:
+    """A USGS site number from a string (``USGS-01013500``, ``01013500``) or from an integer that lost its leading zeros."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and 10 ** 6 <= value < 10 ** 15:       # a bare small integer is a count, not a station number
+        value = str(value).zfill(8)
     m = _USGS_ID.match(str(value or "").strip())
     return m.group(1) if m else None
 
@@ -382,9 +387,20 @@ def gauges_of_row(row: dict[str, Any]) -> dict[str, str]:
     return found
 
 
-def _read_run_rows(study_id: str) -> dict[str, dict[str, Any]]:
-    """``{run_id: row}`` from the study's run-log database, opened read-only (no create, no pragma, no directory made).
+def wal_pending(study_id: str) -> bool:
+    """True when the study's run log has a non-empty ``-wal`` file: rows written since the last checkpoint live there."""
+    from ai_hydro.session import store as _store
 
+    wal = Path(str(_store._run_log_db_path(study_id)) + "-wal")
+    return wal.exists() and wal.stat().st_size > 0
+
+
+def _read_run_rows(study_id: str, needle: str | None = None) -> dict[str, dict[str, Any]]:
+    """``{run_id: row}`` from the study's run-log database, opened ``immutable=1`` so that **nothing is created** beside it.
+
+    SQLite makes ``-shm``/``-wal`` files when it opens a WAL database, even ``mode=ro``; ``immutable=1`` does not (no locking,
+    no sidecars). The price: rows still in an uncheckpointed ``-wal`` file are not seen (``wal_pending`` says when that can be so;
+    copying the files aside would be a write). ``needle`` (digits of an id) prefilters in SQL with ``entry_json LIKE``.
     A study with no database has no runs (``{}``). Raises ``sqlite3.Error`` / ``OSError`` if one exists and cannot be read."""
     import sqlite3
 
@@ -393,10 +409,11 @@ def _read_run_rows(study_id: str) -> dict[str, dict[str, Any]]:
     path = _store._run_log_db_path(study_id)
     if not path.exists():
         return {}
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    sql = "SELECT run_id, entry_json FROM runs" + (" WHERE entry_json LIKE ?" if needle else "") + " ORDER BY timestamp"
+    conn = sqlite3.connect(path.resolve().as_uri() + "?immutable=1", uri=True, timeout=5)
     try:
         out: dict[str, dict[str, Any]] = {}
-        for run_id, entry_json in conn.execute("SELECT run_id, entry_json FROM runs ORDER BY timestamp"):
+        for run_id, entry_json in conn.execute(sql, (f"%{needle}%",) if needle else ()):
             try:
                 row = json.loads(entry_json) if entry_json else {}
             except ValueError:
@@ -407,22 +424,39 @@ def _read_run_rows(study_id: str) -> dict[str, dict[str, Any]]:
         conn.close()
 
 
-def runs_holding_gauge(gauge_id: str, *, include_hidden: bool = False, max_runs_per_study: int = 50) -> dict[str, Any]:
+MAX_STUDIES = 50
+
+
+def _safe_wal(study_id: str) -> bool:
+    try:
+        return wal_pending(study_id)
+    except OSError:
+        return False
+
+
+def runs_holding_gauge(gauge_id: str, *, include_hidden: bool = False, max_runs_per_study: int = 50,
+                       workspace: str | None = None, max_studies: int = MAX_STUDIES) -> dict[str, Any]:
     """Studies that are bound to ``gauge_id`` or hold runs that name it, with those runs.
 
-    ``bound`` is the study's own gauge (its ``site_id``); ``runs`` are the rows that name the gauge, each with where. A study
-    whose run log cannot be read is listed with ``run_log_readable: false``: unknown, not empty.
+    ``workspace`` keeps only studies of that workspace directory (``None``: every study on the machine). ``bound`` is the study's
+    own gauge (its ``site_id``); ``runs`` are the rows that name the gauge, each with where. A study whose run log cannot be read
+    is listed with ``run_log_readable: false``: unknown, not empty; one with an uncheckpointed ``-wal`` file says
+    ``run_log_recent_rows_may_be_missing``. At most ``max_studies`` studies are listed (bound ones first);
+    ``studies_truncated`` says when more matched. Workspace folders are named by their last path component, never absolutely.
     """
     g = _norm_gauge(gauge_id)
     if g is None:
         return {"gauge": None, "error": "not a USGS site number", "studies": []}
+    needle = g.lstrip("0") or g          # the digits as they would appear even if a writer stored the id as an integer
     studies: list[dict[str, Any]] = []
-    for summary in study_summaries(include_hidden=include_hidden):
+    scanned = 0
+    for summary in study_summaries(include_hidden=include_hidden, workspace=workspace):
         sid = summary["study_id"]
+        scanned += 1
         bound = _norm_gauge(summary.get("site_id")) == g
         readable = True
         try:
-            rows = _read_run_rows(sid)
+            rows = _read_run_rows(sid, needle)
         except Exception:
             rows, readable = {}, False
         hits = []
@@ -437,12 +471,17 @@ def runs_holding_gauge(gauge_id: str, *, include_hidden: bool = False, max_runs_
         if not (bound or hits):
             continue
         hits.sort(key=lambda h: str(h["timestamp"] or ""), reverse=True)
+        ws = summary.get("workspace_dir")
         studies.append({
             "study_id": sid, "label": summary["label"], "bound_to_gauge": bound,
-            "workspace_dir": summary.get("workspace_dir"), "last_run": summary.get("last_run"),
-            "run_log_readable": readable, "n_runs_naming_gauge": len(hits),
+            "workspace": Path(ws).name if ws else None, "last_run": summary.get("last_run"),
+            "run_log_readable": readable, "run_log_recent_rows_may_be_missing": _safe_wal(sid),
+            "n_runs_naming_gauge": len(hits),
             "runs": hits[:max_runs_per_study], "runs_truncated": len(hits) > max_runs_per_study,
         })
     studies.sort(key=lambda s: (not s["bound_to_gauge"], -s["n_runs_naming_gauge"], str(s["study_id"])))
-    return {"gauge": g, "n_studies": len(studies), "studies": studies,
+    truncated = len(studies) > max_studies
+    return {"gauge": g, "n_studies": len(studies), "n_studies_scanned": scanned, "studies_truncated": truncated,
+            "studies": studies[:max_studies],
+            "scope": "workspace" if workspace else "all",
             "basis": "run rows that name the gauge in their outputs, inputs or resolved place; a study's own gauge is its site_id"}

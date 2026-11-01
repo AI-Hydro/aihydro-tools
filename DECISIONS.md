@@ -680,3 +680,16 @@ It never infers a gauge from a study's name or a run id. A study's own gauge (`s
 with it. The run-log reader opens each database `mode=ro` and does not go through `_run_log_connect` (which can create the sessions directory). SQLite may still
 create `-wal`/`-shm` sidecars when it opens a WAL store, as in the existing read-only history reader; the test pins that nothing else changes. Cost: one small
 SQLite read per study per call; there is no persistent index file, so it cannot go stale.
+
+### Review revision (find_studies_for_gauge)
+
+- **"Writes nothing" is now true.** A `mode=ro` open of a WAL database makes `-shm`/`-wal` files beside every study, which the earlier text called acceptable and
+  the read-only guard cannot catch (it excludes `.runlog.sqlite3`). The reader opens the file `immutable=1`, which creates no sidecar. The price is that rows still in an
+  uncheckpointed `-wal` file are not seen, so a study with a non-empty `-wal` is reported `run_log_recent_rows_may_be_missing` rather than silently short. (A first
+  version copied the files aside to read them; the read-only guard flagged the copy, correctly: it is a write.) Two tests list the directory before and after, one
+  with a live writer.
+- **Scope.** The default is the current study's workspace folder (`scope="workspace"`); `scope="all"` searches every study on the machine, which can include other
+  projects. With no current workspace the default says so and names `scope="all"`. Workspaces are reported by folder name only, never as absolute paths
+  (`to_ref` would give a `session-data:` prefix for a directory, which is not a reference to anything; the name is what a reader needs).
+- **Cost.** An SQL `LIKE` on the id's digits (leading zeros dropped, so an integer-typed id still matches) means a row is parsed only if it could hold the id; at
+  most 50 studies are listed, bound ones first, with `studies_truncated`. A bare integer is read as a station number only from 1,000,000 up.

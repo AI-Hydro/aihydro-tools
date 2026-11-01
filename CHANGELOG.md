@@ -10,10 +10,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`find_studies_for_gauge`** (read-only, tier 3): the studies on this machine that are bound to a USGS gauge or hold runs that name it, with those runs (id, tool,
-  slot, time, and where the gauge appears: key outputs, inputs or resolved place; never guessed from a name). A study whose run log cannot be read is listed as
-  unreadable, not empty. Reads each run log directly in read-only mode. The same index can answer the map's "this gauge has N runs in M studies".
-### Fixed
+- **`find_studies_for_gauge`** (read-only, tier 3): the studies bound to a USGS gauge or holding runs that name it, with those runs (id, tool, slot, time, and where the
+  gauge appears: key outputs, inputs or resolved place; never guessed from a name). Default scope is the current study's workspace folder; `scope="all"` searches every
+  study on the machine. Up to 50 studies (`studies_truncated`), workspaces named by folder name only. Run logs are opened `immutable=1`, so no `-shm`/`-wal` file is
+  created; a study with an uncheckpointed `-wal` is reported `run_log_recent_rows_may_be_missing`, and one whose log cannot be read `run_log_readable: false`. An
+  SQL `LIKE` prefilter parses only rows that could hold the id (an integer-typed id still matches).
 
 - **`q_mean` and its siblings are shown with their unit, mm/day.** The study digest (`aihydro://project/<prj>/context`) printed
   `q_mean = 2.01686 [run:...]` with no unit, and an agent wrote "Q_mean 2.017 m3/s". The signature flows (`q_mean`, `q_std`, `q5`,
