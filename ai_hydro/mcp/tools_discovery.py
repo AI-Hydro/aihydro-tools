@@ -27,7 +27,7 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "session":     ("start_session", "get_session", "clear_session", "archive_session",
                     "merge_session", "add_note", "export_session",
                     "aihydro_rebind_chat", "aihydro_chat_status"),
-    "project":     ("start_project", "get_project", "add_session_to_project"),
+    "project":     ("start_project", "get_project", "add_session_to_project", "find_studies_for_gauge"),
     "watershed":   ("delineate_watershed", "delineation_", "merit_", "extract_geomorphic",
                     "compute_twi", "create_cn_grid", "compute_soil_loss_rusle",
                     "fetch_soil_attributes_ssurgo",

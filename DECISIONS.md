@@ -887,3 +887,28 @@ earlier version never listed the monitoring-locations URL at all (the result obj
 now asserts both are listed. Recording the gauge and dam queries needs `--session-id`; without it the call is counted as unrecorded and leaves no row, which the
 changelog and the CLI help now say. `test_mutation_every_mislabelled_writer_is_caught` runs its check in a fresh interpreter (`test_mutation_child`), so what it
 catches cannot depend on which tests warmed module-level caches or lazy imports before it.
+
+## 2026-10-31: a study index of the runs that hold a gauge
+
+The map and the agent both need "have I already worked on this gauge, and where". A gauge is named in several places (a fetch's input, a signatures run's
+`basin_gauge_id`, a delineation's `gauge_id`, the gauge a fetch resolved), so the index reads what each run-log row recorded and says where it found the gauge.
+It never infers a gauge from a study's name or a run id. A study's own gauge (`site_id`) makes it *bound*; runs in other studies that name the gauge are listed
+with it. The run-log reader opens each database `mode=ro` and does not go through `_run_log_connect` (which can create the sessions directory). SQLite may still
+create `-wal`/`-shm` sidecars when it opens a WAL store, as in the existing read-only history reader; the test pins that nothing else changes. Cost: one small
+SQLite read per study per call; there is no persistent index file, so it cannot go stale.
+
+### Review revision (find_studies_for_gauge)
+
+- **"Writes nothing" is now true.** A `mode=ro` open of a WAL database makes `-shm`/`-wal` files beside every study, which the earlier text called acceptable and
+  the read-only guard cannot catch (it excludes `.runlog.sqlite3`). The reader opens the file `immutable=1`, which creates no sidecar. The price is that rows still in an
+  uncheckpointed `-wal` file are not seen, so a study with a non-empty `-wal` is reported `run_log_recent_rows_may_be_missing` rather than silently short. (A first
+  version copied the files aside to read them; the read-only guard flagged the copy, correctly: it is a write.) Two tests list the directory before and after, one
+  with a live writer.
+- **Scope.** The default is the current study's workspace folder (`scope="workspace"`); `scope="all"` searches every study on the machine, which can include other
+  projects. With no current workspace the default says so and names `scope="all"`. Workspaces are reported by folder name only, never as absolute paths
+  (`to_ref` would give a `session-data:` prefix for a directory, which is not a reference to anything; the name is what a reader needs).
+- **Cost.** An SQL `LIKE` on the id's digits (leading zeros dropped, so an integer-typed id still matches) means a row is parsed only if it could hold the id; at
+  most 50 studies are listed, bound ones first, with `studies_truncated`. A bare integer is read as a station number only from 1,000,000 up.
+
+A concurrent checkpoint by a writer can move pages under an `immutable=1` read, so a study can read as unreadable (`run_log_readable: false`) for that call even though
+its log is fine. The reader retries once on `sqlite3.DatabaseError` before giving up, and an unreadable study is reported as unknown, never as empty.

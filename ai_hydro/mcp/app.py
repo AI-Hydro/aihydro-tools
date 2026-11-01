@@ -141,6 +141,7 @@ TOOL_TIERS: dict[str, int] = {
     # Deterministic series/geometry tools (identical in every evaluation arm).
     "summarize_series":                 1,
     "trace_lineage":                    3,
+    "find_studies_for_gauge":           3,
     "detect_threshold_runs":            1,
     "compare_series":                   1,
     "bootstrap_statistic":              1,
