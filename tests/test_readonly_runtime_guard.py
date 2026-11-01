@@ -188,3 +188,12 @@ def test_mutation_child(fixture_home, record_network):
     missed = sorted(set(rest) - runtime_caught)
     print(f"mislabels={len(mislabels)} static={len(static_caught)} runtime={len(runtime_caught)} missed={missed}")
     assert not missed, f"mislabelled writers neither guard catches: {missed}"
+
+
+def test_example_arguments_for_a_gauge_id_are_valid_so_the_guard_reaches_the_network_code():
+    """A placeholder like "<gauge_id>" is refused (US_ONLY) before any request, so the runtime guard saw nothing."""
+    from ai_hydro.mcp.tools_discovery import _example_value
+
+    assert _example_value("gauge_id", {"type": "string"}) == "01031500"
+    assert _example_value("basin_gauge_id", {"type": "string"}) == "01031500"
+    assert _example_value("site", {"type": "string"}) == "<site>"
