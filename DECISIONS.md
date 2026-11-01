@@ -933,3 +933,10 @@ its log is fine. The reader retries once on `sqlite3.DatabaseError` before givin
   `RESPONSE_TOO_LARGE`, and closes the response in a `finally`). The feature cap is per direction (750 each), so a large tributary network cannot push the
   downstream main stem out of the answer. It sits in the same discovery domain as `gauge_network_context`. A test sends a flowline run through
   `map_add_layer_from_run`.
+
+## 2026-11-02: the mislabel guard counts a refused network attempt as a network call
+
+With real example arguments (`gauge_id` = a valid site number), `gauge_network_context` reaches its network code in the mutation check, where the suite's offline
+guard refuses the connection before the audit hook sees a socket event; the check read that as "nothing happened" and reported the tool as missed. The check
+now counts refusals per tool call (`record_network`) as a catch, and acknowledges them afterwards (`request.node.offline_attempts`), since provoking them is the point.
+The check itself runs in a fresh interpreter, so it does not depend on test order.
