@@ -44,6 +44,7 @@ META_KEYS = {
     "effect": "aihydro/effect",
     "requiresConsent": "aihydro/requiresConsent",
     "audience": "aihydro/audience",
+    "acquires": "aihydro/acquires",
 }
 META_VALUES = {"effect": {"ui"}, "audience": {"host"}}
 

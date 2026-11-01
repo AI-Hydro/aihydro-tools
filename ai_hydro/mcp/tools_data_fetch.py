@@ -93,12 +93,105 @@ def _series_payload(fetched: Any, variable: str) -> dict | None:
     return payload
 
 
+#: Statistics are of the served values as they are: no unit conversion, no area normalisation.
+_SUMMARY_BASIS = ("descriptive statistics of the finite served values in `units` (arithmetic mean/min/max; "
+                  "no conversion or area normalisation); missing days are calendar days in the requested "
+                  "window with no served date (daily series only). fraction_with_value is finite values "
+                  "over the days the window spans and partial is true when it is below 1; both are null for "
+                  "a series that is not daily")
+
+
+def _summary_from_payload(payload: dict, start: str, end: str, quality: Any = None) -> dict | None:
+    """Compact, labelled descriptive statistics of a served series (``data.summary``). Never raises.
+
+    The maths is ``series_ops.summarize`` (the code behind ``summarize_series``), so the two agree;
+    this only selects and labels the fields. ``quality`` is aihydro-data's per-value quality summary
+    (USGS: approval and qualifier counts), passed through when present.
+    """
+    try:
+        from ai_hydro.analysis.series_ops import make_series, summarize, window
+
+        meta = {k: payload.get(k) for k in ("units", "product", "variable", "timestep", "source")}
+        s = make_series(payload["dates"], payload["values"], meta)
+        windowed, lo, hi = window(s, start, end)
+        st = summarize(windowed, [], lo, hi)
+        units = payload.get("units") or None
+        daily = (payload.get("timestep") or "daily") == "daily"     # a calendar-day gap count means nothing for monthly data
+
+        def r6(v: Any) -> Any:
+            return float(f"{v:.6g}") if isinstance(v, (int, float)) else v
+
+        out: dict[str, Any] = {
+            "variable": payload.get("variable"),
+            "value_column": payload.get("value_column"),
+            "units": units,
+            "n_dates": st["n"],
+            "n_finite": st["n_finite"],
+            "first_date": st["first_date"],
+            "last_date": st["last_date"],
+            "requested_start": start,
+            "requested_end": end,
+            "mean": r6(st["mean"]),
+            "min": r6(st["min"]),
+            "max": r6(st["max"]),
+            "n_dates_without_value": st["n"] - st["n_finite"],
+            "basis": _SUMMARY_BASIS,
+        }
+        if daily:
+            out["n_missing_days"] = st["n_missing_dates"]
+            expected = st["expected_calendar_days"]
+        else:
+            out["timestep"] = payload.get("timestep")
+            expected = None                # the window spans no countable number of steps here: not computed, not guessed
+        # A mean over a partial record is not a mean over the window: say so beside the number (daily series only).
+        out["fraction_with_value"] = r6(st["n_finite"] / expected) if expected else None
+        out["partial"] = (st["n_finite"] < expected) if expected else None
+        if isinstance(quality, dict) and quality:
+            q = {k: quality[k] for k in ("approval_counts", "qualifier_counts", "n_negative", "provisional_fraction")
+                 if k in quality}
+            if q:
+                out["qualifier_counts"] = q
+        return out
+    except Exception as exc:
+        log.warning("data_fetch: could not summarise the served series: %s", exc)
+        return None
+
+
+def _summary_units(summary: dict) -> dict:
+    """``units`` map for the statistics, so the audit's unit check sees the unit of ``summary.mean`` etc."""
+    u = summary.get("units")
+    return {k: u for k in ("mean", "min", "max") if u}
+
+
+def _fetched_summary(result: dict, variable: str, start: str, end: str) -> dict | None:
+    """``data.summary`` read back from aihydro-data's cache entry for the call (no session needed)."""
+    try:
+        from aihydro_data.cache import cache_read
+
+        key = result.get("cache_key")
+        fetched = cache_read(key) if key else None
+        payload = _series_payload(fetched, variable) if fetched is not None else None
+        if payload is None:
+            return None
+        for k in ("units", "timestep", "product", "source"):
+            if result.get(k) not in (None, ""):
+                payload[k] = result[k]
+        return _summary_from_payload(payload, start, end, result.get("quality"))
+    except Exception as exc:
+        log.warning("data_fetch: could not read the served series for a summary: %s", exc)
+        return None
+
+
 def _safe(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "-", text).strip("-")[:40] or "series"
 
 
-def _retain(session_id: str, result: dict, variable: str, files_out: list | None = None) -> dict | None:
-    """Write the served series and declare it on the in-flight record. Never raises."""
+def _retain(session_id: str, result: dict, variable: str, files_out: list | None = None,
+            start: str = "", end: str = "") -> dict | None:
+    """Write the served series and declare it on the in-flight record. Never raises.
+
+    The returned description carries ``summary`` (see ``_summary_from_payload``); the caller lifts it
+    out of the file description into ``data.summary``."""
     try:
         from aihydro_data.cache import cache_read
         from ai_hydro.session import run_records
@@ -139,7 +232,9 @@ def _retain(session_id: str, result: dict, variable: str, files_out: list | None
         else:
             run_records.declare_lineage(retained_files=[entry])
         finite = [v for v in payload["values"] if v is not None]
+        summary = _summary_from_payload(payload, start, end, result.get("quality"))
         return {
+            **({"summary": summary} if summary else {}),
             "value_column": payload["value_column"],
             "n": len(payload["dates"]),
             "n_finite": len(finite),
@@ -197,6 +292,16 @@ def _fetch_with_identity(**kw: Any) -> dict[str, Any]:
         return {"error": True, "code": "UNEXPECTED_ERROR",
                 "message": f"Unexpected error in data_fetch: {exc}",
                 "recovery": "Check arguments and try again.", "next_tools": ["data_doctor"]}
+
+
+def _attach_summary(result: dict, summary: dict | None) -> None:
+    """Put ``summary`` (and the unit of its statistics) in ``result["data"]``; a no-op without one."""
+    if not summary or not isinstance(result.get("data"), dict):
+        return
+    result["data"]["summary"] = summary
+    units = _summary_units(summary)
+    if units and "units" not in result["data"]:
+        result["data"]["units"] = units
 
 
 def _write_streamflow_slot(session_id: str, result: dict, start: str, end: str,
@@ -313,10 +418,10 @@ def data_fetch(
                      ambiguous outlet -> GAUGE_AMBIGUOUS; refusals are final.
 
     Returns:
-        Success: variable, product, source, resolved_place, data (head), license, citation, next_steps,
-        `_run_id` (the `series` argument of summarize_series, compare_series, bootstrap_statistic). Failure: error envelope.
+        Success: variable, product, source, resolved_place, data (head, `summary` stats), license, citation,
+        next_steps, `_run_id` (the `series` argument of summarize_series, compare_series, bootstrap_statistic). Failure: error envelope.
 
-    Queued backends (GloFAS / HPC): USE_ASYNC_TOOL (use data_fetch_background).
+    Queued (GloFAS/HPC): USE_ASYNC_TOOL (data_fetch_background).
     """
     from ai_hydro.mcp.helpers import StudyNotFoundError, _resolve_session
 
@@ -383,15 +488,21 @@ def data_fetch(
     if not isinstance(result, dict) or result.get("error") or result.get("redirect"):
         return result
     if sid is None:
+        _attach_summary(result, _fetched_summary(result, variable, start, end))
         return result
 
     retained_files: list = []
-    retained = _retain(sid, result, variable, retained_files)
+    retained = _retain(sid, result, variable, retained_files, start, end)
     data = result.setdefault("data", {})
     if isinstance(data, dict):
         data["series_retained"] = retained is not None
+        summary = None
         if retained is not None:
+            summary = retained.pop("summary", None)
             data["retained_series"] = retained
+        elif cache:
+            summary = _fetched_summary(result, variable, start, end)
+        _attach_summary(result, summary)
 
     flags: list = []
     if variable == "streamflow":

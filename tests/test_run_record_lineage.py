@@ -107,7 +107,8 @@ def test_fetch_to_signatures_edge_with_served_data_digest(world):
     sigs = _signatures(real_mcp)
     child = HydroSession.load(SID).get("_run_log")[sigs["_run_id"]]["record"]
     assert child["tool"] == "extract_hydrological_signatures"
-    assert child["parents"] == [slot_run]
+    # the explicit edge first; the generic slot read adds the watershed the tool also used (its exact run id)
+    assert child["parents"] == [slot_run, HydroSession.load(SID).watershed["meta"]["run_id"]]
     served = {r["ref"]: r for r in child["input_refs"]}
     assert served[slot_run] == {"ref": slot_run, "digest": parent_record["output_digest"], "role": "served_data"}
     assert served[f"{slot_run}#q_cms"]["digest"] == digest(Q_CMS)
@@ -155,7 +156,8 @@ def test_edge_without_a_recorded_producer_is_a_reference_without_a_digest(world,
     slot_run = HydroSession.load(SID).streamflow["meta"]["run_id"]
     sigs = _signatures(real_mcp)
     child = HydroSession.load(SID).get("_run_log")[sigs["_run_id"]]["record"]
-    assert child["parents"] == [slot_run]
+    # the explicit edge first; the generic slot read adds the watershed the tool also used (its exact run id)
+    assert child["parents"] == [slot_run, HydroSession.load(SID).watershed["meta"]["run_id"]]
     assert child["input_refs"][0] == {"ref": slot_run, "role": "served_data"}        # no digest key
     assert child["input_refs"][1]["digest"] == digest(Q_CMS)
 

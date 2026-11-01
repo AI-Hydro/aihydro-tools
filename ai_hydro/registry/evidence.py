@@ -91,7 +91,7 @@ def resolve_source(session: Any, span: dict, bound_seal: str | None = None) -> d
                                 "Manifest metadata or a similar source name is insufficient.")
         return record
     if kind == "paper":
-        from ai_hydro.knowledge.embeddings import _passage_hash, resolve_passage_hash
+        from ai_hydro.knowledge.passages import _passage_hash, resolve_passage_hash
         passage_id = span.get("passage_hash") or sid
         record = resolve_passage_hash(passage_id)
         if not record or not record.get("text") or _passage_hash(record["text"]) != passage_id:

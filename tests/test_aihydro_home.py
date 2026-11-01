@@ -167,7 +167,7 @@ def test_approval_store_read_resolves_under_home(homes):
 
 def test_other_state_dirs_resolve_under_home(homes):
     """Map, comments, citations, data_jobs, chat studies, skills, knowledge, persona, projects."""
-    from ai_hydro.knowledge import embeddings
+    from ai_hydro.knowledge import passages as embeddings
     from ai_hydro.mcp import (
         map_commands,
         map_events,

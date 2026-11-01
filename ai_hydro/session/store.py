@@ -1382,7 +1382,9 @@ class HydroSession:
         by_feature = self._slots.get(slot)
         if not by_feature:
             return None
-        return self._resolve_slot(slot, by_feature, track=True)[1]
+        res = self._resolve_slot(slot, by_feature, track=True)[1]
+        _note_slot_read(res)
+        return res
 
     def _resolve_slot(self, slot: str, by_feature: dict, *, track: bool = False
                       ) -> tuple[str | None, dict | None]:
@@ -1621,16 +1623,20 @@ class HydroSession:
         if not isinstance(data, dict):
             return {}
         out: dict[str, Any] = {}
-        for key, item in data.items():
+        # `units` first and outside the cap: it is what tells a reader that q_mean is mm/day, and the
+        # 40-key limit must never be the thing that drops it.
+        ordered = sorted(data.items(), key=lambda kv: 0 if kv[0] == "units" else 1)
+        for key, item in ordered:
             if str(key).startswith("_"):
                 continue
             if isinstance(item, list):
                 out[f"{key}_n"] = len(item)
             elif isinstance(item, dict):
-                out[key] = {k: (len(v) if isinstance(v, list) else v) for k, v in list(item.items())[:20]}
+                keep = item.items() if key == "units" else list(item.items())[:20]      # the unit map is never cut
+                out[key] = {k: (len(v) if isinstance(v, list) else v) for k, v in keep}
             elif isinstance(item, (str, int, float, bool)) or item is None:
                 out[key] = item
-            if len(out) >= 40:
+            if len(out) >= 40 + ("units" in out):
                 break
         return out
 
@@ -1718,6 +1724,7 @@ class HydroSession:
         if res is not None and product in _bi.BASIN_DEPENDENT_SLOTS \
                 and _bi.judge(res, self._expected_for(product, feature_id, res)) != _bi.VERIFIED:
             return None
+        _note_slot_read(res)
         return res
 
     def list_results(self, product: str) -> dict[str, list[str]]:
@@ -2334,6 +2341,18 @@ class HydroSession:
 # --------------------------------------------------------------------------- #
 # Module-level helpers (used internally and by helpers.py)
 # --------------------------------------------------------------------------- #
+
+def _note_slot_read(res: Any) -> None:
+    """Declare, on the running tool call, that it read the stored result of run ``res.meta.run_id``."""
+    if not isinstance(res, dict):
+        return
+    meta = res.get("meta") if isinstance(res.get("meta"), dict) else {}
+    rid = meta.get("run_id") or res.get("_run_id")
+    if rid:
+        from ai_hydro.session import run_records
+
+        run_records.note_slot_read(rid, meta.get("tool"))
+
 
 def _hash_obj(obj: Any) -> str:
     """Deterministic SHA-256 hash of a serialisable object (16-char hex)."""

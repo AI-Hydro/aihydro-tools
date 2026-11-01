@@ -657,6 +657,123 @@ timeout and the final-answer audit timed out at 15 s.
   timeouts in the sibling data packages; a read-modify-write audit of the remaining slot writers (`tools_experiments`) beyond the leaf
   merge.
 
+## 2026-10-31: `data_fetch` returns a data summary, computed in tools (A3)
+
+The first-party `data_fetch` result had `data = {type, rows, columns, head[5]}` and nothing to say what the series was like. In a
+recorded session the agent called the deprecated `fetch_streamflow_data`, whose result had `q_mean_cms`, `q_min_cms` and `q_max_cms`,
+and reported them.
+
+1. **Layer.** `aihydro-data` is not changed. It returns the frame; the statistics are descriptive and need the retained series that the
+   tools wrapper already reads from aihydro-data's cache entry. Dependencies stay downward (tools reads data, never the reverse).
+2. **One implementation.** The numbers come from `series_ops.summarize`, the code behind `summarize_series`, and a test pins that the
+   two agree on the same run. It is not a second statistics routine that could drift.
+3. **Not slimmed.** The result still carries `product_identity`, `site_resolution` and `common_pitfalls`; trimming them is a separate
+   change with its own test. This adds about 650 characters.
+4. **Labels, not judgements.** `basis` says the values are finite served values in `units`, not converted or area-normalised.
+   The summary does not call a record long enough or complete.
+5. **Sealed.** `data.summary` is in `key_outputs`, so a marker can cite it; `data.units` carries the unit map the audit reads.
+## 2026-10-31: passage search is BM25 over FTS5, and the keep-or-delete test is still open (graph features, P2)
+
+`search_passages` scored passages by substring overlap divided by length (`embeddings.py`, no IDF), so short junk passages beat real ones
+(measured: a four-word passage scored 0.75 against 0.097 for the real baseflow-index passage). `[lit:<hash>]` resolution does not depend
+on ranking, but the agent finds the passage to cite through it.
+
+1. **One search path, hash unchanged.** The JSONL stays the index of record and `passage_hash` is untouched (claims bind it). A derived
+   SQLite file holds an FTS5 table and a hash-keyed table; only `index_passages` writes it, because `search_passages_tool` and
+   `resolve_passage` are annotated read-only (an earlier draft rebuilt the file on read and the read-only guard caught it). If it is missing or
+   stale, a read builds the table in memory for that call. Both `search_passages` and `resolve_passage_hash` read it; the old scorer is gone
+   from the product (a copy lives in `bench/literature/run.py` so the comparison can be re-run). The file is derived: deleting it loses nothing.
+2. **No new dependency.** FTS5 is part of the SQLite the interpreter ships (3.45.3 here). If a build lacks it, search raises a named error
+   and `[lit:<hash>]` resolution is the same error; nothing falls back to a second scorer.
+3. **Naming.** `embeddings.py` promised semantic matching. It is `passages.py` now, with a module alias for the old import path, and
+   the docstring and tool descriptions say "keyword search, not semantic".
+4. **The plan's kill test, as far as it can be run.** The plan: delete the index if grep over the text matches BM25 within 5 points at
+   Recall@5 on 30 to 50 human-written questions from real hydrology papers. That set does not exist and no hydrology paper is in this repository.
+   What was run: 29 questions written by an AI agent from this repo's prose docs (178 passages, 22 documents). Recall@5: BM25 86.2,
+   grep-style 89.7, retired scorer 34.5. BM25 is 3.5 points below grep (one question), so the kill rule would fire on this set. The set is
+   too small (one question is 3.4 points), not hydrology, and its author had read the passages, so it neither confirms nor refutes the plan's
+   hypothesis. The change is kept because the old scorer is measurably broken (34.5 against 86 to 90), the hash lookup is useful regardless,
+   and the cost is one small module. **Open:** run `bench/literature/run.py --gold <human set>`; if BM25 is within 5 points of grep, delete
+   `passages.py`' search and hand the agent the text, keeping only hash resolution. The index was empty on the owner's machine when the scout
+   looked, so demand is unproven too.
+5. **Not done:** `search_literature` (project-level document search in `tools_project.py`) is a different object (documents, not passages)
+   and was left alone. No reranker, no embeddings; the plan adds those only if BM25 misses 20% of questions on the human set.
+## 2026-10-31: honest exit, part 1 -- an advisory lineage check and a completion outcome (N1)
+
+Agents asked for data that does not exist tend to produce numbers anyway (SciIntegrity-Bench: all seven models synthesised data rather than
+report infeasibility). Two small pieces on the tools side; the extension's prompt and `attempt_completion` change is separate.
+
+1. **The check is advisory and does not touch evidence acceptance.** `resolve_prose` accepts a value exactly as before (marker resolves,
+   value matches, unit agrees); the lineage walk runs after that and can only add an advisory. `audit/resolver.py` still never accepts a
+   suggested marker on the agent's behalf.
+2. **What is flagged is what the record positively shows.** Producer edges are incomplete (only `data_fetch`, the signatures tool and the
+   series tools declare parents), so "no declared parent" is *unknown*, not "none". Flagged: (a) declared and resolved parents with no data
+   acquisition among them; (b) `run_python`, which can read anything and records no input. Unknown (unsealed row, unresolved parent,
+   producer that declares no edge) is counted, not flagged. Flagging every undeclared edge would teach the agent to ignore the advisory.
+3. **"Acquired data" is the explicit `acquires = true` key** in `tool_annotations.toml`, on the true fetchers (data_fetch, data_batch_fetch,
+   data_fetch_background, fetch_streamflow_data, fetch_forcing_data, fetch_camels_us, fetch_soil_attributes_ssurgo, the delineate tools).
+   Open-world is not enough: a citation lookup, `gee.status`, `delineation_doctor`, `run_experiment` and `gauge_network_context` are
+   open-world and acquire no study data. A failed call is not an acquisition. A table that cannot be read is not cached.
+   **Review revision:** declared parents are flagged only when every run the walk ends at is recorded as having read no stored study
+   result (`record.extra.lineage_basis = slot_reads`, written by the recorder when each slot read is declared); otherwise the lineage is unknown.
+   `summarize_series` over `separate_baseflow` is therefore not flagged. Advisories are one per run id, outside `advisory_count`. A truncated
+   `unmet` list is reported as truncated.
+4. **Completion outcome field.** `outcome` in `done | partial | infeasible`, plus short `unmet` strings, passed to `audit_interpretation`
+   and sealed in that call's record. Proposal for the extension: `attempt_completion` passes the same two fields through unchanged and
+   shows `outcome` in the answer header. Not agreed with the extension engineer in this change; this is the tools-side half and the
+   contract it proposes. `done` with `unmet` items is refused.
+## 2026-10-31: `gauge_network_context` is a thin federated read, in tools (graph features, P3)
+
+The agent had no tool for "what is upstream and downstream of this gauge", which the nested-basin check and the map trace both need.
+ADR-003 and ADR-006 rule out hosting a network; NLDI and Geoconnex already answer it.
+
+1. **Layer.** In aihydro-tools (`ai_hydro/data/gauge_network.py`, tool in `mcp/tools_gauge_network.py`), not aihydro-data. The question is
+   an agent-facing composition of three public services and a label; aihydro-data's job is to serve variables, and it already holds a
+   private NLDI/OGC client for gauge resolution that this does not need to reach into. It uses `requests` (a base dependency) with
+   an https host allow-list, no redirects and a fixed timeout, and reuses `aihydro_watershed.identity.resolve_geoconnex_gage` for the PID.
+   Dependencies stay downward (tools reads watershed). If a second consumer needs the same thing, move the client down then.
+2. **"Streamflow site" means a daily-mean discharge series, not an id shape.** NLDI's `nwissite` source returns every NWIS surface-water site
+   (in one 100 km query from 01013500: 30 sites, 22 with 15-digit lake-station ids, 1 with a daily discharge series). One Water Data API
+   `time-series-metadata` query (parameter 00060, statistic 00003) per 40 ids decides. The record begin and end come from the same query.
+3. **No local graph and no cache of the network.** Each call asks the services; the request URLs and response SHA-256 are returned so
+   the answer can be re-checked. The only file written is the existing Geoconnex PID cache. Offline replay of the answer is not provided.
+4. **US-only, said so.** Outside NLDI's coverage the answer is `available: false` with `US_ONLY` or `GAUGE_NOT_IN_NLDI`. The global
+   alternatives (MERIT-Basins reach tables, HydroRIVERS, HydroLAKES) need licence checks and local tables and were not started.
+5. **Annotation.** The annotation rules reserve `readOnlyHint` for tools that make no network call, so this is `readOnlyHint=false`,
+   `openWorldHint=true`, even though it changes nothing in the study. The lineage check counts an open-world, non-destructive run as having
+   acquired external data, which is right for this tool: its answer comes from the services.
+6. **What it does not claim.** Neighbours are listed by network position. Distance along the network is not returned (NLDI's site list does
+   not carry it), so the order is by drainage area; the radius is a bound, not a measurement. It does not say whether a gauge is regulated
+   or whether two basins are independent; a dams lookup (Geoconnex `dams`) and the nested-basin check are the next pieces and are not here.
+
+## 2026-10-31: `trace_lineage` over declared edges, with unknown kept apart from none (graph features, P1)
+
+The question "what depends on this run?" was answered by hand (the 2026-10-19 impact review). The graph report (`findings/graph-features-2026-10-31.md`)
+recommended a lineage query over existing records and no graph store (ADR-006: graphs are views).
+
+1. **No store.** A dict walk in `ai_hydro.session.lineage` over the run log and claims, built per call. A study has tens of runs.
+   A SQLite recursive CTE is the next step if a study ever has thousands.
+2. **Edges are only what is declared:** `record.parents`; `input_refs` whose `ref` is a run id; claim `evidence_spans` of type run.
+   Claim revision `supersedes` is a digest link inside one claim's chain, not a run edge, and is not walked.
+3. **"No parents" and "unknown" are different answers.** Sealed rows cannot be back-filled, and most producers declare no edge, so an
+   empty parent list is not a statement that there were no inputs. Each run node reports `edge_state` and `parents_known`; a completeness
+   flag is false if anything reached is unknown.
+4. **Edge coverage in current code (static, `ai_hydro/mcp`, 160 registered tools).** 19 tools read a session slot (the stored result of
+   an earlier tool). Of these only `extract_hydrological_signatures` declares the run it consumed (with a refusal reason when the slot does not
+   match). Declaring a parent: the four series tools (`summarize_series`,
+   `detect_threshold_runs`, `compare_series`, `bootstrap_statistic`; parent = the series run). `data_fetch` and `fetch_streamflow_data` declare the files they
+   retained, which are outputs, not inputs, and are roots by construction. Reading a slot with no declared edge: `separate_baseflow`, `compute_flow_duration_curve`,
+   `compute_flood_frequency`, `compute_drought_index`, `compute_soil_loss_rusle`, `compute_design_hydrograph`, `extract_geomorphic_parameters`,
+   `get_model_results`, `export_session`, `run_inundation_physics_validation`, and the validators `check_water_balance_consistency`,
+   `check_record_length`, `check_usgs_qualification_codes`, `check_stationarity`. `train_hydro_model`, `run_experiment` and `run_python` consume
+   data by other routes and were not classified statically. This is a static read of the code, not a measure of how often edges are missing in a
+   real study; a dynamic count over fresh end-to-end studies is still needed. Not fixed here: the fix is a general consume-declaration mechanism
+   (the slot read itself records the edge), not a `declare_lineage` call per tool.
+5. **Dependents are a lower bound.** Because those tools declare nothing, `downstream.nodes` can miss real dependents. `may_also_depend`
+   names the later runs that cannot be ruled out, so the answer to "what breaks if I change this?" is "these, and possibly these".
+6. **Tier 3, recorded.** It is a view, but the run-record coverage test requires new tools to be recorded rather than exempted; its own
+   rows are left out of dependents and coverage counts so that looking does not change what is seen.
+
 ## 2026-10-31: signature flows carry their unit wherever a value is printed (Q_mean bug)
 
 A study digest listed `q_mean = 2.01686` with no unit and the answer said "Q_mean 2.017 m3/s". The value is mm/day (m3/s * 86.4 /
@@ -671,3 +788,62 @@ digest ignored it and older results never had one.
    `units` map, and each row of the `reference_comparison.table` (value, reference, diff for q_mean, q5, q95 ...) gets a `unit`.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
+
+## 2026-10-31: the audit knows the unit of a signatures value even when the row does not (follow-up to the Q_mean fix)
+
+The digest now prints mm/day, but a row written by an older watershed carries no `units` map, so `declared_unit` returned None and the audit let
+"Mean daily discharge: 2.02 m3/s" pass against it (the fixture of the original wrong answer did exactly that, and a test encoded it as a pass).
+`declared_unit` now falls back to `ai_hydro.science.signature_units` for a row whose `slot` is `signatures` or whose tool is
+`extract_hydrological_signatures`. That fixture test changed from 4 cited / 5 hard to 3 cited / 6 hard: the changed line is the point.
+`tests/test_study_context.assert_no_bare_numbers` no longer lets any word sit between a value and its marker: only a unit `audit.units.unit_after`
+recognises, or "day of water year", which the audit grammar has no entry for. `_run_key_outputs` puts `units` first and exempts it from the
+40-key and 20-item limits.
+### Review revision (passage search)
+
+- Decision: keep BM25. The kill-rule item stays open until a person writes the 30-50 question set; the seed result is committed at
+  `bench/literature/results/seed.json` with the code commit it was run on.
+- `resolve_passage_hash` falls back to a scan of the JSONL if FTS5 is unavailable: a hash lookup needs no ranking.
+- `index_passages` writes through private temp names (JSONL and SQLite), so two concurrent builds never share a path.
+- The benchmark harness restores the module paths it overrides, also on failure.
+### Review revision (gauge_network_context)
+
+- **Bounded and partial, never a bare error.** `Client` has a request budget (12) and a wall-clock deadline (45 s); a 429, a service fault, a spent
+  budget or a passed deadline stop the call where it is and the result returns what was gathered, `incomplete: true`, the reasons, and how many
+  candidates were not checked. Only an id that is not a USGS number or that NLDI does not know is a refusal (`available: false`). Candidates are
+  ordered by straight-line distance from the gauge (NLDI's list carries no along-network distance) and capped at 80 before the discharge check.
+- **Sealed so it can be cited.** The tool takes an optional `session_id`; with a study the result goes through `post_run`, and key_outputs keep
+  neighbours as dicts keyed by USGS id (20 per side, equal to what is shown), with URLs and digests as strings (key_outputs drops lists).
+- `API_USGS_PAT` goes to `api.waterdata.usgs.gov` only. The Geoconnex lookup's URL is listed in `request_urls` (its response digest is not
+  available through the existing resolver; a cached answer is marked by status). If `aihydro_watershed.identity` does not import, the gauge's PID
+  is `unavailable` and the rest is unaffected. The site-number pattern uses `[0-9]`, not `\d`.
+
+### Review revision 2 (gauge_network_context)
+
+A capped candidate list is not a complete answer: when more NLDI sites exist than the 80 checked, the result is `incomplete: true` with "candidate cap: N of M
+checked, nearest by straight-line distance", and the per-side excluded counts are `null` (they cannot be known for unchecked sites). Each request's timeout is
+`min(30 s, what is left of the 45 s deadline)`, so the deadline holds even when a service hangs.
+### Review revision (trace_lineage and the slot-read edge)
+
+- **The edge is recorded where the slot is read.** `HydroSession.get`/`get_result` call `run_records.note_slot_read(meta.run_id, meta.tool)`;
+  the recorder turns those into `record.parents` unless the call said `parent_unresolved` (signatures does when the slot does not match
+  its request: the generic read must not contradict that). It skips a tool reading its own previous output, tools that are not recorded
+  (status/view tools), and the run's own id. Under the server's worker pool the capture is a context variable shared by reference with the
+  worker thread; the only mutation is an append to a list guarded by a membership check (a duplicate would be harmless and is removed at
+  seal time).
+- **Measured, synthetic study** (one hand-seeded streamflow slot; `tests/test_slot_read_lineage.py`): `separate_baseflow`,
+  `compute_flow_duration_curve`, `compute_flood_frequency`, `check_record_length`, `check_stationarity` declared their input run 0 of 5
+  before, 5 of 5 after. The other slot-reading tools in the static list go through the same `get`; they were not each exercised, and
+  tools that read files or the network directly are not covered.
+- **`lineage_basis`** is the claim "every stored-result read of this call was declared", so a root with that value read no stored result.
+  It is withheld for arbitrary code. It is what lets the audit say "declared parents, none observed" instead of "unknown".
+- **trace_lineage:** a walk cut by `max_depth` or `max_nodes` is `complete: false` (`depth_or_size_limited`); `edge_state` counts run-valued
+  `input_refs`; `may_also_depend` compares parsed times (unparsable: kept); `max_nodes` is a parameter; each call seals its own run row.
+
+### Review revision 2 (acquires)
+
+`acquires = true` was under-inclusive, which made `declared_unobserved` flag chains that start at a geometry, terrain, forcing, land-surface or experiment
+tool. It is now on every open-world tool whose job is to bring external data in (twi, cn grid, spectral index, drought index, geomorphic parameters, GEE
+time series, flood inundation, all `lsh_*`, `merit_ensure_*`, `run_experiment`). `tests/test_lineage_check.py::test_every_open_world_tool_has_an_explicit_acquires_decision`
+lists every open-world non-code tool and fails for a new one until it is marked or listed with a reason (citation lookups, service checks, previews,
+`gauge_network_context`, and signatures, whose own fetch is internal and conditional so lineage follows its declared parent). `helpers._lean_key_outputs`
+now delegates to the store's `_run_key_outputs` (one 40-key rule); the unused `_record_run_log_entry` is removed with its test case.
