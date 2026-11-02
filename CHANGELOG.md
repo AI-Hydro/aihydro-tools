@@ -6,6 +6,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **A tool can state facts about the layer its run will make, and the layer carries them.** A result's `meta.layer_meta` (flat scalars: lower-case snake_case keys, at most 12, values cut at 200 characters, none of the envelope's own keys) is stored in the run row, and `map_add_layer_from_run` copies it onto the layer envelope beside `_run_id`, `study_id` and `tool`. It is general: any tool may set it. A run that sets none writes the same row as before (no new key), and a layer from it gets no extra keys. Nothing is inferred.
+- `gauge_flowlines` sets it: `gauge_id`, `direction`, `distance_km`, `truncated` (the tool's own flag, true when the 750-per-direction cap cut any direction) and `n_features`. The extension reads these instead of a file name or a layer name.
+
+---
+
 ## [2.8.7] - 2026-11-02 (lookup class, series codes, reference-layer stamps, gauge index, flowlines)
 
 Citation lookups get an `effect = "lookup"` class without weakening `readOnlyHint`; retained series keep USGS approval and qualifier codes and an information class; reference layers say when and for which view they were retrieved; a study index of the runs that hold a gauge; and `gauge_flowlines` for the map.

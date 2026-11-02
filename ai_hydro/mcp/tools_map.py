@@ -569,6 +569,12 @@ def map_add_layer_from_run(
         }
         if ACTIVE_CHAT_ID.get():
             provenance["chat_id"] = ACTIVE_CHAT_ID.get()
+        # What the tool itself said about this layer (gauge, direction, distance, whether it was cut). Never the
+        # envelope's own keys, and nothing is inferred: a run that recorded none adds none.
+        from ai_hydro.mcp.enforcement import sanitize_layer_meta
+
+        for k, v in sanitize_layer_meta(row.get("layer_meta")).items():
+            provenance.setdefault(k, v)
         ok = push_add_layer_from_run(
             layer_id=lid,
             layer_name=name,

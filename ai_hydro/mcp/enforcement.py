@@ -37,9 +37,10 @@ Usage from a Tier 1 tool:
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from datetime import date, datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
 log = logging.getLogger("ai_hydro.enforcement")
 
@@ -142,6 +143,37 @@ def _generate_unique_run_id(tool_name: str, session_id: str) -> str:
     return f"{run_id}{secrets.token_hex(4)}"
 
 
+#: Keys of the layer envelope a tool's own ``layer_meta`` may not set: the map host and ``map_add_layer_from_run`` own them.
+_LAYER_META_RESERVED = frozenset({"_run_id", "study_id", "tool", "source", "retrieved_at", "chat_id", "session_id"})
+_LAYER_META_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+
+
+def sanitize_layer_meta(raw: Any) -> dict[str, str]:
+    """
+    Facts a tool states about the layer its run will put on the map, as the flat string map the layer envelope carries.
+
+    A tool puts them in ``result["meta"]["layer_meta"]``; ``post_run`` stores them in the run row and
+    ``map_add_layer_from_run`` copies them onto the layer. Scalars only (str, int, float, bool; a bool is "true" or
+    "false"), lower-case snake_case keys, at most 12 keys, values cut at 200 characters, and none of the envelope's own
+    keys. Anything else is dropped, never repaired. Returns ``{}`` when there is nothing valid.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if len(out) >= 12:
+            break
+        if not isinstance(k, str) or not _LAYER_META_KEY.match(k) or k in _LAYER_META_RESERVED:
+            continue
+        if isinstance(v, bool):
+            out[k] = "true" if v else "false"
+        elif isinstance(v, (int, float)) and v == v and v not in (float("inf"), float("-inf")):
+            out[k] = str(v)
+        elif isinstance(v, str) and v.strip():
+            out[k] = v.strip()[:200]
+    return out
+
+
 def _write_run_log(
     session_id: str,
     run_id: str,
@@ -182,6 +214,9 @@ def _write_run_log(
         }
         from ai_hydro.session.evidence import capture_result_evidence
         entry["evidence"] = capture_result_evidence(result)
+        layer_meta = sanitize_layer_meta((result.get("meta") or {}).get("layer_meta") if isinstance(result.get("meta"), dict) else None)
+        if layer_meta:
+            entry["layer_meta"] = layer_meta
         scrubbed_inputs = _scrub_tool_inputs(inputs)
         if scrubbed_inputs:
             entry["inputs"] = scrubbed_inputs

@@ -212,6 +212,57 @@ def test_a_flowline_run_goes_to_the_map_through_map_add_layer_from_run(env, mcp_
     assert body["data"]["geometry_file"] in str(added["artifact_id"])           # the artifact the map tool used is the file the tool wrote
 
 
+def _with_workspace(tmp_path, name):
+    ws = tmp_path / name
+    ws.mkdir()
+    s = HydroSession.load(SID)
+    s.workspace_dir = str(ws)
+    s.save()
+
+
+def test_the_layer_carries_what_the_tool_recorded_about_it(env, mcp_server, monkeypatch, tmp_path):
+    """gauge, direction, distance, whether it was cut and the count go from the run onto the layer envelope, by the real tools."""
+    _with_workspace(tmp_path, "ws3")
+    monkeypatch.setattr(gn, "_default_get", fake())
+    err, body, _ = call(mcp_server, "gauge_flowlines", {"gauge_id": "USGS-01031500", "direction": "upstream", "distance_km": 20, "session_id": SID})
+    assert not err, body
+    row = run_log()[body["_run_id"]]
+    assert row["layer_meta"] == {"gauge_id": "01031500", "direction": "upstream", "distance_km": "20", "truncated": "false", "n_features": "3"}
+    err, added, _ = call(mcp_server, "map_add_layer_from_run", {"session_id": SID, "run_id": body["_run_id"]})
+    assert not err and added["ok"] is True, added
+    p = added["provenance"]
+    assert (p["gauge_id"], p["direction"], p["distance_km"], p["truncated"], p["n_features"]) == ("01031500", "upstream", "20", "false", "3")
+    assert p["_run_id"] == body["_run_id"] and p["tool"] == "gauge_flowlines" and p["study_id"] == SID   # the envelope's own keys are untouched
+
+
+def test_a_cut_trace_says_truncated_true_on_the_layer(env, mcp_server, monkeypatch, tmp_path):
+    _with_workspace(tmp_path, "ws4")
+    many = [line(1000 + i, -68.0 - i * 0.001, 47.0, n=2) for i in range(nf.MAX_FEATURES_PER_DIRECTION + 1)]
+    monkeypatch.setattr(gn, "_default_get", fake(ut=many))
+    err, body, _ = call(mcp_server, "gauge_flowlines", {"gauge_id": "01031500", "direction": "upstream", "distance_km": 200, "session_id": SID})
+    assert not err and body["data"]["truncated"] is True, body
+    err, added, _ = call(mcp_server, "map_add_layer_from_run", {"session_id": SID, "run_id": body["_run_id"]})
+    assert added["provenance"]["truncated"] == "true" and added["provenance"]["n_features"] == str(nf.MAX_FEATURES_PER_DIRECTION)
+
+
+def test_a_run_that_states_nothing_about_its_layer_adds_nothing_and_its_row_is_unchanged():
+    from ai_hydro.mcp.enforcement import sanitize_layer_meta
+
+    assert sanitize_layer_meta(None) == {} and sanitize_layer_meta("x") == {} and sanitize_layer_meta({}) == {}
+    got = sanitize_layer_meta({"gauge_id": "01031500", "ok": True, "n": 3, "_run_id": "evil", "tool": "evil", "study_id": "x",
+                               "Bad Key": "x", "nested": {"a": 1}, "items": [1], "empty": "  ", "nan": float("nan")})
+    assert got == {"gauge_id": "01031500", "ok": "true", "n": "3"}
+    assert len(sanitize_layer_meta({f"k{i}": i for i in range(30)})) == 12
+
+
+def test_another_tools_run_row_has_no_layer_meta_key(env, mcp_server):
+    """post_run for a result without meta.layer_meta writes the same row shape as before (no new key)."""
+    from ai_hydro.mcp.enforcement import post_run
+
+    out = post_run("some_tool", SID, {"data": {"x": 1}, "meta": {"tool": "some_tool"}}, inputs={"a": 1})
+    assert "layer_meta" not in run_log()[out["_run_id"]]
+
+
 def test_the_tool_is_in_the_same_discovery_domain_as_gauge_network_context():
     from ai_hydro.mcp.tools_discovery import _DOMAIN_PREFIXES
 
