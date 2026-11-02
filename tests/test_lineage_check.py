@@ -199,6 +199,7 @@ NOT_ACQUIRING = {
     "get_citation_by_doi": "citation lookup",
     "lookup_citation": "citation lookup",
     "gauge_network_context": "network context query (neighbouring gauges); its numbers are not inputs to analyses",
+    "gauge_flowlines": "reference geometry for the map; not an input to analyses",
     "extract_hydrological_signatures": "its own fetch is internal and conditional; lineage follows its declared parent",
 }
 

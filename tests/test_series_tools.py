@@ -747,3 +747,65 @@ def test_a_non_daily_series_gets_no_completeness_claim():
     assert sm["fraction_with_value"] is None and sm["partial"] is None and "n_missing_days" not in sm
     assert sm["n_dates_without_value"] == 1 and sm["timestep"] == "monthly"
     assert "daily series only" in sm["basis"] and "null for a series that is not daily" in sm["basis"]
+# ------------------------------------------- codes and information class travel with the series
+
+def test_usgs_approval_and_qualifier_codes_are_retained_with_the_values_and_readable(env, mcp_server, monkeypatch):
+    import aihydro_data._pipeline as pipeline
+    from aihydro_data.cache import cache_write
+    from aihydro_data.contracts import FetchRequest, FetchResult
+    from ai_hydro.session.series import load_run_series
+
+    d = days("2020-01-01", 5, skip=(2,))                      # 4 dates present
+    df = pd.DataFrame({"date": pd.to_datetime(d), "streamflow": [1.0, 2.0, 4.0, 5.0],
+                       "approval_code": ["A", "A", "P", "P"], "qualifier_code": ["", "ice", "", "e"]})
+
+    def fake_fetch(**kw):
+        req = FetchRequest(variable="streamflow", geometry=kw["geometry"], start=kw["start"], end=kw["end"],
+                           aggregation="basin_mean")
+        res = FetchResult(variable="streamflow", product="NWIS_STREAMFLOW", source="direct_api", request=req, data=df,
+                          units="m3/s", timestep="daily", cache_key="ckc", spatial_support="point")
+        cache_write(res)
+        return res
+
+    monkeypatch.setattr(pipeline, "fetch", fake_fetch)
+    err, body, _ = call(mcp_server, "data_fetch", {"variable": "streamflow", "geometry": {"lat": 41.0, "lon": -71.0},
+                                                    "start": d[0], "end": d[-1], "session_id": SID})
+    assert not err and "error" not in body, body
+    ret = body["data"]["retained_series"]
+    assert ret["has_approval_codes"] and ret["has_qualifier_codes"] and ret["information_class"] == "observation"
+    rs = load_run_series(SID, body["_run_id"], declare=False)
+    assert rs.approval_codes == ["A", "A", "P", "P"] and rs.qualifier_codes == [None, "ice", None, "e"]
+    assert len(rs.approval_codes) == len(rs.dates) == len(rs.values) and rs.meta["information_class"] == "observation"
+    err, out = run(mcp_server, "summarize_series", series=body["_run_id"])
+    assert out["data"]["information_class"] == "observation"
+
+
+def test_information_class_is_stated_only_where_the_product_is_known():
+    from ai_hydro.mcp.tools_data_fetch import information_class as ic
+
+    assert ic("NWIS_STREAMFLOW", "direct_api", None) == "observation"
+    assert ic("X", "direct_api", {"site": "USGS-01"}) == "observation"
+    assert ic("GLOFAS_STREAMFLOW", "cds_glofas") == "model_simulation" and ic("GEOGLOWS_RETRO", "geoglows_retro") == "model_simulation"
+    assert ic("CHIRPS", "gee") == "unclassified" and ic() == "unclassified"
+
+
+def test_a_series_without_codes_has_none(serve):
+    body = serve(days("2020-01-01", 4), [1.0, 2.0, 3.0, 4.0])
+    ret = body["data"]["retained_series"]
+    assert ret["has_approval_codes"] is False and ret["has_qualifier_codes"] is False
+
+
+def test_codes_that_do_not_line_up_with_the_dates_are_dropped_with_a_warning(caplog):
+    import logging
+    from ai_hydro.session.series import RunSeries, _attach_codes
+
+    out = RunSeries(run_id="r1", session_id=SID, tool="data_fetch", values_available=True, dates=["2020-01-01", "2020-01-02"])
+    with caplog.at_level(logging.WARNING, logger="ai_hydro.session.series"):
+        _attach_codes(out, {"approval_codes": ["A"], "qualifier_codes": [None, "ice"]}, "r1")
+    assert out.approval_codes == [] and out.qualifier_codes == [None, "ice"]
+    msgs = [r.getMessage() for r in caplog.records]
+    assert len(msgs) == 1 and "approval_codes dropped (1 entries for 2 dates)" in msgs[0] and "r1" in msgs[0]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="ai_hydro.session.series"):
+        _attach_codes(out, {}, "r1")                          # a file without codes is not a mismatch
+    assert not caplog.records

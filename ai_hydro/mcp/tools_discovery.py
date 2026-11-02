@@ -27,7 +27,7 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
     "session":     ("start_session", "get_session", "clear_session", "archive_session",
                     "merge_session", "add_note", "export_session",
                     "aihydro_rebind_chat", "aihydro_chat_status"),
-    "project":     ("start_project", "get_project", "add_session_to_project"),
+    "project":     ("start_project", "get_project", "add_session_to_project", "find_studies_for_gauge"),
     "watershed":   ("delineate_watershed", "delineation_", "merit_", "extract_geomorphic",
                     "compute_twi", "create_cn_grid", "compute_soil_loss_rusle",
                     "fetch_soil_attributes_ssurgo",
@@ -36,7 +36,7 @@ _DOMAIN_PREFIXES: dict[str, tuple[str, ...]] = {
                     "run_inundation_physics_validation", "get_inundation_physics_result",
                     "export_inundation_surrogate_dataset", "train_inundation_surrogate",
                     "get_inundation_surrogate_result"),
-    "streamflow":  ("fetch_streamflow", "gauge_network_context", "separate_baseflow", "extract_hydrological",
+    "streamflow":  ("fetch_streamflow", "gauge_network_context", "gauge_flowlines", "separate_baseflow", "extract_hydrological",
                     "compute_flow_duration_curve", "compute_flood_frequency"),
     "forcing":     ("fetch_forcing", "compute_drought_index"),
     "camels":      ("fetch_camels",),
@@ -191,6 +191,8 @@ def _example_value(name: str, spec: dict):
         return "<session_id>"
     if lname in ("start", "end") or lname.endswith("_date"):
         return "2024-01-01"
+    if lname == "gauge_id" or lname.endswith("_gauge_id"):
+        return "01031500"                  # a real-shaped USGS site number: a placeholder is refused before the tool does anything
     if "lat" in lname:
         return 28.22
     if "lon" in lname:

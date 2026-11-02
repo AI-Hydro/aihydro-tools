@@ -121,6 +121,7 @@ TOOL_TIERS: dict[str, int] = {
     "compute_drought_index":            1,
     "compute_soil_loss_rusle":          1,
     "fetch_soil_attributes_ssurgo":     2,
+    "gauge_flowlines":                  2,
     "gauge_network_context":            2,
     "compute_design_hydrograph":        1,
     "describe_model_space":             1,
@@ -141,6 +142,7 @@ TOOL_TIERS: dict[str, int] = {
     # Deterministic series/geometry tools (identical in every evaluation arm).
     "summarize_series":                 1,
     "trace_lineage":                    3,
+    "find_studies_for_gauge":           3,
     "detect_threshold_runs":            1,
     "compare_series":                   1,
     "bootstrap_statistic":              1,

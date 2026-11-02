@@ -81,6 +81,7 @@ def _block_network_for_offline_tests(request, monkeypatch):
 
     test_id = request.node.nodeid
     attempts: list[str] = []
+    request.node.offline_attempts = attempts       # a test that provokes refusals on purpose may acknowledge them (see the mutation guard)
 
     def _refuse(host, port=None):
         msg = (

@@ -92,7 +92,7 @@ def _args_for(tool) -> dict:
     return args
 
 
-def _call_all(names, tools) -> dict[str, list[str]]:
+def _call_all(names, tools, network: list | None = None) -> dict[str, list[str]]:
     """Call each tool once (errors are fine), return {tool: [violating events]}."""
     from fastmcp import Client
 
@@ -102,12 +102,17 @@ def _call_all(names, tools) -> dict[str, list[str]]:
         res = {}
         async with Client(mcp) as c:
             for n in names:
+                seen_before = len(network) if network is not None else 0
                 with recording() as rec:
                     try:
                         await asyncio.wait_for(
                             c.call_tool(n, _args_for(tools[n]), raise_on_error=False), timeout=60)
                     except Exception:
                         pass
+                if network is not None and len(network) > seen_before:
+                    # the suite's offline guard refuses the connection before the audit hook sees a socket event;
+                    # an attempt is still a network call by this tool
+                    rec.events.append(Event("network", "offline-guard-intercepted", n))
                 res[n] = rec.events
         return res
 
@@ -135,9 +140,9 @@ def record_network(monkeypatch):
     return seen
 
 
-def _run_tools(names, roots):
+def _run_tools(names, roots, network: list | None = None):
     tools = asyncio.run(mcp.get_tools())
-    fn = _call_all(names, tools)
+    fn = _call_all(names, tools, network)
     return asyncio.run(fn(roots))
 
 
@@ -156,7 +161,20 @@ def test_read_only_tools_have_no_side_effects_at_runtime(fixture_home, record_ne
     assert after == before, sorted(str(p) for p in set(after) ^ set(before) | {p for p in after if after[p] != before.get(p)})
 
 
-def test_mutation_every_mislabelled_writer_is_caught(fixture_home, record_network):
+def test_mutation_every_mislabelled_writer_is_caught():
+    """Runs the check in a fresh interpreter, so it cannot depend on which tests ran before it.
+
+    A mislabelled writer is "caught" by the events its first call produces; module-level caches and lazy imports warmed by an
+    earlier test in the same process would otherwise change what the call does. The child runs ``test_mutation_child``."""
+    import subprocess
+
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"{Path(__file__)}::test_mutation_child"],
+                       env={**os.environ, "AIHYDRO_GUARD_CHILD": "1"}, capture_output=True, text=True, timeout=900)
+    assert r.returncode == 0, (r.stdout[-4000:] + r.stderr[-1500:])
+
+
+@pytest.mark.skipif(os.environ.get("AIHYDRO_GUARD_CHILD") != "1", reason="runs inside test_mutation_every_mislabelled_writer_is_caught")
+def test_mutation_child(fixture_home, record_network, request):
     """Relabel each non-read-only tool as read-only: the static or the runtime guard must flag it.
 
     The runtime pass calls only the tools the static guard misses, with schema example arguments
@@ -169,9 +187,21 @@ def test_mutation_every_mislabelled_writer_is_caught(fixture_home, record_networ
     mislabels = sorted(n for n, r in ROWS.items() if not r["readOnlyHint"] and n in tools)
     static_caught = {n for n in mislabels if _static_violations(tools[n].fn)}
     rest = [n for n in mislabels if n not in static_caught]
-    results = _run_tools(rest, fixture_home)
+    results = _run_tools(rest, fixture_home, record_network)
     runtime_caught = {n for n, ev in results.items() if violations(ev, fixture_home)}
     network_seen = bool(record_network)
     missed = sorted(set(rest) - runtime_caught)
     print(f"mislabels={len(mislabels)} static={len(static_caught)} runtime={len(runtime_caught)} missed={missed}")
     assert not missed, f"mislabelled writers neither guard catches: {missed}"
+    # The probes of mislabelled tools are expected to be refused by the offline guard (that refusal is how a network tool is
+    # caught); acknowledge them so the suite's teardown does not count them as an accidental network use.
+    request.node.offline_attempts.clear()
+
+
+def test_example_arguments_for_a_gauge_id_are_valid_so_the_guard_reaches_the_network_code():
+    """A placeholder like "<gauge_id>" is refused (US_ONLY) before any request, so the runtime guard saw nothing."""
+    from ai_hydro.mcp.tools_discovery import _example_value
+
+    assert _example_value("gauge_id", {"type": "string"}) == "01031500"
+    assert _example_value("basin_gauge_id", {"type": "string"}) == "01031500"
+    assert _example_value("site", {"type": "string"}) == "<site>"

@@ -789,6 +789,17 @@ digest ignored it and older results never had one.
 4. `fetch_streamflow_data` keeps `q_mean_cms` (the unit is in the name). `tools_experiments._TOOL_UNITS` has its own signature table with
    a different vocabulary ("-", "fraction of days"); it was not touched here.
 
+## 2026-10-31: `gauge_flowlines` writes the geometry to the workspace instead of returning it
+
+The map trace needs the river lines above and below a gauge. A 100 km upstream query for one Maine gauge returned 432 lines and 374 KB of GeoJSON; putting that in a
+tool result would cost the model's context for something only the map reads. The tool therefore writes one GeoJSON file to the study workspace (name carries gauge,
+direction, radius and the first 8 hex of its digest, so a different answer never overwrites an earlier file), the study recorder ties the file to the run, and
+`map_add_layer_from_run` shows it. Without a study the summary is returned and nothing is written, and says so.
+Bounds: two requests, a 40 s timeout each, an 8 MB response cap, 1500 features, 200 km. The 1500 cut keeps the first features in NLDI's order, which is not
+by distance; `truncated` and per-direction totals make that visible, and a smaller `distance_km` is the remedy. Length is computed along the coordinates (haversine),
+not read from the service. It carries no regulation or gauge-coverage meaning. It duplicates a small amount of HTTP handling with `gauge_network_context` (#32); fold
+both into one NLDI client once both are on main. Not done: simplification of coordinates for the map; trimming the first reach at the gauge's measure.
+
 ## 2026-10-31: the audit knows the unit of a signatures value even when the row does not (follow-up to the Q_mean fix)
 
 The digest now prints mm/day, but a row written by an older watershed carries no `units` map, so `declared_unit` returned None and the audit let
@@ -847,3 +858,85 @@ time series, flood inundation, all `lsh_*`, `merit_ensure_*`, `run_experiment`).
 lists every open-world non-code tool and fails for a new one until it is marked or listed with a reason (citation lookups, service checks, previews,
 `gauge_network_context`, and signatures, whose own fetch is internal and conditional so lineage follows its declared parent). `helpers._lean_key_outputs`
 now delegates to the store's `_run_key_outputs` (one 40-key rule); the unused `_record_run_log_entry` is removed with its test case.
+
+## 2026-10-31: citation lookups get a `lookup` class, not `readOnlyHint=true`
+
+Plan mode should be able to verify a citation, and an agent should not invent one. `lookup_citation` and `get_citation_by_doi` ask Crossref, Semantic Scholar
+and DataCite and cache the answer under `~/.aihydro/citations/`. The annotation rules reserve `readOnlyHint` for tools that write nothing and make no network
+call; these do both, so marking them read-only would make the hint untrue and weaken the explorer's READ rule for every host that trusts it.
+
+Decision: a new optional vocabulary value, `effect = "lookup"`, with the hints left honest (`readOnlyHint=false`, `destructiveHint=false`, `openWorldHint=true`).
+It says: the tool only asks a question of a public reference service, changes no study, claim, ledger or profile state, and writes only its own response cache.
+A test pins the class to exactly these two tools, pins their hints, and checks that their code path reaches no session or ledger writer. Hosts opt in by
+reading `aihydro/effect`; one that ignores it behaves as before. `gauge_network_context` (a network read of public services) could take the class when its PR
+lands; it is not added here because the tool is not on main. The extension's use of the class is separate work.
+
+## 2026-10-31: the retained series keeps USGS codes and an information class
+
+`_series_payload` kept the primary value column and dropped the frame's `approval_code` and `qualifier_code`, so a hydrograph from a retained series could not
+tell provisional from approved days. They are now carried as string lists aligned with `dates` (`null` for none); the streamflow slot's own combined
+`qualification_codes` is unchanged. `information_class` is a three-valued label (`observation` / `model_simulation` / `unclassified`) from the product id,
+the backend id and the presence of a gauge resolution. Only products whose nature is certain are classed (NWIS; GloFAS, GEOGLOWS and Open-Meteo flood);
+gridded precipitation, reanalysis and remote sensing are `unclassified` until aihydro-data declares a class on the product spec, which is where it belongs.
+It is part of the retained file, so the file digest (and name) differ from an earlier fetch of the same series.
+
+## 2026-10-31: reference layers are snapshots, so they say when and where
+
+A gauge, dam or HUC layer is a public service's answer for one map view at one time. Without the time and the view it cannot be told from a stale layer or one
+for another extent, and the run record of the query did not exist (the CLI called the builders directly). Layers now carry `retrieved_at` and `query_bbox`, and
+the gauge and dam queries go through `recorded_call`. The gauge layer adds drainage area and the daily-discharge record because a map reader choosing a gauge needs
+both; the record costs one extra request per 40 gauges (about six for a full view of 250), and is `unknown` rather than `none` when that request fails.
+The drainage area is kept as the number USGS returns with a note that the unit is documented, not stated, plus a labelled km2 conversion. The record query uses
+two private helpers of `aihydro_data.sources.usgs_waterdata` (`_new_record`, `_paged_features`); a public paged-features function there would be the clean
+fix and is a change to a sibling package. Not done: the layer naming its run id (`recorded_call` does not return it); the NID query is not a USGS service, so it has
+no request URLs.
+
+### Review revision (reference layers)
+
+The km2 conversion uses aihydro-data's `SQMI_TO_KM2` (one constant, not a copy). The layer's `request_urls` now include the discharge-record queries, and the
+earlier version never listed the monitoring-locations URL at all (the result object's request record was dropped when the sites were turned into a list); a test
+now asserts both are listed. Recording the gauge and dam queries needs `--session-id`; without it the call is counted as unrecorded and leaves no row, which the
+changelog and the CLI help now say. `test_mutation_every_mislabelled_writer_is_caught` runs its check in a fresh interpreter (`test_mutation_child`), so what it
+catches cannot depend on which tests warmed module-level caches or lazy imports before it.
+
+## 2026-10-31: a study index of the runs that hold a gauge
+
+The map and the agent both need "have I already worked on this gauge, and where". A gauge is named in several places (a fetch's input, a signatures run's
+`basin_gauge_id`, a delineation's `gauge_id`, the gauge a fetch resolved), so the index reads what each run-log row recorded and says where it found the gauge.
+It never infers a gauge from a study's name or a run id. A study's own gauge (`site_id`) makes it *bound*; runs in other studies that name the gauge are listed
+with it. The run-log reader opens each database `mode=ro` and does not go through `_run_log_connect` (which can create the sessions directory). SQLite may still
+create `-wal`/`-shm` sidecars when it opens a WAL store, as in the existing read-only history reader; the test pins that nothing else changes. Cost: one small
+SQLite read per study per call; there is no persistent index file, so it cannot go stale.
+
+### Review revision (find_studies_for_gauge)
+
+- **"Writes nothing" is now true.** A `mode=ro` open of a WAL database makes `-shm`/`-wal` files beside every study, which the earlier text called acceptable and
+  the read-only guard cannot catch (it excludes `.runlog.sqlite3`). The reader opens the file `immutable=1`, which creates no sidecar. The price is that rows still in an
+  uncheckpointed `-wal` file are not seen, so a study with a non-empty `-wal` is reported `run_log_recent_rows_may_be_missing` rather than silently short. (A first
+  version copied the files aside to read them; the read-only guard flagged the copy, correctly: it is a write.) Two tests list the directory before and after, one
+  with a live writer.
+- **Scope.** The default is the current study's workspace folder (`scope="workspace"`); `scope="all"` searches every study on the machine, which can include other
+  projects. With no current workspace the default says so and names `scope="all"`. Workspaces are reported by folder name only, never as absolute paths
+  (`to_ref` would give a `session-data:` prefix for a directory, which is not a reference to anything; the name is what a reader needs).
+- **Cost.** An SQL `LIKE` on the id's digits (leading zeros dropped, so an integer-typed id still matches) means a row is parsed only if it could hold the id; at
+  most 50 studies are listed, bound ones first, with `studies_truncated`. A bare integer is read as a station number only from 1,000,000 up.
+
+A concurrent checkpoint by a writer can move pages under an `immutable=1` read, so a study can read as unreadable (`run_log_readable: false`) for that call even though
+its log is fine. The reader retries once on `sqlite3.DatabaseError` before giving up, and an unreadable study is reported as unknown, never as empty.
+
+### Review revision (gauge_flowlines)
+
+- `gauge_flowlines` does **not** acquire observations: it is listed in `NOT_ACQUIRING` ("reference geometry for the map; not an input to analyses"), so a chain
+  that starts at a flowline run is never counted as resting on observed data.
+- It now shares `gauge_network`'s parser, errors and `Client` instead of carrying its own: one wall-clock deadline for the whole call (45 s, each request's timeout
+  bounded by what is left), a request budget of 2, a body cap passed to the shared getter (which streams the body, refuses more than the cap with
+  `RESPONSE_TOO_LARGE`, and closes the response in a `finally`). The feature cap is per direction (750 each), so a large tributary network cannot push the
+  downstream main stem out of the answer. It sits in the same discovery domain as `gauge_network_context`. A test sends a flowline run through
+  `map_add_layer_from_run`.
+
+## 2026-11-02: the mislabel guard counts a refused network attempt as a network call
+
+With real example arguments (`gauge_id` = a valid site number), `gauge_network_context` reaches its network code in the mutation check, where the suite's offline
+guard refuses the connection before the audit hook sees a socket event; the check read that as "nothing happened" and reported the tool as missed. The check
+now counts refusals per tool call (`record_network`) as a catch, and acknowledges them afterwards (`request.node.offline_attempts`), since provoking them is the point.
+The check itself runs in a fresh interpreter, so it does not depend on test order.

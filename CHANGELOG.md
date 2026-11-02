@@ -6,6 +6,45 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.8.7] - 2026-11-02 (lookup class, series codes, reference-layer stamps, gauge index, flowlines)
+
+Citation lookups get an `effect = "lookup"` class without weakening `readOnlyHint`; retained series keep USGS approval and qualifier codes and an information class; reference layers say when and for which view they were retrieved; a study index of the runs that hold a gauge; and `gauge_flowlines` for the map.
+
+### Added
+
+- **`effect = "lookup"` annotation class** (served as `_meta["aihydro/effect"]`) for `lookup_citation` and `get_citation_by_doi`: a pure question to a public
+  reference service that changes no study state and writes only its own response cache. Their hints are unchanged (`readOnlyHint=false`, `openWorldHint=true`),
+  so a host's read-only rule is not weakened; a host that wants Plan mode to verify a citation reads the class instead.
+- **A retained series keeps its USGS codes and says what kind of line it is.** `data_fetch` now stores per-value `approval_codes` and `qualifier_codes`
+  (aligned with `dates`, `null` where absent) when the served frame has them, and `information_class`: `observation` (a station's measurement),
+  `model_simulation` (GloFAS, GEOGLOWS, Open-Meteo flood) or `unclassified`; a product is classed only where its nature is known. `load_run_series`
+  returns the codes, `retained_series` reports `has_approval_codes` / `has_qualifier_codes` / `information_class`, and the series tools echo
+  `information_class`. A hydrograph can then draw provisional days differently. Retained files written before this have no codes.
+- **`find_studies_for_gauge`** (read-only, tier 3): the studies bound to a USGS gauge or holding runs that name it, with those runs (id, tool, slot, time, and where the
+  gauge appears: key outputs, inputs or resolved place; never guessed from a name). Default scope is the current study's workspace folder; `scope="all"` searches every
+  study on the machine. Up to 50 studies (`studies_truncated`), workspaces named by folder name only. Run logs are opened `immutable=1`, so no `-shm`/`-wal` file is
+  created; a study with an uncheckpointed `-wal` is reported `run_log_recent_rows_may_be_missing`, and one whose log cannot be read `run_log_readable: false`. An
+  SQL `LIKE` prefilter parses only rows that could hold the id (an integer-typed id still matches).
+
+- **`gauge_flowlines`**: NHDPlus flowline geometry upstream (`UT`, all tributaries) and/or downstream (`DM`, main stem) of a USGS gauge within `distance_km`
+  (1-200, default 50), from NLDI; US only (another country's id, or one NLDI does not know, gives `available: false`). At most two requests, a response-size
+  cap and 750 features per direction (`truncated` says when it cut). The GeoJSON (NHDPlus COMID, direction, length from the coordinates) is written to the study workspace,
+  recorded with the run and kept out of the model's context; `map_add_layer_from_run(run_id=_run_id)` draws it. The result has counts, lengths, bbox, the file
+  and its SHA-256, request URLs and response digests, and a `limits` text. Tier 2; open-world, not read-only (network, and a file is written).
+
+### Changed
+
+- **Reference layers say when and for which view.** The gauge (`nwis-gauges-view`), dam (`nid-dams-view`) and WBD layers carry `metadata.retrieved_at` (UTC) and
+  `metadata.query_bbox` (`west,south,east,north`, EPSG:4326); the gauge layer also carries the USGS request URLs, including the discharge-record queries. Each gauge point has its USGS
+  `drainage_area_raw` (with `drainage_area_unit_note`: the API does not state the unit; USGS documents square miles) and `drainage_area_km2_if_sqmi`, and its
+  daily-discharge record: `daily_discharge_record` is `yes` (with `daily_discharge_begin`/`_end`), `none` (asked, no daily-mean discharge series) or
+  `unknown` (the record query failed), never `none` for a failure. No area is invented where USGS states none.
+- **The map CLI's gauge and dam queries are recorded calls** (`gauges_in_view`, `dams_in_view`): the sealed record has the
+  view, the counts and the retrieval time. **Recording needs `--session-id`** (the extension must pass it); without one the call is unrecorded and leaves no row. The layer does not yet name the run that produced it.
+### Fixed
+
+- `describe_tool` worked examples for `gauge_id` parameters use a valid site number (`01031500`) instead of a `<gauge_id>` placeholder, which the tool refused before doing anything; the read-only runtime guard's mislabel check now reaches the network code of gauge tools.
+
 ## [2.8.6] - 2026-10-31 (units, fetch summaries, lineage, literature search)
 
 Unit labels on signatures, a data summary on every `data_fetch`, `trace_lineage`, BM25 literature search, `gauge_network_context`, and an
