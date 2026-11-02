@@ -37,7 +37,6 @@ Usage from a Tier 1 tool:
 from __future__ import annotations
 
 import logging
-import re
 import secrets
 from datetime import date, datetime, timezone
 from typing import Any, Callable
@@ -143,27 +142,26 @@ def _generate_unique_run_id(tool_name: str, session_id: str) -> str:
     return f"{run_id}{secrets.token_hex(4)}"
 
 
-#: Keys of the layer envelope a tool's own ``layer_meta`` may not set: the map host and ``map_add_layer_from_run`` own them.
-_LAYER_META_RESERVED = frozenset({"_run_id", "study_id", "tool", "source", "retrieved_at", "chat_id", "session_id"})
-_LAYER_META_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+#: The facts a tool may state about the layer its run will put on the map. An allowlist, in one place: a key not named here is
+#: dropped, so a result can never put a path, a status, a claim link or a host-owned id onto a layer through ``layer_meta``.
+#: Adding a key is a deliberate change here (and in the extension's matching list), with a test.
+LAYER_FACT_KEYS = frozenset({"gauge_id", "direction", "distance_km", "truncated", "n_features"})
 
 
 def sanitize_layer_meta(raw: Any) -> dict[str, str]:
     """
-    Facts a tool states about the layer its run will put on the map, as the flat string map the layer envelope carries.
+    Facts a tool states about the layer its run will make, as the flat string map the layer envelope carries.
 
     A tool puts them in ``result["meta"]["layer_meta"]``; ``post_run`` stores them in the run row and
-    ``map_add_layer_from_run`` copies them onto the layer. Scalars only (str, int, float, bool; a bool is "true" or
-    "false"), lower-case snake_case keys, at most 12 keys, values cut at 200 characters, and none of the envelope's own
-    keys. Anything else is dropped, never repaired. Returns ``{}`` when there is nothing valid.
+    ``map_add_layer_from_run`` copies them onto the layer. Only the keys in ``LAYER_FACT_KEYS`` are kept. Values are
+    scalars (str, int, float, bool; a bool is "true" or "false"), cut at 200 characters; anything else is dropped, never
+    repaired. Returns ``{}`` when there is nothing valid.
     """
     if not isinstance(raw, dict):
         return {}
     out: dict[str, str] = {}
     for k, v in raw.items():
-        if len(out) >= 12:
-            break
-        if not isinstance(k, str) or not _LAYER_META_KEY.match(k) or k in _LAYER_META_RESERVED:
+        if k not in LAYER_FACT_KEYS:
             continue
         if isinstance(v, bool):
             out[k] = "true" if v else "false"

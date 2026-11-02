@@ -245,14 +245,20 @@ def test_a_cut_trace_says_truncated_true_on_the_layer(env, mcp_server, monkeypat
     assert added["provenance"]["truncated"] == "true" and added["provenance"]["n_features"] == str(nf.MAX_FEATURES_PER_DIRECTION)
 
 
-def test_a_run_that_states_nothing_about_its_layer_adds_nothing_and_its_row_is_unchanged():
-    from ai_hydro.mcp.enforcement import sanitize_layer_meta
+def test_only_the_five_fact_keys_get_through_and_nothing_else_can():
+    from ai_hydro.mcp.enforcement import LAYER_FACT_KEYS, sanitize_layer_meta
 
+    assert LAYER_FACT_KEYS == {"gauge_id", "direction", "distance_km", "truncated", "n_features"}
     assert sanitize_layer_meta(None) == {} and sanitize_layer_meta("x") == {} and sanitize_layer_meta({}) == {}
-    got = sanitize_layer_meta({"gauge_id": "01031500", "ok": True, "n": 3, "_run_id": "evil", "tool": "evil", "study_id": "x",
-                               "Bad Key": "x", "nested": {"a": 1}, "items": [1], "empty": "  ", "nan": float("nan")})
-    assert got == {"gauge_id": "01031500", "ok": "true", "n": "3"}
-    assert len(sanitize_layer_meta({f"k{i}": i for i in range(30)})) == 12
+    refused = ["source_path", "workspace_path", "path", "source_status", "validation_status", "claim_id", "uncertainty",
+               "raster_path", "geojson_cache_path", "project_id", "item_id", "session_id", "study_id", "tool", "source",
+               "_run_id", "retrieved_at", "chat_id", "display_name", "_fact_keys", "unknown"]
+    assert sanitize_layer_meta({k: "x" for k in refused}) == {}
+    got = sanitize_layer_meta({"gauge_id": "01031500", "truncated": True, "n_features": 3, "distance_km": 20.0,
+                               "direction": "  ", "source_path": "/etc/passwd", "claim_id": "c1"})
+    assert got == {"gauge_id": "01031500", "truncated": "true", "n_features": "3", "distance_km": "20.0"}
+    assert sanitize_layer_meta({"gauge_id": {"a": 1}, "n_features": [1], "distance_km": float("nan")}) == {}
+    assert len(sanitize_layer_meta({"gauge_id": "x" * 500})["gauge_id"]) == 200
 
 
 def test_another_tools_run_row_has_no_layer_meta_key(env, mcp_server):
