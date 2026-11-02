@@ -581,3 +581,95 @@ def test_the_agent_run_recorder_is_not_on_an_evaluation_arms_surface():
 
     assert "aihydro_record_agent_run" in ec.HIDDEN_ALL_ARMS
     assert "aihydro_record_agent_run" in ec.hidden_tools("C3", ["aihydro_record_agent_run", "add_claim"])
+
+
+# ----------------------------------------------------------------- the shipped extension's meta shape
+SHIPPED = {"agent": AGENT, "chat_id": CHAT, "workspace": "/ws", "client": "vscode/0.4.6", "project_id": "prj_x"}
+
+
+@pytest.fixture
+def shipped(env, monkeypatch):
+    """0.4.6 sends agent, chat_id, workspace, client and project_id and never study_id."""
+    from ai_hydro.session import project as project_mod
+
+    monkeypatch.setattr(project_mod, "_PROJECTS_DIR", env / "projects")
+    for name, sid in (("proj", SID), ("other_proj", OTHER)):
+        p = project_mod.ProjectSession(name)
+        p.session_ids = [sid]
+        p.save()
+    get_binding_store().bind(CHAT, SID)
+    return {META: dict(SHIPPED)}
+
+
+@pytest.mark.parametrize("alias", ALIASES + ["session_id"])
+@pytest.mark.parametrize("tool", ["list_claims", "get_session_summary"])
+def test_shipped_meta_own_study_passes_and_any_other_is_refused(shipped, tool, alias):
+    from binding_helpers import call
+
+    assert "study_id" not in shipped[META]
+    res, body = call(tool, {alias: SID}, meta=shipped)
+    assert (body or {}).get("code") != AGENT_CONTEXT_MISMATCH, (tool, alias, body)
+    res, body = call(tool, {alias: OTHER}, meta=shipped)
+    assert body is not None and body.get("code") == AGENT_CONTEXT_MISMATCH, (tool, alias, body)
+    assert get_binding_store().lookup_study(CHAT) == SID              # and nothing rebound
+
+
+def test_shipped_meta_with_no_bound_study_refuses_every_explicit_id(env):
+    from binding_helpers import call
+
+    meta = {META: dict(SHIPPED)}
+    for sid in (SID, OTHER):
+        res, body = call("list_claims", {"session_id": sid}, meta=meta)
+        assert body is not None and body.get("code") == AGENT_CONTEXT_MISMATCH, (sid, body)
+
+
+def test_shipped_meta_search_tools_work_for_the_own_project_only(shipped):
+    from binding_helpers import call
+
+    for tool in ("search_experiments", "search_literature"):
+        res, body = call(tool, {"project_name": "proj", "query": "nse"}, meta=shipped)
+        assert (body or {}).get("code") != AGENT_CONTEXT_MISMATCH, (tool, body)
+        res, body = call(tool, {"project_name": "other_proj", "query": "nse"}, meta=shipped)
+        assert body is not None and body.get("code") == AGENT_CONTEXT_MISMATCH, (tool, body)
+        res, body = call(tool, {"project_name": "no_such", "query": "nse"}, meta=shipped)
+        assert body is not None and body.get("code") == AGENT_CONTEXT_MISMATCH, (tool, body)
+    res, body = call("search_experiments", {"project_name": "proj", "query": "n", "compare_sessions": True},
+                     meta=shipped)
+    assert body is not None and body.get("code") == AGENT_CONTEXT_MISMATCH
+
+
+def test_the_five_explorer_reads_that_became_lead_are_refused(shipped):
+    from binding_helpers import call
+
+    for tool, args in (("find_studies_for_gauge", {"gauge_id": "01031500"}),
+                       ("get_project_summary", {"project_name": "proj"}),
+                       ("get_researcher_profile", {}), ("list_skills", {}), ("load_skill", {"name": "x"})):
+        assert ROWS[tool]["delegable"] == "lead", tool
+        res, body = call(tool, args, meta=shipped)
+        assert body is not None and body.get("code") == AGENT_NOT_DELEGABLE, (tool, body)
+
+
+def test_insert_is_one_transaction_and_a_racing_same_id_is_a_no_op(env):
+    from concurrent.futures import ThreadPoolExecutor
+
+    rows = [agent_runs.build_row(SID, {"agent_id": "race", "status": "completed"}) for _ in range(6)]
+    with ThreadPoolExecutor(6) as ex:
+        out = list(ex.map(lambda r: agent_runs.insert_agent_run(SID, r)[0], rows))
+    assert sorted(out) == ["inserted"] + ["noop"] * 5
+    assert list(agent_runs.read_all(SID)) == ["race"]
+
+
+def test_build_row_non_string_ids_and_nested_export_filter():
+    for bad in (5, ["a"], {"x": 1}, ""):
+        with pytest.raises(agent_runs.AgentRunError):
+            agent_runs.build_row(SID, {"agent_run_id": bad, "agent_id": "fallback"})
+    assert agent_runs.build_row(SID, {"agent_id": "ok"})["agent_run_id"] == "ok"
+    rec = {"agent_id": "a", "budget": {"usd": 1.5, "nested": {"prompt": "secret"}},
+           "tool_calls": [{"tool": "data_fetch", "args_sha256": "ab", "args": {"gauge": "x"}, "status": "ok"}],
+           "approvals": {"read": 2}, "runs_created": ["r1", {"x": 1}], "status": {"deep": 1}}
+    out, withheld = agent_runs.export_record(rec)
+    assert out["budget"] == {"usd": 1.5}
+    assert out["tool_calls"] == [{"tool": "data_fetch", "args_sha256": "ab", "status": "ok"}]
+    assert out["runs_created"] == ["r1"] and "status" not in out
+    assert {"budget.nested", "tool_calls.args", "runs_created.extra", "status"} <= set(withheld)
+    assert "secret" not in json.dumps(out)

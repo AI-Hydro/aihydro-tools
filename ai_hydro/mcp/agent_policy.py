@@ -25,10 +25,11 @@ and the host; this layer is a floor under them, not a replacement.
 
 Limits, stated plainly:
 
-* The study comparison is against ``ACTIVE_STUDY_ID``, which is itself read from the same
-  client-asserted ``_meta``. It confines an agent to its study only when the HOST stamps
-  ``study_id`` on every child call (the extension does). A caller that omits ``agent`` or lies
-  about ``study_id`` is not stopped; this layer is a floor under a cooperating host.
+* The study an agent may name is the call context's ``study_id`` when the host sends one, else the
+  study the call's chat is bound to (``agent_study``). Both come from client-asserted ``_meta``
+  and the server-side chat binding. The 0.4.6 extension sends ``chat_id`` and no ``study_id``, so
+  for shipped explorers it is the chat binding that decides. A caller that omits ``agent`` or lies
+  about ``chat_id`` is not stopped; this layer is a floor under a cooperating host.
 * ``delegable = "read"`` means read-only and study-scoped for tools reached through ``tools/call``.
   ``aihydro://`` resource reads do not pass through tool middleware. A host must not hand a child
   the resource surface (known gap); the policy does not cover it.
@@ -50,7 +51,7 @@ from ai_hydro.mcp.errors import StructuredToolError
 log = logging.getLogger("ai_hydro.mcp.agent_policy")
 
 __all__ = [
-    "AGENT_ARG_RULES", "check_agent_arguments", "AgentArgumentPolicyMiddleware",
+    "AGENT_ARG_RULES", "agent_study", "check_agent_arguments", "AgentArgumentPolicyMiddleware",
     "AGENT_KEYS", "DELEGABLE_VALUES", "AGENT_NOT_DELEGABLE", "AGENT_CONTEXT_MISMATCH",
     "AGENT_IN_EVALUATION", "parse_agent", "delegable_of", "AgentPolicyMiddleware",
 ]
@@ -124,13 +125,50 @@ def delegable_of(tool: str, rows: dict[str, dict[str, Any]] | None = None) -> st
     return value if value in DELEGABLE_VALUES else "lead"
 
 
+def agent_study(chat_id: str | None = None) -> str | None:
+    """The one study a call naming an agent may name: the context's ``study_id``, else the chat's binding.
+
+    None when neither exists (then no explicit study id is acceptable).
+    """
+    from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_STUDY_ID
+
+    bound = ACTIVE_STUDY_ID.get()
+    if bound:
+        return bound
+    chat = chat_id or ACTIVE_CHAT_ID.get()
+    if not chat:
+        return None
+    try:
+        from ai_hydro.session.chat_binding import get_binding_store
+
+        return get_binding_store().lookup_study(chat) or None
+    except Exception:       # an unreadable binding store means no study: fail closed
+        return None
+
+
+def _project_owns(project_name: Any, study: str | None) -> bool:
+    """True iff ``project_name`` is an existing project whose sessions include ``study``."""
+    if not study or not isinstance(project_name, str) or not project_name.strip():
+        return False
+    try:
+        from ai_hydro.session.project import ProjectSession
+
+        if not ProjectSession._path(project_name.strip()).exists():
+            return False
+        return study in ProjectSession.load(project_name.strip()).session_ids
+    except Exception:
+        return False
+
+
 #: Arguments that reach outside the call's own study. Keyed by tool because the argument, not the tool
 #: class, is the hazard. Checked on the repaired arguments (AgentArgumentPolicyMiddleware) and on the raw
 #: ones. "forbid": refused when set to anything but None / "" / [] / False. "context": must equal the
 #: call context's value (``chat`` -> ACTIVE_CHAT_ID, ``workspace`` -> ACTIVE_WORKSPACE). "values": refused values.
+#: "owned_project": the argument names a project; allowed only when that project's sessions include the
+#: agent's study (``agent_study``).
 AGENT_ARG_RULES: dict[str, dict[str, Any]] = {
-    "search_experiments": {"forbid": ("project_name", "compare_sessions")},
-    "search_literature": {"forbid": ("project_name",)},
+    "search_experiments": {"forbid": ("compare_sessions",), "owned_project": ("project_name",)},
+    "search_literature": {"owned_project": ("project_name",)},
     "audit_interpretation": {"forbid": ("outcome", "unmet")},
     "aihydro_chat_status": {"context": {"chat_id": "chat"}},
     "map_get_state": {"context": {"chat_id": "chat", "workspace": "workspace"},
@@ -144,13 +182,13 @@ def _set(v: Any) -> bool:
 
 def check_agent_arguments(tool: str, args: Any) -> None:
     """Raise a structured refusal if ``args`` reach outside the call's study. Agent calls only."""
-    from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_STUDY_ID, ACTIVE_WORKSPACE
+    from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_WORKSPACE
 
     if not isinstance(args, dict):
         return
     requested = args.get("session_id")
     if isinstance(requested, str) and requested.strip():
-        bound = ACTIVE_STUDY_ID.get()
+        bound = agent_study()
         if bound is None or requested.strip() != bound:
             raise _refusal(
                 AGENT_CONTEXT_MISMATCH,
@@ -164,6 +202,11 @@ def check_agent_arguments(tool: str, args: Any) -> None:
             raise _refusal(AGENT_CONTEXT_MISMATCH,
                            f"{tool}: argument {name!r} reaches outside the agent's study and is not "
                            "available to a subagent.", tool=tool, argument=name)
+    for name in rule.get("owned_project", ()):
+        if _set(args.get(name)) and not _project_owns(args.get(name), agent_study()):
+            raise _refusal(AGENT_CONTEXT_MISMATCH,
+                           f"{tool}: {name}={str(args.get(name))[:80]!r} is not the project of the agent's "
+                           "study; an agent may name only its own study's project.", tool=tool, argument=name)
     ctx = {"chat": ACTIVE_CHAT_ID.get(), "workspace": ACTIVE_WORKSPACE.get()}
     for name, key in (rule.get("context") or {}).items():
         v = args.get(name)

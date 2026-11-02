@@ -26,7 +26,13 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
 
 - **Evaluation tool surface:** `aihydro_record_agent_run` is added to `HIDDEN_ALL_ARMS`, so every evaluation arm (C1-C3) lists exactly the tools it
   listed before this change; the diff against 2.8.7 is empty. P1 and Paper A stay pinned to their older tools versions and no bundle is edited.
-- Known gap: `aihydro://` resource reads do not pass through tool middleware; a host must not hand a child the resource surface.
+- **Explorers lose five tools, deliberately:** `find_studies_for_gauge`, `get_project_summary`, `get_researcher_profile`, `list_skills` and
+  `load_skill` are `lead`. They are read-only but reach beyond the agent's own study (every study on the machine, any project) or are the lead's
+  (profile, skills). A shipped explorer that called them now gets `AGENT_NOT_DELEGABLE`; the extension's own READ list must follow.
+- An agent's explicit `session_id` must be the study of its call context, or, when the host sends no `study_id` (the 0.4.6 extension sends
+  `chat_id` only), the study its chat is bound to. `search_experiments` / `search_literature` accept `project_name` only for a project whose
+  sessions include that study.
+- Known gap: `aihydro:// resource reads do not pass through tool middleware; a host must not hand a child the resource surface.
 - A call that names an agent never rebinds the chat (`helpers._bind`).
 - `merge_session_shards` is `audience = host`.
 

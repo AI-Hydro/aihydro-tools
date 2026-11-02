@@ -477,12 +477,13 @@ def _resolve_session_impl(
         sid = _normalize_session_id(session_id)
         if rule == "explicit_arg":
             from ai_hydro.mcp.app import ACTIVE_AGENT
+            from ai_hydro.mcp.agent_policy import agent_study as _agent_study
 
-            if ACTIVE_AGENT.get() is not None and sid != ACTIVE_STUDY_ID.get():
+            if ACTIVE_AGENT.get() is not None and sid != _agent_study(chat_id):
                 # Whatever spelling the argument arrived in, an agent works in its call's study only.
                 raise AgentContextMismatchError(
-                    "An agent works in the study of its call context; it may not name another "
-                    f"(session_id={sid[:80]!r}). Omit session_id.",
+                    "An agent works in the study of its call (its context's study, else its chat's bound study); "
+                    f"it may not name another (session_id={sid[:80]!r}). Omit session_id.",
                     recovery="Omit session_id: the study is the call's own.")
         if chat_id and not read_only:
             # Only a study that already exists is bound: a typo or a made-up id must not become the chat's study.

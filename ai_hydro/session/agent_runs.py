@@ -76,10 +76,12 @@ def build_row(session_id: str, record: Any, *, workspace_dir: str | None = None,
     """Validate ``record`` and return the row to store (scrubbed, digested). Raises ``AgentRunError``."""
     if not isinstance(record, dict):
         raise AgentRunError("AGENT_RUN_INVALID", "record must be an object")
-    agent_id = record.get("agent_run_id") or record.get("agent_id")
+    agent_id = record.get("agent_run_id")
+    if agent_id is None:
+        agent_id = record.get("agent_id")
     if not isinstance(agent_id, str) or not agent_id.strip() or len(agent_id) > _ID_MAX:
         raise AgentRunError("AGENT_RUN_INVALID",
-                            f"record needs a non-empty string agent_id (at most {_ID_MAX} characters)")
+                            f"record needs a non-empty string agent_id or agent_run_id (at most {_ID_MAX} characters)")
     try:
         raw = json.dumps(record, sort_keys=True, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -120,31 +122,40 @@ def insert_agent_run(session_id: str, row: dict) -> tuple[str, dict]:
 
     deadline = store._new_deadline()
 
-    def _txn() -> str:
+    def _txn() -> tuple[str, dict]:
         conn = store._run_log_connect(session_id, deadline=deadline)
         try:
+            conn.isolation_level = None            # explicit transaction: the lookup, count and insert are one unit
             conn.execute(_DDL)
-            cur = conn.execute("SELECT row_json FROM agent_runs WHERE agent_run_id = ?",
-                               (row["agent_run_id"],)).fetchone()
-            if cur is not None:
-                old = json.loads(cur[0])
-                if _body_digest(old) == _body_digest(row):
-                    return "noop", old
-                raise AgentRunError(
-                    "AGENT_RUN_CONFLICT",
-                    f"agent run {row['agent_run_id']!r} is already recorded with a different body; "
-                    "agent run records are insert-only")
-            n = conn.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0]
-            if n >= MAX_RUNS_PER_STUDY:
-                raise AgentRunError(
-                    "AGENT_RUN_LIMIT",
-                    f"this study already holds {n} agent run records (limit {MAX_RUNS_PER_STUDY})")
-            conn.execute(
-                "INSERT INTO agent_runs (agent_run_id, recorded_at, record_digest, row_json) VALUES (?,?,?,?)",
-                (row["agent_run_id"], row["recorded_at"], row["record_digest"],
-                 json.dumps(row, sort_keys=True, ensure_ascii=False)))
-            conn.commit()
-            return "inserted", row
+            conn.execute("BEGIN IMMEDIATE")        # takes the write lock first, so two writers of one id serialise
+            try:
+                cur = conn.execute("SELECT row_json FROM agent_runs WHERE agent_run_id = ?",
+                                   (row["agent_run_id"],)).fetchone()
+                if cur is not None:
+                    old = json.loads(cur[0])
+                    conn.execute("ROLLBACK")
+                    if _body_digest(old) == _body_digest(row):
+                        return "noop", old
+                    raise AgentRunError(
+                        "AGENT_RUN_CONFLICT",
+                        f"agent run {row['agent_run_id']!r} is already recorded with a different body; "
+                        "agent run records are insert-only")
+                n = conn.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0]
+                if n >= MAX_RUNS_PER_STUDY:
+                    conn.execute("ROLLBACK")
+                    raise AgentRunError(
+                        "AGENT_RUN_LIMIT",
+                        f"this study already holds {n} agent run records (limit {MAX_RUNS_PER_STUDY})")
+                conn.execute(
+                    "INSERT INTO agent_runs (agent_run_id, recorded_at, record_digest, row_json) VALUES (?,?,?,?)",
+                    (row["agent_run_id"], row["recorded_at"], row["record_digest"],
+                     json.dumps(row, sort_keys=True, ensure_ascii=False)))
+                conn.execute("COMMIT")
+                return "inserted", row
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
         finally:
             conn.close()
 
@@ -199,3 +210,65 @@ def file_stem(agent_run_id: str) -> str:
     if stem != agent_run_id:
         stem = f"{stem[:60]}-{hashlib.sha256(agent_run_id.encode('utf-8')).hexdigest()[:8]}"
     return stem[:100]
+
+
+# ----------------------------------------------------------------------------- export filter
+_SCALAR_MAPS = ("budget", "usage", "approvals", "budget_stops", "lease")
+_ITEM_LISTS = ("tool_calls", "denied", "refused")
+_ITEM_KEYS = ("tool", "name", "toolKey", "args_sha256", "argsSha256", "status", "run_id", "approval",
+              "effect_class", "effectClass", "reason", "code", "at", "duration_ms")
+_MAX_ITEMS = 200
+_MAX_STR = 500
+
+
+def _scalar(v: Any) -> bool:
+    return v is None or isinstance(v, (bool, int, float)) or (isinstance(v, str))
+
+
+def _clip(v: Any) -> Any:
+    return v[:_MAX_STR] if isinstance(v, str) else v
+
+
+def export_record(record: dict, *, include_prompt: bool = False) -> tuple[dict, list[str]]:
+    """The part of ``record`` that reaches a capsule, and the names of what was left out.
+
+    Top-level fields come from ``EXPORT_FIELDS`` only. Inside them the same rule applies one level
+    down: maps (``budget``, ``usage``, ``approvals``, ``budget_stops``, ``lease``) keep scalar values
+    only; lists of calls (``tool_calls``, ``denied``, ``refused``) keep ``_ITEM_KEYS`` with scalar
+    values (at most 200 items); ``runs_created`` is a list of strings; every other allowlisted field
+    must be a scalar. Anything dropped is named (``field`` or ``field.key``).
+    """
+    keep = set(EXPORT_FIELDS) | ({"prompt"} if include_prompt else set())
+    out: dict[str, Any] = {}
+    withheld: list[str] = []
+    for k in sorted(record):
+        v = record[k]
+        if k not in keep:
+            withheld.append(k)
+        elif k in _SCALAR_MAPS and isinstance(v, dict):
+            kept = {kk: _clip(vv) for kk, vv in v.items() if _scalar(vv)}
+            withheld += [f"{k}.{kk}" for kk, vv in v.items() if not _scalar(vv)]
+            out[k] = kept
+        elif k in _ITEM_LISTS and isinstance(v, list):
+            items = []
+            for i, it in enumerate(v[:_MAX_ITEMS]):
+                if isinstance(it, dict):
+                    items.append({kk: _clip(vv) for kk, vv in it.items() if kk in _ITEM_KEYS and _scalar(vv)})
+                    withheld += sorted({f"{k}.{kk}" for kk, vv in it.items()
+                                        if kk not in _ITEM_KEYS or not _scalar(vv)})
+                elif _scalar(it):
+                    items.append(_clip(it))
+                else:
+                    withheld.append(f"{k}[{i}]")
+            if len(v) > _MAX_ITEMS:
+                withheld.append(f"{k}[{_MAX_ITEMS}:]")
+            out[k] = items
+        elif k == "runs_created" and isinstance(v, list):
+            out[k] = [_clip(x) for x in v[:_MAX_ITEMS] if isinstance(x, str)]
+            if len(v) > _MAX_ITEMS or any(not isinstance(x, str) for x in v):
+                withheld.append(k + ".extra")
+        elif _scalar(v):
+            out[k] = _clip(v) if k != "prompt" else v
+        else:
+            withheld.append(k)
+    return out, sorted(set(withheld))

@@ -54,13 +54,11 @@ def collect_agent_runs(session_id: str, capsule_dir: str | Path,
         counts["verified" if ok else "failed"] += 1
         doc = json.loads(json.dumps(row))
         rec = doc.get("record") if isinstance(doc.get("record"), dict) else {}
-        keep = set(_ar.EXPORT_FIELDS) | ({"prompt"} if include_prompts else set())
-        withheld = sorted(k for k in rec if k not in keep)
-        doc["record"] = {k: v for k, v in rec.items() if k in keep}
+        doc["record"], withheld = _ar.export_record(rec, include_prompt=include_prompts)
         if withheld:
             # record_digest covers the stored row WITH these fields; this copy cannot re-hash to it
             doc["withheld_fields"] = withheld
-            doc["prompt_withheld"] = "prompt" in withheld
+            doc["prompt_withheld"] = "prompt" in withheld or ("prompt" in rec and not include_prompts)
         clean = scrub_value(doc, workspace_dir)
         if json.dumps(clean, sort_keys=True) != json.dumps(doc, sort_keys=True):
             counts["scrubbed_on_export"] += 1
