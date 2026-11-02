@@ -53,14 +53,20 @@ def collect_agent_runs(session_id: str, capsule_dir: str | Path,
         counts["runs"] += 1
         counts["verified" if ok else "failed"] += 1
         doc = json.loads(json.dumps(row))
-        if not include_prompts and isinstance(doc.get("record"), dict) and "prompt" in doc["record"]:
-            doc["record"].pop("prompt")
-            # record_digest covers the stored row WITH the prompt text; this copy cannot re-hash to it
-            doc["prompt_withheld"] = True
+        rec = doc.get("record") if isinstance(doc.get("record"), dict) else {}
+        keep = set(_ar.EXPORT_FIELDS) | ({"prompt"} if include_prompts else set())
+        withheld = sorted(k for k in rec if k not in keep)
+        doc["record"] = {k: v for k, v in rec.items() if k in keep}
+        if withheld:
+            # record_digest covers the stored row WITH these fields; this copy cannot re-hash to it
+            doc["withheld_fields"] = withheld
+            doc["prompt_withheld"] = "prompt" in withheld
         clean = scrub_value(doc, workspace_dir)
         if json.dumps(clean, sort_keys=True) != json.dumps(doc, sort_keys=True):
             counts["scrubbed_on_export"] += 1
             clean["scrubbed_on_export"] = True
+        # "unchanged since stored": the stored row still hashes to its record_digest. Not a statement
+        # that the host's account is true, and not a re-hash of THIS file when fields were withheld.
         clean["digest_verified_at_export"] = ok
         stem = _ar.file_stem(rid)
         n = 1
@@ -88,5 +94,7 @@ def manifest_section(entries: list[dict], counts: dict) -> dict | None:
         "note": ("Reported by the host that ran the agents (asserted_by: client). The digest shows the "
                  "stored record is unchanged, not that it is true; the sealed run records that name an "
                  "agent (extra.agent, also client-asserted) are the trace of what each call did. "
-                 "The prompt text is withheld unless the export asked for it; its hash stays."),
+                 "digest_verified_at_export means the stored row was unchanged since it was stored. Only an "
+                "allowlist of fields is exported (withheld_fields names the rest); the prompt text is "
+                "withheld unless the export asked for it, and its hash stays."),
     }

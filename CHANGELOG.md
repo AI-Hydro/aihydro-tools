@@ -13,7 +13,7 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
 ### Added
 
 - **`delegable` column on every row of `tool_annotations.toml`** (`read | scoped | lead`, served as `_meta["aihydro/delegable"]`):
-  74 read, 20 scoped, 88 lead. Claims, the research plan, interpretation, claim binding, study lifecycle, profile and skills and host
+  73 read, 17 scoped, 94 lead (184 rows). Claims, the research plan, interpretation, claim binding, study lifecycle, profile and skills and host
   operations are lead-only. A tool with no row or no key reads as lead. A test fails a new row without it.
 - **`AgentPolicyMiddleware`**: for a call naming an agent (`_meta["aihydro/context"].agent`), refuses a lead or host-audience tool
   (`AGENT_NOT_DELEGABLE`), an explicit `session_id` other than the call's study (`AGENT_CONTEXT_MISMATCH`), and any call in an evaluation run.
@@ -24,6 +24,9 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
 
 ### Changed
 
+- **Evaluation tool surface:** `aihydro_record_agent_run` is added to `HIDDEN_ALL_ARMS`, so every evaluation arm (C1-C3) lists exactly the tools it
+  listed before this change; the diff against 2.8.7 is empty. P1 and Paper A stay pinned to their older tools versions and no bundle is edited.
+- Known gap: `aihydro://` resource reads do not pass through tool middleware; a host must not hand a child the resource surface.
 - A call that names an agent never rebinds the chat (`helpers._bind`).
 - `merge_session_shards` is `audience = host`.
 

@@ -1142,7 +1142,7 @@ def aihydro_record_agent_run(record: dict, session_id: str | None = None) -> dic
             workspace_dir = None
         try:
             row = agent_runs.build_row(sid, record, workspace_dir=workspace_dir)
-            status = agent_runs.insert(sid, row)
+            status, row = agent_runs.insert_agent_run(sid, row)       # on a no-op, the STORED row
         except agent_runs.AgentRunError as exc:
             return {"error": True, "code": exc.code, "message": str(exc)}
         return {"session_id": sid, "agent_run_id": row["agent_run_id"], "status": status,

@@ -110,6 +110,10 @@ LEAD_ONLY = {
     "aihydro_record_agent_run", "ensure_project", "run_python",
     # bulk downloads and long runs stay with the lead
     "merit_ensure_region", "run_experiment",
+    # bulk and background acquisition: a later stage promotes these on purpose
+    "data_batch_fetch", "lsh_batch", "data_fetch_background",
+    # reach beyond the call's own study
+    "get_project_summary", "find_studies_for_gauge", "gauge_flowlines",
 }
 
 
@@ -124,7 +128,8 @@ def test_classification_counts_and_basis():
     # `read` is exactly the read-only tools minus the profile/skills reads; nothing else is
     ro = {n for n, r in ROWS.items() if r["readOnlyHint"]}
     assert {n for n, r in ROWS.items() if r["delegable"] == "read"} == ro - {
-        "get_researcher_profile", "list_skills", "load_skill"}
+        "get_researcher_profile", "list_skills", "load_skill",   # profile and skills are the lead's
+        "get_project_summary", "find_studies_for_gauge"}         # reach beyond the call's own study
     assert counts["scoped"] > 0 and counts["lead"] > counts["scoped"]
 
 
@@ -295,10 +300,17 @@ def test_session_resolution_itself_never_binds_for_an_agent(env):
     from ai_hydro.mcp.helpers import _resolve_session
 
     get_binding_store().bind(CHAT, OTHER)
+    from ai_hydro.mcp.app import ACTIVE_STUDY_ID
+    from ai_hydro.mcp.helpers import AgentContextMismatchError
+
     token = ACTIVE_AGENT.set({"agent_id": "ag_1"})
+    t2 = ACTIVE_STUDY_ID.set(SID)
     try:
         assert _resolve_session(SID, CHAT) == SID
+        with pytest.raises(AgentContextMismatchError):          # the resolver itself refuses another study
+            _resolve_session(OTHER, CHAT)
     finally:
+        ACTIVE_STUDY_ID.reset(t2)
         ACTIVE_AGENT.reset(token)
     assert get_binding_store().lookup_study(CHAT) == OTHER
     assert _resolve_session(SID, CHAT) == SID                                  # no agent: binds as before
@@ -486,3 +498,86 @@ def test_a_study_without_agents_exports_no_agents_directory(env, tmp_path):
     cap = Path(out["capsule_dir"])
     assert not (cap / "agents").exists()
     assert "agent_runs" not in json.loads((cap / "capsule_manifest.json").read_text())
+
+
+# ----------------------------------------------------------------- Stage 1 review fixes
+ALIASES = ["session", "sid", "sessionId", "Session_Id", "sesion_id", "session-id"]
+
+
+@pytest.mark.parametrize("alias", ALIASES)
+@pytest.mark.parametrize("tool", ["list_claims", "get_session_summary", "get_session_health",
+                                  "compute_drought_index"])
+def test_no_alias_spelling_reaches_another_study(env, tool, alias):
+    from binding_helpers import call
+
+    meta = {META: {"study_id": SID, "chat_id": CHAT, "agent": AGENT}}
+    res, body = call(tool, {alias: OTHER}, meta=meta)
+    assert body is not None and body.get("code") == AGENT_CONTEXT_MISMATCH, (tool, alias, body)
+    assert get_binding_store().lookup_study(CHAT) is None
+    # the same alias naming the call's own study is not a mismatch
+    res, body = call(tool, {alias: SID}, meta=meta)
+    assert (body or {}).get("code") != AGENT_CONTEXT_MISMATCH, (tool, alias, body)
+    # a plain call may still name another study
+    res, body = call(tool, {alias: OTHER}, meta={META: {"study_id": SID}})
+    assert (body or {}).get("code") != AGENT_CONTEXT_MISMATCH, (tool, alias, body)
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("search_experiments", {"project_name": "p", "query": "q"}),
+    ("search_experiments", {"project_name": "p", "query": "q", "compare_sessions": True}),
+    ("search_literature", {"project_name": "p", "query": "q"}),
+    ("audit_interpretation", {"prose": "x", "outcome": "pass"}),
+    ("audit_interpretation", {"prose": "x", "unmet": ["a"]}),
+    ("aihydro_chat_status", {"chat_id": "01OTHERCHAT"}),
+    ("map_get_state", {"chat_id": "01OTHERCHAT"}),
+    ("map_get_state", {"workspace": "/elsewhere"}),
+    ("map_get_state", {"scope": "project"}),
+])
+def test_identifier_arguments_that_leave_the_study_are_refused(env, tool, args):
+    from binding_helpers import call
+
+    meta = {META: {"study_id": SID, "chat_id": CHAT, "workspace": "/ws", "agent": AGENT}}
+    res, body = call(tool, args, meta=meta)
+    assert body is not None and body.get("code") == AGENT_CONTEXT_MISMATCH, (tool, args, body)
+
+
+def test_the_call_contexts_own_chat_and_workspace_are_fine(env):
+    from binding_helpers import call
+
+    meta = {META: {"study_id": SID, "chat_id": CHAT, "workspace": "/ws", "agent": AGENT}}
+    for tool, args in (("aihydro_chat_status", {"chat_id": CHAT}),
+                       ("map_get_state", {"chat_id": CHAT, "workspace": "/ws"})):
+        res, body = call(tool, args, meta=meta)
+        assert (body or {}).get("code") != AGENT_CONTEXT_MISMATCH, (tool, body)
+    # plain calls are untouched
+    res, body = call("map_get_state", {"scope": "project"}, meta={META: {"study_id": SID}})
+    assert (body or {}).get("code") != AGENT_CONTEXT_MISMATCH
+
+
+def test_record_agent_run_no_op_returns_the_stored_digest_cap_and_allowlist(env, tmp_path, monkeypatch):
+    import ai_hydro.mcp.tools_session as ts
+
+    rec = {"agent_id": "a1", "status": "completed", "mystery_field": {"x": 1}}
+    first = ts.aihydro_record_agent_run(rec, session_id=SID)
+    again = ts.aihydro_record_agent_run(dict(rec), session_id=SID)
+    assert again["status"] == "noop" and again["record_digest"] == first["record_digest"]
+    assert agent_runs.read_all(SID)["a1"]["record_digest"] == first["record_digest"]
+
+    out = ts.export_session(session_id=SID, capsule_path=str(tmp_path / "cap"))
+    doc = json.loads((Path(out["capsule_dir"]) / "agents" / "a1.json").read_text())
+    assert doc["record"] == {"agent_id": "a1", "status": "completed"}
+    assert doc["withheld_fields"] == ["mystery_field"]
+    assert doc["digest_verified_at_export"] is True
+
+    monkeypatch.setattr(agent_runs, "MAX_RUNS_PER_STUDY", 2)
+    assert ts.aihydro_record_agent_run({"agent_id": "a2"}, session_id=SID)["status"] == "inserted"
+    over = ts.aihydro_record_agent_run({"agent_id": "a3"}, session_id=SID)
+    assert over["code"] == "AGENT_RUN_LIMIT"
+    assert ts.aihydro_record_agent_run(dict(rec), session_id=SID)["status"] == "noop"   # existing ids still no-op
+
+
+def test_the_agent_run_recorder_is_not_on_an_evaluation_arms_surface():
+    from ai_hydro.mcp import eval_condition as ec
+
+    assert "aihydro_record_agent_run" in ec.HIDDEN_ALL_ARMS
+    assert "aihydro_record_agent_run" in ec.hidden_tools("C3", ["aihydro_record_agent_run", "add_claim"])

@@ -485,7 +485,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
-delegable = "scoped"
+delegable = "lead"
 evidence = "network fetch; writes cache + (when session_id given) session slot / background job artifacts [calls: cancel, fetch, fetch_batch, fetch_index_composite, submit]"
 
 ["data_describe_product"]
@@ -523,7 +523,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
-delegable = "scoped"
+delegable = "lead"
 evidence = "network fetch; writes cache + (when session_id given) session slot / background job artifacts [calls: Popen, jobs.start_job, mkdir, start_job, subprocess.Popen]"
 
 ["data_get_cache_status"]
@@ -865,7 +865,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
-delegable = "read"
+delegable = "lead"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_researcher_profile"]
@@ -1130,7 +1130,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
-delegable = "scoped"
+delegable = "lead"
 evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [calls: submit]"
 
 ["lsh_compare_to_ref"]
@@ -1705,6 +1705,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network fetch (NLDI flowlines) and one GeoJSON file written to the study workspace; writes no session slot, claim or ledger entry [calls: nldi_flowlines, write_workspace_file]"
 
 ["find_studies_for_gauge"]
@@ -1713,6 +1714,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "reads every study file and run log on this machine and filters in memory; writes nothing [guard: no write, subprocess or network call found]"
 
 ["gauge_network_context"]

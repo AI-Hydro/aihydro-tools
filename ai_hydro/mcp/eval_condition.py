@@ -81,7 +81,8 @@ MARKER_SCHEMA = "aihydro.eval_home/1"
 CONDITIONS = ("C1", "C2", "C3")
 CONTEXT_MISMATCH = "EVAL_CONTEXT_MISMATCH"
 
-HIDDEN_ALL_ARMS = frozenset({"write_research_interpretation", "run_python"})
+# aihydro_record_agent_run (Stage 1) is hidden so an arm's tool surface is what it was before that tool existed.
+HIDDEN_ALL_ARMS = frozenset({"write_research_interpretation", "run_python", "aihydro_record_agent_run"})
 REGISTRY_TOOLS = frozenset({"promote_claim_to_registry", "list_registry_claims", "check_registry_staleness"})
 C1_ONLY_HIDDEN = frozenset({"run_skeptic", "audit_interpretation", "register_research_plan"})
 # C1 strips ADVISORY and GATE output only: text produced by validators, the skeptic and promotion

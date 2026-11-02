@@ -8,9 +8,11 @@ as ``_meta["aihydro/context"]["agent"]``. This module is the server's half:
 * ``AgentPolicyMiddleware`` refuses, for a call that names an agent,
   - any tool whose annotation row is not ``delegable = "read" | "scoped"`` (a missing
     row or a missing key counts as ``lead``: fail closed), and any ``audience = "host"`` tool;
-  - an explicit ``session_id`` that is not the study the call's context names, so an agent
-    cannot reach another study (session resolution also never rebinds a chat for an agent,
-    see ``helpers._bind``);
+  - an explicit study id (``session_id`` or any alias ArgRepair maps to it) that is not the
+    study the call's context names (re-checked inside ``helpers._resolve_session_impl``, so no
+    alias spelling gets past it), plus a few identifier arguments that reach outside the call's
+    study (``AGENT_ARG_RULES``). Session resolution also never rebinds a chat for an agent,
+    see ``helpers._bind``;
   - every call at all while an evaluation run is active (``in_evaluation_run()``).
 
 What ``agent`` is, and is not. It is asserted by the client. The server cannot tell a
@@ -20,6 +22,18 @@ rule here lets any call do more than it could. It is attribution (sealed into th
 record as ``extra.agent`` with ``asserted_by: "client"``), not proof of origin (ADR-002).
 The hard stops that need origin (human approval, launcher trust) stay with the human
 and the host; this layer is a floor under them, not a replacement.
+
+Limits, stated plainly:
+
+* The study comparison is against ``ACTIVE_STUDY_ID``, which is itself read from the same
+  client-asserted ``_meta``. It confines an agent to its study only when the HOST stamps
+  ``study_id`` on every child call (the extension does). A caller that omits ``agent`` or lies
+  about ``study_id`` is not stopped; this layer is a floor under a cooperating host.
+* ``delegable = "read"`` means read-only and study-scoped for tools reached through ``tools/call``.
+  ``aihydro://`` resource reads do not pass through tool middleware. A host must not hand a child
+  the resource surface (known gap); the policy does not cover it.
+* ``audience = "host"`` is a hint to hosts. The server enforces it only for calls that name an
+  agent; any caller that omits ``agent`` can call a host-audience tool.
 
 With no ``agent`` the middleware is a pure pass-through and run records are byte-identical
 to those written before it existed.
@@ -36,6 +50,7 @@ from ai_hydro.mcp.errors import StructuredToolError
 log = logging.getLogger("ai_hydro.mcp.agent_policy")
 
 __all__ = [
+    "AGENT_ARG_RULES", "check_agent_arguments", "AgentArgumentPolicyMiddleware",
     "AGENT_KEYS", "DELEGABLE_VALUES", "AGENT_NOT_DELEGABLE", "AGENT_CONTEXT_MISMATCH",
     "AGENT_IN_EVALUATION", "parse_agent", "delegable_of", "AgentPolicyMiddleware",
 ]
@@ -109,6 +124,60 @@ def delegable_of(tool: str, rows: dict[str, dict[str, Any]] | None = None) -> st
     return value if value in DELEGABLE_VALUES else "lead"
 
 
+#: Arguments that reach outside the call's own study. Keyed by tool because the argument, not the tool
+#: class, is the hazard. Checked on the repaired arguments (AgentArgumentPolicyMiddleware) and on the raw
+#: ones. "forbid": refused when set to anything but None / "" / [] / False. "context": must equal the
+#: call context's value (``chat`` -> ACTIVE_CHAT_ID, ``workspace`` -> ACTIVE_WORKSPACE). "values": refused values.
+AGENT_ARG_RULES: dict[str, dict[str, Any]] = {
+    "search_experiments": {"forbid": ("project_name", "compare_sessions")},
+    "search_literature": {"forbid": ("project_name",)},
+    "audit_interpretation": {"forbid": ("outcome", "unmet")},
+    "aihydro_chat_status": {"context": {"chat_id": "chat"}},
+    "map_get_state": {"context": {"chat_id": "chat", "workspace": "workspace"},
+                      "values": {"scope": ("project",)}},
+}
+
+
+def _set(v: Any) -> bool:
+    return v not in (None, "", [], False, {})
+
+
+def check_agent_arguments(tool: str, args: Any) -> None:
+    """Raise a structured refusal if ``args`` reach outside the call's study. Agent calls only."""
+    from ai_hydro.mcp.app import ACTIVE_CHAT_ID, ACTIVE_STUDY_ID, ACTIVE_WORKSPACE
+
+    if not isinstance(args, dict):
+        return
+    requested = args.get("session_id")
+    if isinstance(requested, str) and requested.strip():
+        bound = ACTIVE_STUDY_ID.get()
+        if bound is None or requested.strip() != bound:
+            raise _refusal(
+                AGENT_CONTEXT_MISMATCH,
+                "An agent works in the study of its call context; it may not name another "
+                f"(session_id={requested.strip()[:80]!r}). Omit session_id.", tool=tool)
+    rule = AGENT_ARG_RULES.get(tool)
+    if not rule:
+        return
+    for name in rule.get("forbid", ()):
+        if _set(args.get(name)):
+            raise _refusal(AGENT_CONTEXT_MISMATCH,
+                           f"{tool}: argument {name!r} reaches outside the agent's study and is not "
+                           "available to a subagent.", tool=tool, argument=name)
+    ctx = {"chat": ACTIVE_CHAT_ID.get(), "workspace": ACTIVE_WORKSPACE.get()}
+    for name, key in (rule.get("context") or {}).items():
+        v = args.get(name)
+        if _set(v) and v != ctx[key]:
+            raise _refusal(AGENT_CONTEXT_MISMATCH,
+                           f"{tool}: {name!r} must be the call context's own ({key}); an agent may not "
+                           "name another.", tool=tool, argument=name)
+    for name, bad in (rule.get("values") or {}).items():
+        if args.get(name) in bad:
+            raise _refusal(AGENT_CONTEXT_MISMATCH,
+                           f"{tool}: {name}={args.get(name)!r} reaches beyond the agent's study.",
+                           tool=tool, argument=name)
+
+
 def _refusal(code: str, message: str, **extra: Any) -> StructuredToolError:
     return StructuredToolError({"error": True, "code": code, "message": message, **extra})
 
@@ -154,14 +223,23 @@ class AgentPolicyMiddleware(Middleware):
                 "Report what you found to the lead, which makes the call itself.",
                 tool=tool, delegable="lead")
 
-        args = getattr(message, "arguments", None) or {}
-        requested = args.get("session_id") if isinstance(args, dict) else None
-        if isinstance(requested, str) and requested.strip():
-            bound = ACTIVE_STUDY_ID.get()
-            if bound is None or requested.strip() != bound:
-                raise _refusal(
-                    AGENT_CONTEXT_MISMATCH,
-                    f"An agent works in the study of its call context; it may not name another "
-                    f"(session_id={requested.strip()[:80]!r}). Omit session_id.",
-                    tool=tool)
+        check_agent_arguments(tool, getattr(message, "arguments", None))
+        return await call_next(context)
+
+
+class AgentArgumentPolicyMiddleware(Middleware):
+    """The argument rules again, on the REPAIRED arguments.
+
+    ``AgentPolicyMiddleware`` sees the arguments as the client spelt them; ``ArgRepairMiddleware``
+    (installed later) renames aliases (``session``, ``sid``, ``sessionId``, ...) to the real parameter.
+    This one is installed after it, so it runs just before the tool and sees what the tool will get.
+    A pass-through for a call that names no agent.
+    """
+
+    async def on_call_tool(self, context, call_next):  # type: ignore[override]
+        from ai_hydro.mcp.app import ACTIVE_AGENT
+
+        if ACTIVE_AGENT.get() is not None:
+            message = context.message
+            check_agent_arguments(getattr(message, "name", "") or "", getattr(message, "arguments", None))
         return await call_next(context)

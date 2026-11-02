@@ -15,10 +15,10 @@ server.
 2. **`delegable` is a required column of `tool_annotations.toml`** (`read | scoped | lead`), served as `aihydro/delegable`. A row
    without it, or a tool with no row, reads as `lead`. `tests/test_agent_policy.py` fails a row without the key. `read` requires
    `readOnlyHint`; `scoped` is only a non-destructive `acquires` tool; destructive, host-audience and consent tools are `lead`.
-3. **Classification of the 182 rows: 74 read, 20 scoped, 88 lead.** Unclear rows went to `lead`. Judgment calls: the researcher
+3. **Classification of the 184 rows: 73 read, 17 scoped, 94 lead.** Unclear rows went to `lead`. Judgment calls: the researcher
    profile and skills reads (`get_researcher_profile`, `list_skills`, `load_skill`) are `lead` though read-only (the floor names them);
    both delineation tools are `lead` because they create a study, as are `merit_ensure_*` (bulk downloads), `run_experiment` and
-   `map_flood_inundation*`; compute tools that do not acquire data (`compute_flow_duration_curve`, `extract_hydrological_signatures`, ...)
+   `map_flood_inundation*`; `data_batch_fetch`, `lsh_batch` and `data_fetch_background` (bulk or background acquisition; a later stage promotes them on purpose); `get_project_summary`, `find_studies_for_gauge` (reach beyond the call's study) and `gauge_flowlines` (writes a file, not data acquisition); compute tools that do not acquire data (`compute_flow_duration_curve`, `extract_hydrological_signatures`, ...)
    are `lead` until a data-runner stage needs them and reclassifies them on purpose.
 4. **`AgentPolicyMiddleware`** is registered after the context and evaluation layers and before the run record, so a refused call
    writes nothing. For a call naming an agent it refuses: a `lead` or host-audience tool (`AGENT_NOT_DELEGABLE`); an explicit
@@ -32,6 +32,18 @@ server.
    `agent_runs` manifest section. A capsule of a study with no agent runs is unchanged.
 7. **`merge_session_shards` is `audience = host`** (removal from the model surface later). Shards merge notes, citations, interpretation
    and slots by last writer and skip claims; they look like a branch of a study and are not.
+
+8. **Identity arguments are enforced twice.** `_resolve_session_impl` raises `AGENT_CONTEXT_MISMATCH` for an explicit study id other than the
+   call context's `study_id`, whatever alias spelling `ArgRepairMiddleware` mapped it from; `AgentArgumentPolicyMiddleware` (registered
+   after arg repair) applies `AGENT_ARG_RULES` to the repaired arguments (`project_name` / `compare_sessions` on `search_experiments` and
+   `search_literature`, so those two cannot be used by an agent as `project_name` is required; `outcome` / `unmet` on `audit_interpretation`;
+   a foreign `chat_id` / `workspace` and `scope="project"` on `aihydro_chat_status` and `map_get_state`).
+9. **Limits, stated.** The comparison is against `ACTIVE_STUDY_ID`, which is client-asserted `_meta`: it confines an agent only when the host
+   stamps `study_id` on every child call. `aihydro://` resource reads bypass tool middleware (known gap; the host must not hand a child
+   resources). `audience = "host"` is a hint: the server enforces it only for calls that name an agent.
+10. **Agent-run export uses an allowlist** (`agent_runs.EXPORT_FIELDS`), at most 500 records per study (`AGENT_RUN_LIMIT`), and
+    `digest_verified_at_export` means the stored row was unchanged since it was stored. `aihydro_record_agent_run` is hidden in all
+    evaluation arms (`HIDDEN_ALL_ARMS`), so an arm's tool surface is what it was before the tool existed.
 
 **Not done in this stage.** The defensibility report section for agents, the extension reading `aihydro/delegable` in place of its
 hand list, and replay.py checking `agents/` digests (the files are covered by the manifest's file hashes only).

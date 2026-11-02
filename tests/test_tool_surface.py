@@ -130,6 +130,7 @@ _WRITE_NAMES = {
     "_save_experiments", "_save_progress", "_write_all", "rmtree", "_save", "save_skill",
     "_write_csv", "_workspace_write", "_write_tools_md", "start_job", "submit_job", "Popen",
     "exec", "eval", "execfile", "system", "_run_feature", "_launch_job", "_start_job", "MeritDataManager",
+    "insert_agent_run",
 }
 # Provenance recording of the call itself (see the header of tool_annotations.toml).
 _EXCLUDED = {"_write_run_log", "post_run", "_post_run"}

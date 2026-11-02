@@ -34,6 +34,19 @@ log = logging.getLogger("ai_hydro.session.agent_runs")
 
 SCHEMA = "aihydro.agent_run/1"
 MAX_RECORD_BYTES = 256 * 1024
+#: Rows per study. A host that ends more agents than this in one study is out of control; the
+#: insert is refused (AGENT_RUN_LIMIT) so the table and every capsule stay bounded.
+MAX_RUNS_PER_STUDY = 500
+
+#: Fields of a record that reach a capsule. Anything else the host sent stays in the study's
+#: database but is withheld from the export and named in the file's ``withheld_fields``; a new
+#: field is exported only after it is added here on purpose. ``prompt`` is separate (flag).
+EXPORT_FIELDS = (
+    "agent_id", "agent_run_id", "parent_agent_id", "role", "definition_sha256", "team_id", "lease",
+    "status", "end_state", "model_requested", "model_returned", "started_at", "ended_at",
+    "budget", "usage", "approvals", "denied", "refused", "budget_stops", "tool_calls",
+    "runs_created", "report_sha256", "prompt_sha256",
+)
 _ID_MAX = 200
 
 _DDL = ("CREATE TABLE IF NOT EXISTS agent_runs "
@@ -97,8 +110,9 @@ def _body_digest(row: dict) -> str:
     return _digest({"agent_run_id": row.get("agent_run_id"), "record": row.get("record")})
 
 
-def insert(session_id: str, row: dict) -> str:
-    """Insert-only store. ``"inserted"`` | ``"noop"`` (same body already stored).
+def insert_agent_run(session_id: str, row: dict) -> tuple[str, dict]:
+    """Insert-only store. ``("inserted" | "noop", stored_row)``; ``noop`` means the same body is
+    already stored, and ``stored_row`` is the row as stored (its digest, not the new row's).
 
     Raises ``AgentRunError('AGENT_RUN_CONFLICT')`` for a different body under an existing id.
     """
@@ -115,17 +129,22 @@ def insert(session_id: str, row: dict) -> str:
             if cur is not None:
                 old = json.loads(cur[0])
                 if _body_digest(old) == _body_digest(row):
-                    return "noop"
+                    return "noop", old
                 raise AgentRunError(
                     "AGENT_RUN_CONFLICT",
                     f"agent run {row['agent_run_id']!r} is already recorded with a different body; "
                     "agent run records are insert-only")
+            n = conn.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0]
+            if n >= MAX_RUNS_PER_STUDY:
+                raise AgentRunError(
+                    "AGENT_RUN_LIMIT",
+                    f"this study already holds {n} agent run records (limit {MAX_RUNS_PER_STUDY})")
             conn.execute(
                 "INSERT INTO agent_runs (agent_run_id, recorded_at, record_digest, row_json) VALUES (?,?,?,?)",
                 (row["agent_run_id"], row["recorded_at"], row["record_digest"],
                  json.dumps(row, sort_keys=True, ensure_ascii=False)))
             conn.commit()
-            return "inserted"
+            return "inserted", row
         finally:
             conn.close()
 

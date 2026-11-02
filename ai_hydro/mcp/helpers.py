@@ -56,6 +56,13 @@ class SessionResolutionError(RuntimeError):
         return d
 
 
+class AgentContextMismatchError(SessionResolutionError):
+    """A call naming an agent tried to reach a study other than its context's."""
+
+    def to_dict(self) -> dict:
+        return {**super().to_dict(), "code": "AGENT_CONTEXT_MISMATCH"}
+
+
 class StudyNotFoundError(SessionResolutionError):
     """The named (or bound) study does not exist. Nothing was created or written."""
 
@@ -468,6 +475,15 @@ def _resolve_session_impl(
     # 1. Explicit session_id (or _meta study_id) -> use it; optionally rebind chat
     if session_id:
         sid = _normalize_session_id(session_id)
+        if rule == "explicit_arg":
+            from ai_hydro.mcp.app import ACTIVE_AGENT
+
+            if ACTIVE_AGENT.get() is not None and sid != ACTIVE_STUDY_ID.get():
+                # Whatever spelling the argument arrived in, an agent works in its call's study only.
+                raise AgentContextMismatchError(
+                    "An agent works in the study of its call context; it may not name another "
+                    f"(session_id={sid[:80]!r}). Omit session_id.",
+                    recovery="Omit session_id: the study is the call's own.")
         if chat_id and not read_only:
             # Only a study that already exists is bound: a typo or a made-up id must not become the chat's study.
             from ai_hydro.session.study_index import study_exists

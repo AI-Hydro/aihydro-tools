@@ -367,6 +367,9 @@ except Exception as _e:
 try:
     from ai_hydro.mcp.arg_repair import install_arg_repair as _install_arg_repair
     _install_arg_repair(mcp)
+    # Agent argument rules on the repaired arguments: must be registered after arg repair so it runs inside it.
+    from ai_hydro.mcp.agent_policy import AgentArgumentPolicyMiddleware as _AgentArgs
+    mcp.add_middleware(_AgentArgs())
 except Exception as _e:
     import logging
     logging.getLogger("ai_hydro.mcp").warning(
