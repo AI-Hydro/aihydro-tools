@@ -4,6 +4,29 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] (next minor: server identity and floor for subagents)
+
+A call can now name the subagent that made it, and the server keeps a floor under what such a call may do. Calls that name no
+agent behave and record exactly as before (a sealed record's digest is unchanged). `agent` is asserted by the client: it narrows
+what a call may do and never grants anything. Evaluation runs refuse calls that name an agent.
+
+### Added
+
+- **`delegable` column on every row of `tool_annotations.toml`** (`read | scoped | lead`, served as `_meta["aihydro/delegable"]`):
+  74 read, 20 scoped, 88 lead. Claims, the research plan, interpretation, claim binding, study lifecycle, profile and skills and host
+  operations are lead-only. A tool with no row or no key reads as lead. A test fails a new row without it.
+- **`AgentPolicyMiddleware`**: for a call naming an agent (`_meta["aihydro/context"].agent`), refuses a lead or host-audience tool
+  (`AGENT_NOT_DELEGABLE`), an explicit `session_id` other than the call's study (`AGENT_CONTEXT_MISMATCH`), and any call in an evaluation run.
+- **`extra.agent`** in the sealed run record of a call that named an agent (`agent_id, parent_agent_id, role, definition_sha256, team_id,
+  lease`, `asserted_by: "client"`).
+- **`aihydro_record_agent_run`** (host-audience) and an insert-only `agent_runs` table; **`export_session` writes `agents/<id>.json`** and an
+  `agent_runs` manifest section (prompt text only with `include_agent_prompts=True`).
+
+### Changed
+
+- A call that names an agent never rebinds the chat (`helpers._bind`).
+- `merge_session_shards` is `audience = host`.
+
 ---
 
 ## [2.8.7] - 2026-11-02 (lookup class, series codes, reference-layer stamps, gauge index, flowlines)

@@ -69,6 +69,25 @@
 #                          citation lookup, a service status check, a network context query are
 #                          open-world and acquire no study data). -> _meta["aihydro/acquires"]
 #
+#   delegable = "read" | "scoped" | "lead"   REQUIRED on every row (tests/test_agent_policy.py fails a row
+#                          without it). Who may call the tool when the call names a subagent
+#                          (`_meta["aihydro/context"].agent`). Unlike the keys above the server enforces
+#                          it, for agent calls only (ai_hydro.mcp.agent_policy.AgentPolicyMiddleware):
+#                            read    free for an agent. Only a readOnlyHint=true tool may be `read`.
+#                            scoped  the server lets an agent call it; the HOST decides, per grant, whether
+#                                    a given child may (data acquisition into the existing study).
+#                            lead    refused to an agent, whatever the user approved for it. A tool with no
+#                                    row, or a row without the key, reads as `lead`: fail closed.
+#                          Classification principle: claims, the research plan, interpretation and claim
+#                          binding are lead-only, as are study lifecycle (start, clear, archive, merge,
+#                          rebind, delineation that creates a study), researcher profile and skills,
+#                          anything with audience=host or requiresConsent, and every destructive tool.
+#                          When a row is unclear it is `lead`. `scoped` is only an `acquires` tool that is
+#                          not destructive and does not create a study or start a bulk download
+#                          (merit_ensure_*, run_experiment, map_flood_* stay `lead`). `agent` is asserted
+#                          by the client: this narrows what a call may do and never grants anything.
+#                          -> _meta["aihydro/delegable"]
+#
 # `source` is the distribution that registers the tool (builtin = aihydro-tools); rows for an
 # optional plugin are only enforced when that plugin is importable.
 
@@ -78,6 +97,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: save]"
 
 ["add_claim"]
@@ -86,6 +106,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: mkdir, record_change, save, write_ledger_event, write_text]"
 
 ["add_journal_entry"]
@@ -94,6 +115,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [calls: save]"
 
 ["add_note"]
@@ -102,6 +124,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [calls: save]"
 
 ["add_session_to_project"]
@@ -110,6 +133,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [calls: save]"
 
 ["aihydro_chat_status"]
@@ -118,6 +142,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["aihydro_describe_capability"]
@@ -126,6 +151,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["aihydro_rebind_chat"]
@@ -134,6 +160,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: bind]"
 
 ["ensure_project"]
@@ -143,6 +170,7 @@ destructiveHint = false
 idempotentHint = true
 openWorldHint = false
 audience = "host"
+delegable = "lead"
 evidence = "creates or finds projects/<prj_id>/project.json (derived registry, no researcher-authored state); idempotent [calls: ensure]"
 
 ["rename_project"]
@@ -152,6 +180,7 @@ destructiveHint = false
 idempotentHint = true
 openWorldHint = false
 audience = "host"
+delegable = "lead"
 evidence = "overwrites the project title (user-owned metadata of the registry, not a claim or result); same title is a no-op"
 
 ["set_project_default_study"]
@@ -161,6 +190,7 @@ destructiveHint = false
 idempotentHint = true
 openWorldHint = false
 audience = "host"
+delegable = "lead"
 evidence = "sets or clears the project's default study and its confirmation; same arguments leave the same state"
 
 ["add_project_study"]
@@ -170,6 +200,7 @@ destructiveHint = false
 idempotentHint = true
 openWorldHint = false
 audience = "host"
+delegable = "lead"
 evidence = "appends a study link to the project; a repeat is a no-op (already_member)"
 
 ["remove_project_study"]
@@ -179,6 +210,7 @@ destructiveHint = false
 idempotentHint = true
 openWorldHint = false
 audience = "host"
+delegable = "lead"
 evidence = "removes a study link only; the study, run log and claims are untouched; a repeat is a no-op"
 
 ["archive_session"]
@@ -187,6 +219,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: archive]"
 
 ["audit_interpretation"]
@@ -195,6 +228,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["bind_map_to_claim"]
@@ -203,6 +237,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes workspace files (scaffold/export); recomputed from session [calls: mkdir, save, write_ledger_event, write_text]"
 
 ["bind_claim_to_item"]
@@ -211,6 +246,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes one ledger link into the study (session.extra) and a ledger event; a repeat call changes nothing"
 
 ["bootstrap_statistic"]
@@ -219,6 +255,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["cancel_job"]
@@ -227,6 +264,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "cancels a running job / deletes cache entry [calls: cancel_job, jobs.cancel_job, mkdir, write_text]"
 
 ["check_record_length"]
@@ -235,6 +273,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["check_registry_staleness"]
@@ -243,6 +282,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: _write_all, mkdir, open(write), os.replace, record_change]"
 
 ["check_regulated_basin"]
@@ -251,6 +291,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["check_stationarity"]
@@ -259,6 +300,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["check_temporal_alignment"]
@@ -267,6 +309,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["check_unit_consistency"]
@@ -275,6 +318,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["check_usgs_qualification_codes"]
@@ -283,6 +327,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["check_water_balance_consistency"]
@@ -291,6 +336,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["clear_session"]
@@ -299,6 +345,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: save]"
 
 ["compare_series"]
@@ -307,6 +354,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["compute_design_hydrograph"]
@@ -315,6 +363,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "reads session slots (no network); writes derived session slot and/or workspace files [calls: save]"
 
 ["compute_drought_index"]
@@ -324,6 +373,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: save]"
 
 ["compute_flood_frequency"]
@@ -332,6 +382,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "reads session slots (no network); writes derived session slot and/or workspace files [calls: save]"
 
 ["compute_flow_duration_curve"]
@@ -340,6 +391,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "reads session slots (no network); writes derived session slot and/or workspace files [calls: save]"
 
 ["compute_soil_loss_rusle"]
@@ -348,6 +400,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "reads session slots (no network); writes derived session slot and/or workspace files [calls: save]"
 
 ["compute_spectral_index"]
@@ -357,6 +410,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: mkdir, save, write_text]"
 
 ["compute_twi"]
@@ -366,6 +420,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: _workspace_write, mkdir, write_text, write_workspace_file]"
 
 ["course_get_curriculum"]
@@ -374,6 +429,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["course_get_state"]
@@ -382,6 +438,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["course_navigate"]
@@ -390,6 +447,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: mkdir, os.replace, write_text]"
 
 ["course_scaffold"]
@@ -398,6 +456,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes workspace files (scaffold/export); recomputed from session [calls: mkdir, os.replace, write_text]"
 
 ["course_set_progress"]
@@ -406,6 +465,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: _save_progress, mkdir, os.replace, write_text]"
 
 ["create_cn_grid"]
@@ -415,6 +475,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: mkdir, save, write_text]"
 
 ["data_batch_fetch"]
@@ -424,6 +485,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes cache + (when session_id given) session slot / background job artifacts [calls: cancel, fetch, fetch_batch, fetch_index_composite, submit]"
 
 ["data_describe_product"]
@@ -432,6 +494,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["data_doctor"]
@@ -440,6 +503,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["data_fetch"]
@@ -449,6 +513,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: _workspace_write, fetch, fetch_batch, mkdir, persist_streamflow_slot]"
 
 ["data_fetch_background"]
@@ -458,6 +523,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes cache + (when session_id given) session slot / background job artifacts [calls: Popen, jobs.start_job, mkdir, start_job, subprocess.Popen]"
 
 ["data_get_cache_status"]
@@ -466,6 +532,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["data_help"]
@@ -474,6 +541,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["data_invalidate_cache"]
@@ -482,6 +550,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "cancels a running job / deletes cache entry [calls: unlink]"
 
 ["data_list_products"]
@@ -490,6 +559,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["data_validate_request"]
@@ -498,6 +568,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "aihydro-data local registry/cache inspection; no network, no writes beyond creating the empty cache root [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["define_experiment"]
@@ -506,6 +577,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: _save_experiments, save]"
 
 ["delineate_watershed"]
@@ -515,6 +587,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: _workspace_write, dump, makedirs, mkdir, open(write)]"
 
 ["delineate_watershed_from_point"]
@@ -524,6 +597,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: _workspace_write, dump, fetch, fetch_dem_bbox, fetch_merit_gee_bbox]"
 
 ["delineation_doctor"]
@@ -532,6 +606,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network (Earth Engine initialisation or fetch); no session write [calls: Initialize, ee.Initialize]"
 
 ["describe_model_space"]
@@ -540,6 +615,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["describe_tool"]
@@ -548,6 +624,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["describe_tools"]
@@ -556,6 +633,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["detect_threshold_runs"]
@@ -564,6 +642,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["draft_claim_from_run"]
@@ -572,6 +651,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["export_inundation_surrogate_dataset"]
@@ -580,6 +660,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes workspace files (scaffold/export); recomputed from session [calls: mkdir, write_text]"
 
 ["export_session"]
@@ -588,6 +669,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes workspace files (scaffold/export); recomputed from session [calls: _workspace_write, _write_csv, export_bibtex, fetch, mkdir]"
 
 ["extract_geomorphic_parameters"]
@@ -597,6 +679,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: _workspace_write, fetch_dem, write_workspace_file]"
 
 ["extract_hydrological_signatures"]
@@ -605,6 +688,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: _workspace_write, fetch, write_workspace_file]"
 
 ["fetch_camels_us"]
@@ -614,6 +698,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: _workspace_write, save, write_workspace_file]"
 
 ["fetch_forcing_data"]
@@ -623,6 +708,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: _workspace_write, write_workspace_file]"
 
 ["fetch_soil_attributes_ssurgo"]
@@ -632,6 +718,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: save]"
 
 ["fetch_streamflow_data"]
@@ -641,6 +728,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: _workspace_write, mkdir, persist_streamflow_slot, save, write_session_data_file]"
 
 ["gee.extract_timeseries"]
@@ -650,6 +738,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "Earth Engine network call; writes GEE provenance/output files under the workspace [calls: Initialize, ee.Date, ee.Feature, ee.FeatureCollection, ee.Geometry]"
 
 ["gee.preview_layer"]
@@ -658,6 +747,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "Earth Engine network call; writes GEE provenance/output files under the workspace [calls: Initialize, ee.Geometry, ee.ImageCollection, ee.Initialize, getInfo]"
 
 ["gee.status"]
@@ -666,6 +756,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "Earth Engine network call; writes GEE provenance/output files under the workspace [calls: Initialize, ee.Initialize, mkdir, write_text]"
 
 ["get_citation_by_doi"]
@@ -675,6 +766,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network citation lookup (Crossref/Semantic Scholar/DataCite); writes the citation cache [calls: mkdir, urlopen, write_text]"
 
 ["get_data_fetch_result"]
@@ -683,6 +775,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads job status/artifacts from the job store; no writes [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_dataset_info"]
@@ -691,6 +784,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_equation_definition"]
@@ -699,6 +793,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_experiment_table"]
@@ -707,6 +802,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_inundation_physics_result"]
@@ -715,6 +811,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_inundation_surrogate_result"]
@@ -723,6 +820,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_leaderboard"]
@@ -731,6 +829,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads job status/artifacts from the job store; no writes [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_library_reference"]
@@ -739,6 +838,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_metric_definition"]
@@ -747,6 +847,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_model_results"]
@@ -755,6 +856,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_project_summary"]
@@ -763,6 +865,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_researcher_profile"]
@@ -771,6 +874,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_session_health"]
@@ -779,6 +883,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_session_raw_state"]
@@ -787,6 +892,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_session_summary"]
@@ -795,6 +901,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_training_status"]
@@ -803,6 +910,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads job status/artifacts from the job store; no writes [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_variable_definition"]
@@ -811,6 +919,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["get_workflow_manifest"]
@@ -819,6 +928,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["index_literature"]
@@ -827,6 +937,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: mkdir, save, write_text]"
 
 ["index_passages"]
@@ -835,6 +946,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: mkdir, os.replace, write_text]"
 
 ["list_assumptions"]
@@ -843,6 +955,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_available_tools"]
@@ -851,6 +964,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_available_workflows"]
@@ -859,6 +973,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_cached_citations"]
@@ -867,6 +982,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_claims"]
@@ -875,6 +991,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_features"]
@@ -883,6 +1000,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_jobs"]
@@ -891,6 +1009,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads job status/artifacts from the job store; no writes [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_known_datasets"]
@@ -899,6 +1018,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_known_metrics"]
@@ -907,6 +1027,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_known_variables"]
@@ -915,6 +1036,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_registry_claims"]
@@ -923,6 +1045,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_relevant_clis"]
@@ -931,6 +1054,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_skills"]
@@ -939,6 +1063,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["list_spectral_indices"]
@@ -947,6 +1072,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["load_skill"]
@@ -955,6 +1081,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["log_researcher_observation"]
@@ -964,6 +1091,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [calls: save]"
 
 ["lookup_citation"]
@@ -973,6 +1101,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network citation lookup (Crossref/Semantic Scholar/DataCite); writes the citation cache [calls: mkdir, urlopen, write_text]"
 
 ["lsh_attribute_info"]
@@ -981,6 +1110,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static/local recipe metadata; no network, no writes [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["lsh_attributes"]
@@ -990,6 +1120,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [calls: Initialize, ee.Image, ee.Initialize, fetch, fetch_dem_bbox]"
 
 ["lsh_batch"]
@@ -999,6 +1130,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [calls: submit]"
 
 ["lsh_compare_to_ref"]
@@ -1008,6 +1140,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [calls: Initialize, ee.Image, ee.Initialize, fetch, fetch_dem_bbox]"
 
 ["lsh_dynamic_attributes"]
@@ -1017,6 +1150,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [calls: Initialize, ee.Image, ee.Initialize, fetch, fetch_dem_bbox]"
 
 ["lsh_events"]
@@ -1026,6 +1160,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [calls: fetch, fetch_dem_bbox, fetch_merit_gee_bbox, nldi_basin_gdf]"
 
 ["lsh_families"]
@@ -1034,6 +1169,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static/local recipe metadata; no network, no writes [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["lsh_forcing"]
@@ -1043,6 +1179,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [calls: Initialize, ee.Image, ee.Initialize, fetch, fetch_dem_bbox]"
 
 ["lsh_geomorphic_attributes"]
@@ -1052,6 +1189,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "scoped"
 evidence = "network fetch (NLDI/DEM/GEE/forcing/streamflow) via aihydro-lsh/aihydro-data; fills the shared fetch cache; no session write [calls: fetch, fetch_dem_bbox, fetch_merit_gee_bbox, nldi_basin_gdf]"
 
 ["lsh_recipe_status"]
@@ -1060,6 +1198,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static/local recipe metadata; no network, no writes [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["lsh_reliability_matrix"]
@@ -1068,6 +1207,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static/local recipe metadata; no network, no writes [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["map_add_layer_from_run"]
@@ -1077,6 +1217,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "adds a layer to the map (command queue + run-derived layer); repeat adds layers [calls: mkdir, write_map_command, write_text]"
 
 ["map_apply_symbology"]
@@ -1086,6 +1227,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the map command queue (replace-style commands) [calls: mkdir, write_map_command, write_text]"
 
 ["map_fit_extent"]
@@ -1095,6 +1237,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the map command queue (replace-style commands) [calls: mkdir, write_map_command, write_text]"
 
 ["map_fit_layer"]
@@ -1104,6 +1247,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the map command queue (replace-style commands) [calls: mkdir, write_map_command, write_text]"
 
 ["map_flood_inundation"]
@@ -1113,6 +1257,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: Initialize, _workspace_write, data_fetch, ee.FeatureCollection, ee.ImageCollection]"
 
 ["map_flood_inundation_hydrograph"]
@@ -1122,6 +1267,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network fetch; writes session slot + workspace files (derived, recomputed deterministically from inputs) [calls: makedirs, mkdir, os.makedirs, write_text]"
 
 ["map_fly_to"]
@@ -1131,6 +1277,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the map command queue (replace-style commands) [calls: mkdir, write_map_command, write_text]"
 
 ["map_get_state"]
@@ -1139,6 +1286,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["map_list_layers"]
@@ -1147,6 +1295,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["map_remove_layer"]
@@ -1156,6 +1305,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the map command queue (replace-style commands) [calls: mkdir, write_map_command, write_text]"
 
 ["map_save_roi"]
@@ -1164,6 +1314,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session fields (workspace_dir, ROI, working geometry) and/or ROI files [calls: _workspace_write, mkdir, save, write_map_command, write_text]"
 
 ["map_set_basemap"]
@@ -1173,6 +1324,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the map command queue (replace-style commands) [calls: mkdir, write_map_command, write_text]"
 
 ["map_set_roi"]
@@ -1181,6 +1333,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session fields (workspace_dir, ROI, working geometry) and/or ROI files [calls: mkdir, save, write_map_command, write_text]"
 
 ["map_set_time_range"]
@@ -1190,6 +1343,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the map command queue (replace-style commands) [calls: mkdir, write_map_command, write_text]"
 
 ["map_set_working_geometry"]
@@ -1198,6 +1352,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session fields (workspace_dir, ROI, working geometry) and/or ROI files [calls: save]"
 
 ["map_show"]
@@ -1207,6 +1362,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the map command queue (replace-style commands) [calls: mkdir, write_map_command, write_text]"
 
 ["map_update_layer"]
@@ -1216,6 +1372,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the map command queue (replace-style commands) [calls: mkdir, write_map_command, write_text]"
 
 ["measure_feature"]
@@ -1224,6 +1381,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["merge_session_shards"]
@@ -1232,6 +1390,8 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+audience = "host"
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: save, unlink]"
 
 ["merit_add_map_layers"]
@@ -1240,6 +1400,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "reads local MERIT cache; writes a map event file for the UI [calls: mkdir, write_text]"
 
 ["merit_ensure_basin"]
@@ -1249,6 +1410,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network download of regional MERIT data into the data cache (download=True); no session write"
 
 ["merit_ensure_basins_region"]
@@ -1258,6 +1420,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network download of regional MERIT data into the data cache (download=True); no session write"
 
 ["merit_ensure_region"]
@@ -1267,6 +1430,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network download of regional MERIT data into the data cache (download=True); no session write"
 
 ["merit_ensure_routing_region"]
@@ -1276,6 +1440,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network download of regional MERIT data into the data cache (download=True); no session write"
 
 ["preview_address_comment"]
@@ -1285,6 +1450,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the preview command queue [calls: mkdir, write_preview_command, write_text]"
 
 ["preview_focus_cell"]
@@ -1294,6 +1460,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the preview command queue [calls: mkdir, write_preview_command, write_text]"
 
 ["preview_get_pending_changes"]
@@ -1302,6 +1469,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["preview_get_state"]
@@ -1310,6 +1478,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["preview_list_modules"]
@@ -1318,6 +1487,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["preview_recent_events"]
@@ -1326,6 +1496,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["preview_revise_section"]
@@ -1335,6 +1506,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the preview command queue [calls: mkdir, write_preview_command, write_text]"
 
 ["promote_claim_to_registry"]
@@ -1343,6 +1515,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [calls: _write_all, mkdir, open(write), os.replace, record_change]"
 
 ["propose_and_train"]
@@ -1351,6 +1524,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "starts a background job writing artifacts (new job_id per call) [calls: Popen, jobs.start_job, mkdir, start_job, subprocess.Popen]"
 
 ["register_feature"]
@@ -1359,6 +1533,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: register]"
 
 ["register_research_plan"]
@@ -1367,6 +1542,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [calls: save]"
 
 ["resolve_passage"]
@@ -1375,6 +1551,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["run_autoresearch"]
@@ -1383,6 +1560,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "starts a background job writing artifacts (new job_id per call) [calls: Popen, jobs.start_job, mkdir, start_job, subprocess.Popen]"
 
 ["run_experiment"]
@@ -1392,6 +1570,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "runs a registered analysis tool per feature (some fetch network data); writes session experiment results [calls: _save_experiments, save]"
 
 ["run_inundation_physics_validation"]
@@ -1400,6 +1579,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "starts a background job writing artifacts (new job_id per call) [calls: Popen, jobs.start_job, mkdir, start_job, subprocess.Popen]"
 
 ["run_python"]
@@ -1408,6 +1588,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = false
 openWorldHint = true
+delegable = "lead"
 evidence = "executes arbitrary Python in a subprocess (can read/write/delete anywhere and use the network) [calls: subprocess.run]"
 
 ["run_skeptic"]
@@ -1416,6 +1597,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["save_skill"]
@@ -1424,6 +1606,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: _save, mkdir, write_text]"
 
 ["search_experiments"]
@@ -1432,6 +1615,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["search_literature"]
@@ -1440,6 +1624,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the session store; no slot/file writes (HydroSession.load does not create files) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["search_passages_tool"]
@@ -1448,6 +1633,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "static or local-file lookup (registry, knowledge cards, manifests, curricula, skills, event files); no writes, no network [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["separate_baseflow"]
@@ -1456,6 +1642,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "reads session slots (no network); writes derived session slot and/or workspace files [calls: save]"
 
 ["set_active_feature"]
@@ -1464,6 +1651,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: set_active]"
 
 ["show_html_preview"]
@@ -1472,6 +1660,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes a UI command file to the preview command queue [calls: mkdir, write_text]"
 
 ["show_on_map"]
@@ -1480,6 +1669,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "reads local MERIT cache; writes a map event file for the UI [calls: mkdir, write_text]"
 
 ["start_project"]
@@ -1488,6 +1678,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "appends to the session/project/registry (notes, journal, plan, drafted claim, registry promotion); repeat call adds another record [calls: mkdir, save]"
 
 ["start_session"]
@@ -1496,6 +1687,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "writes session state (feature registry / binding / archive flag); idempotent [calls: save, subprocess.run]"
 
 ["summarize_series"]
@@ -1504,6 +1696,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "pure compute over the arguments; the only write is the call's own run-log row (post_run/middleware provenance) [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["gauge_flowlines"]
@@ -1528,6 +1721,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = true
 openWorldHint = true
+delegable = "lead"
 evidence = "network fetch (NLDI, USGS Water Data API, Geoconnex reference gages); writes no session state; the only file written is the Geoconnex PID cache [calls: resolve_geoconnex_gage]"
 
 ["trace_lineage"]
@@ -1536,6 +1730,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads the study's run log and claims and walks recorded edges in memory; writes nothing [guard: no write, subprocess or network call found]"
 
 ["train_hydro_model"]
@@ -1544,6 +1739,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "starts a background job writing artifacts (new job_id per call) [calls: Popen, jobs.start_job, mkdir, start_job, subprocess.Popen]"
 
 ["train_inundation_surrogate"]
@@ -1552,6 +1748,7 @@ readOnlyHint = false
 destructiveHint = false
 idempotentHint = false
 openWorldHint = false
+delegable = "lead"
 evidence = "starts a background job writing artifacts (new job_id per call) [calls: Popen, jobs.start_job, mkdir, start_job, subprocess.Popen]"
 
 ["update_claim_status"]
@@ -1560,6 +1757,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: mkdir, record_change, save, write_ledger_event, write_text]"
 
 ["update_researcher_profile"]
@@ -1569,6 +1767,7 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: save]"
 
 ["wait_for_job"]
@@ -1577,6 +1776,7 @@ readOnlyHint = true
 destructiveHint = false
 idempotentHint = true
 openWorldHint = false
+delegable = "read"
 evidence = "reads job status/artifacts from the job store; no writes [guard: no write, subprocess or network call found; runtime-audited by tests/test_readonly_runtime_guard.py]"
 
 ["write_research_interpretation"]
@@ -1585,4 +1785,15 @@ readOnlyHint = false
 destructiveHint = true
 idempotentHint = true
 openWorldHint = false
+delegable = "lead"
 evidence = "overwrites or removes researcher-authored session/profile/skill state [calls: _workspace_write, _write_tools_md, export_bibtex, mkdir, save]"
+
+["aihydro_record_agent_run"]
+source = "builtin"
+readOnlyHint = false
+destructiveHint = false
+idempotentHint = true
+openWorldHint = false
+audience = "host"
+delegable = "lead"
+evidence = "inserts one agent-run record into the study's agent_runs table (insert-only; the same record again is a no-op, a different body under the same id is refused) [host-audience: the host calls it when a subagent ends]"

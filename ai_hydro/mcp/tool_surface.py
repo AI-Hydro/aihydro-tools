@@ -31,6 +31,7 @@ log = logging.getLogger("ai_hydro.mcp")
 __all__ = [
     "ANNOTATIONS_PATH", "SURFACE_ENV", "load_annotation_rows", "apply_tool_annotations",
     "ToolSurfaceMiddleware", "install_tool_surface", "tool_surface_mode",
+    "load_annotation_rows_cached",
 ]
 
 ANNOTATIONS_PATH = Path(__file__).with_name("tool_annotations.toml")
@@ -45,8 +46,12 @@ META_KEYS = {
     "requiresConsent": "aihydro/requiresConsent",
     "audience": "aihydro/audience",
     "acquires": "aihydro/acquires",
+    "delegable": "aihydro/delegable",
 }
-META_VALUES = {"effect": {"ui", "lookup"}, "audience": {"host"}}
+# `delegable` is REQUIRED on every row (tests/test_agent_policy.py). Unlike the other keys the server
+# does branch on it, for calls that name an agent (ai_hydro.mcp.agent_policy); a missing or unknown
+# value reads as `lead` there, so a new tool is refused to agents until someone classifies it.
+META_VALUES = {"effect": {"ui", "lookup"}, "audience": {"host"}, "delegable": {"read", "scoped", "lead"}}
 
 HOT_MODE_NOTE = (
     "TOOL SURFACE: this server lists only the common tools (tools/list). Many more exist: "
@@ -170,6 +175,17 @@ def _is_hot(tool: Any) -> bool:
         return bool(meta["hot"])
     from ai_hydro.mcp.app import is_hot_tool
     return is_hot_tool(getattr(tool, "name", ""))
+
+
+_ROWS_CACHE: dict[str, dict[str, Any]] | None = None
+
+
+def load_annotation_rows_cached() -> dict[str, dict[str, Any]]:
+    """The annotation table, read once per process (the agent policy consults it on every agent call)."""
+    global _ROWS_CACHE
+    if _ROWS_CACHE is None:
+        _ROWS_CACHE = load_annotation_rows()
+    return _ROWS_CACHE
 
 
 _READ_ONLY_TOOLS: frozenset[str] | None = None

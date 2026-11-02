@@ -76,7 +76,7 @@ The [AI-Hydro VS Code extension](https://github.com/AI-Hydro/AI-Hydro) auto-dete
 | **Session** | `get_session_raw_state` | Retrieve raw computed results for LLM interpretation (Phase 1 of two-phase split) |
 | **Session** | `write_research_interpretation` | Store LLM-authored scientific interpretation (Phase 2 of two-phase split) |
 | **Session** | `archive_session` | Archive completed session to a timestamped ZIP |
-| **Session** | `merge_session_shards` | Merge parallel sub-agent shards into the main session |
+| **Session** | `merge_session_shards` | Host-only (not for agents): merge parallel session shards into the main session |
 | **Ledger** | `add_claim` | Add a scoped scientific claim to the session ledger |
 | **Ledger** | `update_claim_status` | Update the status/confidence of an existing claim |
 | **Ledger** | `list_claims` | List all claims in the session (filterable by status) |

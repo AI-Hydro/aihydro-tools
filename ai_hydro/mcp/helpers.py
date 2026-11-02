@@ -324,7 +324,16 @@ def note_binding_change(chat_id: str, study_id: str, previous: str | None, bound
 
 
 def _bind(store, chat_id: str, study_id: str, bound_by: str) -> None:
-    """Bind and report the change; a failed bind (invalid chat id, I/O) never fails the call."""
+    """Bind and report the change; a failed bind (invalid chat id, I/O) never fails the call.
+
+    An agent never rebinds a chat: its chat id is its parent's, so a bind would move the lead's
+    chat to another study. Every binding path in session resolution goes through here.
+    """
+    from ai_hydro.mcp.app import ACTIVE_AGENT
+
+    if ACTIVE_AGENT.get() is not None:
+        log.info("Not binding chat %s to %s (%s): call made by agent", chat_id, study_id, bound_by)
+        return
     try:
         previous = store.lookup_study(chat_id)
         if store.bind(chat_id, study_id, bound_by=bound_by):

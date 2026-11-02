@@ -221,7 +221,10 @@ def test_every_host_operation_is_audience_host_and_listed(ws):
     ops = {"ensure_project", "rename_project", "set_project_default_study", "add_project_study",
            "remove_project_study"}
     rows = load_annotation_rows()
-    assert {n for n, r in rows.items() if r.get("audience") == "host"} == ops
+    # the other host-audience tools are not registry operations: the shard merge (Stage 1, retired from
+    # the model surface) and the agent-run recorder
+    not_registry = {"merge_session_shards", "aihydro_record_agent_run"}
+    assert {n for n, r in rows.items() if r.get("audience") == "host"} == ops | not_registry
     import asyncio
     from ai_hydro.mcp import mcp
 
