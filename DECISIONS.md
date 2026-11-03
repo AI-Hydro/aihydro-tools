@@ -36,7 +36,10 @@ server.
 8. **Identity arguments are enforced twice.** `_resolve_session_impl` raises `AGENT_CONTEXT_MISMATCH` for an explicit study id other than the
    call context's `study_id`, whatever alias spelling `ArgRepairMiddleware` mapped it from; `AgentArgumentPolicyMiddleware` (registered
    after arg repair) applies `AGENT_ARG_RULES` to the repaired arguments (`project_name` / `compare_sessions` on `search_experiments` and
-   `search_literature` unless `project_name` is a project whose sessions include the agent's study; `compare_sessions` stays forbidden; `outcome` / `unmet` on `audit_interpretation`;
+   `search_literature` unless `project_name` is a project whose sessions include the agent's study. For an agent `search_experiments` then searches
+   its own study only: the project's other sessions are dropped before the search (so a study in two projects stays confined to that study), and
+   `compare_sessions` stays forbidden. `search_literature` is allowed for the owning project on purpose: a project's literature index is a shared
+   paper library, not study results; `outcome` / `unmet` on `audit_interpretation`;
    a foreign `chat_id` / `workspace` and `scope="project"` on `aihydro_chat_status` and `map_get_state`).
 9. **Limits, stated.** The study an agent may name is the context's `study_id`, else the study its chat is bound to (the 0.4.6 extension
    sends `chat_id` and no `study_id`); with neither, no explicit id is accepted. Both are client-asserted `_meta` or the server's chat binding. `aihydro://` resource reads bypass tool middleware (known gap; the host must not hand a child
@@ -48,6 +51,14 @@ server.
 11. **Explorers lose five reads on purpose:** `find_studies_for_gauge` (reads every study on the machine), `get_project_summary` (any project),
     `get_researcher_profile`, `list_skills`, `load_skill` (the floor names profile and skills). They are read-only but not study-scoped or not the
     lead's to share, so they are `lead`. The extension's own READ list must follow.
+
+12. **Stage 2 mapping, extension `SubagentRecord` to `aihydro_record_agent_run`.** The server record is snake_case and allowlisted; the host must map:
+    `childId` to `agent_id`; `agent.{parent_agent_id, role}` to top level; `modelIdRequested`/`modelIdReturned` to `model_requested`/`model_returned`;
+    `startedAt`/`endedAt` to `started_at`/`ended_at`; `status` as is; `budgetStop` to `budget_stop`; `allowlistSha256` to `allowlist_sha256`;
+    `profile` as is; `promptSha256` to `prompt_sha256` (and `prompt` text only if it is to be stored); `usage` as is (scalar keys); `toolCalls`
+    (`name, server, tool, argsSha256, approval, result`) to `tool_calls` (those keys are kept as sent); the `approvals`/`denied`/`refused` summaries and
+    `runs_created` (from `_run_id` in results) are for the host to derive. Not exported by design: `label`, `parentTaskId`, `parentUlid`, `report`,
+    `lastAssistantText`, `error` (free text). Until mapped, camelCase fields are stored but withheld from the capsule and named in `withheld_fields`.
 
 **Not done in this stage.** The defensibility report section for agents, the extension reading `aihydro/delegable` in place of its
 hand list, and replay.py checking `agents/` digests (the files are covered by the manifest's file hashes only).

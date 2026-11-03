@@ -33,6 +33,9 @@ Limits, stated plainly:
 * ``delegable = "read"`` means read-only and study-scoped for tools reached through ``tools/call``.
   ``aihydro://`` resource reads do not pass through tool middleware. A host must not hand a child
   the resource surface (known gap); the policy does not cover it.
+* ``search_experiments`` for an agent searches the agent's own study only (filtered inside the tool).
+  ``search_literature`` is allowed for the project that owns the agent's study: a project's literature
+  index is a shared paper library, not study results.
 * ``audience = "host"`` is a hint to hosts. The server enforces it only for calls that name an
   agent; any caller that omits ``agent`` can call a host-audience tool.
 
@@ -59,6 +62,12 @@ __all__ = [
 AGENT_NOT_DELEGABLE = "AGENT_NOT_DELEGABLE"
 AGENT_CONTEXT_MISMATCH = "AGENT_CONTEXT_MISMATCH"
 AGENT_IN_EVALUATION = "AGENT_REFUSED_IN_EVALUATION"
+
+#: Why a read-only tool is nonetheless refused to agents (named in the refusal).
+_WHY_READ_REFUSED = {
+    "find_studies_for_gauge": "reads other studies (every study on this machine)",
+    "get_project_summary": "reads other studies and projects (every session of the project)",
+}
 
 #: Closed vocabulary of the ``delegable`` column of tool_annotations.toml.
 #: read   - a child may call it freely (the tool is readOnlyHint).
@@ -258,9 +267,11 @@ class AgentPolicyMiddleware(Middleware):
         rows = load_annotation_rows_cached()
         row = rows.get(tool) or {}
         if row.get("audience") == "host" or delegable_of(tool, rows) == "lead":
+            why = _WHY_READ_REFUSED.get(tool)
             raise _refusal(
                 AGENT_NOT_DELEGABLE,
-                f"{tool} is not available to a subagent (agent {who!r}). Claims, the research plan, "
+                (f"{tool} is refused to a subagent because it {why}. " if why else "")
+                + f"{tool} is not available to a subagent (agent {who!r}). Claims, the research plan, "
                 "interpretation, claim binding, study lifecycle, profile and skills, and host-only "
                 "operations are the lead's alone, whatever the user approved for the agent. "
                 "Report what you found to the lead, which makes the call itself.",

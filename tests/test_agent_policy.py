@@ -667,9 +667,60 @@ def test_build_row_non_string_ids_and_nested_export_filter():
     rec = {"agent_id": "a", "budget": {"usd": 1.5, "nested": {"prompt": "secret"}},
            "tool_calls": [{"tool": "data_fetch", "args_sha256": "ab", "args": {"gauge": "x"}, "status": "ok"}],
            "approvals": {"read": 2}, "runs_created": ["r1", {"x": 1}], "status": {"deep": 1}}
-    out, withheld = agent_runs.export_record(rec)
+    out, withheld, cut = agent_runs.export_record(rec)
     assert out["budget"] == {"usd": 1.5}
     assert out["tool_calls"] == [{"tool": "data_fetch", "args_sha256": "ab", "status": "ok"}]
     assert out["runs_created"] == ["r1"] and "status" not in out
     assert {"budget.nested", "tool_calls.args", "runs_created.extra", "status"} <= set(withheld)
     assert "secret" not in json.dumps(out)
+
+
+def _study_with_marker(sid, marker):
+    s = HydroSession.load(sid)
+    s.put_result("watershed", "__legacy__", "", {"data": {"marker": marker, "area_km2": 1.0}})
+    s.save()
+
+
+def test_search_experiments_for_an_agent_never_shows_another_study(shipped, env):
+    """Two studies in one project, and one study in two projects: an agent in A reads A only."""
+    from binding_helpers import call
+    from ai_hydro.session import project as project_mod
+
+    _study_with_marker(SID, "MARKERAAA")
+    _study_with_marker(OTHER, "MARKERBBB")
+    both = project_mod.ProjectSession("both")
+    both.session_ids = [SID, OTHER]
+    both.save()
+    twin = project_mod.ProjectSession("twin")
+    twin.session_ids = [OTHER, SID]
+    twin.save()
+
+    # contrast: a plain call over the project sees both studies (the tool itself is unchanged)
+    res, plain = call("search_experiments", {"project_name": "both", "query": "marker"}, meta={META: {"study_id": SID}})
+    assert {m["session_id"] for m in plain["matches"]} == {SID, OTHER}
+
+    for project in ("both", "twin", "proj"):
+        res, body = call("search_experiments", {"project_name": project, "query": "marker"}, meta=shipped)
+        assert body.get("code") != AGENT_CONTEXT_MISMATCH, (project, body)
+        assert {m["session_id"] for m in body["matches"]} == {SID}, (project, body)
+        assert "MARKERBBB" not in json.dumps(body), project
+        assert body["n_sessions_searched"] == 1 and body["confined_to_agent_study"] is True
+    res, body = call("search_experiments", {"project_name": "both", "query": "MARKERBBB"}, meta=shipped)
+    assert body["matches"] == []
+
+
+def test_refusal_says_why_the_two_study_crossing_reads_are_refused(shipped):
+    from binding_helpers import call
+
+    for tool, args, phrase in (("find_studies_for_gauge", {"gauge_id": "01031500"}, "reads other studies"),
+                               ("get_project_summary", {"project_name": "proj"}, "other studies and projects")):
+        res, body = call(tool, args, meta=shipped)
+        assert body["code"] == AGENT_NOT_DELEGABLE and phrase in body["message"], body
+
+
+def test_export_names_truncated_fields():
+    rec = {"agent_id": "a", "status": "x" * 900, "tool_calls": [{"tool": "t", "reason": "y" * 700}],
+           "budget": {"note": "z" * 600}}
+    out, withheld, cut = agent_runs.export_record(rec)
+    assert len(out["status"]) == 500 and len(out["tool_calls"][0]["reason"]) == 500
+    assert cut == ["budget.note", "status", "tool_calls.reason"]

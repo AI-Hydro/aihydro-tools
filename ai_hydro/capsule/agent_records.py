@@ -54,7 +54,9 @@ def collect_agent_runs(session_id: str, capsule_dir: str | Path,
         counts["verified" if ok else "failed"] += 1
         doc = json.loads(json.dumps(row))
         rec = doc.get("record") if isinstance(doc.get("record"), dict) else {}
-        doc["record"], withheld = _ar.export_record(rec, include_prompt=include_prompts)
+        doc["record"], withheld, truncated = _ar.export_record(rec, include_prompt=include_prompts)
+        if truncated:
+            doc["truncated_fields"] = truncated
         if withheld:
             # record_digest covers the stored row WITH these fields; this copy cannot re-hash to it
             doc["withheld_fields"] = withheld

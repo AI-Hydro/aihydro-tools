@@ -164,6 +164,17 @@ def search_experiments(
         from ai_hydro.session.project import ProjectSession
 
         project = ProjectSession.load(project_name)
+        from ai_hydro.mcp.app import ACTIVE_AGENT
+
+        confined = ACTIVE_AGENT.get() is not None
+        if confined:
+            # A subagent sees its own study's results only, never the project's other studies (nor, if the
+            # study sits in several projects, any of theirs). The sessions are dropped BEFORE the search, so
+            # no other study is even loaded. compare_sessions is refused for agents upstream.
+            from ai_hydro.mcp.agent_policy import agent_study
+
+            study = agent_study()
+            project.session_ids = [study] if study and study in project.session_ids else []
         matches = project.search_experiments(query)
 
         result: dict = {
@@ -172,6 +183,7 @@ def search_experiments(
             "n_sessions_searched": len(project.session_ids),
             "n_matches": len(matches),
             "matches": matches,
+            **({"confined_to_agent_study": True} if confined else {}),
         }
 
         if compare_sessions:

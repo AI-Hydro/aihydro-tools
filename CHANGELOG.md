@@ -31,7 +31,8 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
   (profile, skills). A shipped explorer that called them now gets `AGENT_NOT_DELEGABLE`; the extension's own READ list must follow.
 - An agent's explicit `session_id` must be the study of its call context, or, when the host sends no `study_id` (the 0.4.6 extension sends
   `chat_id` only), the study its chat is bound to. `search_experiments` / `search_literature` accept `project_name` only for a project whose
-  sessions include that study.
+  sessions include that study; for an agent `search_experiments` searches that study only (no other session of the project is loaded) and
+  `search_literature` returns the project's shared literature index.
 - Known gap: `aihydro:// resource reads do not pass through tool middleware; a host must not hand a child the resource surface.
 - A call that names an agent never rebinds the chat (`helpers._bind`).
 - `merge_session_shards` is `audience = host`.

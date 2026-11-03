@@ -46,6 +46,7 @@ EXPORT_FIELDS = (
     "status", "end_state", "model_requested", "model_returned", "started_at", "ended_at",
     "budget", "usage", "approvals", "denied", "refused", "budget_stops", "tool_calls",
     "runs_created", "report_sha256", "prompt_sha256",
+    "allowlist_sha256", "profile", "budget_stop",
 )
 _ID_MAX = 200
 
@@ -216,7 +217,7 @@ def file_stem(agent_run_id: str) -> str:
 _SCALAR_MAPS = ("budget", "usage", "approvals", "budget_stops", "lease")
 _ITEM_LISTS = ("tool_calls", "denied", "refused")
 _ITEM_KEYS = ("tool", "name", "toolKey", "args_sha256", "argsSha256", "status", "run_id", "approval",
-              "effect_class", "effectClass", "reason", "code", "at", "duration_ms")
+              "effect_class", "effectClass", "reason", "code", "at", "duration_ms", "server", "result")
 _MAX_ITEMS = 200
 _MAX_STR = 500
 
@@ -229,46 +230,56 @@ def _clip(v: Any) -> Any:
     return v[:_MAX_STR] if isinstance(v, str) else v
 
 
-def export_record(record: dict, *, include_prompt: bool = False) -> tuple[dict, list[str]]:
-    """The part of ``record`` that reaches a capsule, and the names of what was left out.
+def export_record(record: dict, *, include_prompt: bool = False) -> tuple[dict, list[str], list[str]]:
+    """``(exported part, withheld names, truncated names)`` of ``record`` for a capsule.
 
     Top-level fields come from ``EXPORT_FIELDS`` only. Inside them the same rule applies one level
     down: maps (``budget``, ``usage``, ``approvals``, ``budget_stops``, ``lease``) keep scalar values
     only; lists of calls (``tool_calls``, ``denied``, ``refused``) keep ``_ITEM_KEYS`` with scalar
     values (at most 200 items); ``runs_created`` is a list of strings; every other allowlisted field
-    must be a scalar. Anything dropped is named (``field`` or ``field.key``).
+    must be a scalar. Free strings stay (``reason``, ``approval``, ``name``, ``tool``, ``status`` and the
+    like are the host's text, scrubbed for local paths when stored) but are cut at 500 characters; each
+    field cut is named in the third list (``field`` or ``field.key``). Dropped parts are named in the second.
     """
     keep = set(EXPORT_FIELDS) | ({"prompt"} if include_prompt else set())
     out: dict[str, Any] = {}
     withheld: list[str] = []
+    cut: list[str] = []
+
+    def clip(name: str, v: Any) -> Any:
+        if isinstance(v, str) and len(v) > _MAX_STR and name != "prompt":
+            cut.append(name)
+            return v[:_MAX_STR]
+        return v
+
     for k in sorted(record):
         v = record[k]
         if k not in keep:
             withheld.append(k)
         elif k in _SCALAR_MAPS and isinstance(v, dict):
-            kept = {kk: _clip(vv) for kk, vv in v.items() if _scalar(vv)}
+            out[k] = {kk: clip(f"{k}.{kk}", vv) for kk, vv in v.items() if _scalar(vv)}
             withheld += [f"{k}.{kk}" for kk, vv in v.items() if not _scalar(vv)]
-            out[k] = kept
         elif k in _ITEM_LISTS and isinstance(v, list):
             items = []
             for i, it in enumerate(v[:_MAX_ITEMS]):
                 if isinstance(it, dict):
-                    items.append({kk: _clip(vv) for kk, vv in it.items() if kk in _ITEM_KEYS and _scalar(vv)})
+                    items.append({kk: clip(f"{k}.{kk}", vv) for kk, vv in it.items()
+                                  if kk in _ITEM_KEYS and _scalar(vv)})
                     withheld += sorted({f"{k}.{kk}" for kk, vv in it.items()
                                         if kk not in _ITEM_KEYS or not _scalar(vv)})
                 elif _scalar(it):
-                    items.append(_clip(it))
+                    items.append(clip(k, it))
                 else:
                     withheld.append(f"{k}[{i}]")
             if len(v) > _MAX_ITEMS:
                 withheld.append(f"{k}[{_MAX_ITEMS}:]")
             out[k] = items
         elif k == "runs_created" and isinstance(v, list):
-            out[k] = [_clip(x) for x in v[:_MAX_ITEMS] if isinstance(x, str)]
+            out[k] = [clip(k, x) for x in v[:_MAX_ITEMS] if isinstance(x, str)]
             if len(v) > _MAX_ITEMS or any(not isinstance(x, str) for x in v):
                 withheld.append(k + ".extra")
         elif _scalar(v):
-            out[k] = _clip(v) if k != "prompt" else v
+            out[k] = clip(k, v)
         else:
             withheld.append(k)
-    return out, sorted(set(withheld))
+    return out, sorted(set(withheld)), sorted(set(cut))
