@@ -1,5 +1,71 @@
 # Decisions
 
+## 2026-11-02 - Server identity and floor for subagents (agent orchestration, Stage 1)
+
+**Context.** The extension can run read-only subagents. A child shares its parent's `chat_id`, the server ignored the `agent`
+field the client already sends, and the extension's list of tools a child may not call was kept by hand and had drifted from the
+real tool names. Stage 1 of `docs/vision-2040/findings/agent-orchestration-2026-10-31.md` puts the identity and the floor on the
+server.
+
+**Decisions.**
+1. **`agent` is client-asserted: it narrows, it never grants.** The server cannot tell a real subagent from a caller that omits the
+   field. Every rule keyed on `agent` only removes abilities from a call that names one; a call without it is exactly what it was.
+   It is attribution (sealed as `extra.agent`, `asserted_by: "client"`), not proof of origin (ADR-002). Human approval and launcher
+   trust stay with the human and the host.
+2. **`delegable` is a required column of `tool_annotations.toml`** (`read | scoped | lead`), served as `aihydro/delegable`. A row
+   without it, or a tool with no row, reads as `lead`. `tests/test_agent_policy.py` fails a row without the key. `read` requires
+   `readOnlyHint`; `scoped` is only a non-destructive `acquires` tool; destructive, host-audience and consent tools are `lead`.
+3. **Classification of the 184 rows: 73 read, 17 scoped, 94 lead.** Unclear rows went to `lead`. Judgment calls: the researcher
+   profile and skills reads (`get_researcher_profile`, `list_skills`, `load_skill`) are `lead` though read-only (the floor names them);
+   both delineation tools are `lead` because they create a study, as are `merit_ensure_*` (bulk downloads), `run_experiment` and
+   `map_flood_inundation*`; `data_batch_fetch`, `lsh_batch` and `data_fetch_background` (bulk or background acquisition; a later stage promotes them on purpose); `get_project_summary`, `find_studies_for_gauge` (reach beyond the call's study) and `gauge_flowlines` (writes a file, not data acquisition); compute tools that do not acquire data (`compute_flow_duration_curve`, `extract_hydrological_signatures`, ...)
+   are `lead` until a data-runner stage needs them and reclassifies them on purpose.
+4. **`AgentPolicyMiddleware`** is registered after the context and evaluation layers and before the run record, so a refused call
+   writes nothing. For a call naming an agent it refuses: a `lead` or host-audience tool (`AGENT_NOT_DELEGABLE`); an explicit
+   `session_id` that is not the agent's study: the context's `study_id`, else the chat's bound study (`AGENT_CONTEXT_MISMATCH`); and everything in an evaluation run
+   (`AGENT_REFUSED_IN_EVALUATION`). A present but malformed `agent` still counts as an agent (`agent_id: "unidentified"`), so garbling
+   the field cannot shed the floor. With no `agent` it is a pass-through.
+5. **No rebind for an agent**, enforced in `helpers._bind`, the one function every binding path calls.
+6. **Agent runs reach the capsule through the host.** `aihydro_record_agent_run` (host-audience) stores the host's record insert-only in an
+   `agent_runs` table of the study's run-log database, created on first insert so a study without agents is unchanged. `export_session`
+   writes `agents/<id>.json` (second-layer path scrub, prompt text withheld unless `include_agent_prompts=True`, prompt hash kept) and an
+   `agent_runs` manifest section. A capsule of a study with no agent runs is unchanged.
+7. **`merge_session_shards` is `audience = host`** (removal from the model surface later). Shards merge notes, citations, interpretation
+   and slots by last writer and skip claims; they look like a branch of a study and are not.
+
+8. **Identity arguments are enforced twice.** `_resolve_session_impl` raises `AGENT_CONTEXT_MISMATCH` for an explicit study id other than the
+   call context's `study_id`, whatever alias spelling `ArgRepairMiddleware` mapped it from; `AgentArgumentPolicyMiddleware` (registered
+   after arg repair) applies `AGENT_ARG_RULES` to the repaired arguments (`project_name` / `compare_sessions` on `search_experiments` and
+   `search_literature` unless `project_name` is a project whose sessions include the agent's study. For an agent `search_experiments` then searches
+   its own study only: the project's other sessions are dropped before the search (so a study in two projects stays confined to that study), and
+   `compare_sessions` stays forbidden. `search_literature` is allowed for the owning project on purpose: a project's literature index is a shared
+   paper library, not study results; `outcome` / `unmet` on `audit_interpretation`;
+   a foreign `chat_id` / `workspace` and `scope="project"` on `aihydro_chat_status` and `map_get_state`).
+9. **Limits, stated.** The study an agent may name is the context's `study_id`, else the study its chat is bound to (the 0.4.6 extension
+   sends `chat_id` and no `study_id`); with neither, no explicit id is accepted. Both are client-asserted `_meta` or the server's chat binding. `aihydro://` resource reads bypass tool middleware (known gap; the host must not hand a child
+   resources). `audience = "host"` is a hint: the server enforces it only for calls that name an agent.
+10. **Agent-run export uses an allowlist** (`agent_runs.EXPORT_FIELDS`), at most 500 records per study (`AGENT_RUN_LIMIT`), and
+    `digest_verified_at_export` means the stored row was unchanged since it was stored. `aihydro_record_agent_run` is hidden in all
+    evaluation arms (`HIDDEN_ALL_ARMS`), so an arm's tool surface is what it was before the tool existed.
+
+11. **Explorers lose five reads on purpose:** `find_studies_for_gauge` (reads every study on the machine), `get_project_summary` (any project),
+    `get_researcher_profile`, `list_skills`, `load_skill` (the floor names profile and skills). They are read-only but not study-scoped or not the
+    lead's to share, so they are `lead`. The extension's own READ list must follow.
+
+12. **Stage 2 mapping, extension `SubagentRecord` to `aihydro_record_agent_run`.** The server record is snake_case and allowlisted; the host must map:
+    `childId` to `agent_id`; `agent.{parent_agent_id, role}` to top level; `modelIdRequested`/`modelIdReturned` to `model_requested`/`model_returned`;
+    `startedAt`/`endedAt` to `started_at`/`ended_at`; `status` as is; `budgetStop` to `budget_stop`; `allowlistSha256` to `allowlist_sha256`;
+    `profile` as is; `promptSha256` to `prompt_sha256` (and `prompt` text only if it is to be stored); `usage` as is (scalar keys); `toolCalls`
+    (`name, server, tool, argsSha256, approval, result`) to `tool_calls` (those keys are kept as sent); the `approvals`/`denied`/`refused` summaries and
+    `runs_created` (from `_run_id` in results) are for the host to derive. Not exported by design: `label`, `parentTaskId`, `parentUlid`, `report`,
+    `lastAssistantText`, `error` (free text). Until mapped, camelCase fields are stored but withheld from the capsule and named in `withheld_fields`.
+
+**Not done in this stage.** The defensibility report section for agents, the extension reading `aihydro/delegable` in place of its
+hand list, and replay.py checking `agents/` digests (the files are covered by the manifest's file hashes only).
+
+
+- **A tool call's `result` in an agent-run record is a status token, not content.** The host writes an outcome such as `ok`, `denied` or `error`, never a result summary or study text. The export keeps it as a scalar capped at 500 characters and path-scrubbed; that cap bounds size, not meaning, so the rule is the host's to keep.
+
 ## 2026-10-30 - One period-completeness rule for period statistics (tool audit T1-P)
 
 **Context.** SPI over a partial month, annual maxima over partial years and a 7-day low flow spliced across a gap each

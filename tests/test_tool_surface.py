@@ -130,6 +130,7 @@ _WRITE_NAMES = {
     "_save_experiments", "_save_progress", "_write_all", "rmtree", "_save", "save_skill",
     "_write_csv", "_workspace_write", "_write_tools_md", "start_job", "submit_job", "Popen",
     "exec", "eval", "execfile", "system", "_run_feature", "_launch_job", "_start_job", "MeritDataManager",
+    "insert_agent_run",
 }
 # Provenance recording of the call itself (see the header of tool_annotations.toml).
 _EXCLUDED = {"_write_run_log", "post_run", "_post_run"}
@@ -413,8 +414,8 @@ def test_representative_tools_of_each_class():
 # ── T-A1: annotation vocabulary (effect / requiresConsent / audience), data only ─────────────
 
 _META_PREFIX = "aihydro/"
-_VOCAB_KEYS = ("effect", "requiresConsent", "audience", "acquires")
-_VOCAB_VALUES = {"effect": {"ui", "lookup"}, "audience": {"host"}}
+_VOCAB_KEYS = ("effect", "requiresConsent", "audience", "acquires", "delegable")
+_VOCAB_VALUES = {"effect": {"ui", "lookup"}, "audience": {"host"}, "delegable": {"read", "scoped", "lead"}}
 _SESSION_WRITERS = {"save", "_ensure_session", "_resolve_session", "_workspace_write", "HydroSession",
                     "add_note", "record_change", "set_slot", "write_ledger_event"}
 _COMMAND_WRITERS = {"write_map_command", "write_preview_command", "mkdir", "write_text"}
@@ -566,13 +567,14 @@ def test_map_add_layer_from_run_cannot_traverse_out_of_the_sessions_dir(tmp_path
 
 def test_host_audience_is_served_for_the_project_registry_operations_only():
     """`audience = "host"` is defined (closed vocabulary, `_meta` key). Only the T-P1 project-registry
-    operations claim it, and the mechanism serves it as it would any other key (no code branches on a tool name)."""
+    operations, the shard merge (Stage 1: retired from the model surface) and the agent-run recorder claim
+    it, and the mechanism serves it as it would any other key (no code branches on a tool name)."""
     from ai_hydro.mcp.tool_surface import META_KEYS, apply_tool_annotations
 
     assert META_KEYS["audience"] == "aihydro/audience"
     assert _rows_with("audience", "host") == {
         "ensure_project", "rename_project", "set_project_default_study", "add_project_study",
-        "remove_project_study",
+        "remove_project_study", "merge_session_shards", "aihydro_record_agent_run",
     }
 
     class _Comp:

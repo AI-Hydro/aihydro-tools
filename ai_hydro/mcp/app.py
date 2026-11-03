@@ -23,6 +23,7 @@ __all__ = [
     "mcp", "Context", "TOOL_TIERS", "get_tool_tiers", "get_tool_tier",
     "ACTIVE_CHAT_ID", "ACTIVE_WORKSPACE", "ACTIVE_STUDY_ID",
     "ACTIVE_CONTEXT_SOURCE", "ACTIVE_CONTEXT_CLIENT", "CONTEXT_META_KEY", "ACTIVE_READ_ONLY",
+    "ACTIVE_AGENT",
 ]
 
 # ---------------------------------------------------------------------------
@@ -76,6 +77,12 @@ ACTIVE_CONTEXT_CLIENT: contextvars.ContextVar[str | None] = contextvars.ContextV
 # Session resolution then has no side effects: no chat rebinding, no workspace_dir backfill/save.
 ACTIVE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "ACTIVE_READ_ONLY", default=False
+)
+# The subagent identity a call names in ``_meta["aihydro/context"]["agent"]`` (a bounded dict, see
+# ai_hydro.mcp.agent_policy.parse_agent), or None for every call that names none. CLIENT-ASSERTED:
+# it can narrow what a call may do and is sealed into the run record as attribution; it never grants.
+ACTIVE_AGENT: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "ACTIVE_AGENT", default=None
 )
 # A per-call mutable dict (set by _SessionWarningMiddleware) that session resolution writes into
 # when it guesses the "most recent study" (key ``recent_fallback_session``). A tool runs in a worker
@@ -265,6 +272,7 @@ TOOL_TIERS: dict[str, int] = {
     # ── Chat-native session management (Wave 3) ───────────────────────────
     "aihydro_rebind_chat":              3,
     "aihydro_chat_status":              3,
+    "aihydro_record_agent_run":         3,
     # ── Spectral indices (v0.2.0 / TorchGeo cherry-pick Day 5) ───────────
     "compute_spectral_index":           2,
     "list_spectral_indices":            3,
@@ -580,6 +588,9 @@ class _ContextInjectionMiddleware(Middleware):
         study_id = _str_or_none(meta_ctx.get("study_id"))
         project_id = _str_or_none(meta_ctx.get("project_id"))
         client = _str_or_none(meta_ctx.get("client"))
+        from ai_hydro.mcp.agent_policy import parse_agent
+
+        agent = parse_agent(meta_ctx.get("agent"))
         used_meta = any((chat_id, workspace, study_id, project_id, client))
         used_legacy = False
 
@@ -615,6 +626,7 @@ class _ContextInjectionMiddleware(Middleware):
             (ACTIVE_PROJECT_ID, ACTIVE_PROJECT_ID.set(project_id)),
             (ACTIVE_CONTEXT_SOURCE, ACTIVE_CONTEXT_SOURCE.set(source)),
             (ACTIVE_CONTEXT_CLIENT, ACTIVE_CONTEXT_CLIENT.set(client)),
+            (ACTIVE_AGENT, ACTIVE_AGENT.set(agent)),
             (ACTIVE_TOOL_NAME, ACTIVE_TOOL_NAME.set(getattr(message, "name", None) or None)),
         )
         try:
@@ -669,6 +681,10 @@ mcp.add_middleware(_ContextInjectionMiddleware())
 # Evaluation arms (P1/W2): registered BEFORE RunRecordMiddleware so it wraps it and strips only after sealing.
 from ai_hydro.mcp.eval_condition import EvalConditionMiddleware as _EvalConditionMiddleware  # noqa: E402
 mcp.add_middleware(_EvalConditionMiddleware())
+# Agent floor (orchestration Stage 1): after the context and evaluation layers, before the run record,
+# so a refused call writes nothing. A pure pass-through for a call that names no agent.
+from ai_hydro.mcp.agent_policy import AgentPolicyMiddleware as _AgentPolicyMiddleware  # noqa: E402
+mcp.add_middleware(_AgentPolicyMiddleware())
 
 
 # ---------------------------------------------------------------------------
@@ -968,6 +984,8 @@ class RunRecordMiddleware(Middleware):
             "study_id": ACTIVE_STUDY_ID.get(),
             "client": ACTIVE_CONTEXT_CLIENT.get(),
         }
+        if ACTIVE_AGENT.get() is not None:        # absent for a plain call: its record is unchanged
+            run_context["agent"] = ACTIVE_AGENT.get()
         from ai_hydro.mcp.enforcement import _generate_unique_run_id as _run_id_factory
 
         capture, token = run_records.begin_capture(

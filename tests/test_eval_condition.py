@@ -147,7 +147,8 @@ def test_real_app_tool_lists_and_registration_order(home, monkeypatch):
         assert needed in full
     arm(home, monkeypatch, "C3")
     c3 = names(app.mcp)
-    assert full - c3 == ec.HIDDEN_ALL_ARMS == {"write_research_interpretation", "run_python"}
+    assert full - c3 == ec.HIDDEN_ALL_ARMS == {
+        "write_research_interpretation", "run_python", "aihydro_record_agent_run"}
     arm(home, monkeypatch, "C2")
     c2 = names(app.mcp)
     assert c3 - c2 == REGISTRY

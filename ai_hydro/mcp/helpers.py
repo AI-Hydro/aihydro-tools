@@ -56,6 +56,13 @@ class SessionResolutionError(RuntimeError):
         return d
 
 
+class AgentContextMismatchError(SessionResolutionError):
+    """A call naming an agent tried to reach a study other than its context's."""
+
+    def to_dict(self) -> dict:
+        return {**super().to_dict(), "code": "AGENT_CONTEXT_MISMATCH"}
+
+
 class StudyNotFoundError(SessionResolutionError):
     """The named (or bound) study does not exist. Nothing was created or written."""
 
@@ -324,7 +331,16 @@ def note_binding_change(chat_id: str, study_id: str, previous: str | None, bound
 
 
 def _bind(store, chat_id: str, study_id: str, bound_by: str) -> None:
-    """Bind and report the change; a failed bind (invalid chat id, I/O) never fails the call."""
+    """Bind and report the change; a failed bind (invalid chat id, I/O) never fails the call.
+
+    An agent never rebinds a chat: its chat id is its parent's, so a bind would move the lead's
+    chat to another study. Every binding path in session resolution goes through here.
+    """
+    from ai_hydro.mcp.app import ACTIVE_AGENT
+
+    if ACTIVE_AGENT.get() is not None:
+        log.info("Not binding chat %s to %s (%s): call made by agent", chat_id, study_id, bound_by)
+        return
     try:
         previous = store.lookup_study(chat_id)
         if store.bind(chat_id, study_id, bound_by=bound_by):
@@ -459,6 +475,16 @@ def _resolve_session_impl(
     # 1. Explicit session_id (or _meta study_id) -> use it; optionally rebind chat
     if session_id:
         sid = _normalize_session_id(session_id)
+        if rule == "explicit_arg":
+            from ai_hydro.mcp.app import ACTIVE_AGENT
+            from ai_hydro.mcp.agent_policy import agent_study as _agent_study
+
+            if ACTIVE_AGENT.get() is not None and sid != _agent_study(chat_id):
+                # Whatever spelling the argument arrived in, an agent works in its call's study only.
+                raise AgentContextMismatchError(
+                    "An agent works in the study of its call (its context's study, else its chat's bound study); "
+                    f"it may not name another (session_id={sid[:80]!r}). Omit session_id.",
+                    recovery="Omit session_id: the study is the call's own.")
         if chat_id and not read_only:
             # Only a study that already exists is bound: a typo or a made-up id must not become the chat's study.
             from ai_hydro.session.study_index import study_exists

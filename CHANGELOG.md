@@ -4,6 +4,39 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] (next minor: server identity and floor for subagents)
+
+A call can now name the subagent that made it, and the server keeps a floor under what such a call may do. Calls that name no
+agent behave and record exactly as before (a sealed record's digest is unchanged). `agent` is asserted by the client: it narrows
+what a call may do and never grants anything. Evaluation runs refuse calls that name an agent.
+
+### Added
+
+- **`delegable` column on every row of `tool_annotations.toml`** (`read | scoped | lead`, served as `_meta["aihydro/delegable"]`):
+  73 read, 17 scoped, 94 lead (184 rows). Claims, the research plan, interpretation, claim binding, study lifecycle, profile and skills and host
+  operations are lead-only. A tool with no row or no key reads as lead. A test fails a new row without it.
+- **`AgentPolicyMiddleware`**: for a call naming an agent (`_meta["aihydro/context"].agent`), refuses a lead or host-audience tool
+  (`AGENT_NOT_DELEGABLE`), an explicit `session_id` other than the call's study (`AGENT_CONTEXT_MISMATCH`), and any call in an evaluation run.
+- **`extra.agent`** in the sealed run record of a call that named an agent (`agent_id, parent_agent_id, role, definition_sha256, team_id,
+  lease`, `asserted_by: "client"`).
+- **`aihydro_record_agent_run`** (host-audience) and an insert-only `agent_runs` table; **`export_session` writes `agents/<id>.json`** and an
+  `agent_runs` manifest section (prompt text only with `include_agent_prompts=True`).
+
+### Changed
+
+- **Evaluation tool surface:** `aihydro_record_agent_run` is added to `HIDDEN_ALL_ARMS`, so every evaluation arm (C1-C3) lists exactly the tools it
+  listed before this change; the diff against 2.8.7 is empty. P1 and Paper A stay pinned to their older tools versions and no bundle is edited.
+- **Explorers lose five tools, deliberately:** `find_studies_for_gauge`, `get_project_summary`, `get_researcher_profile`, `list_skills` and
+  `load_skill` are `lead`. They are read-only but reach beyond the agent's own study (every study on the machine, any project) or are the lead's
+  (profile, skills). A shipped explorer that called them now gets `AGENT_NOT_DELEGABLE`; the extension's own READ list must follow.
+- An agent's explicit `session_id` must be the study of its call context, or, when the host sends no `study_id` (the 0.4.6 extension sends
+  `chat_id` only), the study its chat is bound to. `search_experiments` / `search_literature` accept `project_name` only for a project whose
+  sessions include that study; for an agent `search_experiments` searches that study only (no other session of the project is loaded) and
+  `search_literature` returns the project's shared literature index.
+- Known gap: `aihydro:// resource reads do not pass through tool middleware; a host must not hand a child the resource surface.
+- A call that names an agent never rebinds the chat (`helpers._bind`).
+- `merge_session_shards` is `audience = host`.
+
 ---
 
 ## [2.8.7] - 2026-11-02 (lookup class, series codes, reference-layer stamps, gauge index, flowlines)

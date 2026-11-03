@@ -1159,6 +1159,10 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
             extra["context_client"] = context["client"]
         if context.get("study_id"):
             extra["context_study_id"] = context["study_id"]
+        if context.get("agent"):
+            # Orchestration Stage 1: who the host said made this call. Client-asserted attribution, sealed
+            # with the record; present only for a call that named an agent.
+            extra["agent"] = {**context["agent"], "asserted_by": "client"}
         requested = [
             v.strip() for v in (
                 (arguments.get("session_id") if isinstance(arguments, dict) else None),

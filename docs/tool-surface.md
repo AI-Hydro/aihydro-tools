@@ -69,15 +69,18 @@ A row may add optional keys beyond the four hints. They are data for hosts, serv
 | `effect = "ui"` | `aihydro/effect` | The tool only queues a command for the map or preview host. It may read session, run-log, workspace and catalog files, and the host may persist map-layer state in response to the command. It never writes scientific state (session slots, claims, run records, workspace files) and uses no network. Enforced by a static scan and an audit-hook run of every `ui` tool in `tests/test_tool_surface.py`. |
 | `effect = "lookup"` | `aihydro/effect` | The tool asks a public reference service a question and returns the answer (`lookup_citation`, `get_citation_by_doi`). It changes no study, claim, ledger or profile state; the only file it may write is its own response cache; what it sends is the query text. Its hints stay honest: `readOnlyHint=false` (it makes a network call and writes the cache), `openWorldHint=true`. A host that shows only `readOnlyHint` tools in a read-only mode still hides it; a host that wants Plan mode to verify a citation reads this class instead. Pinned to exactly those two tools by `test_lookup_class_is_citations_only_and_does_not_weaken_read_only`. |
 | `requiresConsent = true` | `aihydro/requiresConsent` | The tool records or changes facts about the researcher (`log_researcher_observation`, `update_researcher_profile`); a host should ask first. |
-| `audience = "host"` | `aihydro/audience` | For the host application, not the agent: a host should not list it to the model and should refuse agent-originated calls. No tool has it yet. |
+| `audience = "host"` | `aihydro/audience` | For the host application, not the agent: a host should not list it to the model and should refuse agent-originated calls. The server also refuses it to any call that names an agent. Held by the project-registry operations, `merge_session_shards` and `aihydro_record_agent_run`. |
+| `delegable = "read" \| "scoped" \| "lead"` | `aihydro/delegable` | **Required on every row.** Who may call the tool when the call names a subagent (`_meta["aihydro/context"].agent`). `read`: read-only and study-scoped (read-only tools only; `aihydro://` resource reads bypass tool middleware, so a host must not hand a child the resource surface: a known gap). `scoped`: the server allows it and the host decides per grant (non-destructive data acquisition only). `lead`: refused to an agent (`search_experiments` for an agent searches its own study only; `search_literature` is allowed for the project owning that study, because a project's literature index is a shared paper library, not study results; including `find_studies_for_gauge`, `get_project_summary`, `get_researcher_profile`, `list_skills`, `load_skill`, which a shipped explorer used to reach). No row, or no key, reads as `lead`. Enforced by `AgentPolicyMiddleware`; `agent` is asserted by the client, so it narrows what a call may do and never grants. 73 read, 17 scoped, 94 lead (184 rows). |
 
 **Precondition for host auto-run (extension X1-A1).** `effect = "ui"` makes a tool safe to auto-run on the server side only.
 `preview_revise_section` and `preview_address_comment` queue a proposal that the person accepts or rejects as a diff in the
 preview. They are safe to auto-run only while the host keeps that accept step; if a host ever applies previews without the
 person's accept, those two must be treated as consent-required again.
 
+`delegable` is the one key the server branches on, and only for calls that name an agent (`ai_hydro/mcp/agent_policy.py`); a call without `agent` is untouched, and so is every call in an evaluation run (agents are refused there). A new row without it fails `tests/test_agent_policy.py`.
+
 The vocabulary is closed (a misspelt key fails `test_every_tool_has_a_row_and_the_vocabulary_is_closed`). The server applies it
-generically in `apply_tool_annotations` (`META_KEYS`); no code is keyed on a tool name.
+generically in `apply_tool_annotations` (`META_KEYS`); no code is keyed on a tool name (the agent policy reads the `delegable` column, never a name).
 
 ## Discovery answers are capped
 

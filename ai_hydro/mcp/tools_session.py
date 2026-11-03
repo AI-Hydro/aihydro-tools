@@ -611,6 +611,7 @@ def export_session(
     session_id: str | None = None,
     capsule_path: str | None = None,
     format: str = "capsule",
+    include_agent_prompts: bool = False,
 ) -> dict:
     """Export the session.
 
@@ -632,6 +633,7 @@ def export_session(
     format='bibtex' | 'json': single-file exports.
 
     capsule_path: override the default capsule directory.
+    include_agent_prompts: put subagent prompt text in agents/ (default: hash only).
     """
     try:
         session_id = resolve_existing_study(session_id)
@@ -867,6 +869,11 @@ def export_session(
         from ai_hydro.capsule.claim_records import collect_claim_revisions
         claim_entries, claim_counts = collect_claim_revisions(session_id, capsule_dir, session.workspace_dir)
 
+        # agents/ — what the host reported its subagents did in this study (none: no directory, no section)
+        from ai_hydro.capsule.agent_records import collect_agent_runs, manifest_section as _agents_section
+        agent_entries, agent_counts = collect_agent_runs(
+            session_id, capsule_dir, session.workspace_dir, include_prompts=include_agent_prompts)
+
         # capsule_manifest.json — SHA-256 of every data file for integrity checking
         from ai_hydro.capsule.manifest import build_manifest, MANIFEST_FILE as _MF
         manifest = build_manifest(capsule_dir)
@@ -885,6 +892,9 @@ def export_session(
             "files_scrubbed": _priv_files,
         }
         manifest["session_id"] = session_id
+        _agents = _agents_section(agent_entries, agent_counts)
+        if _agents is not None:
+            manifest["agent_runs"] = _agents
         # written before the crate step so a deleted crate is a failure, not "predates the crate export";
         # rewritten below if the crate could not be built
         manifest["crate"] = {"expected": True, "files": ["bundle.json", "ro-crate-metadata.json",
@@ -1101,6 +1111,44 @@ def _chat_context_id(explicit: str | None) -> tuple[str | None, dict | None]:
             }
         return ctx, None
     return explicit, None
+
+
+@mcp.tool()
+def aihydro_record_agent_run(record: dict, session_id: str | None = None) -> dict:
+    """
+    Host-only: store the record of a finished subagent run in the study (insert-only).
+
+    Called by the host application when a child agent ends, so the record reaches
+    ``export_session`` (``agents/<id>.json``). Models do not call it; it is refused to agents.
+
+    record : object with a string ``agent_id`` (or ``agent_run_id``); the rest is the host's account
+        (role, definition hash, model, budget, approvals, end state, prompt hash, ...). Local paths
+        are scrubbed, prompt text is withheld from the default export.
+    session_id : leave empty; the study of the call context.
+
+    The record is asserted by the host (``asserted_by: client``): the digest shows it is unchanged
+    since stored, not that it is true. The same record again is a no-op; a different body under the
+    same id is refused (AGENT_RUN_CONFLICT).
+    """
+    try:
+        from ai_hydro.session import agent_runs
+
+        sid = resolve_existing_study(session_id)
+        try:
+            from ai_hydro.session import HydroSession
+
+            workspace_dir = HydroSession.load(sid).workspace_dir
+        except Exception:
+            workspace_dir = None
+        try:
+            row = agent_runs.build_row(sid, record, workspace_dir=workspace_dir)
+            status, row = agent_runs.insert_agent_run(sid, row)       # on a no-op, the STORED row
+        except agent_runs.AgentRunError as exc:
+            return {"error": True, "code": exc.code, "message": str(exc)}
+        return {"session_id": sid, "agent_run_id": row["agent_run_id"], "status": status,
+                "record_digest": row["record_digest"], "asserted_by": "client"}
+    except Exception as e:
+        return _tool_error_to_dict(e)
 
 
 @mcp.tool()
