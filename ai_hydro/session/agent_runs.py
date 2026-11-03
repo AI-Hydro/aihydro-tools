@@ -226,10 +226,6 @@ def _scalar(v: Any) -> bool:
     return v is None or isinstance(v, (bool, int, float)) or (isinstance(v, str))
 
 
-def _clip(v: Any) -> Any:
-    return v[:_MAX_STR] if isinstance(v, str) else v
-
-
 def export_record(record: dict, *, include_prompt: bool = False) -> tuple[dict, list[str], list[str]]:
     """``(exported part, withheld names, truncated names)`` of ``record`` for a capsule.
 

@@ -63,6 +63,9 @@ server.
 **Not done in this stage.** The defensibility report section for agents, the extension reading `aihydro/delegable` in place of its
 hand list, and replay.py checking `agents/` digests (the files are covered by the manifest's file hashes only).
 
+
+- **A tool call's `result` in an agent-run record is a status token, not content.** The host writes an outcome such as `ok`, `denied` or `error`, never a result summary or study text. The export keeps it as a scalar capped at 500 characters and path-scrubbed; that cap bounds size, not meaning, so the rule is the host's to keep.
+
 ## 2026-10-30 - One period-completeness rule for period statistics (tool audit T1-P)
 
 **Context.** SPI over a partial month, annual maxima over partial years and a 7-day low flow spliced across a gap each
