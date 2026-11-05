@@ -52,7 +52,7 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
   return `layer_aliases` when the host recorded any.
 - **`map_get_state` and `map_list_layers` no longer send absolute paths to the model.** The path fields of catalog entries and `metadata_snapshot`,
   `workspace_root`, `active_roi.workspace_path` and `host_workspace_ownership` are shown workspace-relative when inside the workspace and as
-  `<outside-workspace>` otherwise; `load_geojson_for_layer` and the catalog file keep the absolute values.
+  `<outside-workspace>` otherwise; `recent_events` and `map_save_roi`'s `saved_to` get the same treatment (path-named fields at any depth); `load_geojson_for_layer` and the catalog file keep the absolute values.
 - No change when the catalog has no `layer_aliases`.
 
 ---

@@ -44,7 +44,7 @@ from ai_hydro.mcp.map_layer_catalog import (
     read_layer_catalog,
     resolve_catalog_layer,
 )
-from ai_hydro.mcp.map_model_view import safe_layers, safe_path
+from ai_hydro.mcp.map_model_view import safe_layers, safe_path, safe_tree
 from ai_hydro.registry.paths import aihydro_home, home_path
 
 log = logging.getLogger("ai_hydro.mcp")
@@ -194,7 +194,7 @@ def map_get_state(
             **_aliases_out(catalog),
             "layer_catalog_scope": "global_host",
             "resolved_roi_for_session": resolved,
-            "recent_events": _recent_outbound_events(max(1, min(event_limit, 50))),
+            "recent_events": safe_tree(_recent_outbound_events(max(1, min(event_limit, 50))), host_root),
             "recent_events_scope": "global_host",
             "scope": scope,
             **scoped,
@@ -752,7 +752,7 @@ def map_save_roi(
             "ok": True,
             "workspace_path": rel_geo,
             "active_pointer": "roi/active.json",
-            "saved_to": saved,
+            "saved_to": safe_path(saved, session.workspace_dir),
         }
     except Exception as e:
         return _tool_error_to_dict(e)

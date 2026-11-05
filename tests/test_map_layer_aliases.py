@@ -305,3 +305,36 @@ def test_safe_path_unit():
     assert safe_path("C:\\Users\\me\\ws\\sub\\a.json", "C:\\Users\\me\\ws") == "sub/a.json"
     assert safe_path("C:\\Users\\other\\a.json", "C:\\Users\\me\\ws") == OUTSIDE_WORKSPACE
     assert safe_path("/w/a", None) == OUTSIDE_WORKSPACE
+
+
+def test_recent_events_show_no_absolute_paths(host, tmp_path, monkeypatch):
+    root = str(tmp_path / "ws")
+    out_dir = tmp_path / "outbound"
+    out_dir.mkdir()
+    (out_dir / "1.json").write_text(json.dumps({
+        "type": "layer_added", "id": "L", "geojson_cache_path": "/Users/someone/cache.geojson",
+        "metadata": {"raster_path": f"{root}/r/L.png", "workspace_path": "v/L.geojson", "note": "kept"},
+        "layers": [{"source_path": f"{root}/s.geojson", "name": "n"}],
+        "geojson": {"type": "Point", "coordinates": [1, 2]},
+    }))
+    monkeypatch.setattr("ai_hydro.mcp.tools_map._MAP_EVENTS_OUTBOUND", out_dir)
+    host.write(_cat([]), {"workspaceRoot": root})
+    _, state = call("map_get_state")
+    ev = state["recent_events"][0]
+    assert ev["geojson_cache_path"] == "<outside-workspace>"
+    assert ev["metadata"] == {"raster_path": "r/L.png", "workspace_path": "v/L.geojson", "note": "kept"}
+    assert ev["layers"][0] == {"source_path": "s.geojson", "name": "n"}
+    assert ev["geojson"] == {"type": "Point", "coordinates": [1, 2]}
+    assert "/Users/someone" not in json.dumps(state) and root not in json.dumps(
+        {k: v for k, v in state.items() if k != "host_workspace_ownership"})
+
+
+def test_save_roi_does_not_return_an_absolute_path(host, tmp_path):
+    ws = tmp_path / "w2"
+    ws.mkdir()
+    make_study("s2", workspace=str(ws))
+    host.write(_cat([]), {"workspaceRoot": str(ws), "activeRoi": {"name": "n", "geojson": {
+        "type": "Point", "coordinates": [0, 0]}}})
+    _, out = call("map_save_roi", {"session_id": "s2", "name": "basin"})
+    assert out["ok"] is True and not str(out["saved_to"]).startswith("/"), out
+    assert out["saved_to"] == "roi/basin.geojson" and (ws / "roi" / "basin.geojson").exists()

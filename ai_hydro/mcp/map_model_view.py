@@ -71,3 +71,24 @@ def safe_layers(layers: Any, workspace_root: str | None) -> list[Any]:
             entry["metadata_snapshot"] = _safe_mapping(snap, workspace_root)
         out.append(entry)
     return out
+
+
+_PATH_KEY_SUFFIXES = ("_path", "_dir", "_root", "_folder", "_uri", "Path", "Dir", "Root", "Folder", "Uri")
+
+
+def _is_path_key(key: Any) -> bool:
+    return isinstance(key, str) and (key in PATH_KEYS or key == "path" or key.endswith(_PATH_KEY_SUFFIXES))
+
+
+def safe_tree(value: Any, workspace_root: str | None) -> Any:
+    """A copy of ``value`` (nested dicts and lists, such as a map event) with every path-named field made safe.
+
+    A field is path-named when its key is in ``PATH_KEYS`` or is ``path`` or ends in ``_path``, ``_dir``, ``_root``,
+    ``_folder``, ``_uri`` (or the camelCase forms). Other values, GeoJSON included, are copied as they are.
+    """
+    if isinstance(value, dict):
+        return {k: (safe_path(v, workspace_root) if _is_path_key(k) and isinstance(v, str)
+                    else safe_tree(v, workspace_root)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [safe_tree(v, workspace_root) for v in value]
+    return value
