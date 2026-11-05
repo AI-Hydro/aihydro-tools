@@ -158,7 +158,11 @@ def _fetch_variable_chunked(adata_fetch, adata_var, geom, start_date, end_date, 
     df = pd.concat(frames, ignore_index=True)
     if "date" in df.columns:
         df = df.drop_duplicates(subset="date", keep="first").sort_values("date").reset_index(drop=True)
-    return SimpleNamespace(data=df, product=first.product, source=first.source, **_merge_chunk_provenance(parts))
+    return SimpleNamespace(
+        data=df, product=first.product, source=first.source,
+        # the first chunk made the routing decision; later chunks are pinned to its product
+        fallback_history=list(getattr(first, "fallback_history", None) or []),
+        **_merge_chunk_provenance(parts))
 
 
 def fetch_forcing_data(
@@ -1035,6 +1039,7 @@ def fetch_forcing_data_routed(
     warnings_list: list[str] = []
     variables_failed: list[dict] = []
     variable_provenance: dict[str, dict] = {}
+    forcing_history: list[dict] = []        # every product tried, per variable (the sealed attempt trail)
 
     for var in requested:
         if var not in _ADATA_ROUTES:
@@ -1075,6 +1080,9 @@ def fetch_forcing_data_routed(
                     df_var[out_col] = df_var[out_col] - 273.15
 
             frames.append(df_var)
+            for h in (getattr(result, "fallback_history", None) or []):
+                if isinstance(h, dict):
+                    forcing_history.append({**h, "variable": adata_var})
             products_used.append(result.product)
             sources_used.append(str(result.source))
             # Per-variable provenance: which product served it, in what units, and whether the
@@ -1097,6 +1105,13 @@ def fetch_forcing_data_routed(
             warnings_list.append(f"{adata_var}: {exc}")
             variables_failed.append({"variable": var, "output": out_col,
                                      "product": pinned, "reason": str(exc)[:300]})
+            _details = getattr(exc, "details", None)
+            _tried = _details.get("fallback_history") if isinstance(_details, dict) else None
+            if _tried:
+                forcing_history.extend({**h, "variable": adata_var} for h in _tried if isinstance(h, dict))
+            else:
+                forcing_history.append({"product": pinned or adata_var, "outcome": "failed",
+                                        "reason": f"{type(exc).__name__}: {exc}", "variable": adata_var})
 
     # ── Supplement: CONUS-only GridMET vars (srad, vs, sph, …) ────────────
     conus_only_requested = [v for v in requested if v in _GRIDMET_ONLY_VARS]
@@ -1180,6 +1195,8 @@ def fetch_forcing_data_routed(
     clean["source"]  = " | ".join(dict.fromkeys(sources_used))
     if warnings_list:
         clean["_warnings"] = warnings_list
+    if forcing_history:
+        clean["fallback_history"] = forcing_history
     # Asked-for versus served, by name. A variable that failed leaves a record, not a silent hole.
     clean["variables_requested"] = [v for v in requested]
     clean["variables_failed"] = variables_failed

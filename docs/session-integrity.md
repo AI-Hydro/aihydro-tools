@@ -159,8 +159,38 @@ NSE) is refused as `interval_scope_gate`: the interval's coverage is unknown. St
 
 A record names which sources a call tried, which one served it, and the limitations it reported, on success and on failure. The trail is
 sealed with the record (inside `record_digest`) and travels in the capsule's `run_log.json`; `replay.py` fails if an attempt is edited or
-removed. Built in one place (`run_records.attempt_trail`) from the `fallback_history` a result or error carries, so every tool that reports
-one is covered. Bounds: 32 attempts, 16 limitations, reasons 200 characters, local paths and secret-shaped text scrubbed. A call that
-reports no `fallback_history` has no `attempt_trail` key and its digest is unchanged. Records from before this feature have no key: read
-absence as "not recorded", never as "no fallback happened". They are not backfilled (sealed rows are insert-only). `limitations` are the
-tool's own `quality_flags`; the trail says what was reported, not that the chosen source is adequate for the question.
+removed. It is built in one place (`run_records.attempt_trail`). A call that yields no trail has no key and its digest is unchanged.
+Records from before this feature have no key: read absence as "not recorded", never as "no fallback happened". They are not backfilled
+(sealed rows are insert-only).
+
+**Shape.** `basis` is `fallback_history` (a recorded chain) or `declared_source` (one served attempt taken from the result's own declared
+source; it is not a record of a chain). `attempts` are `{source, outcome, reason}` (plus `provider`, `variable`), at most 32
+(`attempts_omitted` counts the rest); `source_used`; `limitations` (the tool's string `quality_flags`, at most 16); `error_code` on failure.
+A batch fetch has one such trail per label under `labels`.
+
+**Cache and reuse.** A result that says `cache_hit`, and a record-level reuse row (`extra.reused`), do not claim the origin's attempts:
+`served_from` is `"cache"` or `"reuse"`, `attempts` is empty, the origin's attempts are `origin_attempts` and `source_used` is the origin's.
+
+**Scrubbing.** Every reason, flag and `error_summary` goes through `scrub_error_text`: local paths, `file://` URLs and `~/` paths (basename only),
+URL query strings and userinfo, `Authorization`/`Bearer`/`Basic` credentials, token prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`, `sk-`,
+`xox*-`, `AKIA`/`ASIA`) and secret-shaped assignments are redacted; 200 characters.
+
+**Which tools carry a trail (by what they return; tested by shape):**
+
+| Tool | Trail |
+|---|---|
+| `data_fetch` | `fallback_history` (success, cache hit, failure through `details`) |
+| `data_batch_fetch` | per-label `fallback_history` (`results[label]`, `errors[label]`) |
+| `get_data_fetch_result` | `fallback_history` the job kept (success and failure) |
+| `delineate_watershed_from_point` | `fallback_history`; on failure needs aihydro-watershed with the attempt-trail change (PR AI-Hydro/aihydro-watershed#7). Tiers recorded: small catchment, NLDI (failed, skipped, served), MERIT tiers, raw DEM (served, rejected, failed). A non-`ToolError` exception also carries it |
+| `fetch_forcing_data` | `fallback_history` per variable (inner aihydro-data history, and each variable that failed); cache hit as `served_from: cache` |
+| `fetch_streamflow_data`, `fetch_camels_us`, `fetch_soil_attributes_ssurgo` | `declared_source`: one attempt from `meta.sources`/`meta.source`/`meta.product` |
+| any other tool annotated `acquires = true` | `declared_source` only if its successful result declares `product`/`source`, `meta.product`/`meta.source`, `data.source`, `meta.sources` or `meta.upstream.backend` |
+
+**Which tools do not (gaps):** `data_fetch_background` (it only starts a job; the trail is on `get_data_fetch_result`); the `lsh_*` tools
+(aihydro-lsh carries no `fallback_history`; to be done with the lsh work); `merit_ensure_*`, `compute_twi`, `create_cn_grid`,
+`compute_drought_index`, `compute_spectral_index`, `gee.extract_timeseries`, `map_flood_inundation*`, `run_experiment`,
+`extract_geomorphic_parameters` and `delineate_watershed` unless their result carries one of the fields above (none was found to by
+reading their code; `delineate_watershed` returns a `source` that names the gauge service, which only counts for an acquirer that
+returns it at the top level or in `data.source`). Non-acquiring tools never get a derived trail. A call whose failure carries no
+`fallback_history` (for example a `delineate_watershed_from_point` failure with an older aihydro-watershed) keeps only its error code and summary.

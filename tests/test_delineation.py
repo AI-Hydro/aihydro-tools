@@ -1070,6 +1070,11 @@ def test_delineate_from_point_fast_mock(mock_fast):
     assert result.data["method_used"] == "dem_raw_fallback"
     assert result.data["area_km2"] > 0
     assert result.data["geometry_geojson"]["type"] == "Feature"
+    from aihydro_watershed.delineation import router as _router
+
+    if hasattr(_router, "_delineate_from_point"):     # aihydro-watershed with the attempt-trail change
+        assert result.data["fallback_history"][-1]["method"] == "dem_raw_fallback"
+        assert result.data["fallback_history"][-1]["outcome"] == "served"
 
 
 def test_merit_ensure_basin_mcp_smoke(tmp_path):

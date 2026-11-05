@@ -74,11 +74,67 @@ def world(tmp_path, monkeypatch):
     server.add_middleware(app.RunRecordMiddleware())
 
     @server.tool()
-    def data_fetch(session_id: str, variable: str = "precipitation") -> dict:
+    def data_fetch(session_id: str, variable: str = "precipitation", cache: bool = False) -> dict:
         """The real unified fetch, so the real FetchResult.fallback_history reaches the middleware."""
         from ai_hydro.mcp.tools_data_fetch import data_fetch as real
         return real(variable, "2020-06-01", "2020-06-03", geometry="POINT(-90 40)",
-                    cache=False, session_id=session_id)
+                    cache=cache, session_id=session_id)
+
+    shapes = {
+        # single-source fetchers, in the shapes the real tools return (declared source, no fallback_history)
+        "fetch_camels_us": {"data": {"p_mean": 2.1}, "meta": {"tool": "fetch_camels_us",
+                            "source": "CAMELS-US via pygeohydro.get_camels()"}},
+        "fetch_soil_attributes_ssurgo": {"data": {"sand_pct_mean": 30.0}, "meta": {
+            "tool": "ssurgo", "product": "SSURGO", "source": "USDA NRCS"}},
+        "fetch_streamflow_data": {"data": {"gauge_id": "01013500"}, "meta": {
+            "tool": "t", "sources": [{"name": "USGS Water Data API"}], "upstream": {"backend": "usgs_waterdata"}}},
+        "fetch_forcing_data": {"data": {"n_days": 3}, "meta": {}, "product": "GRIDMET_PRECIP", "source": "hyriver"},
+        "compute_twi": {"data": {"twi_mean": 6.0}, "meta": {"tool": "compute_twi"}},      # acquires, declares nothing
+        "summarize_series": {"data": {"q_mean": 1.0}, "meta": {"source": "not an acquirer"}},
+    }
+    for _name, _shape in shapes.items():
+        def _make(shape):
+            def tool(session_id: str) -> dict:
+                return json.loads(json.dumps(shape))
+            return tool
+        _fn = _make(_shape)
+        _fn.__name__ = _name
+        server.tool(name=_name)(_fn)
+
+    @server.tool()
+    def data_batch_fetch(session_id: str) -> dict:
+        """aihydro-data's batch shape: one result or error per label."""
+        return {"variable": "precipitation", "labels": ["a", "b", "c"], "results": {
+            "a": {"product": "DAYMET_PRECIP", "fallback_history": [
+                {"product": "GRIDMET_PRECIP", "source": "hyriver", "outcome": "failed", "reason": "boom"},
+                {"product": "DAYMET_PRECIP", "source": "hyriver", "outcome": "served", "reason": ""}]},
+            "b": {"product": "CHIRPS", "cache_hit": True, "fallback_history": [
+                {"product": "CHIRPS", "source": "gee", "outcome": "served", "reason": ""}]}},
+            "errors": {"c": {"error": True, "code": "ALL_PRODUCTS_FAILED", "details": {"fallback_history": [
+                {"product": "ERA5L_PRECIP", "source": "gee", "outcome": "failed", "reason": "quota"}]}}},
+            "summary": {"succeeded": 2, "failed": 1}}
+
+    @server.tool()
+    def get_data_fetch_result(job_id: str, session_id: str = SID) -> dict:
+        from ai_hydro.mcp.tools_data_async import get_data_fetch_result as real
+        return real(job_id)
+
+    @server.tool()
+    def blows_up(session_id: str) -> dict:
+        from ai_hydro.mcp.helpers import _tool_error_to_dict
+        exc = KeyError("unexpected")
+        exc.fallback_history = _history_of_failure()
+        return _tool_error_to_dict(exc)
+
+    @server.tool()
+    def cached_tool(session_id: str, with_history: bool = True) -> dict:
+        res = {"data": {"area_km2": 774.15, "gauge_id": "01031500"}, "meta": {"tool": "delineate_watershed",
+               "computed_at": "2026-06-27T21:37:05+00:00"}, "_cached": True}
+        if with_history:
+            res["data"]["fallback_history"] = [
+                {"method": "merit_gee", "outcome": "failed", "reason": "GEE_MEMORY_LIMIT"},
+                {"method": "merit_basins_hybrid", "outcome": "succeeded", "reason": ""}]
+        return res
 
     @server.tool()
     def delineate_watershed_from_point(session_id: str, lat: float = 28.4, lon: float = 77.2,
@@ -334,3 +390,210 @@ def test_real_delineation_router_failure_carries_its_history(monkeypatch):
     envelope = _tool_error_to_dict(caught.value)
     t = rr.attempt_trail(envelope)
     assert t and t["attempts"][0]["source"] == "small_catchment_3dep" and "3DEP down" in t["attempts"][0]["reason"]
+
+
+# ================================================================== cache and reuse truth
+@needs_fastmcp2
+def test_a_cache_hit_never_presents_the_origins_attempts_as_its_own(world):
+    server, _ = world
+    with patch("aihydro_data._pipeline._fetch_one", side_effect=_fake_fetch_one_factory(fail_first=1)):
+        first = _call(server, "data_fetch", {"session_id": SID, "cache": True})
+    assert first["cache_hit"] is False
+    with patch("aihydro_data._pipeline._fetch_one", side_effect=AssertionError("must be served from the cache")):
+        second = _call(server, "data_fetch", {"session_id": SID, "cache": True})
+    assert second["cache_hit"] is True
+    recs = sorted((r for r in _records() if r["tool"] == "data_fetch"), key=lambda r: r["recorded_at"])
+    t1, t2 = (r["extra"]["attempt_trail"] for r in recs)
+    assert "served_from" not in t1 and [a["outcome"] for a in t1["attempts"]][0] == "failed"
+    assert t2["served_from"] == "cache" and t2["attempts"] == []
+    assert t2["origin_attempts"] == t1["attempts"] and t2["source_used"] == t1["source_used"] == second["product"]
+
+
+@needs_fastmcp2
+def test_a_reuse_record_never_presents_the_origins_attempts_as_its_own(world):
+    server, _ = world
+    body = _call(server, "cached_tool", {"session_id": SID})
+    assert body.get("reused") is True or body.get("_cached") is True
+    rec = next(r for r in _records() if r["tool"] == "cached_tool")
+    t = rec["extra"]["attempt_trail"]
+    assert rec["extra"].get("reused") is True
+    assert t["served_from"] == "reuse" and t["attempts"] == []
+    assert [a["outcome"] for a in t["origin_attempts"]] == ["failed", "succeeded"]
+    assert t["source_used"] == "merit_basins_hybrid"
+
+
+@needs_fastmcp2
+def test_a_reuse_record_takes_the_trail_from_the_origin_row_when_the_result_has_none(world):
+    server, _ = world
+    origin = rr.build_run_record(
+        run_id="watershed.origin1", tool="delineate_watershed", session_id=SID, arguments={}, result={"data": {}},
+        extra={"writer": "post_run", "attempt_trail": {
+            "basis": "fallback_history", "source_used": "merit_basins_hybrid", "limitations": ["X"],
+            "attempts": [{"source": "merit_gee", "outcome": "failed", "reason": "r"},
+                         {"source": "merit_basins_hybrid", "outcome": "succeeded", "reason": ""}]}},
+        entry={"run_id": "watershed.origin1"})
+    store._run_log_record(SID, "watershed.origin1", {
+        "run_id": "watershed.origin1", "tool_name": "delineate_watershed", "session_id": SID,
+        "timestamp": "2026-06-27T21:37:05+00:00", "key_outputs": {"area_km2": 774.15, "gauge_id": "01031500"},
+        "record": origin.to_dict()}, writer="middleware")
+    _call(server, "cached_tool", {"session_id": SID, "with_history": False})
+    rec = next(r for r in _records() if r["tool"] == "cached_tool")
+    t = rec["extra"]["attempt_trail"]
+    assert t["served_from"] == "reuse" and t["attempts"] == [] and t["derived_from"] == "watershed.origin1"
+    assert [a["source"] for a in t["origin_attempts"]] == ["merit_gee", "merit_basins_hybrid"]
+
+
+# ================================================================== coverage
+@needs_fastmcp2
+def test_batch_fetch_gets_a_trail_per_label(world):
+    server, _ = world
+    _call(server, "data_batch_fetch", {"session_id": SID})
+    t = next(r for r in _records() if r["tool"] == "data_batch_fetch")["extra"]["attempt_trail"]
+    assert set(t["labels"]) == {"a", "b", "c"}
+    assert [a["outcome"] for a in t["labels"]["a"]["attempts"]] == ["failed", "served"]
+    assert t["labels"]["a"]["source_used"] == "DAYMET_PRECIP"
+    assert t["labels"]["b"]["served_from"] == "cache" and t["labels"]["b"]["attempts"] == []
+    assert t["labels"]["c"]["attempts"][0]["reason"] == "quota" and t["labels"]["c"]["source_used"] is None
+    assert t["labels"]["c"]["error_code"] == "ALL_PRODUCTS_FAILED"
+
+
+@needs_fastmcp2
+def test_background_job_history_survives_success_and_failure(world, tmp_path, monkeypatch):
+    from ai_hydro.mcp import tools_data_async as tda
+
+    server, _ = world
+
+    monkeypatch.setattr(tda, "_artifact_dir", lambda job_id: tmp_path / "jobs" / job_id)
+    ok, bad = tmp_path / "jobs" / "okjob", tmp_path / "jobs" / "badjob"
+    ok.mkdir(parents=True); bad.mkdir(parents=True)
+    (ok / "status.json").write_text(json.dumps({
+        "status": "complete", "variable": "precipitation", "product": "DAYMET_PRECIP", "source": "hyriver",
+        "fallback_history": [{"product": "GRIDMET_PRECIP", "source": "hyriver", "outcome": "failed", "reason": "boom"},
+                             {"product": "DAYMET_PRECIP", "source": "hyriver", "outcome": "served", "reason": ""}]}))
+    (bad / "status.json").write_text(json.dumps({
+        "status": "failed", "error": {"code": "SOURCE_UNAVAILABLE", "message": "all failed", "fallback_history": [
+            {"product": "GRIDMET_PRECIP", "source": "hyriver", "outcome": "failed", "reason": "boom"},
+            {"product": "DAYMET_PRECIP", "source": "hyriver", "outcome": "failed", "reason": "boom2"}]}}))
+    _call(server, "get_data_fetch_result", {"job_id": "okjob", "session_id": SID})
+    _call(server, "get_data_fetch_result", {"job_id": "badjob", "session_id": SID})
+    trails = [r["extra"]["attempt_trail"] for r in sorted(
+        (r for r in _records() if r["tool"] == "get_data_fetch_result"), key=lambda r: r["recorded_at"])]
+    assert [a["outcome"] for a in trails[0]["attempts"]] == ["failed", "served"] and trails[0]["source_used"] == "DAYMET_PRECIP"
+    assert [a["reason"] for a in trails[1]["attempts"]] == ["boom", "boom2"] and trails[1]["error_code"] == "SOURCE_UNAVAILABLE"
+
+
+def test_runner_persists_the_history_of_a_job_that_failed():
+    from ai_hydro.mcp.runners.data_fetch_runner import DataFetchRunner
+    from aihydro_data.exceptions import SourceUnavailable
+
+    exc = SourceUnavailable("all failed", details={"fallback_history": [
+        {"product": "P", "source": "s", "outcome": "failed", "reason": "boom"}]})
+    err = DataFetchRunner()._extract_error(exc)
+    assert err["fallback_history"][0]["reason"] == "boom" and err["terminal"] is False
+
+
+@needs_fastmcp2
+def test_a_non_toolerror_failure_keeps_the_trail_through_the_error_envelope(world):
+    server, _ = world
+    body = _call(server, "blows_up", {"session_id": SID})
+    assert body["code"] == "UNEXPECTED_ERROR" and len(body["fallback_history"]) == 3
+    t = next(r for r in _records() if r["tool"] == "blows_up")["extra"]["attempt_trail"]
+    assert [a["source"] for a in t["attempts"]][0] == "merit_gee" and t["error_code"] == "UNEXPECTED_ERROR"
+
+
+@needs_fastmcp2
+@pytest.mark.parametrize("tool,source", [
+    ("fetch_camels_us", "CAMELS-US via pygeohydro.get_camels()"),
+    ("fetch_soil_attributes_ssurgo", "SSURGO"),
+    ("fetch_streamflow_data", "USGS Water Data API"),
+    ("fetch_forcing_data", "GRIDMET_PRECIP"),
+])
+def test_single_source_fetchers_record_a_one_attempt_trail_from_the_declared_source(world, tool, source):
+    server, _ = world
+    _call(server, tool, {"session_id": SID})
+    t = next(r for r in _records() if r["tool"] == tool)["extra"]["attempt_trail"]
+    assert t["basis"] == "declared_source"
+    assert [(a["source"], a["outcome"]) for a in t["attempts"]] == [(source, "served")] and t["source_used"] == source
+
+
+@needs_fastmcp2
+def test_no_declared_source_or_not_an_acquirer_means_no_trail(world):
+    server, _ = world
+    _call(server, "compute_twi", {"session_id": SID})                     # acquires, declares no source
+    _call(server, "summarize_series", {"session_id": SID})                # declares one but acquires nothing
+    for name in ("compute_twi", "summarize_series"):
+        rec = next(r for r in _records() if r["tool"] == name)
+        assert "attempt_trail" not in rec["extra"], name
+
+
+def test_forcing_surfaces_the_inner_fetch_history_per_variable(monkeypatch):
+    import types
+
+    import numpy as np
+    import pandas as pd
+
+    import aihydro_data
+    from ai_hydro.data import forcing as fo
+
+    d = pd.date_range("2020-01-01", "2020-01-10", freq="D")
+    hist = [{"product": "GRIDMET_PRECIP", "source": "hyriver", "outcome": "failed", "reason": "boom"},
+            {"product": "CHIRPS", "source": "gee", "outcome": "served", "reason": ""}]
+
+    def fetch(var, geom, start, end, **kw):
+        if var != "precipitation":
+            raise RuntimeError("ALL_BACKENDS_FAILED")
+        return types.SimpleNamespace(
+            data=pd.DataFrame({"date": d, "precipitation": np.full(d.size, 1.0)}), product="CHIRPS", source="gee",
+            units="mm/day", coverage_complete=True, days_missing_head=0, days_missing_tail=0,
+            days_missing_internal=0, missing_ranges=[], notes=[], fallback_history=hist)
+
+    monkeypatch.setattr(fo, "_adata_fetch", fetch, raising=False)
+    monkeypatch.setattr(aihydro_data, "fetch", fetch)
+    geom = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
+    data = fo.fetch_forcing_data_routed(geom, "2020-01-01", "2020-01-10", variables=["pr", "pet"]).data
+    rows = data["fallback_history"]
+    assert [(r["variable"], r["outcome"]) for r in rows] == [
+        ("precipitation", "failed"), ("precipitation", "served"), ("pet", "failed")]
+    t = rr.attempt_trail({"data": data})
+    assert t["source_used"] == "CHIRPS" and len(t["attempts"]) == 3 and t["attempts"][0]["variable"] == "precipitation"
+
+
+# ================================================================== scrubber
+@pytest.mark.parametrize("raw,gone", [
+    ("cannot open file:///Users/someone/proj/data/x.nc now", "/Users/someone"),
+    ("cannot open file:///srv/private/cache/x.nc", "/srv/private"),
+    ("missing ~/projects/secret_basin/dem.tif", "secret_basin"),
+    ("GET failed: Authorization: Bearer abcdef1234567890", "abcdef1234567890"),
+    ("sent header Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+    ("retry with Bearer abcdef1234567890xyz", "abcdef1234567890xyz"),
+    ("connect https://user:p4ssw0rd@host.example/data failed", "p4ssw0rd"),
+    ("token ghp_" + "a1B2c3D4e5" * 4, "a1B2c3D4e5"),
+    ("token gho_" + "a1B2c3D4e5" * 4, "a1B2c3D4e5"),
+    ("key sk-" + "Zz9" * 12, "Zz9Zz9"),
+    ("slack xoxb-1234567890-abcdefghij", "abcdefghij"),
+    ("aws AKIA" + "ABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
+])
+def test_scrubber_removes_each_credential_and_path_shape(raw, gone):
+    out = rr.scrub_error_text(raw)
+    assert gone not in out and out, out
+    assert rr.scrub_error_text(out) == out                                  # idempotent
+
+
+def test_scrubber_leaves_ordinary_text_alone():
+    for text in ("units m/s ~ 3 and a/b", "HTTP 503 from https://api.example.org/v1/items", "NLDI 503", "~ approx"):
+        assert rr.scrub_error_text(text) == text
+
+
+@needs_fastmcp2
+def test_error_summary_uses_the_extended_scrubber(world):
+    server, _ = world
+
+    @server.tool()
+    def leaky(session_id: str) -> dict:
+        return {"error": True, "code": "X",
+                "message": "failed with Authorization: Bearer abcdef1234567890 at file:///Users/someone/x.nc"}
+
+    _call(server, "leaky", {"session_id": SID})
+    log = store._run_log_read_all(SID)
+    blob = json.dumps([r for r in log.values() if r.get("tool_name") == "leaky"])
+    assert "abcdef1234567890" not in blob and "/Users/someone" not in blob

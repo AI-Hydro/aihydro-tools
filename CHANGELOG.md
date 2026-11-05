@@ -16,6 +16,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `attempts_omitted` counts the rest), scrubbed of local paths, URL query strings and secret-shaped text, and sits inside the record seal,
   so editing or deleting an attempt fails `record_digest` verification and `replay.py`. The capsule carries it in `run_log.json`. It is kept
   on success and on total failure; before, only a 200-character `error_summary` survived a failed delineation and no list survived a success.
+- **Cache and reuse never claim the origin's attempts.** A `cache_hit` result and a reuse row get `served_from: "cache" | "reuse"`,
+  `attempts: []`, `origin_attempts` and the origin's `source_used`.
+- **Coverage.** `data_batch_fetch` has a trail per label; `data_fetch_background`'s job keeps its history, returned by `get_data_fetch_result`
+  on success and failure; `fetch_forcing_data` now surfaces the inner aihydro-data history per variable (`data.fallback_history`; before it
+  was dropped); single-source fetchers (`fetch_streamflow_data`, `fetch_camels_us`, `fetch_soil_attributes_ssurgo`, and any `acquires = true`
+  tool that declares its source) get a one-attempt `declared_source` trail; an unexpected exception that carries `fallback_history` keeps it
+  through `_tool_error_to_dict`. `docs/session-integrity.md` lists exactly which tools carry a trail and which do not (the `lsh_*` tools do not yet).
+- **`scrub_error_text` redacts more**: `file://` URLs and `~/` paths (basename only), URL userinfo, `Authorization`/`Bearer`/`Basic`, token
+  prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`, `sk-`, `xox*-`, `AKIA`/`ASIA`). It also applies to `error_summary`.
 - **Older records.** Records written before this change have no `attempt_trail`. Absence there means "not recorded", not "no source was
   tried"; sealed rows are insert-only and are not rewritten, so they are not backfilled, and they keep verifying. A call that reports no
   `fallback_history` gets no key and its record digest is exactly what earlier versions produced (tested).
