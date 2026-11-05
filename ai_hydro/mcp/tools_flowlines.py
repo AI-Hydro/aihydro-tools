@@ -64,8 +64,12 @@ def gauge_flowlines(gauge_id: str, direction: str = "both", distance_km: int = 5
             data["geometry_file"] = fname if path else None
             data["geometry_note"] = ("written to the study workspace" if path else
                                      "the study has no workspace directory, so the geometry was not written")
+            # What the map needs to describe the layer without reading its file name: the layer envelope carries these.
+            layer_meta = {"gauge_id": site, "direction": direction, "distance_km": distance_km,
+                          "truncated": data["truncated"], "n_features": data["n_features_returned"]}
             result = {"data": data, "meta": {"tool": "gauge_flowlines", "source": data["source"],
-                                             "params": {"gauge_id": site, "direction": direction, "distance_km": distance_km}}}
+                                             "params": {"gauge_id": site, "direction": direction, "distance_km": distance_km},
+                                             "layer_meta": layer_meta}}
             return post_run("gauge_flowlines", sid, result,
                             inputs={"gauge_id": site, "direction": direction, "distance_km": distance_km})
         data["geometry_note"] = "no study resolved, so the geometry was not written; pass session_id"

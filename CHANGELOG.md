@@ -4,7 +4,9 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] (next minor: server identity and floor for subagents)
+## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
+
+Extension 0.4.7 reads the trace facts and layer aliases this release adds; with older tools its trace card reads "not recorded".
 
 A call can now name the subagent that made it, and the server keeps a floor under what such a call may do. Calls that name no
 agent behave and record exactly as before (a sealed record's digest is unchanged). `agent` is asserted by the client: it narrows
@@ -36,6 +38,29 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
 - Known gap: `aihydro:// resource reads do not pass through tool middleware; a host must not hand a child the resource surface.
 - A call that names an agent never rebinds the chat (`helpers._bind`).
 - `merge_session_shards` is `audience = host`.
+
+
+### Changed
+
+- **Map layer ids follow the host catalog's `layer_aliases`** (old id to surviving id, recorded when the extension merges duplicate layers). One resolver
+  (`resolve_catalog_layer`, with chain, cycle and depth-cap protection, depth 8) serves `find_catalog_layer`, `map_update_layer`, `map_apply_symbology`,
+  `map_remove_layer`, `map_fit_layer` and `bind_claim_to_item`; a tool that followed an alias acts on the surviving id and adds `alias_followed` and
+  `requested_layer_id` (`requested_item_id` for `bind_claim_to_item`) to its result. A new link to an alias is recorded under the surviving id.
+- **Claims bound to a merged-away id show on the surviving item, marked.** `claim_ids` stays direct links only; links recorded under an id the catalog says was
+  merged into the item are listed as `claim_ids_via_alias: [{claim_id, bound_to}]` (survivor only; merged siblings never see each other), because `layer_aliases` is host
+  data and must not pass for a link. The stored `map_item_claim_links` is never rewritten; a bind that followed an alias also records `map_item_claim_link_via`
+  (`{item_id: {claim_id: requested_id}}`) in the study. `map_remove_layer` given an alias id refuses and names the surviving id. A study item recorded under a merged id reports `layer_alias_of`. `map_get_state` and `map_list_layers`
+  return `layer_aliases` when the host recorded any.
+- **`map_get_state` and `map_list_layers` no longer send absolute paths to the model.** The path fields of catalog entries and `metadata_snapshot`,
+  `workspace_root`, `active_roi.workspace_path` and `host_workspace_ownership` are shown workspace-relative when inside the workspace and as
+  `<outside-workspace>` otherwise; `recent_events` and `map_save_roi`'s `saved_to` get the same treatment (path-named fields at any depth, camelCase, `uri`/`url`, `file://` and `vscode-file://`, backslash-rooted and `..` paths; every string also goes through `session.refs.scrub_paths`, and the resolver, not-found and file-not-found messages are scrubbed); `load_geojson_for_layer` and the catalog file keep the absolute values.
+- No change when the catalog has no `layer_aliases`.
+
+
+### Added
+
+- **A tool can state facts about the layer its run will make, and the layer carries them.** A result's `meta.layer_meta` (flat scalars, values cut at 200 characters; only the allowlisted keys `gauge_id`, `direction`, `distance_km`, `truncated` and `n_features` are kept, in `LAYER_FACT_KEYS`; any other key is dropped, so a result cannot put a path, status, claim link or host-owned id on a layer) is stored in the run row, and `map_add_layer_from_run` copies it onto the layer envelope beside `_run_id`, `study_id` and `tool`. Any tool may set those facts. A run that sets none writes the same row as before (no new key), and a layer from it gets no extra keys. Nothing is inferred.
+- `gauge_flowlines` sets it: `gauge_id`, `direction`, `distance_km`, `truncated` (the tool's own flag, true when the 750-per-direction cap cut any direction) and `n_features`. The extension reads these instead of a file name or a layer name.
 
 ---
 

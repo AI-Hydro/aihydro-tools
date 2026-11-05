@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import date, datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
 log = logging.getLogger("ai_hydro.enforcement")
 
@@ -142,6 +142,36 @@ def _generate_unique_run_id(tool_name: str, session_id: str) -> str:
     return f"{run_id}{secrets.token_hex(4)}"
 
 
+#: The facts a tool may state about the layer its run will put on the map. An allowlist, in one place: a key not named here is
+#: dropped, so a result can never put a path, a status, a claim link or a host-owned id onto a layer through ``layer_meta``.
+#: Adding a key is a deliberate change here (and in the extension's matching list), with a test.
+LAYER_FACT_KEYS = frozenset({"gauge_id", "direction", "distance_km", "truncated", "n_features"})
+
+
+def sanitize_layer_meta(raw: Any) -> dict[str, str]:
+    """
+    Facts a tool states about the layer its run will make, as the flat string map the layer envelope carries.
+
+    A tool puts them in ``result["meta"]["layer_meta"]``; ``post_run`` stores them in the run row and
+    ``map_add_layer_from_run`` copies them onto the layer. Only the keys in ``LAYER_FACT_KEYS`` are kept. Values are
+    scalars (str, int, float, bool; a bool is "true" or "false"), cut at 200 characters; anything else is dropped, never
+    repaired. Returns ``{}`` when there is nothing valid.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if k not in LAYER_FACT_KEYS:
+            continue
+        if isinstance(v, bool):
+            out[k] = "true" if v else "false"
+        elif isinstance(v, (int, float)) and v == v and v not in (float("inf"), float("-inf")):
+            out[k] = str(v)
+        elif isinstance(v, str) and v.strip():
+            out[k] = v.strip()[:200]
+    return out
+
+
 def _write_run_log(
     session_id: str,
     run_id: str,
@@ -182,6 +212,9 @@ def _write_run_log(
         }
         from ai_hydro.session.evidence import capture_result_evidence
         entry["evidence"] = capture_result_evidence(result)
+        layer_meta = sanitize_layer_meta((result.get("meta") or {}).get("layer_meta") if isinstance(result.get("meta"), dict) else None)
+        if layer_meta:
+            entry["layer_meta"] = layer_meta
         scrubbed_inputs = _scrub_tool_inputs(inputs)
         if scrubbed_inputs:
             entry["inputs"] = scrubbed_inputs

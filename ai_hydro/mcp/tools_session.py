@@ -1563,8 +1563,8 @@ def bind_claim_to_item(
     try:
         session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
-        from ai_hydro.mcp.map_items import add_link
-        from ai_hydro.mcp.map_layer_catalog import find_catalog_layer
+        from ai_hydro.mcp.map_items import add_link, note_requested_id
+        from ai_hydro.mcp.map_layer_catalog import resolve_catalog_layer
 
         session = HydroSession.load(session_id)
         if claim_id not in set(session.claims.keys()):
@@ -1576,7 +1576,8 @@ def bind_claim_to_item(
                 "recovery": "Add the claim first, or pass the id of an existing claim.",
                 "next_tools": ["add_claim"],
             }
-        if f"layer:{item_id}" not in session.artifact_manifest and not find_catalog_layer(item_id):
+        hit = resolve_catalog_layer(item_id)
+        if f"layer:{item_id}" not in session.artifact_manifest and not hit["entry"]:
             return {
                 "error": True,
                 "code": "ITEM_NOT_FOUND",
@@ -1584,7 +1585,12 @@ def bind_claim_to_item(
                 "recovery": "List the items with map_get_state and pass one of their item_id values.",
                 "next_tools": ["map_get_state"],
             }
+        requested_item_id = item_id
+        if hit["alias_followed"] and f"layer:{item_id}" not in session.artifact_manifest:
+            item_id = hit["canonical_id"]      # a new link names the layer that stands now; recorded ones stay as they are
         created = add_link(session.extra, item_id, claim_id)
+        if created and item_id != requested_item_id:
+            note_requested_id(session.extra, item_id, claim_id, requested_item_id)
         if created:
             session.save()
             from ai_hydro.mcp.ledger_commands import write_ledger_event
@@ -1593,6 +1599,7 @@ def bind_claim_to_item(
                 "session_id": session_id,
                 "claim_id": claim_id,
                 "item_id": item_id,
+                **({"requested_item_id": requested_item_id} if item_id != requested_item_id else {}),
             })
         return {
             "session_id": session_id,
@@ -1601,6 +1608,8 @@ def bind_claim_to_item(
             "linked": True,
             "already_linked": not created,
             "message": f"Claim '{claim_id}' is linked to map item '{item_id}'.",
+            **({"alias_followed": True, "requested_item_id": requested_item_id}
+               if item_id != requested_item_id else {}),
         }
     except Exception as e:
         log.error("bind_claim_to_item failed: %s", e)
