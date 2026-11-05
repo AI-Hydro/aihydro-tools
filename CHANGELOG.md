@@ -18,7 +18,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   installed server through the `aihydro.tools` entry point (audit C8: zero attributes on the installed build). **Needs aihydro-lsh 0.4.0 on PyPI first**
   (0.3.0 requires `aihydro-watershed<0.3` and cannot co-install with this package); until then `[attributes]` and `[all]` do not resolve.
 - `install-alone` CI workflow: wheel-only install in a fresh venv, then the MCP server driven in-process with sockets refused (173 tools, a knowledge lookup, an
-  aihydro-data product listing, the structured `MODELLING_NOT_INSTALLED` envelope). A second job, `with-attributes`, checks the co-install. Until lsh 0.4.0 is on PyPI it installs lsh from the `vision2040/install-alone` git ref of aihydro-lsh; **it needs the repository secret `AIHYDRO_LSH_READ_TOKEN` (the lsh repository is private) and fails with a clear error without it; at release, switch it back to `pip install <wheel>[attributes]` from PyPI** (the marked step in the workflow).
+  aihydro-data product listing, the structured `MODELLING_NOT_INSTALLED` envelope). A second job, `with-attributes`, installs `[attributes]` from PyPI and checks the `lsh_*` tools register; it is `continue-on-error` until lsh 0.4.0 is published. **Release checklist: remove `continue-on-error` from `with-attributes` once aihydro-lsh 0.4.0 is on PyPI.**
 
 ## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
 

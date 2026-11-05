@@ -1023,4 +1023,4 @@ Source: AGU ecosystem audit C1 and C8 (`docs/vision-2040/findings/agu-ecosystem-
   aihydro-modelling remains private. The offline `tests` job still does not install lsh; the `with-attributes` job of `install-alone.yml` does.
 - **`install-alone.yml`**: builds the wheel and installs only it into a fresh venv outside the checkout, then drives the MCP server in-process
   with sockets refused (`scripts/install_alone_check.py`; lsh and modelling asserted absent). A second job, `with-attributes`, installs
-  `[attributes]` and checks the `lsh_*` tools register (`scripts/coinstall_attributes_check.py`); it installs lsh from the lsh PR branch git ref until 0.4.0 is on PyPI, then switches back to `[attributes]` from PyPI.
+  `[attributes]` and checks the `lsh_*` tools register (`scripts/coinstall_attributes_check.py`); it installs `[attributes]` from PyPI and is `continue-on-error` until lsh 0.4.0 is published (release checklist: remove it then); no token is used in public CI.
