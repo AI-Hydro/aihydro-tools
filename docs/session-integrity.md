@@ -154,3 +154,13 @@ A comparison claim whose cited interval has no readable `scope` and for which fo
 NSE) is refused as `interval_scope_gate`: the interval's coverage is unknown. Standalone `source="signatures"` validators accept
 `run_id` / `feature` / `series_digest`; with several stored signatures results and none of them the call is
 `ambiguous_signatures_result` (teaching error, candidates listed).
+
+## Attempt trail (`extra.attempt_trail`)
+
+A record names which sources a call tried, which one served it, and the limitations it reported, on success and on failure. The trail is
+sealed with the record (inside `record_digest`) and travels in the capsule's `run_log.json`; `replay.py` fails if an attempt is edited or
+removed. Built in one place (`run_records.attempt_trail`) from the `fallback_history` a result or error carries, so every tool that reports
+one is covered. Bounds: 32 attempts, 16 limitations, reasons 200 characters, local paths and secret-shaped text scrubbed. A call that
+reports no `fallback_history` has no `attempt_trail` key and its digest is unchanged. Records from before this feature have no key: read
+absence as "not recorded", never as "no fallback happened". They are not backfilled (sealed rows are insert-only). `limitations` are the
+tool's own `quality_flags`; the trail says what was reported, not that the chosen source is adequate for the question.

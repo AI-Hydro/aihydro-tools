@@ -4,6 +4,24 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Attempt trail in the sealed run record** (AGU abstract claim: "each request records the sources attempted, the source ultimately used,
+  and any limitations"). One rule in the record writer, no per-tool code: a call whose result (top level or `data`) or failure carries a
+  `fallback_history` (aihydro-data fetches, aihydro-watershed delineation) gets `extra.attempt_trail` in its record: `attempts`
+  (`source, outcome, reason`, plus `provider` when a product ran through another source), `source_used`, `limitations` (the string
+  `quality_flags`, for example `RAW_DEM_EXPERIMENTAL_FALLBACK`) and, on failure, `error_code`. It is bounded (32 attempts, 16 limitations,
+  `attempts_omitted` counts the rest), scrubbed of local paths, URL query strings and secret-shaped text, and sits inside the record seal,
+  so editing or deleting an attempt fails `record_digest` verification and `replay.py`. The capsule carries it in `run_log.json`. It is kept
+  on success and on total failure; before, only a 200-character `error_summary` survived a failed delineation and no list survived a success.
+- **Older records.** Records written before this change have no `attempt_trail`. Absence there means "not recorded", not "no source was
+  tried"; sealed rows are insert-only and are not rewritten, so they are not backfilled, and they keep verifying. A call that reports no
+  `fallback_history` gets no key and its record digest is exactly what earlier versions produced (tested).
+- A failed delineation carries its trail only with an aihydro-watershed that attaches `fallback_history` to the `ToolError` (the companion
+  change in that package); with an older one the failure record has the error code and summary as before.
+
 ## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
 
 Extension 0.4.7 reads the trace facts and layer aliases this release adds; with older tools its trace card reads "not recorded".

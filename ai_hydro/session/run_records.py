@@ -38,6 +38,12 @@ Limits of the seal (read before relying on a record):
   the caller sent them.
 - ``output_digest`` covers what the caller received (``result["data"]``), not
   arrays a tool read from or wrote to disk.
+- ``extra.attempt_trail`` is the attempt trail: which sources a call tried (each with its outcome and
+  reason), which one served it, and the limitations it reported (``quality_flags``), on success and on failure
+  (see ``attempt_trail``). It lives in ``extra``, so the record seal covers it. Records written by earlier
+  versions have no such key; absence there means "not recorded", never "no source was tried". Sealed rows are
+  insert-only and are not rewritten, so they are not backfilled. A call that reports no ``fallback_history``
+  gets no key, and its record digest is the one earlier versions produced.
 
 ``build_run_record`` never raises. When a digest cannot be computed the record
 is still sealed, the digest is ``None`` and ``record_error`` says why.
@@ -769,6 +775,95 @@ def scrub_error_text(text: Any, limit: int = 200, workspace_dir: Any = None) -> 
     return out[:limit]
 
 
+#: Bounds on the attempt trail kept in a record (a record is small and sealed; a runaway history must not bloat it).
+MAX_TRAIL_ATTEMPTS = 32
+MAX_TRAIL_LIMITATIONS = 16
+
+
+def _history_of(result: Any, failure: Optional[BaseException]) -> Optional[List[Any]]:
+    """The ``fallback_history`` list a result (top level or ``data``) or a failure's ``details`` carries."""
+    holders: List[Any] = []
+    if isinstance(result, dict):
+        holders.append(result)
+        if isinstance(result.get("data"), dict):
+            holders.append(result["data"])
+        if isinstance(result.get("details"), dict):
+            holders.append(result["details"])
+    details = getattr(failure, "details", None)
+    if isinstance(details, dict):
+        holders.append(details)
+    for holder in holders:
+        history = holder.get("fallback_history")
+        if isinstance(history, (list, tuple)) and history:
+            return list(history)
+    return None
+
+
+def _limitations_of(result: Any) -> List[str]:
+    """String quality flags a result reports (delineation: ``data.quality_flags``). Validator dicts are not limitations."""
+    found: List[str] = []
+    if isinstance(result, dict):
+        for holder in (result.get("data"), result):
+            flags = holder.get("quality_flags") if isinstance(holder, dict) else None
+            if isinstance(flags, (list, tuple)):
+                found.extend(f for f in flags if isinstance(f, str) and f.strip())
+    return list(dict.fromkeys(found))
+
+
+def attempt_trail(result: Any, failure: Optional[BaseException] = None,
+                  workspace_dir: Any = None) -> Optional[Dict[str, Any]]:
+    """The attempt trail of one call, or ``None`` when the call reports no ``fallback_history``.
+
+    One general rule for every tool, success or failure: when the result (top level or ``data``) or the
+    failure's ``details`` carries a ``fallback_history`` (aihydro-data fetches, aihydro-watershed
+    delineation), keep
+
+    - ``attempts``: each entry as ``{source, outcome, reason}`` (``provider`` too when a product ran
+      through a different source), in order, at most ``MAX_TRAIL_ATTEMPTS``; ``attempts_omitted`` counts
+      the rest. ``reason`` is path- and secret-scrubbed and truncated; nothing else of an entry is kept.
+    - ``source_used``: the last attempt that served (``served``/``succeeded...``), else ``None``.
+    - ``limitations``: the call's string ``quality_flags``, bounded and scrubbed.
+    - ``error_code``: the failure's code, when the call failed.
+
+    A call with no ``fallback_history`` returns ``None`` so its record (and digest) is unchanged.
+    """
+    history = _history_of(result, failure)
+    if not history:
+        return None
+    attempts: List[Dict[str, str]] = []
+    used: Optional[str] = None
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("product") or item.get("method") or item.get("source") or "unknown"
+        row: Dict[str, str] = {
+            "source": scrub_error_text(name, limit=80, workspace_dir=workspace_dir),
+            "outcome": scrub_error_text(item.get("outcome") or "unknown", limit=40, workspace_dir=workspace_dir),
+            "reason": scrub_error_text(item.get("reason") or "", workspace_dir=workspace_dir),
+        }
+        provider = item.get("source")
+        if item.get("product") and isinstance(provider, str) and provider and provider != item.get("product"):
+            row["provider"] = scrub_error_text(provider, limit=80, workspace_dir=workspace_dir)
+        if row["outcome"] == "served" or row["outcome"].startswith("succeeded"):
+            used = row["source"]
+        attempts.append(row)
+    if not attempts:
+        return None
+    trail: Dict[str, Any] = {
+        "attempts": attempts[:MAX_TRAIL_ATTEMPTS],
+        "source_used": used,
+        "limitations": [scrub_error_text(f, limit=80, workspace_dir=workspace_dir)
+                        for f in _limitations_of(result)[:MAX_TRAIL_LIMITATIONS]],
+    }
+    if len(attempts) > MAX_TRAIL_ATTEMPTS:
+        trail["attempts_omitted"] = len(attempts) - MAX_TRAIL_ATTEMPTS
+    code = result.get("code") if isinstance(result, dict) else None
+    code = code or getattr(failure, "code", None)
+    if isinstance(code, str) and code and (failure is not None or (isinstance(result, dict) and result.get("error"))):
+        trail["error_code"] = scrub_error_text(code, limit=80, workspace_dir=workspace_dir)
+    return trail
+
+
 def recorded_call(tool: str, fn: Callable[..., Any], /, **kwargs: Any) -> Any:
     """Call ``fn(**kwargs)`` (a tool implementation) and record the call.
 
@@ -1144,6 +1239,17 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
     if output_bytes is not None and output_bytes > MAX_DIGEST_BYTES:
         skip_reason = f"{output_bytes} bytes exceeds {MAX_DIGEST_BYTES}"
 
+    trail: Optional[Dict[str, Any]] = None
+    try:
+        if _history_of(result, failure):
+            try:
+                _ws = store.HydroSession.load(session_id).workspace_dir
+            except Exception:
+                _ws = None
+            trail = attempt_trail(result, failure, _ws)
+    except Exception as exc:  # the trail is additive: never cost the record
+        log.warning("attempt trail skipped for %s: %s", tool, exc)
+
     problems: List[str] = []
     run_ids: List[str] = []
     for sid, rid, writer in rows:
@@ -1172,6 +1278,8 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         if any(v != sid for v in requested):
             extra["context_mismatch"] = True
         extra.update(capture.notes)
+        if trail is not None:
+            extra["attempt_trail"] = trail
         if reuse_ctx and created:
             extra.update(reused=True, derived_from=reuse_ctx["origin_id"],
                          computed_at=reuse_ctx["computed_at"], origin_match=reuse_ctx["how"])
