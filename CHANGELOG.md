@@ -29,6 +29,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   errored label without history, and an all-failed batch never reads as served. The serving backend (`upstream.backend`) outranks the static `meta.sources` list
   (`AIHYDRO_USGS_BACKEND=legacy_waterservices` is recorded as `legacy_waterservices`). The scrubber no longer redacts `sk-SoilGrids-250m-...`, "Basic Authentication"
   or "Bearer authentication", and keeps query strings on DOI and scholarly-index hosts (`mailto=` is still redacted).
+- `Bearer <token>` is redacted at 16+ token characters (digit or not); `create_cn_grid`'s trail lists the land-cover source and the soil product (`data.*_product`).
 - **Older records.** Records written before this change have no `attempt_trail`. Absence there means "not recorded", not "no source was
   tried"; sealed rows are insert-only and are not rewritten, so they are not backfilled, and they keep verifying. A call that reports no
   `fallback_history` gets no key and its record digest is exactly what earlier versions produced (tested).

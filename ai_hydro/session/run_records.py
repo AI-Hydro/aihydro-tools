@@ -772,9 +772,12 @@ _SECRET_ASSIGN = re.compile(r"(\b[\w-]*(?:key|token|secret|credential|password)[
 _FILE_URL = re.compile(r"\bfile://[^\s\"']*", re.IGNORECASE)
 _HOME_PATH = re.compile(r"(?<![\w/.:~-])~/[^\s\"',;/]+/[^\s\"',;]+")     # ~/dir/.../file: directories dropped (~/file stays)
 _AUTH_HEADER = re.compile(r"(\b(?:proxy-)?authorization\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s,;\"']+", re.IGNORECASE)
-#: A bare ``Bearer <token>``: the body must look like a token (8+ characters including a digit), so prose such as
-#: "Bearer authentication" survives. ``Basic`` is only redacted inside an Authorization header (above).
-_BEARER = re.compile(r"\b(bearer)\s+(?=[A-Za-z0-9._~+/=-]*[0-9])[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
+#: A bare ``Bearer <token>`` is redacted when the body is 16+ characters of ``[A-Za-z0-9._~+/=-]`` (digit or not), or 8+
+#: with a digit. Accepted pass-throughs (not redacted, by design): plain short words ("Bearer authentication"), a bare
+#: ``Basic`` outside an Authorization header ("Basic Authentication"), a short ``sk-`` with punctuation
+#: (``sk-SoilGrids-250m-clay``), and ``?sig=``/any query string on a citation host (doi.org, crossref, ...).
+_BEARER = re.compile(
+    r"\b(bearer)\s+(?:(?=[A-Za-z0-9._~+/=-]*[0-9])[A-Za-z0-9._~+/=-]{8,}|[A-Za-z0-9._~+/=-]{16,})", re.IGNORECASE)
 _URL_USERINFO = re.compile(r"\b([a-z][a-z0-9+.-]*://)[^/\s:@\"']+:[^/\s@\"']+@", re.IGNORECASE)
 #: Known key prefixes. An ``sk-`` key has a single unbroken base62 body of 20+ characters (or a ``proj``/``ant``/``live``/
 #: ``test`` segment before it), so a product name such as ``sk-SoilGrids-250m-clay`` is not a key.
@@ -878,6 +881,12 @@ def _real_name(value: Any) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() and value.strip().lower() != "unknown" else None
 
 
+def _data_products(data: Dict[str, Any]) -> List[str]:
+    """Distinct product names in ``data``'s ``*_product`` keys (``landcover_product``, ``soil_product``)."""
+    return [n for n in dict.fromkeys(
+        _real_name(v) for k, v in data.items() if isinstance(k, str) and k.endswith("_product")) if n]
+
+
 def _declared_sources(result: Any) -> List[Dict[str, str]]:
     """The source(s) a successful result declares itself: one served entry each, or ``[]`` (no declared source).
 
@@ -894,10 +903,13 @@ def _declared_sources(result: Any) -> List[Dict[str, str]]:
     listed = [_real_name(i.get("name")) for i in (meta.get("sources") if isinstance(meta.get("sources"), list) else [])
               if isinstance(i, dict)]
     data_upstream = data.get("upstream") if isinstance(data.get("upstream"), dict) else {}
+    data_products = _data_products(data)
     pairs: List[Tuple[List[str], Optional[str]]] = [
         ([_real_name(result.get("product")) or ""], _real_name(result.get("source"))),
         ([_real_name(meta.get("product")) or ""], _real_name(meta.get("source"))),
-        ([""], _real_name(data.get("source"))),
+        # data-level products ("landcover_product", "soil_product", ...) are each a declared source; ``data.source``
+        # is the provider of the one that is ``data.product``, or its own entry when none matches.
+        (data_products, _real_name(data.get("source"))),
         # The backend that actually served the call outranks the static list of sources a tool declares
         # (streamflow with AIHYDRO_USGS_BACKEND=legacy_waterservices still lists the Water Data API).
         ([""], _real_name(data_upstream.get("backend")) or _real_name(upstream.get("backend"))),
@@ -912,7 +924,8 @@ def _declared_sources(result: Any) -> List[Dict[str, str]]:
         for n in dict.fromkeys(names):
             row = {"product": n, "outcome": "served", "reason": ""}
             if source and source != n and any(products):
-                row["source"] = source
+                if products is not data_products or n == _real_name(data.get("product")):
+                    row["source"] = source
             out.append(row)
         return out
     return []

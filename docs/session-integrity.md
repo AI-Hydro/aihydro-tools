@@ -178,7 +178,7 @@ without a history has no trail, and an all-failed batch has none at all; it neve
 
 **Scrubbing.** Every reason, flag and `error_summary` goes through `scrub_error_text`: local paths, `file://` URLs and `~/` paths (basename only),
 URL query strings (kept on DOI and scholarly-index hosts such as doi.org, crossref, OpenAlex, arXiv) and userinfo, `Authorization` headers,
-a `Bearer` token (a body with a digit; the phrase "Bearer authentication" stays), token prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`,
+a `Bearer` token (16+ token characters, or 8+ with a digit; plain short words such as "Bearer authentication" stay), token prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`,
 `xox*-`, `AKIA`/`ASIA`, and `sk-` only with an unbroken 20+ character base62 body or a `proj`/`ant`/`live`/`test` segment, so `sk-SoilGrids-250m-clay`
 stays), `mailto=` and secret-shaped assignments are redacted; 200 characters.
 
@@ -192,7 +192,7 @@ stays), `mailto=` and secret-shaped assignments are redacted; 200 characters.
 | `delineate_watershed_from_point` | `fallback_history`; on failure needs aihydro-watershed with the attempt-trail change (PR AI-Hydro/aihydro-watershed#7). Tiers recorded: small catchment, NLDI (failed, skipped, served), MERIT tiers, raw DEM (served, rejected, failed). A non-`ToolError` exception also carries it |
 | `fetch_forcing_data` | `fallback_history` per variable (inner aihydro-data history, and each variable that failed); cache hit as `served_from: cache` |
 | `fetch_streamflow_data`, `fetch_camels_us`, `fetch_soil_attributes_ssurgo` | `declared_source`: one attempt from `meta.sources`/`meta.source`/`meta.product` |
-| any other tool annotated `acquires = true` | `declared_source` only if its successful result declares `product`/`source`, `meta.product`/`meta.source`, `data.source`, `data.upstream.backend`/`meta.upstream.backend` or `meta.sources` |
+| any other tool annotated `acquires = true` | `declared_source` only if its successful result declares `product`/`source`, `meta.product`/`meta.source`, `data.source` (with every `data.*_product`, so `create_cn_grid` lists its land-cover and its soil product), `data.upstream.backend`/`meta.upstream.backend` or `meta.sources` |
 
 **Which tools do not (gaps):** `data_fetch_background` (it only starts a job; the trail is on `get_data_fetch_result`); the `lsh_*` tools
 (aihydro-lsh carries no `fallback_history`; to be done with the lsh work); `merit_ensure_*`, `compute_twi`, `create_cn_grid`,

@@ -89,6 +89,8 @@ def world(tmp_path, monkeypatch):
         "fetch_streamflow_data": {"data": {"gauge_id": "01013500"}, "meta": {
             "tool": "t", "sources": [{"name": "USGS Water Data API"}], "upstream": {"backend": "usgs_waterdata"}}},
         "fetch_forcing_data": {"data": {"n_days": 3}, "meta": {}, "product": "GRIDMET_PRECIP", "source": "hyriver"},
+        "create_cn_grid": {"data": {"landcover_product": "NLCD", "soil_product": "gNATSGO", "product": "NLCD",
+                           "source": "MRLC", "cn_mean": 71.0}, "meta": {"tool": "cn"}},
         "compute_twi": {"data": {"twi_mean": 6.0}, "meta": {"tool": "compute_twi"}},      # acquires, declares nothing
         "summarize_series": {"data": {"q_mean": 1.0}, "meta": {"source": "not an acquirer"}},
     }
@@ -587,6 +589,15 @@ def test_scrubber_leaves_ordinary_text_alone():
         assert rr.scrub_error_text(text) == text, text
 
 
+def test_bearer_is_redacted_at_16_characters_with_or_without_a_digit_and_plain_words_survive():
+    for raw, gone in [("Bearer abcdefghijklmnop", "abcdefghijklmnop"), ("Bearer some-long-plain-words-here", "some-long"),
+                      ("Bearer abcdefg1", "abcdefg1"), ("retry Bearer ABCDEFGHIJKLMNOPQRST.uvwxyz", "ABCDEFGHIJKLMNOPQRST")]:
+        assert gone not in rr.scrub_error_text(raw), raw
+    for keep in ("Bearer authentication", "Bearer token required", "uses Bearer scheme", "Basic Authentication",
+                 "sk-SoilGrids-250m-clay", "https://doi.org/10.1/x?sig=abc123def"):
+        assert rr.scrub_error_text(keep) == keep, keep
+
+
 def test_scrubber_still_redacts_real_keys_headers_and_non_citation_queries():
     for raw, gone in [("key sk-" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7", "Ab1Cd2Ef3"), ("key sk-proj-" + "a1b2c3d4e5f6g7h8i9j0k1l2", "a1b2c3d4"),
                       ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"), ("Bearer abcdef123456", "abcdef123456"),
@@ -656,3 +667,17 @@ def test_the_serving_backend_outranks_the_static_source_list(backend, expected):
     # no backend reported: the declared list is the fallback
     assert rr.attempt_trail({"data": {}, "meta": {"sources": [{"name": "USGS Water Data API"}]}},
                             tool="fetch_streamflow_data")["source_used"] == "USGS Water Data API"
+
+
+@needs_fastmcp2
+def test_create_cn_grid_lists_the_land_cover_and_the_soil_product(world):
+    server, _ = world
+    _call(server, "create_cn_grid", {"session_id": SID})
+    t = next(r for r in _records() if r["tool"] == "create_cn_grid")["extra"]["attempt_trail"]
+    assert t["basis"] == "declared_source"
+    assert [a["source"] for a in t["attempts"]] == ["NLCD", "gNATSGO"]
+    assert t["attempts"][0]["provider"] == "MRLC" and all(a["outcome"] == "served" for a in t["attempts"])
+    # an unset soil product (soil fallback) is not invented
+    only = rr.attempt_trail({"data": {"landcover_product": "NLCD", "soil_product": None, "product": "NLCD",
+                                      "source": "MRLC"}}, tool="create_cn_grid")
+    assert [a["source"] for a in only["attempts"]] == ["NLCD"]
