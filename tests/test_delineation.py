@@ -156,14 +156,15 @@ def test_bbox_from_point_is_centered():
 
 
 def test_snap_outlet_nldi_conus():
+    """Offline: the snap uses watershed's own hydrolocation request (not pynhd's)."""
+    from aihydro_watershed.delineation import nldi_point as nl
     from ai_hydro.analysis.delineation.nldi_point import snap_outlet_nldi
 
     lat, lon = 35.03, -120.48
-    snapped = gpd.GeoDataFrame(geometry=[Point(-120.479, 35.031)], crs=4326)
-    with patch("pynhd.NLDI") as client:
-        client.return_value.comid_byloc.return_value = snapped
+    hit = nl.HydrolocationHit(comid=1, lon=-120.479, lat=35.031)
+    with patch.object(nl, "hydrolocation_comid", return_value=hit) as call:
         lat2, lon2, ok = snap_outlet_nldi(lat, lon)
-        client.return_value.comid_byloc.assert_called_once_with((lon, lat))
+        call.assert_called_once_with(lon, lat)
     assert ok
     assert (lat2, lon2) == (35.031, -120.479)
 

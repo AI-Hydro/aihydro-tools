@@ -4,6 +4,13 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- `test_snap_outlet_nldi_conus` patches `aihydro_watershed.delineation.nldi_point.hydrolocation_comid` (watershed now makes its own percent-encoded NLDI hydrolocation request instead of pynhd's `comid_byloc`); no live calls.
+- `delineate_watershed_from_point` docstring documents the `NLDI_OUTLET_AMBIGUOUS` quality flag (the outlet is not moved downstream without consent).
+
 ## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
 
 Extension 0.4.7 reads the trace facts and layer aliases this release adds; with older tools its trace card reads "not recorded".
