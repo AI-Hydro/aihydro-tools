@@ -4,7 +4,9 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] (next minor: server identity and floor for subagents)
+## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
+
+Extension 0.4.7 reads the trace facts and layer aliases this release adds; with older tools its trace card reads "not recorded".
 
 A call can now name the subagent that made it, and the server keeps a floor under what such a call may do. Calls that name no
 agent behave and record exactly as before (a sealed record's digest is unchanged). `agent` is asserted by the client: it narrows
@@ -37,9 +39,6 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
 - A call that names an agent never rebinds the chat (`helpers._bind`).
 - `merge_session_shards` is `audience = host`.
 
----
-
-## [Unreleased]
 
 ### Changed
 
@@ -57,9 +56,6 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
   `<outside-workspace>` otherwise; `recent_events` and `map_save_roi`'s `saved_to` get the same treatment (path-named fields at any depth, camelCase, `uri`/`url`, `file://` and `vscode-file://`, backslash-rooted and `..` paths; every string also goes through `session.refs.scrub_paths`, and the resolver, not-found and file-not-found messages are scrubbed); `load_geojson_for_layer` and the catalog file keep the absolute values.
 - No change when the catalog has no `layer_aliases`.
 
----
-
-## [Unreleased]
 
 ### Added
 
