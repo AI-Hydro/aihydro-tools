@@ -165,7 +165,8 @@ Records from before this feature have no key: read absence as "not recorded", ne
 
 **Shape.** `basis` is `fallback_history` (a recorded chain) or `declared_source` (one served attempt taken from the result's own declared
 source; it is not a record of a chain). `attempts` are `{source, outcome, reason}` (plus `provider`, `variable`), at most 32
-(`attempts_omitted` counts the rest); `source_used`; `limitations` (the tool's string `quality_flags`, at most 16); `error_code` on failure.
+(`attempts_omitted` counts the rest); `source_used` (the one source that served); when more than one source served (land cover plus soil in `create_cn_grid`, or one
+product per variable in forcing) `sources_used` lists them in order and `source_used` is null, never "the last one"; `limitations` (the tool's string `quality_flags`, at most 16); `error_code` on failure.
 A batch result (`batch: true`, or `results`/`errors` keyed by label) never takes a trail of its own, so a batch's `product: "geomorphic"`
 is not read as a source: each label carries its own (its history, or the source its own result declares), under `labels`. An errored label
 without a history has no trail, and an all-failed batch has none at all; it never reads as served.

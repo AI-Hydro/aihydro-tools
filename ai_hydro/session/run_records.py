@@ -946,7 +946,7 @@ def _acquires(tool: Optional[str]) -> bool:
 def _normalize(history: List[Any], workspace_dir: Any):
     """``(attempts, source_used, omitted)`` of a history: ``{source, outcome, reason}`` rows, scrubbed and bounded."""
     attempts: List[Dict[str, str]] = []
-    used: Optional[str] = None
+    used: List[str] = []
     for item in history:
         if not isinstance(item, dict):
             continue
@@ -962,9 +962,9 @@ def _normalize(history: List[Any], workspace_dir: Any):
         if isinstance(item.get("variable"), str) and item["variable"]:
             row["variable"] = scrub_error_text(item["variable"], limit=80, workspace_dir=workspace_dir)
         if row["outcome"] == "served" or row["outcome"].startswith("succeeded"):
-            used = row["source"]
+            used.append(row["source"])
         attempts.append(row)
-    return attempts[:MAX_TRAIL_ATTEMPTS], used, max(0, len(attempts) - MAX_TRAIL_ATTEMPTS)
+    return attempts[:MAX_TRAIL_ATTEMPTS], list(dict.fromkeys(used)), max(0, len(attempts) - MAX_TRAIL_ATTEMPTS)
 
 
 def attempt_trail(result: Any, failure: Optional[BaseException] = None, workspace_dir: Any = None, *,
@@ -981,7 +981,8 @@ def attempt_trail(result: Any, failure: Optional[BaseException] = None, workspac
       its source (``product``/``source``, ``data.source``, ``meta.sources``, ``meta.upstream.backend``) and no
       history: one served attempt. That is the declared source, not a recorded chain of attempts.
     - A batch fetch (``results``/``errors`` keyed by label) gets one trail per label under ``labels``.
-    - ``source_used``: the last attempt that served, else ``None``. ``limitations``: the string ``quality_flags``.
+    - ``source_used``: the one source that served, else ``None``; when more than one served, ``sources_used`` lists them
+      in order and ``source_used`` is ``None``. ``limitations``: the string ``quality_flags``.
       ``error_code``: the failure's code.
     - ``served_from``: ``"cache"`` (the result says ``cache_hit``) or ``"reuse"`` (the record is a reuse row).
       Then ``attempts`` is empty, the origin's attempts are ``origin_attempts``, and ``source_used`` is the
@@ -1016,9 +1017,13 @@ def attempt_trail(result: Any, failure: Optional[BaseException] = None, workspac
         basis = "declared_source"
         if not history:
             return None
-    attempts, used, omitted = _normalize(history, ws)
+    attempts, served, omitted = _normalize(history, ws)
     if not attempts:
         return None
+    # One source served: ``source_used``. Several served (a call that used more than one source, such as land cover
+    # plus soil, or one product per variable): ``sources_used`` in order and ``source_used`` null, never "the last".
+    used = served[0] if len(served) == 1 else None
+    many = {"sources_used": served} if len(served) > 1 else {}
     flags = [scrub_error_text(f, limit=80, workspace_dir=ws) for f in _limitations_of(result)[:MAX_TRAIL_LIMITATIONS]]
     cache_hit = isinstance(result, dict) and any(
         result.get(k) is True or (isinstance(result.get("data"), dict) and result["data"].get(k) is True)
@@ -1026,9 +1031,9 @@ def attempt_trail(result: Any, failure: Optional[BaseException] = None, workspac
     origin = served_from or ("cache" if cache_hit and ok else None)
     if origin:
         trail = {"basis": basis, "served_from": origin, "attempts": [], "origin_attempts": attempts,
-                 "source_used": used, "limitations": flags}
+                 "source_used": used, **many, "limitations": flags}
     else:
-        trail = {"basis": basis, "attempts": attempts, "source_used": used, "limitations": flags}
+        trail = {"basis": basis, "attempts": attempts, "source_used": used, **many, "limitations": flags}
     if omitted:
         trail["attempts_omitted"] = omitted
     code = result.get("code") if isinstance(result, dict) else None
@@ -1053,8 +1058,9 @@ def _origin_trail(session_id: str, origin_id: Optional[str]) -> Optional[Dict[st
         return None
     return {"basis": t.get("basis", "fallback_history"), "served_from": "reuse", "attempts": [],
             "origin_attempts": list(t.get("origin_attempts") or t.get("attempts") or []),
-            "source_used": t.get("source_used"), "limitations": list(t.get("limitations") or []),
-            "derived_from": origin_id}
+            "source_used": t.get("source_used"),
+            **({"sources_used": list(t["sources_used"])} if t.get("sources_used") else {}),
+            "limitations": list(t.get("limitations") or []), "derived_from": origin_id}
 
 
 def recorded_call(tool: str, fn: Callable[..., Any], /, **kwargs: Any) -> Any:

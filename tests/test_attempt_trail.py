@@ -677,7 +677,26 @@ def test_create_cn_grid_lists_the_land_cover_and_the_soil_product(world):
     assert t["basis"] == "declared_source"
     assert [a["source"] for a in t["attempts"]] == ["NLCD", "gNATSGO"]
     assert t["attempts"][0]["provider"] == "MRLC" and all(a["outcome"] == "served" for a in t["attempts"])
+    assert t["source_used"] is None and t["sources_used"] == ["NLCD", "gNATSGO"]       # several served: no "last one"
     # an unset soil product (soil fallback) is not invented
     only = rr.attempt_trail({"data": {"landcover_product": "NLCD", "soil_product": None, "product": "NLCD",
                                       "source": "MRLC"}}, tool="create_cn_grid")
     assert [a["source"] for a in only["attempts"]] == ["NLCD"]
+
+
+def test_several_served_sources_are_listed_and_a_single_one_is_unchanged():
+    multi = rr.attempt_trail({"data": {"landcover_product": "NLCD", "soil_product": "gNATSGO", "product": "NLCD"}},
+                             tool="create_cn_grid")
+    assert multi["sources_used"] == ["NLCD", "gNATSGO"] and multi["source_used"] is None
+    single = rr.attempt_trail({"data": {"landcover_product": "NLCD", "product": "NLCD"}}, tool="create_cn_grid")
+    assert single["source_used"] == "NLCD" and "sources_used" not in single
+    chain = rr.attempt_trail({"fallback_history": [
+        {"product": "A", "outcome": "failed", "reason": "r"}, {"product": "B", "outcome": "served", "reason": ""}]})
+    assert chain["source_used"] == "B" and "sources_used" not in chain
+    per_variable = rr.attempt_trail({"data": {"fallback_history": [
+        {"product": "CHIRPS", "outcome": "served", "variable": "precipitation"},
+        {"product": "ERA5L_PET", "outcome": "served", "variable": "pet"}]}})
+    assert per_variable["sources_used"] == ["CHIRPS", "ERA5L_PET"] and per_variable["source_used"] is None
+    cached = rr.attempt_trail({"cache_hit": True, "data": {"landcover_product": "NLCD", "soil_product": "gNATSGO"}},
+                              tool="create_cn_grid")
+    assert cached["served_from"] == "cache" and cached["sources_used"] == ["NLCD", "gNATSGO"] and cached["source_used"] is None
