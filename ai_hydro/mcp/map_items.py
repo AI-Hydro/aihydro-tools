@@ -16,18 +16,42 @@ from __future__ import annotations
 
 from typing import Any
 
-from ai_hydro.mcp.map_layer_catalog import MAP_LAYER_CATALOG_FILE, read_layer_catalog
+from ai_hydro.mcp.map_layer_catalog import (
+    MAP_LAYER_CATALOG_FILE,
+    aliases_of,
+    read_layer_catalog,
+    resolve_catalog_layer,
+)
 from ai_hydro.session.project_key import project_key
 from ai_hydro.session.study_index import MANIFEST_KIND, study_summaries
 
 LINKS_KEY = "map_item_claim_links"
+VIA_KEY = "map_item_claim_link_via"   # {item_id: {claim_id: id the caller named}}, set when a bind followed an alias
 SCOPES = ("chat", "project")
 
 
 def claim_ids_for(session_extra: dict[str, Any] | None, item_id: str) -> list[str]:
+    """Claims linked to exactly ``item_id``. Links recorded under another id are not folded in: see ``claim_links_via_alias``."""
     links = (session_extra or {}).get(LINKS_KEY)
     ids = links.get(item_id) if isinstance(links, dict) else None
     return [str(c) for c in ids] if isinstance(ids, list) else []
+
+
+def claim_links_via_alias(session_extra: dict[str, Any] | None, item_id: str,
+                          catalog: dict[str, Any] | None) -> list[dict[str, str]]:
+    """``[{claim_id, bound_to}]`` for claims linked to an id the host catalog says was merged into ``item_id``.
+
+    Kept apart from ``claim_ids_for`` because ``layer_aliases`` is host data: an alias entry is a claim about
+    identity, not a link, and a reader must be able to tell the two apart. Only the surviving layer lists them;
+    a claim already linked directly is not repeated. The stored links are not touched.
+    """
+    direct = set(claim_ids_for(session_extra, item_id))
+    out: list[dict[str, str]] = []
+    for alias in aliases_of(item_id, catalog):
+        for cid in claim_ids_for(session_extra, alias):
+            if cid not in direct:
+                out.append({"claim_id": cid, "bound_to": alias})
+    return out
 
 
 def add_link(session_extra: dict[str, Any], item_id: str, claim_id: str) -> bool:
@@ -38,6 +62,11 @@ def add_link(session_extra: dict[str, Any], item_id: str, claim_id: str) -> bool
         return False
     ids.append(claim_id)
     return True
+
+
+def note_requested_id(session_extra: dict[str, Any], item_id: str, claim_id: str, requested_id: str) -> None:
+    """Remember beside a link that it was made by naming ``requested_id``, an alias of ``item_id`` at the time."""
+    session_extra.setdefault(VIA_KEY, {}).setdefault(item_id, {})[claim_id] = requested_id
 
 
 def _layer_entries(summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -103,9 +132,15 @@ def collect(scope: str, *, chat_id: str | None, workspace: str | None) -> dict[s
             if lid in seen:
                 continue
             seen.add(lid)
-            items.append(_item(entry, (lid in host_ids) if host_known else None))
+            item = _item(entry, (lid in host_ids) if host_known else None)
+            if host_known and lid not in host_ids:
+                hit = resolve_catalog_layer(str(lid), catalog)
+                if hit["alias_followed"]:
+                    item["in_host_catalog"] = True
+                    item["layer_alias_of"] = hit["canonical_id"]
+            items.append(item)
 
-    _attach_claim_links(items)
+    _attach_claim_links(items, catalog)
     info.update(resolved=True, items=items, host_catalog_available=host_known)
     return info
 
@@ -119,7 +154,7 @@ def _bound_chats(study_id: str) -> list[str]:
         return []
 
 
-def _attach_claim_links(items: list[dict[str, Any]]) -> None:
+def _attach_claim_links(items: list[dict[str, Any]], catalog: dict[str, Any] | None = None) -> None:
     """Fill ``claim_ids`` from each item's study. Loads only the studies that have items."""
     from ai_hydro.session import HydroSession
 
@@ -133,3 +168,6 @@ def _attach_claim_links(items: list[dict[str, Any]]) -> None:
             continue
         for it in group:
             it["claim_ids"] = claim_ids_for(extra, str(it["item_id"]))
+            via = claim_links_via_alias(extra, str(it["item_id"]), catalog)
+            if via:
+                it["claim_ids_via_alias"] = via

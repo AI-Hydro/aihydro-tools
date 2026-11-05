@@ -490,7 +490,8 @@ def test_ui_class_writes_only_command_files_at_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "_MAP_COMMANDS_DIR", map_dir)
     monkeypatch.setattr(pc, "_PREVIEW_COMMANDS_DIR", prev_dir)
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
-    monkeypatch.setattr(tm, "find_catalog_layer", lambda lid: {"id": lid, "type": "vector"})
+    monkeypatch.setattr(tm, "resolve_catalog_layer", lambda lid, catalog=None: {
+        "entry": {"id": lid, "type": "vector"}, "canonical_id": lid, "alias_followed": False, "requested_id": lid})
     # a seeded scratch session with a run log (map_add_layer_from_run reads it, writes nothing)
     from ai_hydro.session import store as _store
     sessions = tmp_path / "sessions"
