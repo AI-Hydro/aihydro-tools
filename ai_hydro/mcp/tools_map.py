@@ -44,7 +44,7 @@ from ai_hydro.mcp.map_layer_catalog import (
     read_layer_catalog,
     resolve_catalog_layer,
 )
-from ai_hydro.mcp.map_model_view import safe_layers, safe_path, safe_tree
+from ai_hydro.mcp.map_model_view import safe_layers, safe_path, safe_tree, scrub_text
 from ai_hydro.registry.paths import aihydro_home, home_path
 
 log = logging.getLogger("ai_hydro.mcp")
@@ -165,7 +165,7 @@ def map_get_state(
         )
         scoped.pop("scope", None)
 
-        return {
+        return safe_tree({
             "display_state_scope": "global_host",
             "active_roi": roi_summary,
             "active_roi_scope": "global_host",
@@ -194,11 +194,11 @@ def map_get_state(
             **_aliases_out(catalog),
             "layer_catalog_scope": "global_host",
             "resolved_roi_for_session": resolved,
-            "recent_events": safe_tree(_recent_outbound_events(max(1, min(event_limit, 50))), host_root),
+            "recent_events": _recent_outbound_events(max(1, min(event_limit, 50))),
             "recent_events_scope": "global_host",
             "scope": scope,
             **scoped,
-        }
+        }, host_root)
     except Exception as e:
         return _tool_error_to_dict(e)
 
@@ -251,7 +251,7 @@ def map_set_working_geometry(session_id: str, workspace_path: str) -> dict:
         if session.workspace_dir:
             full = Path(session.workspace_dir) / rel
             if not full.exists():
-                return {"ok": False, "message": f"File not found: {rel}"}
+                return {"ok": False, "message": _scrub_roots(f"File not found: {rel}", session.workspace_dir)}
         session.working_geometry_path = rel
         session.save()
         return {"ok": True, "working_geometry_path": rel}
@@ -267,10 +267,11 @@ def map_fit_extent() -> dict:
 
 
 def _scrub_roots(text: str, *roots: Any) -> str:
-    """``text`` with each workspace root path replaced by ``<workspace>`` (error text names absolute paths)."""
+    """``text`` with workspace roots named in ``roots`` replaced by ``<workspace>``, then every other local
+    absolute path scrubbed (``session.refs.scrub_paths``). Error text names absolute paths."""
     for root in sorted((str(r) for r in roots if r), key=len, reverse=True):
         text = text.replace(root, "<workspace>")
-    return text
+    return scrub_text(text, None)
 
 
 def _aliases_out(catalog: dict[str, Any]) -> dict[str, Any]:
@@ -298,13 +299,13 @@ def map_list_layers() -> dict:
         catalog = read_layer_catalog()
         persisted = _read_map_session_file()
         root = persisted.get("workspaceRoot") or persisted.get("workspace_root") or catalog.get("workspace_root")
-        return {
+        return safe_tree({
             "ok": True,
             "layer_order": catalog.get("layer_order") or [],
-            "layers": safe_layers(catalog.get("layers"), root),
+            "layers": catalog.get("layers") or [],
             "layer_ids": list_layer_ids(),
             **_aliases_out(catalog),
-        }
+        }, root)
     except Exception as e:
         return _tool_error_to_dict(e)
 
@@ -313,7 +314,8 @@ def _layer_not_found(layer_id: str) -> dict:
     ids = list_layer_ids()
     return {
         "ok": False,
-        "message": f"Unknown layer_id '{layer_id}'. Known layers: {ids or '(none — open map and load layers first)'}",
+        "message": scrub_text(
+            f"Unknown layer_id '{layer_id}'. Known layers: {ids or '(none — open map and load layers first)'}", None),
         "layer_ids": ids,
     }
 
@@ -428,8 +430,13 @@ def map_remove_layer(layer_id: str) -> dict:
     hit = resolve_catalog_layer(layer_id)
     if not hit["entry"]:
         return _layer_not_found(layer_id)
+    if hit["alias_followed"]:
+        # Removal is destructive: an id the host says was merged away is not a name for the layer that stayed.
+        return {"ok": False, "layer_id": hit["canonical_id"], **_alias_note(hit),
+                "message": f"'{layer_id}' is an alias of layer '{hit['canonical_id']}'; nothing was removed. "
+                           f"To remove that layer, call map_remove_layer with layer_id='{hit['canonical_id']}'."}
     ok = push_remove_layer(hit["canonical_id"])
-    return {"ok": ok, "layer_id": hit["canonical_id"], **_alias_note(hit)}
+    return {"ok": ok, "layer_id": hit["canonical_id"]}
 
 
 @mcp.tool()

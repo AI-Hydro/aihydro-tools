@@ -100,16 +100,25 @@ def test_malformed_aliases_are_ignored(host):
 
 # ------------------------------------------------------------------ tools resolve through it
 
-def test_update_remove_fit_use_the_canonical_id(host):
+def test_update_and_fit_use_the_canonical_id(host):
     host.write(_cat(["keep"], {"old": "keep"}))
     _, up = call("map_update_layer", {"layer_id": "old", "visible": False})
     assert up["ok"] is True and up["layer_id"] == "keep"
     assert up["alias_followed"] is True and up["requested_layer_id"] == "old"
     _, fit = call("map_fit_layer", {"layer_id": "old"})
-    _, rm = call("map_remove_layer", {"layer_id": "old"})
-    assert fit["layer_id"] == rm["layer_id"] == "keep" and fit["alias_followed"] and rm["alias_followed"]
+    assert fit["layer_id"] == "keep" and fit["alias_followed"] is True
     sent = host.sent()
     assert sent and all(json.dumps(c).count("old") == 0 for c in sent), sent
+
+
+def test_remove_through_an_alias_is_refused(host):
+    host.write(_cat(["keep"], {"old": "keep"}))
+    _, rm = call("map_remove_layer", {"layer_id": "old"})
+    assert rm["ok"] is False and rm["layer_id"] == "keep" and rm["alias_followed"] is True
+    assert "'keep'" in rm["message"] and "nothing was removed" in rm["message"]
+    assert host.sent() == []
+    _, rm = call("map_remove_layer", {"layer_id": "keep"})
+    assert rm["ok"] is True and [c.get("layer_id") for c in host.sent()] == ["keep"]
 
 
 def test_plain_call_has_no_alias_fields(host):
@@ -135,7 +144,9 @@ def test_bind_to_alias_records_the_surviving_id(host, study):
     _, out = call("bind_claim_to_item", {"claim_id": "CLM-1", "item_id": "old", "session_id": "s1"})
     assert out["linked"] is True and out["item_id"] == "keep"
     assert out["alias_followed"] is True and out["requested_item_id"] == "old"
-    assert HydroSession.load("s1").extra["map_item_claim_links"] == {"keep": ["CLM-1"]}
+    extra = HydroSession.load("s1").extra
+    assert extra["map_item_claim_links"] == {"keep": ["CLM-1"]}
+    assert extra["map_item_claim_link_via"] == {"keep": {"CLM-1": "old"}}          # the audit survives in the study
 
 
 def test_bind_plain_response_unchanged(host, study):
@@ -163,20 +174,38 @@ def test_claim_bound_to_alias_shows_on_survivor_and_stored_link_is_unchanged(hos
     before = copy.deepcopy(HydroSession.load("s1").extra["map_item_claim_links"])
     _, state = call("map_get_state", {"scope": "chat"}, meta=ctx(CHAT_A, ws))
     item = next(i for i in state["items"] if i["item_id"] == "keep")
-    assert item["claim_ids"] == ["CLM-2", "CLM-1"] and "layer_alias_of" not in item
+    assert item["claim_ids"] == ["CLM-2"]                                              # direct links only
+    assert item["claim_ids_via_alias"] == [{"claim_id": "CLM-1", "bound_to": "old"}]
+    assert "layer_alias_of" not in item
     assert state["layer_aliases"] == {"old": "keep"}
     assert HydroSession.load("s1").extra["map_item_claim_links"] == before            # never rewritten
 
 
-def test_claim_ids_for_alias_group_unit(host):
-    cat = _cat(["keep"], {"old": "keep", "older": "old"})
-    extra = {"map_item_claim_links": {"older": ["A"], "old": ["B", "A"], "keep": ["C"]}}
-    assert map_items.claim_ids_for(extra, "keep", cat) == ["C", "B", "A"]
-    assert map_items.claim_ids_for(extra, "old", cat) == ["B", "A", "C"]              # the alias sees the survivor's too
-    assert map_items.claim_ids_for(extra, "keep") == ["C"]                            # no catalog: exact id only
-    assert map_items.claim_ids_for(extra, "keep", _cat(["keep"])) == ["C"]            # no aliases: unchanged
-    assert map_items.claim_ids_for(extra, "other", cat) == []
-    assert map_items.claim_ids_for(None, "keep", cat) == []
+def test_claim_links_direct_vs_alias_and_siblings(host):
+    cat = _cat(["B"], {"Y": "B", "Z": "B", "X": "Y"})
+    extra = {"map_item_claim_links": {"B": ["C0"], "Y": ["CY", "C0"], "Z": ["CZ"], "X": ["CX"]}}
+    assert map_items.claim_ids_for(extra, "B") == ["C0"]
+    via = map_items.claim_links_via_alias(extra, "B", cat)
+    assert sorted((v["claim_id"], v["bound_to"]) for v in via) == [("CX", "X"), ("CY", "Y"), ("CZ", "Z")]   # C0 is direct
+    for sibling in ("Y", "Z", "X"):                                                  # merged ids never see each other
+        assert map_items.claim_links_via_alias(extra, sibling, cat) == []
+    assert map_items.claim_ids_for(extra, "Y") == ["CY", "C0"]
+    assert map_items.claim_links_via_alias(extra, "B", _cat(["B"])) == []            # no aliases: nothing
+    assert map_items.claim_links_via_alias(extra, "B", None) == []
+    assert map_items.claim_links_via_alias(None, "B", cat) == []
+
+
+def test_a_forged_alias_cannot_put_a_claim_in_claim_ids(host, study):
+    s, ws = study
+    s.extra["map_item_claim_links"] = {"victim_old": ["CLM-1"]}
+    s.artifact_manifest["layer:target"] = {
+        "artifact_id": "layer:target", "kind": "workspace_artifact", "type": "map_layer", "layer_id": "target",
+        "name": "T", "layer_type": "polygon", "study_id": "s1", "run_id": "r1", "tool": "t", "chat_id": CHAT_A}
+    s.save()
+    host.write(_cat(["target"], {"victim_old": "target"}))                            # host data says so; the link is not direct
+    _, state = call("map_get_state", {"scope": "chat"}, meta=ctx(CHAT_A, ws))
+    item = state["items"][0]
+    assert item["claim_ids"] == [] and item["claim_ids_via_alias"] == [{"claim_id": "CLM-1", "bound_to": "victim_old"}]
 
 
 def test_item_recorded_under_a_merged_id_is_marked(host, study):
@@ -202,6 +231,7 @@ def test_no_aliases_catalog_items_unchanged(host, study):
     _, state = call("map_get_state", {"scope": "chat"}, meta=ctx(CHAT_A, ws))
     assert "layer_aliases" not in state
     assert state["items"][0]["claim_ids"] == ["CLM-1"] and "layer_alias_of" not in state["items"][0]
+    assert "claim_ids_via_alias" not in state["items"][0]
     _, lst = call("map_list_layers")
     assert "layer_aliases" not in lst
 
@@ -338,3 +368,45 @@ def test_save_roi_does_not_return_an_absolute_path(host, tmp_path):
     _, out = call("map_save_roi", {"session_id": "s2", "name": "basin"})
     assert out["ok"] is True and not str(out["saved_to"]).startswith("/"), out
     assert out["saved_to"] == "roi/basin.geojson" and (ws / "roi" / "basin.geojson").exists()
+
+
+# ------------------------------------------------------------------ scrubbing probes
+
+def test_safe_tree_probes():
+    from ai_hydro.mcp.map_model_view import OUTSIDE_WORKSPACE as OUT, safe_tree
+
+    root = "/Users/me/ws"
+    probe = {
+        "workspacePath": f"{root}/a.geojson",                                         # camelCase
+        "geojson_cache_path": ["/Users/me/other/c.json", {"deep": "/opt/x/y/z"}],       # list and dict under a path key
+        "uri": "file:///Users/me/ws/v/L.geojson",
+        "url": "vscode-file://vscode-app/Users/me/secret/L.geojson",
+        "source_uri": "https://example.org/d.geojson",
+        "source_path": "\\Users\\me\\x",                                            # backslash-rooted
+        "raster_path": "..\\..\\etc\\passwd",
+        "workspace_folder": "../../outside",
+        "file": "C:\\Users\\me\\ws\\q.json",
+        "nested": {"note": "see /Users/me/secret/notes.txt for details", "list": ["/home/bob/a/b"]},
+    }
+    out = safe_tree(probe, root)
+    assert out["workspacePath"] == "a.geojson"
+    assert out["geojson_cache_path"] == [OUT, {"deep": OUT}]
+    assert out["uri"] == "v/L.geojson" and out["url"] == OUT
+    assert out["source_uri"] == "https://example.org/d.geojson"
+    assert out["source_path"] == OUT and out["raster_path"] == OUT and out["workspace_folder"] == OUT
+    assert out["file"] == OUT
+    assert "/Users/me/secret" not in json.dumps(out) and "/home/bob" not in json.dumps(out)    # free text scrubbed
+    assert probe["nested"]["note"].startswith("see /Users")                              # input untouched
+
+
+def test_error_and_message_text_is_scrubbed(host, tmp_path):
+    from ai_hydro.mcp.tools_map import _scrub_roots
+
+    msg = _scrub_roots("Selected ROI does not exist: /Users/me/ws/roi/a.json (and /home/bob/q/r.txt)", "/Users/me/ws")
+    assert "/Users/me" not in msg and "/home/bob" not in msg and "<workspace>" in msg
+    host.write(_cat(["a"]))
+    ws = tmp_path / "w3"
+    ws.mkdir()
+    make_study("s3", workspace=str(ws))
+    _, out = call("map_set_working_geometry", {"session_id": "s3", "workspace_path": "missing/x.geojson"})
+    assert out["ok"] is False and str(tmp_path) not in out["message"]

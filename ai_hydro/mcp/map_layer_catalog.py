@@ -89,24 +89,16 @@ def find_catalog_layer(layer_id: str) -> dict[str, Any] | None:
     return resolve_catalog_layer(layer_id)["entry"]
 
 
-def alias_group(item_id: str, catalog: dict[str, Any] | None) -> list[str]:
-    """``item_id`` plus every alias id that resolves to the same live layer, own id first.
-
-    Used to read claim links recorded under an id the host has since merged away. Just ``[item_id]`` when the
-    catalog has no aliases.
-    """
+def aliases_of(layer_id: str, catalog: dict[str, Any] | None) -> list[str]:
+    """Alias ids that resolve to ``layer_id``, sorted. Only a live layer has any: a merged-away id or an unknown
+    id has none, so two ids merged into one survivor never see each other. ``[]`` when the catalog has no aliases."""
     aliases = layer_aliases(catalog)
     if not aliases or catalog is None:
-        return [item_id]
+        return []
     live = _live_ids(catalog)
-    canonical, _ = resolve_alias(item_id, aliases, live)
-    if canonical is None:
-        return [item_id]
-    group = [item_id]
-    for cand in [canonical, *sorted(aliases)]:
-        if cand not in group and resolve_alias(cand, aliases, live)[0] == canonical:
-            group.append(cand)
-    return group
+    if layer_id not in live:
+        return []
+    return [a for a in sorted(aliases) if a != layer_id and resolve_alias(a, aliases, live)[0] == layer_id]
 
 
 def list_layer_ids() -> list[str]:

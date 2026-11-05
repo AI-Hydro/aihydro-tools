@@ -47,12 +47,14 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
   (`resolve_catalog_layer`, with chain, cycle and depth-cap protection, depth 8) serves `find_catalog_layer`, `map_update_layer`, `map_apply_symbology`,
   `map_remove_layer`, `map_fit_layer` and `bind_claim_to_item`; a tool that followed an alias acts on the surviving id and adds `alias_followed` and
   `requested_layer_id` (`requested_item_id` for `bind_claim_to_item`) to its result. A new link to an alias is recorded under the surviving id.
-- **Claims bound to a merged-away id show on the surviving item.** `claim_ids_for` reads the links of every id that resolves to the item; the stored
-  `map_item_claim_links` is never rewritten. A study item recorded under a merged id reports `layer_alias_of`. `map_get_state` and `map_list_layers`
+- **Claims bound to a merged-away id show on the surviving item, marked.** `claim_ids` stays direct links only; links recorded under an id the catalog says was
+  merged into the item are listed as `claim_ids_via_alias: [{claim_id, bound_to}]` (survivor only; merged siblings never see each other), because `layer_aliases` is host
+  data and must not pass for a link. The stored `map_item_claim_links` is never rewritten; a bind that followed an alias also records `map_item_claim_link_via`
+  (`{item_id: {claim_id: requested_id}}`) in the study. `map_remove_layer` given an alias id refuses and names the surviving id. A study item recorded under a merged id reports `layer_alias_of`. `map_get_state` and `map_list_layers`
   return `layer_aliases` when the host recorded any.
 - **`map_get_state` and `map_list_layers` no longer send absolute paths to the model.** The path fields of catalog entries and `metadata_snapshot`,
   `workspace_root`, `active_roi.workspace_path` and `host_workspace_ownership` are shown workspace-relative when inside the workspace and as
-  `<outside-workspace>` otherwise; `recent_events` and `map_save_roi`'s `saved_to` get the same treatment (path-named fields at any depth); `load_geojson_for_layer` and the catalog file keep the absolute values.
+  `<outside-workspace>` otherwise; `recent_events` and `map_save_roi`'s `saved_to` get the same treatment (path-named fields at any depth, camelCase, `uri`/`url`, `file://` and `vscode-file://`, backslash-rooted and `..` paths; every string also goes through `session.refs.scrub_paths`, and the resolver, not-found and file-not-found messages are scrubbed); `load_geojson_for_layer` and the catalog file keep the absolute values.
 - No change when the catalog has no `layer_aliases`.
 
 ---

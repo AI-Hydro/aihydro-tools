@@ -1563,7 +1563,7 @@ def bind_claim_to_item(
     try:
         session_id = _resolve_session(session_id, None, must_exist=True)   # inference stays; creation does not
         from ai_hydro.session import HydroSession
-        from ai_hydro.mcp.map_items import add_link
+        from ai_hydro.mcp.map_items import add_link, note_requested_id
         from ai_hydro.mcp.map_layer_catalog import resolve_catalog_layer
 
         session = HydroSession.load(session_id)
@@ -1589,6 +1589,8 @@ def bind_claim_to_item(
         if hit["alias_followed"] and f"layer:{item_id}" not in session.artifact_manifest:
             item_id = hit["canonical_id"]      # a new link names the layer that stands now; recorded ones stay as they are
         created = add_link(session.extra, item_id, claim_id)
+        if created and item_id != requested_item_id:
+            note_requested_id(session.extra, item_id, claim_id, requested_item_id)
         if created:
             session.save()
             from ai_hydro.mcp.ledger_commands import write_ledger_event
@@ -1597,6 +1599,7 @@ def bind_claim_to_item(
                 "session_id": session_id,
                 "claim_id": claim_id,
                 "item_id": item_id,
+                **({"requested_item_id": requested_item_id} if item_id != requested_item_id else {}),
             })
         return {
             "session_id": session_id,

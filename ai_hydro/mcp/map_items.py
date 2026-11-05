@@ -18,7 +18,7 @@ from typing import Any
 
 from ai_hydro.mcp.map_layer_catalog import (
     MAP_LAYER_CATALOG_FILE,
-    alias_group,
+    aliases_of,
     read_layer_catalog,
     resolve_catalog_layer,
 )
@@ -26,23 +26,31 @@ from ai_hydro.session.project_key import project_key
 from ai_hydro.session.study_index import MANIFEST_KIND, study_summaries
 
 LINKS_KEY = "map_item_claim_links"
+VIA_KEY = "map_item_claim_link_via"   # {item_id: {claim_id: id the caller named}}, set when a bind followed an alias
 SCOPES = ("chat", "project")
 
 
-def claim_ids_for(session_extra: dict[str, Any] | None, item_id: str,
-                  catalog: dict[str, Any] | None = None) -> list[str]:
-    """Claim ids linked to ``item_id``, plus those linked to an id the host merged into it (``catalog`` aliases).
-
-    Reading only: a link stays under the id it was recorded with.
-    """
+def claim_ids_for(session_extra: dict[str, Any] | None, item_id: str) -> list[str]:
+    """Claims linked to exactly ``item_id``. Links recorded under another id are not folded in: see ``claim_links_via_alias``."""
     links = (session_extra or {}).get(LINKS_KEY)
-    if not isinstance(links, dict):
-        return []
-    out: list[str] = []
-    for lid in alias_group(item_id, catalog):
-        ids = links.get(lid)
-        if isinstance(ids, list):
-            out.extend(str(c) for c in ids if str(c) not in out)
+    ids = links.get(item_id) if isinstance(links, dict) else None
+    return [str(c) for c in ids] if isinstance(ids, list) else []
+
+
+def claim_links_via_alias(session_extra: dict[str, Any] | None, item_id: str,
+                          catalog: dict[str, Any] | None) -> list[dict[str, str]]:
+    """``[{claim_id, bound_to}]`` for claims linked to an id the host catalog says was merged into ``item_id``.
+
+    Kept apart from ``claim_ids_for`` because ``layer_aliases`` is host data: an alias entry is a claim about
+    identity, not a link, and a reader must be able to tell the two apart. Only the surviving layer lists them;
+    a claim already linked directly is not repeated. The stored links are not touched.
+    """
+    direct = set(claim_ids_for(session_extra, item_id))
+    out: list[dict[str, str]] = []
+    for alias in aliases_of(item_id, catalog):
+        for cid in claim_ids_for(session_extra, alias):
+            if cid not in direct:
+                out.append({"claim_id": cid, "bound_to": alias})
     return out
 
 
@@ -54,6 +62,11 @@ def add_link(session_extra: dict[str, Any], item_id: str, claim_id: str) -> bool
         return False
     ids.append(claim_id)
     return True
+
+
+def note_requested_id(session_extra: dict[str, Any], item_id: str, claim_id: str, requested_id: str) -> None:
+    """Remember beside a link that it was made by naming ``requested_id``, an alias of ``item_id`` at the time."""
+    session_extra.setdefault(VIA_KEY, {}).setdefault(item_id, {})[claim_id] = requested_id
 
 
 def _layer_entries(summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -154,4 +167,7 @@ def _attach_claim_links(items: list[dict[str, Any]], catalog: dict[str, Any] | N
         except Exception:
             continue
         for it in group:
-            it["claim_ids"] = claim_ids_for(extra, str(it["item_id"]), catalog)
+            it["claim_ids"] = claim_ids_for(extra, str(it["item_id"]))
+            via = claim_links_via_alias(extra, str(it["item_id"]), catalog)
+            if via:
+                it["claim_ids_via_alias"] = via
