@@ -110,8 +110,20 @@ delineation = [
 # hybrid already uses (only stricter), so it could never succeed where the
 # hybrid failed and added a manual git-install step for no benefit.
 
+# Catchment attributes: the CAMELS-like attribute recipes (aihydro-lsh, public on PyPI).
+# Registers its lsh_* tools through the `aihydro.tools` entry point. aihydro-lsh sits
+# between watershed and tools in the stack (core <- data <- watershed <- lsh <- tools),
+# so this extra points down, never up. >=0.3.1: lsh 0.3.0 requires aihydro-watershed<0.3
+# and cannot be installed beside this package (which needs watershed>=0.3,<0.4).
+attributes = [
+    "aihydro-lsh>=0.3.1,<0.4",
+]
+
 # Modelling: HBV-light (PyTorch), NeuralHydrology LSTM.
-# Heavy ML stacks now live behind the aihydro-modelling extras (the package the
+# PRIVATE: aihydro-modelling is NOT on PyPI, so this extra cannot be resolved from a
+# public index; it needs access to the private repository. Deliberately excluded from
+# `all` below so `pip install aihydro-tools[all]` resolves for everyone.
+# Heavy ML stacks live behind the aihydro-modelling extras (the package the
 # tools-side modelling/ adapters delegate to).
 modelling = [
     "aihydro-modelling[torch,nh]>=0.6.2,<0.7",
@@ -132,9 +144,10 @@ gee = [
     "earthengine-api>=0.1.390",
 ]
 
-# Full install: all tools + MCP server (no RAG)
+# Full install of everything that is public: all tools + MCP server (no RAG).
+# Excludes `modelling` (private, not on PyPI): add it separately where you have access.
 all = [
-    "aihydro-tools[data,analysis,modelling,mcp,viz,gee,delineation]",
+    "aihydro-tools[data,analysis,attributes,mcp,viz,gee,delineation]",
 ]
 
 # Development
