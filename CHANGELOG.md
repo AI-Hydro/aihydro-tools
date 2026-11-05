@@ -25,6 +25,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   through `_tool_error_to_dict`. `docs/session-integrity.md` lists exactly which tools carry a trail and which do not (the `lsh_*` tools do not yet).
 - **`scrub_error_text` redacts more**: `file://` URLs and `~/` paths (basename only), URL userinfo, `Authorization`/`Bearer`/`Basic`, token
   prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`, `sk-`, `xox*-`, `AKIA`/`ASIA`). It also applies to `error_summary`.
+- **Re-review fixes.** A batch result gets no `declared_source` of its own (its `product: "geomorphic"` is not a source): per-label trails only, nothing for an
+  errored label without history, and an all-failed batch never reads as served. The serving backend (`upstream.backend`) outranks the static `meta.sources` list
+  (`AIHYDRO_USGS_BACKEND=legacy_waterservices` is recorded as `legacy_waterservices`). The scrubber no longer redacts `sk-SoilGrids-250m-...`, "Basic Authentication"
+  or "Bearer authentication", and keeps query strings on DOI and scholarly-index hosts (`mailto=` is still redacted).
 - **Older records.** Records written before this change have no `attempt_trail`. Absence there means "not recorded", not "no source was
   tried"; sealed rows are insert-only and are not rewritten, so they are not backfilled, and they keep verifying. A call that reports no
   `fallback_history` gets no key and its record digest is exactly what earlier versions produced (tested).

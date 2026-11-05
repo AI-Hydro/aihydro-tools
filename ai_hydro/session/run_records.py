@@ -761,17 +761,35 @@ def note_session_resolution(rule: str) -> None:
         capture.notes.setdefault("session_resolution", rule)
 
 
-_URL_QUERY = re.compile(r"\?[^\s\"']*")
+_URL_QUERY = re.compile(r"(?P<url>https?://(?P<host>[^/\s?\"'#]+)[^\s?\"']*)?\?[^\s\"']*", re.IGNORECASE)
+#: Hosts whose query strings are citation identifiers, not credentials (DOI resolvers and scholarly indexes).
+_CITATION_HOSTS = frozenset({
+    "doi.org", "dx.doi.org", "api.crossref.org", "crossref.org", "api.openalex.org", "openalex.org",
+    "api.semanticscholar.org", "arxiv.org", "export.arxiv.org", "eutils.ncbi.nlm.nih.gov", "pubmed.ncbi.nlm.nih.gov",
+})
+_MAILTO = re.compile(r"(\bmailto=)[^&\s\"']+", re.IGNORECASE)
 _SECRET_ASSIGN = re.compile(r"(\b[\w-]*(?:key|token|secret|credential|password)[\w-]*\s*[=:]\s*)[^\s,;\"']+", re.IGNORECASE)
 _FILE_URL = re.compile(r"\bfile://[^\s\"']*", re.IGNORECASE)
 _HOME_PATH = re.compile(r"(?<![\w/.:~-])~/[^\s\"',;/]+/[^\s\"',;]+")     # ~/dir/.../file: directories dropped (~/file stays)
 _AUTH_HEADER = re.compile(r"(\b(?:proxy-)?authorization\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s,;\"']+", re.IGNORECASE)
-_BEARER = re.compile(r"\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
+#: A bare ``Bearer <token>``: the body must look like a token (8+ characters including a digit), so prose such as
+#: "Bearer authentication" survives. ``Basic`` is only redacted inside an Authorization header (above).
+_BEARER = re.compile(r"\b(bearer)\s+(?=[A-Za-z0-9._~+/=-]*[0-9])[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
 _URL_USERINFO = re.compile(r"\b([a-z][a-z0-9+.-]*://)[^/\s:@\"']+:[^/\s@\"']+@", re.IGNORECASE)
+#: Known key prefixes. An ``sk-`` key has a single unbroken base62 body of 20+ characters (or a ``proj``/``ant``/``live``/
+#: ``test`` segment before it), so a product name such as ``sk-SoilGrids-250m-clay`` is not a key.
 _TOKEN_PREFIX = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}"
+    r"(?<![\w-])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"|sk-(?:(?:proj|ant|live|test)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{20,})"
     r"|xox[abprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16})"
 )
+
+
+def _redact_query(m: "re.Match") -> str:
+    host = (m.group("host") or "").lower().rsplit("@", 1)[-1].split(":")[0]
+    if host in _CITATION_HOSTS:
+        return m.group(0)
+    return (m.group("url") or "") + "?<redacted>"
 
 
 def scrub_error_text(text: Any, limit: int = 200, workspace_dir: Any = None) -> str:
@@ -789,7 +807,8 @@ def scrub_error_text(text: Any, limit: int = 200, workspace_dir: Any = None) -> 
     out = _FILE_URL.sub(lambda m: "file://<path>/" + m.group(0).rstrip("/").rsplit("/", 1)[-1], out)
     out = scrub_paths(out, workspace_dir)
     out = _HOME_PATH.sub(lambda m: "~/<path>/" + m.group(0).rstrip("/").rsplit("/", 1)[-1], out)
-    out = _URL_QUERY.sub("?<redacted>", out)
+    out = _URL_QUERY.sub(_redact_query, out)
+    out = _MAILTO.sub(r"\1<redacted>", out)
     out = _SECRET_ASSIGN.sub(r"\1<redacted>", out)
     return out[:limit]
 
@@ -824,15 +843,22 @@ def _history_of(result: Any, failure: Optional[BaseException]) -> Optional[List[
     return None
 
 
+def _is_batch(result: Any) -> bool:
+    """A batch result: ``batch: true`` or ``results``/``errors`` keyed by label."""
+    return isinstance(result, dict) and (
+        result.get("batch") is True
+        or isinstance(result.get("results"), dict) or isinstance(result.get("errors"), dict))
+
+
 def _per_label(result: Any) -> Dict[str, Any]:
-    """``{label: result-or-error dict}`` of a batch fetch (``results`` / ``errors`` keyed by label), else ``{}``."""
+    """``{label: result-or-error dict}`` of a batch (``results`` and ``errors`` keyed by label), else ``{}``."""
     out: Dict[str, Any] = {}
     if isinstance(result, dict):
         for key in ("results", "errors"):
             group = result.get(key)
             if isinstance(group, dict):
                 for label, item in group.items():
-                    if isinstance(item, dict) and _history_in(item):
+                    if isinstance(item, dict):
                         out.setdefault(str(label), item)
     return out
 
@@ -867,12 +893,15 @@ def _declared_sources(result: Any) -> List[Dict[str, str]]:
     upstream = meta.get("upstream") if isinstance(meta.get("upstream"), dict) else {}
     listed = [_real_name(i.get("name")) for i in (meta.get("sources") if isinstance(meta.get("sources"), list) else [])
               if isinstance(i, dict)]
+    data_upstream = data.get("upstream") if isinstance(data.get("upstream"), dict) else {}
     pairs: List[Tuple[List[str], Optional[str]]] = [
         ([_real_name(result.get("product")) or ""], _real_name(result.get("source"))),
         ([_real_name(meta.get("product")) or ""], _real_name(meta.get("source"))),
         ([""], _real_name(data.get("source"))),
+        # The backend that actually served the call outranks the static list of sources a tool declares
+        # (streamflow with AIHYDRO_USGS_BACKEND=legacy_waterservices still lists the Water Data API).
+        ([""], _real_name(data_upstream.get("backend")) or _real_name(upstream.get("backend"))),
         ([n for n in listed if n], None),
-        ([""], _real_name(upstream.get("backend"))),
     ]
     for products, source in pairs:
         names = [p for p in products if p] or ([source] if source else [])
@@ -948,18 +977,21 @@ def attempt_trail(result: Any, failure: Optional[BaseException] = None, workspac
     Returns ``None`` when there is nothing to record, so such a call's record (and digest) is unchanged.
     """
     ws = workspace_dir() if callable(workspace_dir) else workspace_dir
-    labels = _per_label(result)
-    if labels:
+    if _is_batch(result):
+        # A batch never takes a trail of its own (``product: "geomorphic"`` is not a source). Each label carries
+        # its own: its history, or the source its own result declares; an errored label never reads as served.
+        labels = _per_label(result)
         per: Dict[str, Any] = {}
         for label, item in list(labels.items())[:MAX_TRAIL_LABELS]:
-            sub = attempt_trail(item, None, ws, served_from=served_from)
+            sub = attempt_trail(item, None, ws, tool=tool, served_from=served_from)
             if sub:
                 per[scrub_error_text(label, limit=80, workspace_dir=ws)] = sub
-        if per:
-            trail: Dict[str, Any] = {"basis": "fallback_history", "labels": per}
-            if len(labels) > MAX_TRAIL_LABELS:
-                trail["labels_omitted"] = len(labels) - MAX_TRAIL_LABELS
-            return trail
+        if not per:
+            return None
+        trail: Dict[str, Any] = {"basis": "fallback_history", "labels": per}
+        if len(labels) > MAX_TRAIL_LABELS:
+            trail["labels_omitted"] = len(labels) - MAX_TRAIL_LABELS
+        return trail
 
     history = _history_of(result, failure)
     basis = "fallback_history"

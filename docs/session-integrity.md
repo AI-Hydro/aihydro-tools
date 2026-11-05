@@ -166,14 +166,21 @@ Records from before this feature have no key: read absence as "not recorded", ne
 **Shape.** `basis` is `fallback_history` (a recorded chain) or `declared_source` (one served attempt taken from the result's own declared
 source; it is not a record of a chain). `attempts` are `{source, outcome, reason}` (plus `provider`, `variable`), at most 32
 (`attempts_omitted` counts the rest); `source_used`; `limitations` (the tool's string `quality_flags`, at most 16); `error_code` on failure.
-A batch fetch has one such trail per label under `labels`.
+A batch result (`batch: true`, or `results`/`errors` keyed by label) never takes a trail of its own, so a batch's `product: "geomorphic"`
+is not read as a source: each label carries its own (its history, or the source its own result declares), under `labels`. An errored label
+without a history has no trail, and an all-failed batch has none at all; it never reads as served.
 
 **Cache and reuse.** A result that says `cache_hit`, and a record-level reuse row (`extra.reused`), do not claim the origin's attempts:
 `served_from` is `"cache"` or `"reuse"`, `attempts` is empty, the origin's attempts are `origin_attempts` and `source_used` is the origin's.
 
+**Declared sources are ranked.** The backend that served the call (`upstream.backend`, for streamflow `usgs_waterdata` or
+`legacy_waterservices`) outranks the static `meta.sources` list, which names the Water Data API whichever backend ran.
+
 **Scrubbing.** Every reason, flag and `error_summary` goes through `scrub_error_text`: local paths, `file://` URLs and `~/` paths (basename only),
-URL query strings and userinfo, `Authorization`/`Bearer`/`Basic` credentials, token prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`, `sk-`,
-`xox*-`, `AKIA`/`ASIA`) and secret-shaped assignments are redacted; 200 characters.
+URL query strings (kept on DOI and scholarly-index hosts such as doi.org, crossref, OpenAlex, arXiv) and userinfo, `Authorization` headers,
+a `Bearer` token (a body with a digit; the phrase "Bearer authentication" stays), token prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`,
+`xox*-`, `AKIA`/`ASIA`, and `sk-` only with an unbroken 20+ character base62 body or a `proj`/`ant`/`live`/`test` segment, so `sk-SoilGrids-250m-clay`
+stays), `mailto=` and secret-shaped assignments are redacted; 200 characters.
 
 **Which tools carry a trail (by what they return; tested by shape):**
 
@@ -185,7 +192,7 @@ URL query strings and userinfo, `Authorization`/`Bearer`/`Basic` credentials, to
 | `delineate_watershed_from_point` | `fallback_history`; on failure needs aihydro-watershed with the attempt-trail change (PR AI-Hydro/aihydro-watershed#7). Tiers recorded: small catchment, NLDI (failed, skipped, served), MERIT tiers, raw DEM (served, rejected, failed). A non-`ToolError` exception also carries it |
 | `fetch_forcing_data` | `fallback_history` per variable (inner aihydro-data history, and each variable that failed); cache hit as `served_from: cache` |
 | `fetch_streamflow_data`, `fetch_camels_us`, `fetch_soil_attributes_ssurgo` | `declared_source`: one attempt from `meta.sources`/`meta.source`/`meta.product` |
-| any other tool annotated `acquires = true` | `declared_source` only if its successful result declares `product`/`source`, `meta.product`/`meta.source`, `data.source`, `meta.sources` or `meta.upstream.backend` |
+| any other tool annotated `acquires = true` | `declared_source` only if its successful result declares `product`/`source`, `meta.product`/`meta.source`, `data.source`, `data.upstream.backend`/`meta.upstream.backend` or `meta.sources` |
 
 **Which tools do not (gaps):** `data_fetch_background` (it only starts a job; the trail is on `get_data_fetch_result`); the `lsh_*` tools
 (aihydro-lsh carries no `fallback_history`; to be done with the lsh work); `merit_ensure_*`, `compute_twi`, `create_cn_grid`,

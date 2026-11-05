@@ -505,7 +505,7 @@ def test_a_non_toolerror_failure_keeps_the_trail_through_the_error_envelope(worl
 @pytest.mark.parametrize("tool,source", [
     ("fetch_camels_us", "CAMELS-US via pygeohydro.get_camels()"),
     ("fetch_soil_attributes_ssurgo", "SSURGO"),
-    ("fetch_streamflow_data", "USGS Water Data API"),
+    ("fetch_streamflow_data", "usgs_waterdata"),
     ("fetch_forcing_data", "GRIDMET_PRECIP"),
 ])
 def test_single_source_fetchers_record_a_one_attempt_trail_from_the_declared_source(world, tool, source):
@@ -580,8 +580,19 @@ def test_scrubber_removes_each_credential_and_path_shape(raw, gone):
 
 
 def test_scrubber_leaves_ordinary_text_alone():
-    for text in ("units m/s ~ 3 and a/b", "HTTP 503 from https://api.example.org/v1/items", "NLDI 503", "~ approx"):
-        assert rr.scrub_error_text(text) == text
+    for text in ("units m/s ~ 3 and a/b", "HTTP 503 from https://api.example.org/v1/items", "NLDI 503", "~ approx",
+                 "product sk-SoilGrids-250m-clay-v2 unavailable", "uses Basic Authentication here",
+                 "Bearer authentication is not supported", "see https://doi.org/10.1000/xyz123?type=pdf&v=2",
+                 "https://api.crossref.org/works/10.1/x?select=title,DOI"):
+        assert rr.scrub_error_text(text) == text, text
+
+
+def test_scrubber_still_redacts_real_keys_headers_and_non_citation_queries():
+    for raw, gone in [("key sk-" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7", "Ab1Cd2Ef3"), ("key sk-proj-" + "a1b2c3d4e5f6g7h8i9j0k1l2", "a1b2c3d4"),
+                      ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"), ("Bearer abcdef123456", "abcdef123456"),
+                      ("https://example.org/data?access=secretvalue", "secretvalue"),
+                      ("https://api.crossref.org/works?mailto=me@example.org&rows=2", "me@example.org")]:
+        assert gone not in rr.scrub_error_text(raw), raw
 
 
 @needs_fastmcp2
@@ -597,3 +608,51 @@ def test_error_summary_uses_the_extended_scrubber(world):
     log = store._run_log_read_all(SID)
     blob = json.dumps([r for r in log.values() if r.get("tool_name") == "leaky"])
     assert "abcdef1234567890" not in blob and "/Users/someone" not in blob
+
+
+# ================================================================== batch and backend truth (re-review)
+@needs_fastmcp2
+def test_a_batch_never_takes_a_declared_source_and_a_failed_label_never_reads_as_served(world):
+    server, _ = world
+
+    @server.tool()
+    def extract_geomorphic_parameters(session_id: str, mode: str = "mixed") -> dict:
+        ok = {"feature_id": "a", "data": {"area_km2": 3.0}, "meta": {"tool": "g", "source": "MERIT Hydro"}}
+        bad = {"error": True, "code": "NO_WATERSHED", "message": "no watershed for b"}
+        if mode == "all_failed":
+            return {"batch": True, "product": "geomorphic", "n_features": 2, "n_success": 0, "n_error": 2,
+                    "results": {}, "errors": {"a": dict(bad), "b": dict(bad)}}
+        if mode == "failed_with_history":
+            return {"batch": True, "product": "geomorphic", "results": {}, "errors": {"a": {
+                **bad, "details": {"fallback_history": [
+                    {"method": "merit_gee", "outcome": "failed", "reason": "boom"}]}}}}
+        return {"batch": True, "product": "geomorphic", "n_features": 2, "n_success": 1, "n_error": 1,
+                "results": {"a": ok}, "errors": {"b": bad}}
+
+    _call(server, "extract_geomorphic_parameters", {"session_id": SID, "mode": "mixed"})
+    _call(server, "extract_geomorphic_parameters", {"session_id": SID, "mode": "all_failed"})
+    _call(server, "extract_geomorphic_parameters", {"session_id": SID, "mode": "failed_with_history"})
+    recs = sorted((r for r in _records() if r["tool"] == "extract_geomorphic_parameters"),
+                  key=lambda r: r["recorded_at"])
+    mixed, all_failed, with_history = (r["extra"].get("attempt_trail") for r in recs)
+    assert set(mixed) == {"basis", "labels"} and set(mixed["labels"]) == {"a"}           # no top-level source
+    assert [a["source"] for a in mixed["labels"]["a"]["attempts"]] == ["MERIT Hydro"]     # errored label b: nothing
+    assert all_failed is None                                                            # never reads as served
+    assert with_history["labels"]["a"]["source_used"] is None
+    assert with_history["labels"]["a"]["attempts"][0]["outcome"] == "failed"
+    assert "geomorphic" not in json.dumps([mixed, all_failed, with_history])
+
+
+@pytest.mark.parametrize("backend,expected", [("usgs_waterdata", "usgs_waterdata"),
+                                              ("legacy_waterservices", "legacy_waterservices")])
+def test_the_serving_backend_outranks_the_static_source_list(backend, expected):
+    result = {"data": {"gauge_id": "01013500", "upstream": {"backend": backend}},
+              "meta": {"sources": [{"name": "USGS Water Data API"}]}}
+    t = rr.attempt_trail(result, tool="fetch_streamflow_data")
+    assert t["basis"] == "declared_source" and t["source_used"] == expected
+    assert "USGS Water Data API" not in json.dumps(t)
+    meta_only = {"data": {}, "meta": {"sources": [{"name": "USGS Water Data API"}], "upstream": {"backend": backend}}}
+    assert rr.attempt_trail(meta_only, tool="fetch_streamflow_data")["source_used"] == expected
+    # no backend reported: the declared list is the fallback
+    assert rr.attempt_trail({"data": {}, "meta": {"sources": [{"name": "USGS Water Data API"}]}},
+                            tool="fetch_streamflow_data")["source_used"] == "USGS Water Data API"
