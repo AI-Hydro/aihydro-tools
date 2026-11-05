@@ -113,10 +113,11 @@ delineation = [
 # Catchment attributes: the CAMELS-like attribute recipes (aihydro-lsh, public on PyPI).
 # Registers its lsh_* tools through the `aihydro.tools` entry point. aihydro-lsh sits
 # between watershed and tools in the stack (core <- data <- watershed <- lsh <- tools),
-# so this extra points down, never up. >=0.3.1: lsh 0.3.0 requires aihydro-watershed<0.3
-# and cannot be installed beside this package (which needs watershed>=0.3,<0.4).
+# so this extra points down, never up. >=0.4: lsh 0.3.0 requires aihydro-watershed<0.3
+# and cannot be installed beside this package (which needs watershed>=0.3,<0.4); lsh 0.4.0
+# carries the watershed 0.3.x pin.
 attributes = [
-    "aihydro-lsh>=0.3.1,<0.4",
+    "aihydro-lsh>=0.4,<0.5",
 ]
 
 # Modelling: HBV-light (PyTorch), NeuralHydrology LSTM.

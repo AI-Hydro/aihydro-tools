@@ -10,6 +10,10 @@ Every socket connection is refused.
   2. the MCP server lists the ``lsh_*`` tools, registered through the
      ``aihydro.tools`` entry point;
   3. ``lsh_attribute_info(p_mean)`` answers from lsh's bundled registry.
+
+Socket block: an IN-PROCESS patch of the Python ``socket`` module (connect, create_connection,
+getaddrinfo). It does not cover child processes or C libraries that open sockets themselves, so
+it is evidence that this Python code made no network call, not an OS-level sandbox.
 """
 from __future__ import annotations
 

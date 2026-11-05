@@ -14,6 +14,10 @@ Task: drive the real MCP server in-process through a ``fastmcp`` client.
      structured ``MODELLING_NOT_INSTALLED`` envelope instead of raising.
 
 All state goes to a temporary AIHYDRO_HOME, never the real ``~/.aihydro``.
+
+Socket block: an IN-PROCESS patch of the Python ``socket`` module (connect, create_connection,
+getaddrinfo). It does not cover child processes or C libraries that open sockets themselves, so
+it is evidence that this Python code made no network call, not an OS-level sandbox.
 """
 from __future__ import annotations
 

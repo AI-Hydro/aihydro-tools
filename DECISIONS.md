@@ -1014,13 +1014,13 @@ Source: AGU ecosystem audit C1 and C8 (`docs/vision-2040/findings/agu-ecosystem-
 - **`[modelling]` leaves `[all]`.** `aihydro-modelling` is private and not on PyPI, so `aihydro-tools[all]` could not resolve for anyone
   (`No matching distribution found for aihydro-modelling<0.7,>=0.6.2`, run with pip 26.3 on 2.8.8). `[modelling]` stays as its own extra,
   documented as private; the `MODELLING_NOT_INSTALLED` recovery text now says so (and names `>= 0.6.2`, the pin in `pyproject.toml`, not 0.6.1).
-- **New `[attributes]` extra = `aihydro-lsh>=0.3.1,<0.4`, and it is in `[all]`.** Dependency direction `core <- data <- watershed <- lsh <- tools`
+- **New `[attributes]` extra = `aihydro-lsh>=0.4,<0.5`, and it is in `[all]`.** Dependency direction `core <- data <- watershed <- lsh <- tools`
   allows tools to depend on lsh. An extra, not a hard dependency: lsh carries the heavy attribute stack and its tools are a different audience,
   and `tests/_plugin_tools.py` keys optional-plugin exemptions on unconditional dependencies only, so lsh stays an optional plugin there.
-  `>=0.3.1` because lsh 0.3.0 requires `aihydro-watershed<0.3` and cannot be installed beside tools 2.8.8 (`>=0.3,<0.4`); the fix is lsh 0.3.1.
-  **Release order: lsh 0.3.1 first, then a tools release carrying this extra**; until lsh 0.3.1 is on PyPI, `[attributes]` and `[all]` do not resolve.
+  `>=0.4` because lsh 0.3.0 requires `aihydro-watershed<0.3` and cannot be installed beside tools 2.8.8 (`>=0.3,<0.4`); the fix ships in lsh 0.4.0 (pin repair plus the BREAKING-VALUE slope fix).
+  **Release order: lsh 0.4.0 first, then a tools release carrying this extra**; until lsh 0.4.0 is on PyPI, `[attributes]` and `[all]` do not resolve.
 - This amends the 2026-10-20 entry above: aihydro-lsh is no longer private (it is on PyPI), so the public CI can install it; only
   aihydro-modelling remains private. The offline `tests` job still does not install lsh; the `with-attributes` job of `install-alone.yml` does.
 - **`install-alone.yml`**: builds the wheel and installs only it into a fresh venv outside the checkout, then drives the MCP server in-process
   with sockets refused (`scripts/install_alone_check.py`; lsh and modelling asserted absent). A second job, `with-attributes`, installs
-  `[attributes]` and checks the `lsh_*` tools register (`scripts/coinstall_attributes_check.py`); it is `continue-on-error` until lsh 0.3.1 exists.
+  `[attributes]` and checks the `lsh_*` tools register (`scripts/coinstall_attributes_check.py`); it installs lsh from the lsh PR branch git ref until 0.4.0 is on PyPI, then switches back to `[attributes]` from PyPI.

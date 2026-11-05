@@ -56,13 +56,13 @@ jobs:
         run: |
           "$RUNNER_TEMP/alone/bin/python" -I "$GITHUB_WORKSPACE/scripts/install_alone_check.py"
 
-  # aihydro-tools[attributes] needs aihydro-lsh>=0.3.1 (the release that carries the
-  # watershed 0.3.x pin). Until that is on PyPI this job cannot resolve, so it must not
-  # block merges: delete `continue-on-error` the day aihydro-lsh 0.3.1 is published.
+  # aihydro-tools[attributes] needs aihydro-lsh>=0.4 (the release carrying the watershed
+  # 0.3.x pin), which is not on PyPI yet. Until it is, this job installs lsh from the git ref
+  # of its pin-fix PR so the co-install is really tested. AT RELEASE: delete the git-ref lsh
+  # step and use the marked "[attributes] from PyPI" line instead.
   with-attributes:
     name: tools[attributes] co-installs with lsh (Python 3.12)
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -77,10 +77,22 @@ jobs:
           python -m build --wheel --outdir "$RUNNER_TEMP/dist"
 
       - name: Install the wheel with the attributes extra in a fresh venv
+        env:
+          # The aihydro-lsh repository is PRIVATE (only its PyPI releases are public), so a
+          # git install needs a read-only token stored as this repository secret.
+          LSH_READ_TOKEN: ${{ secrets.AIHYDRO_LSH_READ_TOKEN }}
         run: |
+          if [ -z "$LSH_READ_TOKEN" ]; then
+            echo "::error::secret AIHYDRO_LSH_READ_TOKEN (read access to AI-Hydro/aihydro-lsh) is not set; cannot install lsh from its branch"
+            exit 1
+          fi
           python -m venv "$RUNNER_TEMP/alone"
           "$RUNNER_TEMP/alone/bin/pip" install --upgrade pip
-          "$RUNNER_TEMP/alone/bin/pip" install "$(ls "$RUNNER_TEMP"/dist/*.whl)[attributes]"
+          # TEMPORARY (until aihydro-lsh 0.4.0 is on PyPI): lsh from its pin-fix branch.
+          "$RUNNER_TEMP/alone/bin/pip" install "$(ls "$RUNNER_TEMP"/dist/*.whl)" \
+            "aihydro-lsh @ git+https://x-access-token:${LSH_READ_TOKEN}@github.com/AI-Hydro/aihydro-lsh.git@vision2040/install-alone"
+          # AT RELEASE, replace the two lines above with: [attributes] from PyPI
+          #   "$RUNNER_TEMP/alone/bin/pip" install "$(ls "$RUNNER_TEMP"/dist/*.whl)[attributes]"
           "$RUNNER_TEMP/alone/bin/pip" check
           "$RUNNER_TEMP/alone/bin/pip" list
 
