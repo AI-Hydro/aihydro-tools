@@ -261,6 +261,16 @@ def test_only_the_five_fact_keys_get_through_and_nothing_else_can():
     assert len(sanitize_layer_meta({"gauge_id": "x" * 500})["gauge_id"]) == 200
 
 
+def test_the_fact_keys_match_the_fixture_shared_with_the_extension():
+    """The extension's tests compare its list with its copy of this file; a change to either list fails one side until they agree."""
+    import pathlib
+
+    from ai_hydro.mcp.enforcement import LAYER_FACT_KEYS
+
+    fx = json.loads((pathlib.Path(__file__).parent / "fixtures" / "layer_fact_keys.json").read_text())
+    assert set(fx["layer_fact_keys"]) == set(LAYER_FACT_KEYS) and len(fx["layer_fact_keys"]) == len(LAYER_FACT_KEYS)
+
+
 def test_another_tools_run_row_has_no_layer_meta_key(env, mcp_server):
     """post_run for a result without meta.layer_meta writes the same row shape as before (no new key)."""
     from ai_hydro.mcp.enforcement import post_run
