@@ -28,12 +28,85 @@ def read_layer_catalog() -> dict[str, Any]:
         return {"layers": [], "layer_order": []}
 
 
+# A host merges duplicate layers and records the merged-away id in ``layer_aliases`` (old id -> surviving id).
+# A chain is followed at most this deep; a longer one, or a loop, resolves to nothing.
+MAX_ALIAS_DEPTH = 8
+
+
+def layer_aliases(catalog: dict[str, Any] | None) -> dict[str, str]:
+    """The catalog's ``layer_aliases`` as ``{str: str}``; ``{}`` when absent or malformed."""
+    raw = (catalog or {}).get("layer_aliases") if isinstance(catalog, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if isinstance(v, str) and v}
+
+
+def resolve_alias(layer_id: str, aliases: dict[str, str], live_ids: set[str]) -> tuple[str | None, bool]:
+    """Follow ``aliases`` from ``layer_id`` to a live layer id: ``(canonical_id, alias_followed)``.
+
+    A live id is its own answer and no alias is consulted. ``(None, True)`` when the chain loops, is longer than
+    ``MAX_ALIAS_DEPTH`` or ends on an id that is not live (the target is gone); ``(None, False)`` when the id is
+    neither live nor an alias.
+    """
+    if layer_id in live_ids:
+        return layer_id, False
+    if layer_id not in aliases:
+        return None, False
+    seen = {layer_id}
+    current = layer_id
+    for _ in range(MAX_ALIAS_DEPTH):
+        current = aliases.get(current, "")
+        if not current or current in seen:
+            return None, True
+        if current in live_ids:
+            return current, True
+        seen.add(current)
+        if current not in aliases:
+            return None, True
+    return None, True
+
+
+def _live_ids(catalog: dict[str, Any]) -> set[str]:
+    return {str(l.get("id")) for l in catalog.get("layers") or [] if isinstance(l, dict) and l.get("id")}
+
+
+def resolve_catalog_layer(layer_id: str, catalog: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The one resolver for a layer id named by a caller (or recorded in a study).
+
+    Returns ``{"entry", "canonical_id", "alias_followed", "requested_id"}``; ``entry`` and ``canonical_id`` are None
+    when nothing resolves. With no ``layer_aliases`` in the catalog this is the exact-id lookup it always was.
+    """
+    catalog = read_layer_catalog() if catalog is None else catalog
+    canonical, followed = resolve_alias(layer_id, layer_aliases(catalog), _live_ids(catalog))
+    entry = None
+    if canonical is not None:
+        entry = next((l for l in catalog.get("layers") or [] if isinstance(l, dict) and l.get("id") == canonical), None)
+    return {"entry": entry, "canonical_id": canonical if entry is not None else None,
+            "alias_followed": followed and entry is not None, "requested_id": layer_id}
+
+
 def find_catalog_layer(layer_id: str) -> dict[str, Any] | None:
-    catalog = read_layer_catalog()
-    for layer in catalog.get("layers") or []:
-        if layer.get("id") == layer_id:
-            return layer
-    return None
+    return resolve_catalog_layer(layer_id)["entry"]
+
+
+def alias_group(item_id: str, catalog: dict[str, Any] | None) -> list[str]:
+    """``item_id`` plus every alias id that resolves to the same live layer, own id first.
+
+    Used to read claim links recorded under an id the host has since merged away. Just ``[item_id]`` when the
+    catalog has no aliases.
+    """
+    aliases = layer_aliases(catalog)
+    if not aliases or catalog is None:
+        return [item_id]
+    live = _live_ids(catalog)
+    canonical, _ = resolve_alias(item_id, aliases, live)
+    if canonical is None:
+        return [item_id]
+    group = [item_id]
+    for cand in [canonical, *sorted(aliases)]:
+        if cand not in group and resolve_alias(cand, aliases, live)[0] == canonical:
+            group.append(cand)
+    return group
 
 
 def list_layer_ids() -> list[str]:

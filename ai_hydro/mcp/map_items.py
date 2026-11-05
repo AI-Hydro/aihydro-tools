@@ -16,7 +16,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from ai_hydro.mcp.map_layer_catalog import MAP_LAYER_CATALOG_FILE, read_layer_catalog
+from ai_hydro.mcp.map_layer_catalog import (
+    MAP_LAYER_CATALOG_FILE,
+    alias_group,
+    read_layer_catalog,
+    resolve_catalog_layer,
+)
 from ai_hydro.session.project_key import project_key
 from ai_hydro.session.study_index import MANIFEST_KIND, study_summaries
 
@@ -24,10 +29,21 @@ LINKS_KEY = "map_item_claim_links"
 SCOPES = ("chat", "project")
 
 
-def claim_ids_for(session_extra: dict[str, Any] | None, item_id: str) -> list[str]:
+def claim_ids_for(session_extra: dict[str, Any] | None, item_id: str,
+                  catalog: dict[str, Any] | None = None) -> list[str]:
+    """Claim ids linked to ``item_id``, plus those linked to an id the host merged into it (``catalog`` aliases).
+
+    Reading only: a link stays under the id it was recorded with.
+    """
     links = (session_extra or {}).get(LINKS_KEY)
-    ids = links.get(item_id) if isinstance(links, dict) else None
-    return [str(c) for c in ids] if isinstance(ids, list) else []
+    if not isinstance(links, dict):
+        return []
+    out: list[str] = []
+    for lid in alias_group(item_id, catalog):
+        ids = links.get(lid)
+        if isinstance(ids, list):
+            out.extend(str(c) for c in ids if str(c) not in out)
+    return out
 
 
 def add_link(session_extra: dict[str, Any], item_id: str, claim_id: str) -> bool:
@@ -103,9 +119,15 @@ def collect(scope: str, *, chat_id: str | None, workspace: str | None) -> dict[s
             if lid in seen:
                 continue
             seen.add(lid)
-            items.append(_item(entry, (lid in host_ids) if host_known else None))
+            item = _item(entry, (lid in host_ids) if host_known else None)
+            if host_known and lid not in host_ids:
+                hit = resolve_catalog_layer(str(lid), catalog)
+                if hit["alias_followed"]:
+                    item["in_host_catalog"] = True
+                    item["layer_alias_of"] = hit["canonical_id"]
+            items.append(item)
 
-    _attach_claim_links(items)
+    _attach_claim_links(items, catalog)
     info.update(resolved=True, items=items, host_catalog_available=host_known)
     return info
 
@@ -119,7 +141,7 @@ def _bound_chats(study_id: str) -> list[str]:
         return []
 
 
-def _attach_claim_links(items: list[dict[str, Any]]) -> None:
+def _attach_claim_links(items: list[dict[str, Any]], catalog: dict[str, Any] | None = None) -> None:
     """Fill ``claim_ids`` from each item's study. Loads only the studies that have items."""
     from ai_hydro.session import HydroSession
 
@@ -132,4 +154,4 @@ def _attach_claim_links(items: list[dict[str, Any]]) -> None:
         except Exception:
             continue
         for it in group:
-            it["claim_ids"] = claim_ids_for(extra, str(it["item_id"]))
+            it["claim_ids"] = claim_ids_for(extra, str(it["item_id"]), catalog)

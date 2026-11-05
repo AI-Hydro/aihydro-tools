@@ -38,11 +38,13 @@ from ai_hydro.mcp.map_commands import (
 from ai_hydro.mcp.map_events import STYLES
 from ai_hydro.mcp.map_layer_catalog import (
     compute_graduated_metadata,
-    find_catalog_layer,
+    layer_aliases,
     list_layer_ids,
     load_geojson_for_layer,
     read_layer_catalog,
+    resolve_catalog_layer,
 )
+from ai_hydro.mcp.map_model_view import safe_layers, safe_path
 from ai_hydro.registry.paths import aihydro_home, home_path
 
 log = logging.getLogger("ai_hydro.mcp")
@@ -119,6 +121,7 @@ def map_get_state(
             requested_workspace if session_id else None,
             requested=bool(session_id),
         )
+        host_root = persisted.get("workspaceRoot") or persisted.get("workspace_root")
         active_roi = persisted.get("activeRoi") or persisted.get("active_roi")
         roi_summary = None
         if isinstance(active_roi, dict):
@@ -126,7 +129,8 @@ def map_get_state(
                 "id": active_roi.get("id"),
                 "name": active_roi.get("name"),
                 "source": active_roi.get("source"),
-                "workspace_path": active_roi.get("workspacePath") or active_roi.get("workspace_path"),
+                "workspace_path": safe_path(
+                    active_roi.get("workspacePath") or active_roi.get("workspace_path"), host_root),
                 "area_ha": active_roi.get("areaHa") or active_roi.get("area_ha"),
                 "has_geometry": bool(active_roi.get("geojson")),
             }
@@ -146,7 +150,7 @@ def map_get_state(
                 resolved = {
                     "scope": "requested_session",
                     "session_id": session_id,
-                    "error": str(exc),
+                    "error": _scrub_roots(str(exc), host_root, requested_workspace),
                 }
 
         basemap_id = persisted.get("basemapId") or persisted.get("basemap_id")
@@ -167,6 +171,8 @@ def map_get_state(
             "active_roi_scope": "global_host",
             "host_workspace_ownership": {
                 **host_ownership,
+                "host_workspace_root": safe_path(host_ownership.get("host_workspace_root"), host_root),
+                "requested_workspace_dir": safe_path(host_ownership.get("requested_workspace_dir"), host_root),
                 "active_roi_eligible_for_session": bool(
                     session_id
                     and isinstance(active_roi, dict)
@@ -181,10 +187,11 @@ def map_get_state(
             "view": persisted.get("view"),
             "visible_layer_ids": persisted.get("visibleLayerIds")
             or persisted.get("visible_layer_ids"),
-            "workspace_root": persisted.get("workspaceRoot") or persisted.get("workspace_root"),
+            "workspace_root": safe_path(host_root, host_root),
             "updated_at_ms": persisted.get("updatedAtMs") or persisted.get("updated_at_ms"),
             "layer_order": catalog.get("layer_order") or [],
-            "layers": catalog.get("layers") or [],
+            "layers": safe_layers(catalog.get("layers"), host_root),
+            **_aliases_out(catalog),
             "layer_catalog_scope": "global_host",
             "resolved_roi_for_session": resolved,
             "recent_events": _recent_outbound_events(max(1, min(event_limit, 50))),
@@ -259,16 +266,44 @@ def map_fit_extent() -> dict:
     return {"ok": ok, "message": "Fit extent requested" if ok else "Failed to queue fit"}
 
 
+def _scrub_roots(text: str, *roots: Any) -> str:
+    """``text`` with each workspace root path replaced by ``<workspace>`` (error text names absolute paths)."""
+    for root in sorted((str(r) for r in roots if r), key=len, reverse=True):
+        text = text.replace(root, "<workspace>")
+    return text
+
+
+def _aliases_out(catalog: dict[str, Any]) -> dict[str, Any]:
+    """``layer_aliases`` for the model when the host recorded any; no key otherwise."""
+    aliases = layer_aliases(catalog)
+    return {"layer_aliases": aliases} if aliases else {}
+
+
+def _alias_note(hit: dict[str, Any]) -> dict[str, Any]:
+    """Result fields saying an alias was followed; empty when the id was the layer's own."""
+    if not hit["alias_followed"]:
+        return {}
+    return {"alias_followed": True, "requested_layer_id": hit["requested_id"], "layer_id": hit["canonical_id"]}
+
+
 @mcp.tool()
 def map_list_layers() -> dict:
-    """List map layer ids and catalog entries from the host (~/.aihydro/map_layer_catalog.json)."""
+    """List map layer ids and catalog entries from the host (~/.aihydro/map_layer_catalog.json).
+
+    Absolute paths in the entries are shown workspace-relative, or as ``<outside-workspace>``. When the
+    host merged duplicate layers, ``layer_aliases`` maps each old id to the layer that stayed; any tool that
+    takes a layer id accepts an old one.
+    """
     try:
         catalog = read_layer_catalog()
+        persisted = _read_map_session_file()
+        root = persisted.get("workspaceRoot") or persisted.get("workspace_root") or catalog.get("workspace_root")
         return {
             "ok": True,
             "layer_order": catalog.get("layer_order") or [],
-            "layers": catalog.get("layers") or [],
+            "layers": safe_layers(catalog.get("layers"), root),
             "layer_ids": list_layer_ids(),
+            **_aliases_out(catalog),
         }
     except Exception as e:
         return _tool_error_to_dict(e)
@@ -306,9 +341,11 @@ def map_update_layer(
     For choropleth, set graduated_attribute (+ method/classes/ramp).
     """
     try:
-        entry = find_catalog_layer(layer_id)
+        hit = resolve_catalog_layer(layer_id)
+        entry = hit["entry"]
         if not entry:
             return _layer_not_found(layer_id)
+        layer_id = hit["canonical_id"]
 
         style: dict[str, Any] = {}
         metadata: dict[str, str] = {}
@@ -361,6 +398,7 @@ def map_update_layer(
             "ok": ok,
             "layer_id": layer_id,
             "message": "Layer update queued for map host" if ok else "Failed to queue update",
+            **_alias_note(hit),
         }
     except Exception as e:
         return _tool_error_to_dict(e)
@@ -387,10 +425,11 @@ def map_apply_symbology(
 @mcp.tool()
 def map_remove_layer(layer_id: str) -> dict:
     """Remove a layer from the map by id."""
-    if not find_catalog_layer(layer_id):
+    hit = resolve_catalog_layer(layer_id)
+    if not hit["entry"]:
         return _layer_not_found(layer_id)
-    ok = push_remove_layer(layer_id)
-    return {"ok": ok, "layer_id": layer_id}
+    ok = push_remove_layer(hit["canonical_id"])
+    return {"ok": ok, "layer_id": hit["canonical_id"], **_alias_note(hit)}
 
 
 @mcp.tool()
@@ -403,10 +442,11 @@ def map_set_basemap(basemap_id: str, basemap_name: str | None = None) -> dict:
 @mcp.tool()
 def map_fit_layer(layer_id: str) -> dict:
     """Zoom the map viewport to a layer's extent."""
-    if not find_catalog_layer(layer_id):
+    hit = resolve_catalog_layer(layer_id)
+    if not hit["entry"]:
         return _layer_not_found(layer_id)
-    ok = push_fit_layer(layer_id)
-    return {"ok": ok, "layer_id": layer_id}
+    ok = push_fit_layer(hit["canonical_id"])
+    return {"ok": ok, "layer_id": hit["canonical_id"], **_alias_note(hit)}
 
 
 @mcp.tool()

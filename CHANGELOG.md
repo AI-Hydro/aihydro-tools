@@ -39,6 +39,24 @@ what a call may do and never grants anything. Evaluation runs refuse calls that 
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **Map layer ids follow the host catalog's `layer_aliases`** (old id to surviving id, recorded when the extension merges duplicate layers). One resolver
+  (`resolve_catalog_layer`, with chain, cycle and depth-cap protection, depth 8) serves `find_catalog_layer`, `map_update_layer`, `map_apply_symbology`,
+  `map_remove_layer`, `map_fit_layer` and `bind_claim_to_item`; a tool that followed an alias acts on the surviving id and adds `alias_followed` and
+  `requested_layer_id` (`requested_item_id` for `bind_claim_to_item`) to its result. A new link to an alias is recorded under the surviving id.
+- **Claims bound to a merged-away id show on the surviving item.** `claim_ids_for` reads the links of every id that resolves to the item; the stored
+  `map_item_claim_links` is never rewritten. A study item recorded under a merged id reports `layer_alias_of`. `map_get_state` and `map_list_layers`
+  return `layer_aliases` when the host recorded any.
+- **`map_get_state` and `map_list_layers` no longer send absolute paths to the model.** The path fields of catalog entries and `metadata_snapshot`,
+  `workspace_root`, `active_roi.workspace_path` and `host_workspace_ownership` are shown workspace-relative when inside the workspace and as
+  `<outside-workspace>` otherwise; `load_geojson_for_layer` and the catalog file keep the absolute values.
+- No change when the catalog has no `layer_aliases`.
+
+---
+
 ## [2.8.7] - 2026-11-02 (lookup class, series codes, reference-layer stamps, gauge index, flowlines)
 
 Citation lookups get an `effect = "lookup"` class without weakening `readOnlyHint`; retained series keep USGS approval and qualifier codes and an information class; reference layers say when and for which view they were retrieved; a study index of the runs that hold a gauge; and `gauge_flowlines` for the map.
