@@ -933,6 +933,11 @@ def delineate_watershed_from_point(
         value under 5 km2 makes auto use small_catchment first.
     session_id: optional — auto-generated from coordinates/name if not supplied.
     Returns area_km2, method_used, routing metadata, snap quality, and quality flags.
+    NLDI_OUTLET_AMBIGUOUS (quality flag): without expected_area_km2 the nearest NHDPlus
+        reach drains under 80 km2, so the point may sit on a tributary reach or on a larger
+        stem. The basin returned is the nearest reach's (the outlet is not moved downstream
+        without consent); outlet_ambiguity lists candidate COMIDs and areas. Pass
+        expected_area_km2 to choose among them.
     """
     try:
         slug = _watershed_slug(name, lat, lon)

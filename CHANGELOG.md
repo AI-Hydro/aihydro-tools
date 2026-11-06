@@ -49,6 +49,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   (0.3.0 requires `aihydro-watershed<0.3` and cannot co-install with this package); until then `[attributes]` and `[all]` do not resolve.
 - `install-alone` CI workflow: wheel-only install in a fresh venv, then the MCP server driven in-process with sockets refused (173 tools, a knowledge lookup, an
   aihydro-data product listing, the structured `MODELLING_NOT_INSTALLED` envelope). A second job, `with-attributes`, installs `[attributes]` from PyPI and checks the `lsh_*` tools register; it is `continue-on-error` until lsh 0.4.0 is published. **Release checklist: remove `continue-on-error` from `with-attributes` once aihydro-lsh 0.4.0 is on PyPI.**
+### Changed
+
+- `test_snap_outlet_nldi_conus` patches `aihydro_watershed.delineation.nldi_point.hydrolocation_comid` (watershed now makes its own percent-encoded NLDI hydrolocation request instead of pynhd's `comid_byloc`); no live calls.
+- `delineate_watershed_from_point` docstring documents the `NLDI_OUTLET_AMBIGUOUS` quality flag (the outlet is not moved downstream without consent).
 
 ## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
 
