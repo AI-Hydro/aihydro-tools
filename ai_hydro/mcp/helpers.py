@@ -1061,6 +1061,21 @@ def _tool_error_to_dict(e: Exception) -> dict:
                      "repository, version >= 0.6.2).",
         ).to_dict())
 
+    # No metric slope (geographic CRS, no CRS, unusable pixel size): a clear, recoverable error, never a number.
+    try:
+        from aihydro_watershed.characterize._dem import SlopeUnavailableError
+    except ImportError:  # pragma: no cover - aihydro-watershed < 0.4
+        SlopeUnavailableError = ()  # type: ignore[assignment,misc]
+    if SlopeUnavailableError and isinstance(e, SlopeUnavailableError):
+        from aihydro_core.primitives.errors import ToolError
+
+        return sanitize_error(ToolError(
+            "SLOPE_UNAVAILABLE",
+            f"Slope cannot be computed from this DEM: {e}",
+            recovery="The DEM needs a projected (metric) CRS with a usable pixel size. Re-fetch the DEM at 10, 30 or "
+                     "60 m resolution (which reprojects it) or supply a metric DEM; no slope-based result was produced.",
+        ).to_dict())
+
     import traceback as _tb
     log.error("unexpected tool error: %s\n%s", e, _tb.format_exc(limit=8))
 

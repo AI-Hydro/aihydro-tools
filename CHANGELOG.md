@@ -6,6 +6,33 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.8.9] - 2026-11-06 (aihydro-watershed 0.4.0 / aihydro-lsh 0.4.0 train, attempt trail, install-alone)
+
+### Changed
+
+- **Requires aihydro-watershed 0.4.0** (`aihydro-watershed>=0.4.0,<0.5`). Global delineation now defaults to the MERIT-Basins hybrid on pinned,
+  SHA-256-verified `basins##.db` / `rivers##.db` (no Google Drive, no reachhydro shapefiles). `merit_ensure_basin` reports `delineator_ready` as
+  "verified `basins##.db` and `rivers##.db` staged", and its `_note` says so.
+- **`delineate_watershed_from_point`** takes `allow_downstream_expansion` (default `False`, passed to the router) and accepts `method="merit_hybrid"`
+  (alias of `merit_basins`). When NLDI cannot tell a tributary reach from a larger stem the result carries `outlet_ambiguity` and the
+  `NLDI_OUTLET_AMBIGUOUS` flag, and the `_note` says how to choose.
+- `scripts/install_merit_minimal.py` and `scripts/merit-download-basin.py` stage through `ensure_basins_region` (verified, size-checked) instead of
+  the Google Drive / delineator-clone route.
+
+### Fixed
+
+- **`extract_geomorphic_parameters`** keeps the string `relief_flag` ("relief_unavailable:...") as text and adds a `RELIEF_UNAVAILABLE` quality flag.
+- **No slope without a metric grid.** `SlopeUnavailableError` from `slope_from_dem` / `compute_twi` reaches the caller as a structured
+  `SLOPE_UNAVAILABLE` error (and `compute_twi` no longer retries the stats-only path that needs the same slope). The inundation HAND stack
+  fails closed (`DEM_REPROJECTION_FAILED`) instead of continuing on the native CRS, and the UTM zone wraps (`% 60 + 1`, longitude 180 is zone 1).
+
+### Tests
+
+- Ported or retired the tests that patched functions removed in aihydro-watershed 0.4.0 (`merit_traverse_upstream_catchments`,
+  `merit_load_catchment_topology`, `_try_download`); their behaviour is covered by aihydro-watershed `tests/test_merit_hybrid_default.py`.
+  `ai_hydro.data.merit_download` stays a re-export shim: it emits a `DeprecationWarning` only when its functions are called (pinned in
+  `tests/test_merit_download_shim.py`). The install-alone `with-attributes` job stays `continue-on-error` until aihydro-lsh 0.4.0 is on PyPI.
+
 ### Added
 
 - **Attempt trail in the sealed run record** (AGU abstract claim: "each request records the sources attempted, the source ultimately used,

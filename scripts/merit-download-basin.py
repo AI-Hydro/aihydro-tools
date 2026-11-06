@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Prefetch MERIT basin assets for a pour point (wrapper around MeritDataManager)."""
+"""Prefetch verified MERIT-Basins vectors (``basins##.db``, ``rivers##.db``) for a pour point.
+
+Wrapper around ``MeritDataManager.ensure_basins_region``; for several regions use ``scripts/install_merit_minimal.py``.
+"""
 
 from __future__ import annotations
 
@@ -19,16 +22,15 @@ def main() -> int:
     mgr = MeritDataManager()
     status = mgr.ensure_basin(args.lat, args.lon, download=not args.no_download)
     print(f"Pfafstetter basin: {status.pfaf_code}")
-    print(f"  level2: {status.level2_ready}")
-    print(f"  rivers: {status.rivers_ready}")
-    print(f"  catchments: {status.catchments_ready}")
-    print(f"  flowdir: {status.flowdir_ready}")
-    print(f"  delineator_ready: {mgr.delineator_ready(status.pfaf_code)}")
+    print(f"  level2 index (megabasins.db): {status.level2_ready}")
+    print(f"  rivers##.db (verified): {status.rivers_ready}")
+    print(f"  basins##.db (verified): {status.catchments_ready}")
+    print(f"  delineator_ready (verified basins + rivers): {mgr.delineator_ready(status.pfaf_code)}")
     print(f"  root: {mgr.root}")
     print(status.message)
     if status.downloaded:
         print("Downloaded:", ", ".join(status.downloaded))
-    return 0 if status.rivers_ready or status.level2_ready else 1
+    return 0 if status.rivers_ready and status.catchments_ready else 1
 
 
 if __name__ == "__main__":

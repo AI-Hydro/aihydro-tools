@@ -204,6 +204,7 @@ def _prepare_hand_stack(
 ) -> dict[str, Any]:
     """DEM → conditioned flow → HAND (mirrors TWI pipeline)."""
     from ai_hydro.analysis._dem import fetch_dem, _geom_in_conus, slope_from_dem
+    from ai_hydro.core import ToolError
     import tempfile
     import os
     from pysheds.grid import Grid
@@ -218,25 +219,32 @@ def _prepare_hand_stack(
     _is_conus = _geom_in_conus(watershed_geom)
     dem, dem_product, dem_source = fetch_dem(watershed_geom, resolution=resolution, prefer="auto")
 
+    # A DEM left in degrees would give a wrong cell size, flow lengths and slope: fail closed, never keep the native CRS.
     if _is_conus:
         try:
             dem = dem.rio.reproject("EPSG:5070")
         except Exception as exc:
-            log.warning("DEM reproject to EPSG:5070 failed: %s", exc)
+            raise ToolError(
+                "DEM_REPROJECTION_FAILED",
+                f"DEM could not be reprojected to EPSG:5070 ({exc}); HAND needs a metric grid.",
+                recovery="Retry, or use a different resolution; no result was produced from the unprojected DEM.",
+            ) from exc
     else:
         try:
             _centroid = watershed_geom.centroid if hasattr(watershed_geom, "centroid") else watershed_geom
             lat0 = float(getattr(_centroid, "y", 0.0))
             lon0 = float(getattr(_centroid, "x", 0.0))
-            zone = int((lon0 + 180) // 6) + 1
+            zone = int((lon0 + 180) // 6) % 60 + 1  # lon = 180 is zone 1, not 61
             epsg = 32600 + zone if lat0 >= 0 else 32700 + zone
             dem = dem.rio.reproject(f"EPSG:{epsg}")
-            if dem.ndim == 3:
-                dem = dem.squeeze(drop=True)
         except Exception as exc:
-            log.warning("UTM reproject failed: %s", exc)
-            if dem.ndim == 3:
-                dem = dem.squeeze(drop=True)
+            raise ToolError(
+                "DEM_REPROJECTION_FAILED",
+                f"DEM could not be reprojected to a UTM grid ({exc}); HAND needs a metric grid.",
+                recovery="Retry, or use a different resolution; no result was produced from the unprojected DEM.",
+            ) from exc
+        if dem.ndim == 3:
+            dem = dem.squeeze(drop=True)
 
     with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
         tmp_path = tmp.name
@@ -251,20 +259,29 @@ def _prepare_hand_stack(
         acc = grid.accumulation(fdir)
         elev = np.asarray(inflated, dtype=np.float32)
 
-        if _is_conus:
-            try:
-                import py3dep
-                slope_deg = py3dep.get_map(
-                    "Slope Degrees",
-                    watershed_geom,
-                    resolution=resolution,
-                    geo_crs=4326,
-                    crs=5070,
-                )
-            except Exception:
+        from aihydro_watershed.characterize._dem import SlopeUnavailableError
+
+        try:
+            if _is_conus:
+                try:
+                    import py3dep
+                    slope_deg = py3dep.get_map(
+                        "Slope Degrees",
+                        watershed_geom,
+                        resolution=resolution,
+                        geo_crs=4326,
+                        crs=5070,
+                    )
+                except Exception:
+                    slope_deg = slope_from_dem(dem)
+            else:
                 slope_deg = slope_from_dem(dem)
-        else:
-            slope_deg = slope_from_dem(dem)
+        except SlopeUnavailableError as exc:
+            raise ToolError(
+                "SLOPE_UNAVAILABLE",
+                f"Slope cannot be computed from this DEM: {exc}",
+                recovery="The DEM needs a projected (metric) CRS with a usable pixel size; no slope-based result was produced.",
+            ) from exc
 
         hand = compute_hand_from_pysheds(
             elev,
