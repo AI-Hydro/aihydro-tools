@@ -1017,7 +1017,7 @@ Source: AGU ecosystem audit C1 and C8 (`docs/vision-2040/findings/agu-ecosystem-
 - **New `[attributes]` extra = `aihydro-lsh>=0.4,<0.5`, and it is in `[all]`.** Dependency direction `core <- data <- watershed <- lsh <- tools`
   allows tools to depend on lsh. An extra, not a hard dependency: lsh carries the heavy attribute stack and its tools are a different audience,
   and `tests/_plugin_tools.py` keys optional-plugin exemptions on unconditional dependencies only, so lsh stays an optional plugin there.
-  `>=0.4` because lsh 0.3.0 requires `aihydro-watershed<0.3` and cannot be installed beside tools 2.8.8 (`>=0.3,<0.4`); the fix ships in lsh 0.4.0 (pin repair plus the BREAKING-VALUE slope fix).
+  `>=0.4` because lsh 0.3.0 requires `aihydro-watershed<0.3` and cannot be installed beside tools 2.8.8 (`>=0.3,<0.4`); the fix ships in lsh 0.4.0 (pin repair plus the BREAKING-VALUE slope fix). *Update 2026-11-06 (tools 2.8.9): tools now pins `aihydro-watershed>=0.4.0,<0.5`, and lsh 0.4.0 carries the watershed 0.4 pin.*
   **Release order: lsh 0.4.0 first, then a tools release carrying this extra**; until lsh 0.4.0 is on PyPI, `[attributes]` and `[all]` do not resolve.
 - This amends the 2026-10-20 entry above: aihydro-lsh is no longer private (it is on PyPI), so the public CI can install it; only
   aihydro-modelling remains private. The offline `tests` job still does not install lsh; the `with-attributes` job of `install-alone.yml` does.

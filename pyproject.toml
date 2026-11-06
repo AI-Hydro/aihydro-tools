@@ -114,8 +114,8 @@ delineation = [
 # Registers its lsh_* tools through the `aihydro.tools` entry point. aihydro-lsh sits
 # between watershed and tools in the stack (core <- data <- watershed <- lsh <- tools),
 # so this extra points down, never up. >=0.4: lsh 0.3.0 requires aihydro-watershed<0.3
-# and cannot be installed beside this package (which needs watershed>=0.3,<0.4); lsh 0.4.0
-# carries the watershed 0.3.x pin.
+# and cannot be installed beside this package (which needs watershed>=0.4.0,<0.5); lsh 0.4.0
+# carries the watershed 0.4 pin.
 attributes = [
     "aihydro-lsh>=0.4,<0.5",
 ]

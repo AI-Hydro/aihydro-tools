@@ -280,7 +280,7 @@ def _prepare_hand_stack(
             raise ToolError(
                 "SLOPE_UNAVAILABLE",
                 f"Slope cannot be computed from this DEM: {exc}",
-                recovery="The DEM needs a projected (metric) CRS with a usable pixel size; no slope-based result was produced.",
+                recovery="No slope-based result was produced. Check the DEM's CRS and pixel size (a metric, projected grid is needed).",
             ) from exc
 
         hand = compute_hand_from_pysheds(

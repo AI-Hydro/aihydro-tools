@@ -1072,8 +1072,8 @@ def _tool_error_to_dict(e: Exception) -> dict:
         return sanitize_error(ToolError(
             "SLOPE_UNAVAILABLE",
             f"Slope cannot be computed from this DEM: {e}",
-            recovery="The DEM needs a projected (metric) CRS with a usable pixel size. Re-fetch the DEM at 10, 30 or "
-                     "60 m resolution (which reprojects it) or supply a metric DEM; no slope-based result was produced.",
+            recovery="No slope-based result was produced. Check the DEM's CRS and pixel size (a metric, projected grid is "
+                     "needed); retrying with a different DEM resolution may help.",
         ).to_dict())
 
     import traceback as _tb

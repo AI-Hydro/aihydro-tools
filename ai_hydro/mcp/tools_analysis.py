@@ -563,14 +563,6 @@ def delineate_watershed(
 
         # Strip geometry from agent response — it's large and already on disk
         compact = {k: v for k, v in d["data"].items() if k != "geometry_geojson"}
-        _ambig = compact.get("outlet_ambiguity")
-        if _ambig:
-            _method_note += (
-                "NLDI_OUTLET_AMBIGUOUS: the point may sit on a tributary reach or a larger stem; the nearest "
-                "reach's basin was returned (outlet_ambiguity lists the candidates). Pass expected_area_km2 "
-                "to choose, or allow_downstream_expansion=true to accept the larger stem. "
-            )
-
         resp: dict = {
             "data": compact,
             "meta": d.get("meta", {}),
@@ -1052,6 +1044,14 @@ def delineate_watershed_from_point(
                 f"~{_stage_event.get('size_gb', '?')} GB. "
                 "Call merit_ensure_routing_region(pfaf_region='...', "
                 "acquisition_policy='download') to proceed, then re-delineate. "
+            )
+
+        _ambig = compact.get("outlet_ambiguity")
+        if _ambig:
+            _method_note += (
+                "NLDI_OUTLET_AMBIGUOUS: the point may sit on a tributary reach or a larger stem; the nearest "
+                "reach's basin was returned (outlet_ambiguity lists the candidates). Pass expected_area_km2 "
+                "to choose, or allow_downstream_expansion=true to accept the larger stem. "
             )
 
         resp: dict = {

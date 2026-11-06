@@ -8,31 +8,6 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [2.8.9] - 2026-11-06 (aihydro-watershed 0.4.0 / aihydro-lsh 0.4.0 train, attempt trail, install-alone)
 
-### Changed
-
-- **Requires aihydro-watershed 0.4.0** (`aihydro-watershed>=0.4.0,<0.5`). Global delineation now defaults to the MERIT-Basins hybrid on pinned,
-  SHA-256-verified `basins##.db` / `rivers##.db` (no Google Drive, no reachhydro shapefiles). `merit_ensure_basin` reports `delineator_ready` as
-  "verified `basins##.db` and `rivers##.db` staged", and its `_note` says so.
-- **`delineate_watershed_from_point`** takes `allow_downstream_expansion` (default `False`, passed to the router) and accepts `method="merit_hybrid"`
-  (alias of `merit_basins`). When NLDI cannot tell a tributary reach from a larger stem the result carries `outlet_ambiguity` and the
-  `NLDI_OUTLET_AMBIGUOUS` flag, and the `_note` says how to choose.
-- `scripts/install_merit_minimal.py` and `scripts/merit-download-basin.py` stage through `ensure_basins_region` (verified, size-checked) instead of
-  the Google Drive / delineator-clone route.
-
-### Fixed
-
-- **`extract_geomorphic_parameters`** keeps the string `relief_flag` ("relief_unavailable:...") as text and adds a `RELIEF_UNAVAILABLE` quality flag.
-- **No slope without a metric grid.** `SlopeUnavailableError` from `slope_from_dem` / `compute_twi` reaches the caller as a structured
-  `SLOPE_UNAVAILABLE` error (and `compute_twi` no longer retries the stats-only path that needs the same slope). The inundation HAND stack
-  fails closed (`DEM_REPROJECTION_FAILED`) instead of continuing on the native CRS, and the UTM zone wraps (`% 60 + 1`, longitude 180 is zone 1).
-
-### Tests
-
-- Ported or retired the tests that patched functions removed in aihydro-watershed 0.4.0 (`merit_traverse_upstream_catchments`,
-  `merit_load_catchment_topology`, `_try_download`); their behaviour is covered by aihydro-watershed `tests/test_merit_hybrid_default.py`.
-  `ai_hydro.data.merit_download` stays a re-export shim: it emits a `DeprecationWarning` only when its functions are called (pinned in
-  `tests/test_merit_download_shim.py`). The install-alone `with-attributes` job stays `continue-on-error` until aihydro-lsh 0.4.0 is on PyPI.
-
 ### Added
 
 - **Attempt trail in the sealed run record** (AGU abstract claim: "each request records the sources attempted, the source ultimately used,
@@ -63,23 +38,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `fallback_history` gets no key and its record digest is exactly what earlier versions produced (tested).
 - A failed delineation carries its trail only with an aihydro-watershed that attaches `fallback_history` to the `ToolError` (the companion
   change in that package); with an older one the failure record has the error code and summary as before.
-### Fixed
-
-- **`pip install aihydro-tools[all]` resolves from PyPI again.** `[all]` no longer includes `[modelling]`: `aihydro-modelling` is private and not
-  on PyPI, so `[all]` failed with `No matching distribution found for aihydro-modelling` (AGU audit C1b). `[modelling]` remains as a separate,
-  documented-private extra. The `MODELLING_NOT_INSTALLED` recovery text says the package is private and names the pinned `>= 0.6.2`.
-
-### Added
-
 - **`[attributes]` extra** (`aihydro-lsh>=0.4,<0.5`), also part of `[all]`: puts the 11 `lsh_*` attribute tools (107 scalar CAMELS-like keys) on the
   installed server through the `aihydro.tools` entry point (audit C8: zero attributes on the installed build). **Needs aihydro-lsh 0.4.0 on PyPI first**
   (0.3.0 requires `aihydro-watershed<0.3` and cannot co-install with this package); until then `[attributes]` and `[all]` do not resolve.
 - `install-alone` CI workflow: wheel-only install in a fresh venv, then the MCP server driven in-process with sockets refused (173 tools, a knowledge lookup, an
   aihydro-data product listing, the structured `MODELLING_NOT_INSTALLED` envelope). A second job, `with-attributes`, installs `[attributes]` from PyPI and checks the `lsh_*` tools register; it is `continue-on-error` until lsh 0.4.0 is published. **Release checklist: remove `continue-on-error` from `with-attributes` once aihydro-lsh 0.4.0 is on PyPI.**
+
 ### Changed
 
+- **Requires aihydro-watershed 0.4.0** (`aihydro-watershed>=0.4.0,<0.5`). Global delineation now defaults to the MERIT-Basins hybrid on pinned,
+  SHA-256-verified `basins##.db` / `rivers##.db` (no Google Drive, no reachhydro shapefiles). `merit_ensure_basin` reports `delineator_ready` as
+  "verified `basins##.db` and `rivers##.db` staged", and its `_note` says so.
+- **`delineate_watershed_from_point`** takes `allow_downstream_expansion` (default `False`, passed to the router) and accepts `method="merit_hybrid"`
+  (alias of `merit_basins`). When NLDI cannot tell a tributary reach from a larger stem the result carries `outlet_ambiguity` and the
+  `NLDI_OUTLET_AMBIGUOUS` flag, and the `_note` says how to choose.
+- `scripts/install_merit_minimal.py` and `scripts/merit-download-basin.py` stage through `ensure_basins_region` (verified, size-checked) instead of
+  the Google Drive / delineator-clone route.
 - `test_snap_outlet_nldi_conus` patches `aihydro_watershed.delineation.nldi_point.hydrolocation_comid` (watershed now makes its own percent-encoded NLDI hydrolocation request instead of pynhd's `comid_byloc`); no live calls.
 - `delineate_watershed_from_point` docstring documents the `NLDI_OUTLET_AMBIGUOUS` quality flag (the outlet is not moved downstream without consent).
+
+### Fixed
+
+- **`extract_geomorphic_parameters`** keeps the string `relief_flag` ("relief_unavailable:...") as text and adds a `RELIEF_UNAVAILABLE` quality flag.
+- **No slope without a metric grid.** `SlopeUnavailableError` from `slope_from_dem` / `compute_twi` reaches the caller as a structured
+  `SLOPE_UNAVAILABLE` error (and `compute_twi` no longer retries the stats-only path that needs the same slope). The inundation HAND stack
+  fails closed (`DEM_REPROJECTION_FAILED`) instead of continuing on the native CRS, and the UTM zone wraps (`% 60 + 1`, longitude 180 is zone 1).
+- **`pip install aihydro-tools[all]` resolves from PyPI again.** `[all]` no longer includes `[modelling]`: `aihydro-modelling` is private and not
+  on PyPI, so `[all]` failed with `No matching distribution found for aihydro-modelling` (AGU audit C1b). `[modelling]` remains as a separate,
+  documented-private extra. The `MODELLING_NOT_INSTALLED` recovery text says the package is private and names the pinned `>= 0.6.2`.
+
+### Tests
+
+- Ported or retired the tests that patched functions removed in aihydro-watershed 0.4.0 (`merit_traverse_upstream_catchments`,
+  `merit_load_catchment_topology`, `_try_download`); their behaviour is covered by aihydro-watershed `tests/test_merit_hybrid_default.py`.
+  `ai_hydro.data.merit_download` stays a re-export shim: it emits a `DeprecationWarning` only when its functions are called (pinned in
+  `tests/test_merit_download_shim.py`). The install-alone `with-attributes` job stays `continue-on-error` until aihydro-lsh 0.4.0 is on PyPI.
 
 ## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
 
