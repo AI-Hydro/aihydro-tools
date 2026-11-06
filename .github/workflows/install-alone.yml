@@ -58,11 +58,9 @@ jobs:
 
   # aihydro-tools[attributes] needs aihydro-lsh>=0.4 (the release carrying the watershed
   # 0.3.x pin), which is not on PyPI yet, so this job cannot resolve and must not block merges.
-  # RELEASE CHECKLIST: remove `continue-on-error` from this job once aihydro-lsh 0.4.0 is on PyPI.
   with-attributes:
     name: tools[attributes] co-installs with lsh (Python 3.12)
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4

@@ -42,7 +42,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   installed server through the `aihydro.tools` entry point (audit C8: zero attributes on the installed build). **Needs aihydro-lsh 0.4.0 on PyPI first**
   (0.3.0 requires `aihydro-watershed<0.3` and cannot co-install with this package); until then `[attributes]` and `[all]` do not resolve.
 - `install-alone` CI workflow: wheel-only install in a fresh venv, then the MCP server driven in-process with sockets refused (173 tools, a knowledge lookup, an
-  aihydro-data product listing, the structured `MODELLING_NOT_INSTALLED` envelope). A second job, `with-attributes`, installs `[attributes]` from PyPI and checks the `lsh_*` tools register; it is `continue-on-error` until lsh 0.4.0 is published. **Release checklist: remove `continue-on-error` from `with-attributes` once aihydro-lsh 0.4.0 is on PyPI.**
+  aihydro-data product listing, the structured `MODELLING_NOT_INSTALLED` envelope). A second job, `with-attributes`, installs `[attributes]` from PyPI and checks the `lsh_*` tools register; it is blocking now that lsh 0.4.0 is on PyPI.
 
 ### Changed
 
@@ -72,7 +72,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - Ported or retired the tests that patched functions removed in aihydro-watershed 0.4.0 (`merit_traverse_upstream_catchments`,
   `merit_load_catchment_topology`, `_try_download`); their behaviour is covered by aihydro-watershed `tests/test_merit_hybrid_default.py`.
   `ai_hydro.data.merit_download` stays a re-export shim: it emits a `DeprecationWarning` only when its functions are called (pinned in
-  `tests/test_merit_download_shim.py`). The install-alone `with-attributes` job stays `continue-on-error` until aihydro-lsh 0.4.0 is on PyPI.
+  `tests/test_merit_download_shim.py`). The install-alone `with-attributes` job is blocking (aihydro-lsh 0.4.0 is on PyPI).
 
 ## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
 
