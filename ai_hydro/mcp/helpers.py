@@ -1063,7 +1063,7 @@ def _tool_error_to_dict(e: Exception) -> dict:
 
     # No metric slope (geographic CRS, no CRS, unusable pixel size): a clear, recoverable error, never a number.
     try:
-        from aihydro_watershed.characterize._dem import SlopeUnavailableError
+        from ai_hydro.analysis._dem import SlopeUnavailableError
     except ImportError:  # pragma: no cover - aihydro-watershed < 0.4
         SlopeUnavailableError = ()  # type: ignore[assignment,misc]
     if SlopeUnavailableError and isinstance(e, SlopeUnavailableError):

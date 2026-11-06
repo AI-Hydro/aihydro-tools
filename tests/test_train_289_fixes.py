@@ -9,7 +9,7 @@ import pytest
 
 
 def test_slope_unavailable_becomes_a_structured_error():
-    from aihydro_watershed.characterize._dem import SlopeUnavailableError
+    from ai_hydro.analysis._dem import SlopeUnavailableError
 
     from ai_hydro.mcp.helpers import _tool_error_to_dict
 

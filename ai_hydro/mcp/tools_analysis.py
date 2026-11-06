@@ -988,7 +988,8 @@ def delineate_watershed_from_point(
             method=method_norm,  # type: ignore[arg-type]
             verbose=False,
             name=name,
-            allow_downstream_expansion=bool(allow_downstream_expansion),
+            # Only the non-default is passed: the router's own default stays the single source of "off".
+            **({"allow_downstream_expansion": True} if allow_downstream_expansion else {}),
         )
         d = _result_to_dict(result)
         geojson = d["data"]["geometry_geojson"]
@@ -2159,7 +2160,7 @@ async def compute_twi(
                 return d
             except Exception as viz_err:
                 # No metric slope is not a visualisation problem: the stats-only path needs the same slope.
-                from aihydro_watershed.characterize._dem import SlopeUnavailableError
+                from ai_hydro.analysis._dem import SlopeUnavailableError
                 if isinstance(viz_err, SlopeUnavailableError):
                     raise
                 log.warning(

@@ -259,7 +259,7 @@ def _prepare_hand_stack(
         acc = grid.accumulation(fdir)
         elev = np.asarray(inflated, dtype=np.float32)
 
-        from aihydro_watershed.characterize._dem import SlopeUnavailableError
+        from ai_hydro.analysis._dem import SlopeUnavailableError
 
         try:
             if _is_conus:
