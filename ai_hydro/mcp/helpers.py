@@ -1057,7 +1057,8 @@ def _tool_error_to_dict(e: Exception) -> dict:
             "MODELLING_NOT_INSTALLED",
             "This tool needs the optional aihydro-modelling package, which is not installed.",
             recovery='Install the modelling extra: pip install "aihydro-tools[modelling]" '
-                     "(requires access to aihydro-modelling >= 0.6.1).",
+                     "(aihydro-modelling is private and not on PyPI: it needs access to that "
+                     "repository, version >= 0.6.2).",
         ).to_dict())
 
     import traceback as _tb

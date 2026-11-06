@@ -1,0 +1,90 @@
+name: install-alone
+
+# Independent-usability gate (AGU ecosystem audit C1). Builds the wheel, installs
+# ONLY that wheel (plus its PyPI dependencies) into a fresh venv outside the
+# checkout, then runs one offline task through the public API/CLI with every
+# socket connection refused.
+# Task: drive the MCP server in-process (list tools, knowledge lookup, aihydro-data product listing, structured MODELLING_NOT_INSTALLED) with lsh and modelling absent.
+#
+# No sibling AI-Hydro package is installed from source; whatever this package
+# needs from the stack must resolve from PyPI. A stale cross-package pin (the
+# lsh <-> watershed conflict, for one) therefore fails here, not in a user's venv.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: install-alone-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install-alone:
+    name: Install alone (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir "$RUNNER_TEMP/dist"
+
+      - name: Install the wheel alone in a fresh venv
+        run: |
+          python -m venv "$RUNNER_TEMP/alone"
+          "$RUNNER_TEMP/alone/bin/pip" install --upgrade pip
+          "$RUNNER_TEMP/alone/bin/pip" install "$(ls "$RUNNER_TEMP"/dist/*.whl)"
+          "$RUNNER_TEMP/alone/bin/pip" check
+          "$RUNNER_TEMP/alone/bin/pip" list
+
+      - name: Run the offline task (no network, outside the checkout)
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/alone/bin/python" -I "$GITHUB_WORKSPACE/scripts/install_alone_check.py"
+
+  # aihydro-tools[attributes] needs aihydro-lsh>=0.4 (the release carrying the watershed
+  # 0.3.x pin), which is not on PyPI yet, so this job cannot resolve and must not block merges.
+  # RELEASE CHECKLIST: remove `continue-on-error` from this job once aihydro-lsh 0.4.0 is on PyPI.
+  with-attributes:
+    name: tools[attributes] co-installs with lsh (Python 3.12)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir "$RUNNER_TEMP/dist"
+
+      - name: Install the wheel with the attributes extra in a fresh venv
+        run: |
+          python -m venv "$RUNNER_TEMP/alone"
+          "$RUNNER_TEMP/alone/bin/pip" install --upgrade pip
+          "$RUNNER_TEMP/alone/bin/pip" install "$(ls "$RUNNER_TEMP"/dist/*.whl)[attributes]"
+          "$RUNNER_TEMP/alone/bin/pip" check
+          "$RUNNER_TEMP/alone/bin/pip" list
+
+      - name: Run the co-install task (no network, outside the checkout)
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/alone/bin/python" -I "$GITHUB_WORKSPACE/scripts/coinstall_attributes_check.py"

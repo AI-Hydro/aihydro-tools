@@ -277,9 +277,10 @@ Install only what you need:
 |-------|-------------|-----------------|
 | `[data]` | Streamflow, forcing, land cover, soil, CAMELS retrieval | `pip install aihydro-tools[data]` |
 | `[analysis]` | Watershed, signatures, TWI, geomorphic, curve number | `pip install aihydro-tools[analysis]` |
-| `[modelling]` | HBV-light, NeuralHydrology zoo (LSTM · EA-LSTM · hybrid · forecast), CI-aware autoresearch loop, defensibility scoring | `pip install aihydro-tools[modelling]` |
+| `[attributes]` | CAMELS-like catchment attributes (107 scalar keys + trends) through [`aihydro-lsh`](https://pypi.org/project/aihydro-lsh/); adds the `lsh_*` tools | `pip install aihydro-tools[attributes]` |
+| `[modelling]` | **Private, not on PyPI.** HBV-light, NeuralHydrology zoo (LSTM · EA-LSTM · hybrid · forecast), CI-aware autoresearch loop, defensibility scoring. Needs access to the private `aihydro-modelling` repository; without it the modelling tools return `MODELLING_NOT_INSTALLED` | `pip install aihydro-tools[modelling]` (private index/repo access required) |
 | `[viz]` | Matplotlib, Plotly, Folium visualisations | `pip install aihydro-tools[viz]` |
-| `[all]` | Everything above | `pip install aihydro-tools[all]` |
+| `[all]` | Every public extra above. **Excludes `[modelling]`** (private) so it resolves from PyPI | `pip install aihydro-tools[all]` |
 
 ### PATH Troubleshooting
 

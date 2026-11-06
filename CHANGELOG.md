@@ -36,6 +36,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `fallback_history` gets no key and its record digest is exactly what earlier versions produced (tested).
 - A failed delineation carries its trail only with an aihydro-watershed that attaches `fallback_history` to the `ToolError` (the companion
   change in that package); with an older one the failure record has the error code and summary as before.
+### Fixed
+
+- **`pip install aihydro-tools[all]` resolves from PyPI again.** `[all]` no longer includes `[modelling]`: `aihydro-modelling` is private and not
+  on PyPI, so `[all]` failed with `No matching distribution found for aihydro-modelling` (AGU audit C1b). `[modelling]` remains as a separate,
+  documented-private extra. The `MODELLING_NOT_INSTALLED` recovery text says the package is private and names the pinned `>= 0.6.2`.
+
+### Added
+
+- **`[attributes]` extra** (`aihydro-lsh>=0.4,<0.5`), also part of `[all]`: puts the 11 `lsh_*` attribute tools (107 scalar CAMELS-like keys) on the
+  installed server through the `aihydro.tools` entry point (audit C8: zero attributes on the installed build). **Needs aihydro-lsh 0.4.0 on PyPI first**
+  (0.3.0 requires `aihydro-watershed<0.3` and cannot co-install with this package); until then `[attributes]` and `[all]` do not resolve.
+- `install-alone` CI workflow: wheel-only install in a fresh venv, then the MCP server driven in-process with sockets refused (173 tools, a knowledge lookup, an
+  aihydro-data product listing, the structured `MODELLING_NOT_INSTALLED` envelope). A second job, `with-attributes`, installs `[attributes]` from PyPI and checks the `lsh_*` tools register; it is `continue-on-error` until lsh 0.4.0 is published. **Release checklist: remove `continue-on-error` from `with-attributes` once aihydro-lsh 0.4.0 is on PyPI.**
 
 ## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
 
