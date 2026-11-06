@@ -298,6 +298,7 @@ def get_data_fetch_result(job_id: str) -> dict:
                 "recovery": err.get("recovery", "Check log_path for details."),
                 "log_path": status.get("log_path"),
                 "next_tools": ["data_validate_request", "data_doctor"],
+                **({"fallback_history": err["fallback_history"]} if err.get("fallback_history") else {}),
             }
 
         # complete
@@ -312,6 +313,8 @@ def get_data_fetch_result(job_id: str) -> dict:
             "notes":          status.get("notes", []),
             "result_summary": status.get("result_summary"),
             "result_file":    status.get("result_file"),
+            "fallback_history": status.get("fallback_history") or [],
+            "cache_hit":      bool(status.get("cache_hit", False)),
             "_note": (
                 "Full result saved to result_file (parquet/netCDF). "
                 "Load with pd.read_parquet(result_file) or xr.open_dataset(result_file)."

@@ -4,6 +4,39 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Attempt trail in the sealed run record** (AGU abstract claim: "each request records the sources attempted, the source ultimately used,
+  and any limitations"). One rule in the record writer, no per-tool code: a call whose result (top level or `data`) or failure carries a
+  `fallback_history` (aihydro-data fetches, aihydro-watershed delineation) gets `extra.attempt_trail` in its record: `attempts`
+  (`source, outcome, reason`, plus `provider` when a product ran through another source), `source_used`, `limitations` (the string
+  `quality_flags`, for example `RAW_DEM_EXPERIMENTAL_FALLBACK`) and, on failure, `error_code`. It is bounded (32 attempts, 16 limitations,
+  `attempts_omitted` counts the rest), scrubbed of local paths, URL query strings and secret-shaped text, and sits inside the record seal,
+  so editing or deleting an attempt fails `record_digest` verification and `replay.py`. The capsule carries it in `run_log.json`. It is kept
+  on success and on total failure; before, only a 200-character `error_summary` survived a failed delineation and no list survived a success.
+- **Cache and reuse never claim the origin's attempts.** A `cache_hit` result and a reuse row get `served_from: "cache" | "reuse"`,
+  `attempts: []`, `origin_attempts` and the origin's `source_used`.
+- **Coverage.** `data_batch_fetch` has a trail per label; `data_fetch_background`'s job keeps its history, returned by `get_data_fetch_result`
+  on success and failure; `fetch_forcing_data` now surfaces the inner aihydro-data history per variable (`data.fallback_history`; before it
+  was dropped); single-source fetchers (`fetch_streamflow_data`, `fetch_camels_us`, `fetch_soil_attributes_ssurgo`, and any `acquires = true`
+  tool that declares its source) get a one-attempt `declared_source` trail; an unexpected exception that carries `fallback_history` keeps it
+  through `_tool_error_to_dict`. `docs/session-integrity.md` lists exactly which tools carry a trail and which do not (the `lsh_*` tools do not yet).
+- **`scrub_error_text` redacts more**: `file://` URLs and `~/` paths (basename only), URL userinfo, `Authorization`/`Bearer`/`Basic`, token
+  prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`, `sk-`, `xox*-`, `AKIA`/`ASIA`). It also applies to `error_summary`.
+- **Re-review fixes.** A batch result gets no `declared_source` of its own (its `product: "geomorphic"` is not a source): per-label trails only, nothing for an
+  errored label without history, and an all-failed batch never reads as served. The serving backend (`upstream.backend`) outranks the static `meta.sources` list
+  (`AIHYDRO_USGS_BACKEND=legacy_waterservices` is recorded as `legacy_waterservices`). The scrubber no longer redacts `sk-SoilGrids-250m-...`, "Basic Authentication"
+  or "Bearer authentication", and keeps query strings on DOI and scholarly-index hosts (`mailto=` is still redacted).
+- `Bearer <token>` is redacted at 16+ token characters (digit or not); `create_cn_grid`'s trail lists the land-cover source and the soil product (`data.*_product`).
+- When more than one source served a call (`create_cn_grid`: NLCD and gNATSGO; forcing: one product per variable), the trail sets `sources_used` in order and `source_used` null; a single source is unchanged.
+- **Older records.** Records written before this change have no `attempt_trail`. Absence there means "not recorded", not "no source was
+  tried"; sealed rows are insert-only and are not rewritten, so they are not backfilled, and they keep verifying. A call that reports no
+  `fallback_history` gets no key and its record digest is exactly what earlier versions produced (tested).
+- A failed delineation carries its trail only with an aihydro-watershed that attaches `fallback_history` to the `ToolError` (the companion
+  change in that package); with an older one the failure record has the error code and summary as before.
+
 ## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
 
 Extension 0.4.7 reads the trace facts and layer aliases this release adds; with older tools its trace card reads "not recorded".

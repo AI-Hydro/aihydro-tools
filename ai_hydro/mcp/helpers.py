@@ -1063,7 +1063,7 @@ def _tool_error_to_dict(e: Exception) -> dict:
     import traceback as _tb
     log.error("unexpected tool error: %s\n%s", e, _tb.format_exc(limit=8))
 
-    return sanitize_error({
+    envelope = {
         "error":      True,
         "code":       "UNEXPECTED_ERROR",
         "message":    str(e) or repr(e),
@@ -1074,7 +1074,11 @@ def _tool_error_to_dict(e: Exception) -> dict:
         ),
         "next_tools": ["aihydro_describe_capability", "data_doctor"],
         "docs_anchor": "",
-    })
+    }
+    history = getattr(e, "fallback_history", None)       # the tiers tried before an unexpected failure
+    if isinstance(history, (list, tuple)) and history:
+        envelope["fallback_history"] = [dict(h) for h in history if isinstance(h, dict)]
+    return sanitize_error(envelope)
 
 
 def _cached_response(slot: str, session, *, extra: dict | None = None) -> dict:

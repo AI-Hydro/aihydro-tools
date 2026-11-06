@@ -38,6 +38,12 @@ Limits of the seal (read before relying on a record):
   the caller sent them.
 - ``output_digest`` covers what the caller received (``result["data"]``), not
   arrays a tool read from or wrote to disk.
+- ``extra.attempt_trail`` is the attempt trail: which sources a call tried (each with its outcome and
+  reason), which one served it, and the limitations it reported (``quality_flags``), on success and on failure
+  (see ``attempt_trail``). It lives in ``extra``, so the record seal covers it. Records written by earlier
+  versions have no such key; absence there means "not recorded", never "no source was tried". Sealed rows are
+  insert-only and are not rewritten, so they are not backfilled. A call that reports no ``fallback_history``
+  gets no key, and its record digest is the one earlier versions produced.
 
 ``build_run_record`` never raises. When a digest cannot be computed the record
 is still sealed, the digest is ``None`` and ``record_error`` says why.
@@ -755,18 +761,306 @@ def note_session_resolution(rule: str) -> None:
         capture.notes.setdefault("session_resolution", rule)
 
 
-_URL_QUERY = re.compile(r"\?[^\s\"']*")
+_URL_QUERY = re.compile(r"(?P<url>https?://(?P<host>[^/\s?\"'#]+)[^\s?\"']*)?\?[^\s\"']*", re.IGNORECASE)
+#: Hosts whose query strings are citation identifiers, not credentials (DOI resolvers and scholarly indexes).
+_CITATION_HOSTS = frozenset({
+    "doi.org", "dx.doi.org", "api.crossref.org", "crossref.org", "api.openalex.org", "openalex.org",
+    "api.semanticscholar.org", "arxiv.org", "export.arxiv.org", "eutils.ncbi.nlm.nih.gov", "pubmed.ncbi.nlm.nih.gov",
+})
+_MAILTO = re.compile(r"(\bmailto=)[^&\s\"']+", re.IGNORECASE)
 _SECRET_ASSIGN = re.compile(r"(\b[\w-]*(?:key|token|secret|credential|password)[\w-]*\s*[=:]\s*)[^\s,;\"']+", re.IGNORECASE)
+_FILE_URL = re.compile(r"\bfile://[^\s\"']*", re.IGNORECASE)
+_HOME_PATH = re.compile(r"(?<![\w/.:~-])~/[^\s\"',;/]+/[^\s\"',;]+")     # ~/dir/.../file: directories dropped (~/file stays)
+_AUTH_HEADER = re.compile(r"(\b(?:proxy-)?authorization\s*[:=]\s*)(?:(?:bearer|basic|token)\s+)?[^\s,;\"']+", re.IGNORECASE)
+#: A bare ``Bearer <token>`` is redacted when the body is 16+ characters of ``[A-Za-z0-9._~+/=-]`` (digit or not), or 8+
+#: with a digit. Accepted pass-throughs (not redacted, by design): plain short words ("Bearer authentication"), a bare
+#: ``Basic`` outside an Authorization header ("Basic Authentication"), a short ``sk-`` with punctuation
+#: (``sk-SoilGrids-250m-clay``), and ``?sig=``/any query string on a citation host (doi.org, crossref, ...).
+_BEARER = re.compile(
+    r"\b(bearer)\s+(?:(?=[A-Za-z0-9._~+/=-]*[0-9])[A-Za-z0-9._~+/=-]{8,}|[A-Za-z0-9._~+/=-]{16,})", re.IGNORECASE)
+_URL_USERINFO = re.compile(r"\b([a-z][a-z0-9+.-]*://)[^/\s:@\"']+:[^/\s@\"']+@", re.IGNORECASE)
+#: Known key prefixes. An ``sk-`` key has a single unbroken base62 body of 20+ characters (or a ``proj``/``ant``/``live``/
+#: ``test`` segment before it), so a product name such as ``sk-SoilGrids-250m-clay`` is not a key.
+_TOKEN_PREFIX = re.compile(
+    r"(?<![\w-])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"|sk-(?:(?:proj|ant|live|test)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{20,})"
+    r"|xox[abprs]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16})"
+)
+
+
+def _redact_query(m: "re.Match") -> str:
+    host = (m.group("host") or "").lower().rsplit("@", 1)[-1].split(":")[0]
+    if host in _CITATION_HOSTS:
+        return m.group(0)
+    return (m.group("url") or "") + "?<redacted>"
 
 
 def scrub_error_text(text: Any, limit: int = 200, workspace_dir: Any = None) -> str:
-    """Error text safe to keep in a row: absolute paths replaced by refs,
-    URL query strings and secret-shaped assignments redacted, truncated."""
+    """Error text safe to keep in a row: absolute paths (also ``file://`` URLs and ``~/`` paths, kept only as a
+    basename), URL query strings, URL userinfo (``user:pw@``), ``Authorization``/``Bearer`` credentials, known
+    token prefixes (``ghp_``, ``gho_``, ``sk-``, ``xox``, ``AKIA``) and secret-shaped assignments redacted, truncated.
+    One scrubber for every error text and attempt reason a record keeps (``error_summary`` included)."""
     from ai_hydro.session.refs import scrub_paths
 
-    out = _URL_QUERY.sub("?<redacted>", scrub_paths(str(text), workspace_dir))
+    out = str(text)
+    out = _AUTH_HEADER.sub(r"\1<redacted>", out)
+    out = _BEARER.sub(r"\1 <redacted>", out)
+    out = _URL_USERINFO.sub(r"\1<redacted>@", out)
+    out = _TOKEN_PREFIX.sub("<redacted>", out)
+    out = _FILE_URL.sub(lambda m: "file://<path>/" + m.group(0).rstrip("/").rsplit("/", 1)[-1], out)
+    out = scrub_paths(out, workspace_dir)
+    out = _HOME_PATH.sub(lambda m: "~/<path>/" + m.group(0).rstrip("/").rsplit("/", 1)[-1], out)
+    out = _URL_QUERY.sub(_redact_query, out)
+    out = _MAILTO.sub(r"\1<redacted>", out)
     out = _SECRET_ASSIGN.sub(r"\1<redacted>", out)
     return out[:limit]
+
+
+#: Bounds on the attempt trail kept in a record (a record is small and sealed; a runaway history must not bloat it).
+MAX_TRAIL_ATTEMPTS = 32
+MAX_TRAIL_LIMITATIONS = 16
+MAX_TRAIL_LABELS = 64
+_CACHE_FLAGS = ("cache_hit", "_cache_hit", "_cached")
+
+
+def _history_in(holder: Any) -> Optional[List[Any]]:
+    """A ``fallback_history`` list of a result dict: top level, ``data`` or ``details``."""
+    if not isinstance(holder, dict):
+        return None
+    for h in (holder, holder.get("data"), holder.get("details")):
+        history = h.get("fallback_history") if isinstance(h, dict) else None
+        if isinstance(history, (list, tuple)) and history:
+            return list(history)
+    return None
+
+
+def _history_of(result: Any, failure: Optional[BaseException]) -> Optional[List[Any]]:
+    """The ``fallback_history`` a result or a failure carries (error ``details``, or an attribute on the exception)."""
+    found = _history_in(result)
+    if found:
+        return found
+    for holder in (getattr(failure, "details", None), {"fallback_history": getattr(failure, "fallback_history", None)}):
+        found = _history_in(holder)
+        if found:
+            return found
+    return None
+
+
+def _is_batch(result: Any) -> bool:
+    """A batch result: ``batch: true`` or ``results``/``errors`` keyed by label."""
+    return isinstance(result, dict) and (
+        result.get("batch") is True
+        or isinstance(result.get("results"), dict) or isinstance(result.get("errors"), dict))
+
+
+def _per_label(result: Any) -> Dict[str, Any]:
+    """``{label: result-or-error dict}`` of a batch (``results`` and ``errors`` keyed by label), else ``{}``."""
+    out: Dict[str, Any] = {}
+    if isinstance(result, dict):
+        for key in ("results", "errors"):
+            group = result.get(key)
+            if isinstance(group, dict):
+                for label, item in group.items():
+                    if isinstance(item, dict):
+                        out.setdefault(str(label), item)
+    return out
+
+
+def _limitations_of(result: Any) -> List[str]:
+    """String quality flags a result reports (delineation: ``data.quality_flags``). Validator dicts are not limitations."""
+    found: List[str] = []
+    if isinstance(result, dict):
+        for holder in (result.get("data"), result):
+            flags = holder.get("quality_flags") if isinstance(holder, dict) else None
+            if isinstance(flags, (list, tuple)):
+                found.extend(f for f in flags if isinstance(f, str) and f.strip())
+    return list(dict.fromkeys(found))
+
+
+def _real_name(value: Any) -> Optional[str]:
+    return value.strip() if isinstance(value, str) and value.strip() and value.strip().lower() != "unknown" else None
+
+
+def _data_products(data: Dict[str, Any]) -> List[str]:
+    """Distinct product names in ``data``'s ``*_product`` keys (``landcover_product``, ``soil_product``)."""
+    return [n for n in dict.fromkeys(
+        _real_name(v) for k, v in data.items() if isinstance(k, str) and k.endswith("_product")) if n]
+
+
+def _declared_sources(result: Any) -> List[Dict[str, str]]:
+    """The source(s) a successful result declares itself: one served entry each, or ``[]`` (no declared source).
+
+    In order of preference, the first that names anything wins: top-level ``product``/``source``
+    (``get_data_fetch_result``, forcing), ``meta.product``/``meta.source`` (soil, CAMELS), ``data.source``,
+    HydroResult ``meta.sources[*].name`` (streamflow) and ``meta.upstream.backend``. A joined ``"A | B"`` value is
+    several sources.
+    """
+    if not isinstance(result, dict):
+        return []
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    upstream = meta.get("upstream") if isinstance(meta.get("upstream"), dict) else {}
+    listed = [_real_name(i.get("name")) for i in (meta.get("sources") if isinstance(meta.get("sources"), list) else [])
+              if isinstance(i, dict)]
+    data_upstream = data.get("upstream") if isinstance(data.get("upstream"), dict) else {}
+    data_products = _data_products(data)
+    pairs: List[Tuple[List[str], Optional[str]]] = [
+        ([_real_name(result.get("product")) or ""], _real_name(result.get("source"))),
+        ([_real_name(meta.get("product")) or ""], _real_name(meta.get("source"))),
+        # data-level products ("landcover_product", "soil_product", ...) are each a declared source; ``data.source``
+        # is the provider of the one that is ``data.product``, or its own entry when none matches.
+        (data_products, _real_name(data.get("source"))),
+        # The backend that actually served the call outranks the static list of sources a tool declares
+        # (streamflow with AIHYDRO_USGS_BACKEND=legacy_waterservices still lists the Water Data API).
+        ([""], _real_name(data_upstream.get("backend")) or _real_name(upstream.get("backend"))),
+        ([n for n in listed if n], None),
+    ]
+    for products, source in pairs:
+        names = [p for p in products if p] or ([source] if source else [])
+        names = [n.strip() for name in names for n in name.split("|") if n.strip()]
+        if not names:
+            continue
+        out: List[Dict[str, str]] = []
+        for n in dict.fromkeys(names):
+            row = {"product": n, "outcome": "served", "reason": ""}
+            if source and source != n and any(products):
+                if products is not data_products or n == _real_name(data.get("product")):
+                    row["source"] = source
+            out.append(row)
+        return out
+    return []
+
+
+def _acquires(tool: Optional[str]) -> bool:
+    """True for a tool annotated ``acquires = true`` (it fetches external data), from the annotation table."""
+    if not tool:
+        return False
+    try:
+        from ai_hydro.session.lineage import _annotation_classes
+
+        return tool in _annotation_classes()[0]
+    except Exception:
+        return False
+
+
+def _normalize(history: List[Any], workspace_dir: Any):
+    """``(attempts, source_used, omitted)`` of a history: ``{source, outcome, reason}`` rows, scrubbed and bounded."""
+    attempts: List[Dict[str, str]] = []
+    used: List[str] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("product") or item.get("method") or item.get("source") or "unknown"
+        row: Dict[str, str] = {
+            "source": scrub_error_text(name, limit=80, workspace_dir=workspace_dir),
+            "outcome": scrub_error_text(item.get("outcome") or "unknown", limit=40, workspace_dir=workspace_dir),
+            "reason": scrub_error_text(item.get("reason") or "", workspace_dir=workspace_dir),
+        }
+        provider = item.get("source")
+        if item.get("product") and isinstance(provider, str) and provider and provider != item.get("product"):
+            row["provider"] = scrub_error_text(provider, limit=80, workspace_dir=workspace_dir)
+        if isinstance(item.get("variable"), str) and item["variable"]:
+            row["variable"] = scrub_error_text(item["variable"], limit=80, workspace_dir=workspace_dir)
+        if row["outcome"] == "served" or row["outcome"].startswith("succeeded"):
+            used.append(row["source"])
+        attempts.append(row)
+    return attempts[:MAX_TRAIL_ATTEMPTS], list(dict.fromkeys(used)), max(0, len(attempts) - MAX_TRAIL_ATTEMPTS)
+
+
+def attempt_trail(result: Any, failure: Optional[BaseException] = None, workspace_dir: Any = None, *,
+                  tool: Optional[str] = None, served_from: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """The attempt trail of one call, or ``None`` when the call reports no source information.
+
+    One general rule for every tool, success or failure.
+
+    - ``basis: "fallback_history"``: the result (top level or ``data``) or the failure (``details`` or an
+      attribute) carries a ``fallback_history`` (aihydro-data fetches, aihydro-watershed delineation, forcing).
+      Each entry is kept as ``{source, outcome, reason}`` (plus ``provider`` and ``variable``), in order, at most
+      ``MAX_TRAIL_ATTEMPTS`` (``attempts_omitted`` counts the rest). ``reason`` is scrubbed (``scrub_error_text``).
+    - ``basis: "declared_source"``: a successful call of a tool annotated ``acquires = true`` whose result declares
+      its source (``product``/``source``, ``data.source``, ``meta.sources``, ``meta.upstream.backend``) and no
+      history: one served attempt. That is the declared source, not a recorded chain of attempts.
+    - A batch fetch (``results``/``errors`` keyed by label) gets one trail per label under ``labels``.
+    - ``source_used``: the one source that served, else ``None``; when more than one served, ``sources_used`` lists them
+      in order and ``source_used`` is ``None``. ``limitations``: the string ``quality_flags``.
+      ``error_code``: the failure's code.
+    - ``served_from``: ``"cache"`` (the result says ``cache_hit``) or ``"reuse"`` (the record is a reuse row).
+      Then ``attempts`` is empty, the origin's attempts are ``origin_attempts``, and ``source_used`` is the
+      origin's. A cache or reuse hit never presents the origin's attempts as this call's.
+
+    Returns ``None`` when there is nothing to record, so such a call's record (and digest) is unchanged.
+    """
+    ws = workspace_dir() if callable(workspace_dir) else workspace_dir
+    if _is_batch(result):
+        # A batch never takes a trail of its own (``product: "geomorphic"`` is not a source). Each label carries
+        # its own: its history, or the source its own result declares; an errored label never reads as served.
+        labels = _per_label(result)
+        per: Dict[str, Any] = {}
+        for label, item in list(labels.items())[:MAX_TRAIL_LABELS]:
+            sub = attempt_trail(item, None, ws, tool=tool, served_from=served_from)
+            if sub:
+                per[scrub_error_text(label, limit=80, workspace_dir=ws)] = sub
+        if not per:
+            return None
+        trail: Dict[str, Any] = {"basis": "fallback_history", "labels": per}
+        if len(labels) > MAX_TRAIL_LABELS:
+            trail["labels_omitted"] = len(labels) - MAX_TRAIL_LABELS
+        return trail
+
+    history = _history_of(result, failure)
+    basis = "fallback_history"
+    ok = failure is None and not (isinstance(result, dict) and result.get("error"))
+    if not history:
+        if not (ok and _acquires(tool)):
+            return None
+        history = _declared_sources(result)
+        basis = "declared_source"
+        if not history:
+            return None
+    attempts, served, omitted = _normalize(history, ws)
+    if not attempts:
+        return None
+    # One source served: ``source_used``. Several served (a call that used more than one source, such as land cover
+    # plus soil, or one product per variable): ``sources_used`` in order and ``source_used`` null, never "the last".
+    used = served[0] if len(served) == 1 else None
+    many = {"sources_used": served} if len(served) > 1 else {}
+    flags = [scrub_error_text(f, limit=80, workspace_dir=ws) for f in _limitations_of(result)[:MAX_TRAIL_LIMITATIONS]]
+    cache_hit = isinstance(result, dict) and any(
+        result.get(k) is True or (isinstance(result.get("data"), dict) and result["data"].get(k) is True)
+        for k in _CACHE_FLAGS)
+    origin = served_from or ("cache" if cache_hit and ok else None)
+    if origin:
+        trail = {"basis": basis, "served_from": origin, "attempts": [], "origin_attempts": attempts,
+                 "source_used": used, **many, "limitations": flags}
+    else:
+        trail = {"basis": basis, "attempts": attempts, "source_used": used, **many, "limitations": flags}
+    if omitted:
+        trail["attempts_omitted"] = omitted
+    code = result.get("code") if isinstance(result, dict) else None
+    code = code or getattr(failure, "code", None)
+    if isinstance(code, str) and code and not ok:
+        trail["error_code"] = scrub_error_text(code, limit=80, workspace_dir=ws)
+    return trail
+
+
+def _origin_trail(session_id: str, origin_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The reuse row's origin's ``extra.attempt_trail`` as a reuse trail (its attempts become ``origin_attempts``)."""
+    if not origin_id:
+        return None
+    try:
+        from ai_hydro.session import store
+
+        row = store._run_log_read_one(session_id, origin_id)
+        t = (((row or {}).get("record") or {}).get("extra") or {}).get("attempt_trail")
+    except Exception:
+        return None
+    if not isinstance(t, dict) or "labels" in t:
+        return None
+    return {"basis": t.get("basis", "fallback_history"), "served_from": "reuse", "attempts": [],
+            "origin_attempts": list(t.get("origin_attempts") or t.get("attempts") or []),
+            "source_used": t.get("source_used"),
+            **({"sources_used": list(t["sources_used"])} if t.get("sources_used") else {}),
+            "limitations": list(t.get("limitations") or []), "derived_from": origin_id}
 
 
 def recorded_call(tool: str, fn: Callable[..., Any], /, **kwargs: Any) -> Any:
@@ -1144,6 +1438,21 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
     if output_bytes is not None and output_bytes > MAX_DIGEST_BYTES:
         skip_reason = f"{output_bytes} bytes exceeds {MAX_DIGEST_BYTES}"
 
+    trail: Optional[Dict[str, Any]] = None
+    try:
+        def _ws() -> Any:
+            try:
+                return store.HydroSession.load(session_id).workspace_dir
+            except Exception:
+                return None
+
+        is_reuse = bool(reuse_ctx and created)
+        trail = attempt_trail(result, failure, _ws, tool=tool, served_from="reuse" if is_reuse else None)
+        if trail is None and is_reuse:
+            trail = _origin_trail(session_id, reuse_ctx["origin_id"])
+    except Exception as exc:  # the trail is additive: never cost the record
+        log.warning("attempt trail skipped for %s: %s", tool, exc)
+
     problems: List[str] = []
     run_ids: List[str] = []
     for sid, rid, writer in rows:
@@ -1172,6 +1481,8 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         if any(v != sid for v in requested):
             extra["context_mismatch"] = True
         extra.update(capture.notes)
+        if trail is not None:
+            extra["attempt_trail"] = trail
         if reuse_ctx and created:
             extra.update(reused=True, derived_from=reuse_ctx["origin_id"],
                          computed_at=reuse_ctx["computed_at"], origin_match=reuse_ctx["how"])

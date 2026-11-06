@@ -65,6 +65,10 @@ class DataFetchRunner(BaseJobRunner):
         """Base error plus ``terminal``: True for a final identity/integrity refusal
         (TerminalSourceError), False for a transient "could not look"; absent otherwise."""
         err = super()._extract_error(exc)
+        details = getattr(exc, "details", None)
+        history = details.get("fallback_history") if isinstance(details, dict) else None
+        if isinstance(history, (list, tuple)) and history:      # the products the job tried before it failed
+            err["fallback_history"] = [dict(h) for h in history if isinstance(h, dict)]
         try:
             from aihydro_data.exceptions import SourceUnavailable, TerminalSourceError
             if isinstance(exc, TerminalSourceError):
@@ -145,6 +149,9 @@ class DataFetchRunner(BaseJobRunner):
             "citation":       result.citation,
             "next_steps":     result.next_steps,
             "notes":          result.notes,
+            "fallback_history": [dict(h) for h in (getattr(result, "fallback_history", None) or [])
+                                 if isinstance(h, dict)],
+            "cache_hit":      bool(getattr(result, "cache_hit", False)),
         }
 
 

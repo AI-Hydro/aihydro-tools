@@ -154,3 +154,51 @@ A comparison claim whose cited interval has no readable `scope` and for which fo
 NSE) is refused as `interval_scope_gate`: the interval's coverage is unknown. Standalone `source="signatures"` validators accept
 `run_id` / `feature` / `series_digest`; with several stored signatures results and none of them the call is
 `ambiguous_signatures_result` (teaching error, candidates listed).
+
+## Attempt trail (`extra.attempt_trail`)
+
+A record names which sources a call tried, which one served it, and the limitations it reported, on success and on failure. The trail is
+sealed with the record (inside `record_digest`) and travels in the capsule's `run_log.json`; `replay.py` fails if an attempt is edited or
+removed. It is built in one place (`run_records.attempt_trail`). A call that yields no trail has no key and its digest is unchanged.
+Records from before this feature have no key: read absence as "not recorded", never as "no fallback happened". They are not backfilled
+(sealed rows are insert-only).
+
+**Shape.** `basis` is `fallback_history` (a recorded chain) or `declared_source` (one served attempt taken from the result's own declared
+source; it is not a record of a chain). `attempts` are `{source, outcome, reason}` (plus `provider`, `variable`), at most 32
+(`attempts_omitted` counts the rest); `source_used` (the one source that served); when more than one source served (land cover plus soil in `create_cn_grid`, or one
+product per variable in forcing) `sources_used` lists them in order and `source_used` is null, never "the last one"; `limitations` (the tool's string `quality_flags`, at most 16); `error_code` on failure.
+A batch result (`batch: true`, or `results`/`errors` keyed by label) never takes a trail of its own, so a batch's `product: "geomorphic"`
+is not read as a source: each label carries its own (its history, or the source its own result declares), under `labels`. An errored label
+without a history has no trail, and an all-failed batch has none at all; it never reads as served.
+
+**Cache and reuse.** A result that says `cache_hit`, and a record-level reuse row (`extra.reused`), do not claim the origin's attempts:
+`served_from` is `"cache"` or `"reuse"`, `attempts` is empty, the origin's attempts are `origin_attempts` and `source_used` is the origin's.
+
+**Declared sources are ranked.** The backend that served the call (`upstream.backend`, for streamflow `usgs_waterdata` or
+`legacy_waterservices`) outranks the static `meta.sources` list, which names the Water Data API whichever backend ran.
+
+**Scrubbing.** Every reason, flag and `error_summary` goes through `scrub_error_text`: local paths, `file://` URLs and `~/` paths (basename only),
+URL query strings (kept on DOI and scholarly-index hosts such as doi.org, crossref, OpenAlex, arXiv) and userinfo, `Authorization` headers,
+a `Bearer` token (16+ token characters, or 8+ with a digit; plain short words such as "Bearer authentication" stay), token prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`,
+`xox*-`, `AKIA`/`ASIA`, and `sk-` only with an unbroken 20+ character base62 body or a `proj`/`ant`/`live`/`test` segment, so `sk-SoilGrids-250m-clay`
+stays), `mailto=` and secret-shaped assignments are redacted; 200 characters.
+
+**Which tools carry a trail (by what they return; tested by shape):**
+
+| Tool | Trail |
+|---|---|
+| `data_fetch` | `fallback_history` (success, cache hit, failure through `details`) |
+| `data_batch_fetch` | per-label `fallback_history` (`results[label]`, `errors[label]`) |
+| `get_data_fetch_result` | `fallback_history` the job kept (success and failure) |
+| `delineate_watershed_from_point` | `fallback_history`; on failure needs aihydro-watershed with the attempt-trail change (PR AI-Hydro/aihydro-watershed#7). Tiers recorded: small catchment, NLDI (failed, skipped, served), MERIT tiers, raw DEM (served, rejected, failed). A non-`ToolError` exception also carries it |
+| `fetch_forcing_data` | `fallback_history` per variable (inner aihydro-data history, and each variable that failed); cache hit as `served_from: cache` |
+| `fetch_streamflow_data`, `fetch_camels_us`, `fetch_soil_attributes_ssurgo` | `declared_source`: one attempt from `meta.sources`/`meta.source`/`meta.product` |
+| any other tool annotated `acquires = true` | `declared_source` only if its successful result declares `product`/`source`, `meta.product`/`meta.source`, `data.source` (with every `data.*_product`, so `create_cn_grid` lists its land-cover and its soil product), `data.upstream.backend`/`meta.upstream.backend` or `meta.sources` |
+
+**Which tools do not (gaps):** `data_fetch_background` (it only starts a job; the trail is on `get_data_fetch_result`); the `lsh_*` tools
+(aihydro-lsh carries no `fallback_history`; to be done with the lsh work); `merit_ensure_*`, `compute_twi`, `create_cn_grid`,
+`compute_drought_index`, `compute_spectral_index`, `gee.extract_timeseries`, `map_flood_inundation*`, `run_experiment`,
+`extract_geomorphic_parameters` and `delineate_watershed` unless their result carries one of the fields above (none was found to by
+reading their code; `delineate_watershed` returns a `source` that names the gauge service, which only counts for an acquirer that
+returns it at the top level or in `data.source`). Non-acquiring tools never get a derived trail. A call whose failure carries no
+`fallback_history` (for example a `delineate_watershed_from_point` failure with an older aihydro-watershed) keeps only its error code and summary.
