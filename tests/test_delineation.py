@@ -25,7 +25,6 @@ from ai_hydro.analysis.delineation.merit_flowdir_pipeline import (
     merit_build_offline_snap_cache,
     merit_basins_hybrid_delineate,
     merit_dir_to_pyflwdir,
-    merit_traverse_upstream_catchments,
     snap_outlet_on_merit,
     validate_area,
     validate_snap,
@@ -156,14 +155,15 @@ def test_bbox_from_point_is_centered():
 
 
 def test_snap_outlet_nldi_conus():
+    """Offline: the snap uses watershed's own hydrolocation request (not pynhd's)."""
+    from aihydro_watershed.delineation import nldi_point as nl
     from ai_hydro.analysis.delineation.nldi_point import snap_outlet_nldi
 
     lat, lon = 35.03, -120.48
-    snapped = gpd.GeoDataFrame(geometry=[Point(-120.479, 35.031)], crs=4326)
-    with patch("pynhd.NLDI") as client:
-        client.return_value.comid_byloc.return_value = snapped
+    hit = nl.HydrolocationHit(comid=1, lon=-120.479, lat=35.031)
+    with patch.object(nl, "hydrolocation_comid", return_value=hit) as call:
         lat2, lon2, ok = snap_outlet_nldi(lat, lon)
-        client.return_value.comid_byloc.assert_called_once_with((lon, lat))
+        call.assert_called_once_with(lon, lat)
     assert ok
     assert (lat2, lon2) == (35.031, -120.479)
 
@@ -209,15 +209,17 @@ def test_routing_region_cache_flowdir_only_ready(tmp_path):
     assert status.required_assets == ("flowdir",)
 
 
-def test_basins_region_cache_requires_catchments_without_flowdir_or_accum(tmp_path):
+def test_basins_region_cache_ignores_legacy_shapefiles_without_flowdir_or_accum(tmp_path):
+    """Legacy ``shp/`` layouts are reported but never read: only verified ``basins##.db``/``rivers##.db`` count."""
     mgr = MeritDataManager(root=tmp_path)
     river_dir = tmp_path / "shp" / "merit_rivers"
     river_dir.mkdir(parents=True)
     (river_dir / "riv_pfaf_45_MERIT_Hydro_v07_Basins_v01.shp").write_bytes(b"river")
 
     status = mgr.ensure_basins_region("45", acquisition_policy="check_only")
-    assert status.rivers_ready
+    assert not status.rivers_ready
     assert not status.catchments_ready
+    assert status.legacy_layout_found
     assert status.acquisition_required
     assert status.license
     assert status.citation
@@ -226,9 +228,11 @@ def test_basins_region_cache_requires_catchments_without_flowdir_or_accum(tmp_pa
 
 
 def test_basins_region_check_only_never_downloads(tmp_path):
-    mgr = MeritDataManager(root=tmp_path)
-    with patch.object(mgr, "_try_download", side_effect=AssertionError("download not allowed")):
-        status = mgr.ensure_basins_region("45", acquisition_policy="check_only")
+    def opener(url, headers=None):  # the injected opener replaces the removed _try_download seam
+        raise AssertionError("download not allowed")
+
+    mgr = MeritDataManager(root=tmp_path, opener=opener)
+    status = mgr.ensure_basins_region("45", acquisition_policy="check_only")
     assert not status.catchments_ready
     assert status.acquisition_policy == "check_only"
 
@@ -449,117 +453,12 @@ def test_local_merit_scientific_mode_allows_caution_band(tmp_path, monkeypatch):
     assert result.safe_envelope_version == MERIT_SAFE_ENVELOPE_VERSION
 
 
-def test_merit_basins_topology_traversal_synthetic():
-    gdf = gpd.GeoDataFrame(
-        {
-            "_aihydro_catchment_id": ["1", "2", "3", "4"],
-            "_aihydro_downstream_id": ["0", "1", "1", "2"],
-        },
-        geometry=[
-            box(0, 0, 1, 1),
-            box(0, 1, 1, 2),
-            box(1, 1, 2, 2),
-            box(0, 2, 1, 3),
-        ],
-        crs=4326,
-    )
-    upstream = merit_traverse_upstream_catchments("1", gdf)
-    assert set(upstream) == {"1", "2", "3", "4"}
-    assert upstream[0] == "1"
-
-
-def test_merit_load_catchment_topology_merges_river_topology(tmp_path):
-    catch_dir = tmp_path / "shp" / "merit_catchments"
-    river_dir = tmp_path / "shp" / "merit_rivers"
-    catch_dir.mkdir(parents=True)
-    river_dir.mkdir(parents=True)
-    catch = gpd.GeoDataFrame(
-        {"COMID": [1, 2], "unitarea": [1.0, 1.0]},
-        geometry=[box(0, 0, 1, 1), box(0, 1, 1, 2)],
-        crs=4326,
-    )
-    rivers = gpd.GeoDataFrame(
-        {"COMID": [1, 2], "NextDownID": [0, 1], "uparea": [2.0, 1.0]},
-        geometry=[Point(0.5, 0.5), Point(0.5, 1.5)],
-        crs=4326,
-    )
-    catch.to_file(catch_dir / "cat_pfaf_77_MERIT_Hydro_v07_Basins_v01.shp")
-    rivers.to_file(river_dir / "riv_pfaf_77_MERIT_Hydro_v07_Basins_v01.shp")
-
-    with patch("aihydro_watershed.merit.merit_manager.MeritDataManager") as MockMgr:
-        inst = MockMgr.return_value
-        inst.catchment_shapefile_path.return_value = (
-            catch_dir / "cat_pfaf_77_MERIT_Hydro_v07_Basins_v01.shp"
-        )
-        inst.river_shapefile_path.return_value = (
-            river_dir / "riv_pfaf_77_MERIT_Hydro_v07_Basins_v01.shp"
-        )
-        from ai_hydro.analysis.delineation.merit_flowdir_pipeline import (
-            merit_load_catchment_topology,
-        )
-
-        topology = merit_load_catchment_topology("77")
-
-    assert "_aihydro_downstream_id" in topology.columns
-    assert topology.loc[topology["_aihydro_catchment_id"] == "2", "_aihydro_downstream_id"].iloc[0] == "1"
-    assert "uparea" in topology.columns
-
-
-@patch("aihydro_watershed.delineation.merit_flowdir_pipeline._refine_terminal_catchment_with_flowdir")
-@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_load_catchment_topology")
-@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
-@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_basins_region_cache")
-@patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_resolve_pfaf_region")
-def test_merit_basins_hybrid_assembles_topology_and_refines_terminal(
-    mock_pfaf,
-    mock_basins_cache,
-    mock_routing_cache,
-    mock_load,
-    mock_refine,
-):
-    catchments = gpd.GeoDataFrame(
-        {
-            "_aihydro_catchment_id": ["1", "2", "3"],
-            "_aihydro_downstream_id": ["0", "1", "1"],
-        },
-        geometry=[
-            box(0, 0, 1, 1),
-            box(0, 1, 1, 2),
-            box(1, 1, 2, 2),
-        ],
-        crs=4326,
-    )
-    local_gdf = gpd.GeoDataFrame(geometry=[box(0.25, 0.25, 0.75, 0.75)], crs=4326)
-    mock_pfaf.return_value = "77"
-    mock_basins_cache.return_value = {"catchments_ready": True}
-    mock_routing_cache.return_value = {"flowdir_ready": True}
-    mock_load.return_value = catchments
-    mock_refine.return_value = local_gdf
-    snap_reference = MeritSnapReference(
-        snap=MeritSnap(
-            lat=0.5,
-            lon=0.5,
-            row=0,
-            col=0,
-            distance_m=5.0,
-            snapped_upa_km2=250.0,
-            snap_quality="gee_official",
-        ),
-        source="gee",
-        cache_key="snap",
-        bbox=(0, 0, 1, 1),
-        official_merit_upa_km2=250.0,
-    )
-
-    result = merit_basins_hybrid_delineate(0.5, 0.5, snap_reference=snap_reference)
-    assert result.execution_mode == "local_vector_topology_terminal_raster_refinement"
-    assert result.terminal_catchment_id == "1"
-    assert result.upstream_catchment_count == 3
-    assert result.terminal_refinement_used is True
-    assert result.area_km2 < result.vector_assembly_area_km2
-    assert result.refined_polygon_area_km2 < result.vector_assembly_area_km2
-    assert "HYBRID_ROUTING_USED" in result.quality_flags
-    assert result.safe_envelope_version == MERIT_SAFE_ENVELOPE_VERSION
+# Removed in 2.8.9: ``test_merit_basins_topology_traversal_synthetic``, ``test_merit_load_catchment_topology_merges_river_topology``
+# and ``test_merit_basins_hybrid_assembles_topology_and_refines_terminal`` exercised
+# ``merit_traverse_upstream_catchments`` / ``merit_load_catchment_topology``, which aihydro-watershed 0.4.0 replaced by the
+# hash-verified ``basins##.db`` store (``BasinsStore``). The replacement behaviour (upstream-only traversal, terminal
+# refinement, version consistency, integrity refusal) is covered by aihydro-watershed ``tests/test_merit_hybrid_default.py``
+# against a synthetic region; this package only re-exports it.
 
 
 def test_offline_snap_cache_uses_published_accum_by_default_without_deriving_upa():
@@ -814,6 +713,19 @@ def test_auto_conus_falls_back_to_raw_dem_when_nldi_and_merit_fail(
     assert result.data["workflow_steps"][-1]["step"] == "fallback_warning"
 
 
+@pytest.fixture()
+def hybrid_unavailable(monkeypatch):
+    """Global ``auto`` tries the MERIT-Basins hybrid first (aihydro-watershed 0.4.0); these tests exercise the tiers
+    after it, so the hybrid reports "not staged" instead of staging ~GB of vectors (which would touch the network)."""
+    from aihydro_watershed.delineation import merit_flowdir_pipeline as pipe
+
+    def _not_staged(*args, **kwargs):
+        raise RuntimeError("MERIT_BASINS_NOT_STAGED HYBRID_ROUTING_REQUIRED: not staged (test)")
+
+    monkeypatch.setattr(pipe, "merit_basins_hybrid_delineate", _not_staged)
+
+
+@pytest.mark.usefixtures("hybrid_unavailable")
 @patch("aihydro_watershed.delineation.pysheds_pipeline.delineate_fast")
 @patch("aihydro_watershed.delineation.merit_flowdir_pipeline.delineate_merit_gee")
 def test_auto_global_uses_merit_gee_before_raw_dem(mock_merit, mock_fast):
@@ -898,6 +810,7 @@ def test_merit_bundle_delineation_synthetic():
     assert result.snap_quality == "area_targeted"
 
 
+@pytest.mark.usefixtures("hybrid_unavailable")
 @patch("aihydro_watershed.delineation.merit_flowdir_pipeline.delineate_merit_gee")
 @patch("aihydro_watershed.delineation.merit_flowdir_pipeline.local_merit_flowdir_pyflwdir")
 @patch("aihydro_watershed.delineation.merit_flowdir_pipeline.merit_check_routing_region_cache")
@@ -1070,6 +983,11 @@ def test_delineate_from_point_fast_mock(mock_fast):
     assert result.data["method_used"] == "dem_raw_fallback"
     assert result.data["area_km2"] > 0
     assert result.data["geometry_geojson"]["type"] == "Feature"
+    from aihydro_watershed.delineation import router as _router
+
+    if hasattr(_router, "_delineate_from_point"):     # aihydro-watershed with the attempt-trail change
+        assert result.data["fallback_history"][-1]["method"] == "dem_raw_fallback"
+        assert result.data["fallback_history"][-1]["outcome"] == "served"
 
 
 def test_merit_ensure_basin_mcp_smoke(tmp_path):

@@ -4,6 +4,76 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [2.8.9] - 2026-11-06 (aihydro-watershed 0.4.0 / aihydro-lsh 0.4.0 train, attempt trail, install-alone)
+
+### Added
+
+- **Attempt trail in the sealed run record** (AGU abstract claim: "each request records the sources attempted, the source ultimately used,
+  and any limitations"). One rule in the record writer, no per-tool code: a call whose result (top level or `data`) or failure carries a
+  `fallback_history` (aihydro-data fetches, aihydro-watershed delineation) gets `extra.attempt_trail` in its record: `attempts`
+  (`source, outcome, reason`, plus `provider` when a product ran through another source), `source_used`, `limitations` (the string
+  `quality_flags`, for example `RAW_DEM_EXPERIMENTAL_FALLBACK`) and, on failure, `error_code`. It is bounded (32 attempts, 16 limitations,
+  `attempts_omitted` counts the rest), scrubbed of local paths, URL query strings and secret-shaped text, and sits inside the record seal,
+  so editing or deleting an attempt fails `record_digest` verification and `replay.py`. The capsule carries it in `run_log.json`. It is kept
+  on success and on total failure; before, only a 200-character `error_summary` survived a failed delineation and no list survived a success.
+- **Cache and reuse never claim the origin's attempts.** A `cache_hit` result and a reuse row get `served_from: "cache" | "reuse"`,
+  `attempts: []`, `origin_attempts` and the origin's `source_used`.
+- **Coverage.** `data_batch_fetch` has a trail per label; `data_fetch_background`'s job keeps its history, returned by `get_data_fetch_result`
+  on success and failure; `fetch_forcing_data` now surfaces the inner aihydro-data history per variable (`data.fallback_history`; before it
+  was dropped); single-source fetchers (`fetch_streamflow_data`, `fetch_camels_us`, `fetch_soil_attributes_ssurgo`, and any `acquires = true`
+  tool that declares its source) get a one-attempt `declared_source` trail; an unexpected exception that carries `fallback_history` keeps it
+  through `_tool_error_to_dict`. `docs/session-integrity.md` lists exactly which tools carry a trail and which do not (the `lsh_*` tools do not yet).
+- **`scrub_error_text` redacts more**: `file://` URLs and `~/` paths (basename only), URL userinfo, `Authorization`/`Bearer`/`Basic`, token
+  prefixes (`ghp_`, `gho_`, `ghu_`, `ghs_`, `github_pat_`, `sk-`, `xox*-`, `AKIA`/`ASIA`). It also applies to `error_summary`.
+- **Re-review fixes.** A batch result gets no `declared_source` of its own (its `product: "geomorphic"` is not a source): per-label trails only, nothing for an
+  errored label without history, and an all-failed batch never reads as served. The serving backend (`upstream.backend`) outranks the static `meta.sources` list
+  (`AIHYDRO_USGS_BACKEND=legacy_waterservices` is recorded as `legacy_waterservices`). The scrubber no longer redacts `sk-SoilGrids-250m-...`, "Basic Authentication"
+  or "Bearer authentication", and keeps query strings on DOI and scholarly-index hosts (`mailto=` is still redacted).
+- `Bearer <token>` is redacted at 16+ token characters (digit or not); `create_cn_grid`'s trail lists the land-cover source and the soil product (`data.*_product`).
+- When more than one source served a call (`create_cn_grid`: NLCD and gNATSGO; forcing: one product per variable), the trail sets `sources_used` in order and `source_used` null; a single source is unchanged.
+- **Older records.** Records written before this change have no `attempt_trail`. Absence there means "not recorded", not "no source was
+  tried"; sealed rows are insert-only and are not rewritten, so they are not backfilled, and they keep verifying. A call that reports no
+  `fallback_history` gets no key and its record digest is exactly what earlier versions produced (tested).
+- A failed delineation carries its trail only with an aihydro-watershed that attaches `fallback_history` to the `ToolError` (the companion
+  change in that package); with an older one the failure record has the error code and summary as before.
+- **`[attributes]` extra** (`aihydro-lsh>=0.4,<0.5`), also part of `[all]`: puts the 11 `lsh_*` attribute tools (107 scalar CAMELS-like keys) on the
+  installed server through the `aihydro.tools` entry point (audit C8: zero attributes on the installed build). **Needs aihydro-lsh 0.4.0 on PyPI first**
+  (0.3.0 requires `aihydro-watershed<0.3` and cannot co-install with this package); until then `[attributes]` and `[all]` do not resolve.
+- `install-alone` CI workflow: wheel-only install in a fresh venv, then the MCP server driven in-process with sockets refused (173 tools, a knowledge lookup, an
+  aihydro-data product listing, the structured `MODELLING_NOT_INSTALLED` envelope). A second job, `with-attributes`, installs `[attributes]` from PyPI and checks the `lsh_*` tools register; it is blocking now that lsh 0.4.0 is on PyPI.
+
+### Changed
+
+- **Requires aihydro-watershed 0.4.0** (`aihydro-watershed>=0.4.0,<0.5`). Global delineation now defaults to the MERIT-Basins hybrid on pinned,
+  SHA-256-verified `basins##.db` / `rivers##.db` (no Google Drive, no reachhydro shapefiles). `merit_ensure_basin` reports `delineator_ready` as
+  "verified `basins##.db` and `rivers##.db` staged", and its `_note` says so.
+- **`delineate_watershed_from_point`** takes `allow_downstream_expansion` (default `False`, passed to the router) and accepts `method="merit_hybrid"`
+  (alias of `merit_basins`). When NLDI cannot tell a tributary reach from a larger stem the result carries `outlet_ambiguity` and the
+  `NLDI_OUTLET_AMBIGUOUS` flag, and the `_note` says how to choose.
+- `scripts/install_merit_minimal.py` and `scripts/merit-download-basin.py` stage through `ensure_basins_region` (verified, size-checked) instead of
+  the Google Drive / delineator-clone route.
+- `test_snap_outlet_nldi_conus` patches `aihydro_watershed.delineation.nldi_point.hydrolocation_comid` (watershed now makes its own percent-encoded NLDI hydrolocation request instead of pynhd's `comid_byloc`); no live calls.
+- `delineate_watershed_from_point` docstring documents the `NLDI_OUTLET_AMBIGUOUS` quality flag (the outlet is not moved downstream without consent).
+
+### Fixed
+
+- **`extract_geomorphic_parameters`** keeps the string `relief_flag` ("relief_unavailable:...") as text and adds a `RELIEF_UNAVAILABLE` quality flag.
+- **No slope without a metric grid.** `SlopeUnavailableError` from `slope_from_dem` / `compute_twi` reaches the caller as a structured
+  `SLOPE_UNAVAILABLE` error (and `compute_twi` no longer retries the stats-only path that needs the same slope). The inundation HAND stack
+  fails closed (`DEM_REPROJECTION_FAILED`) instead of continuing on the native CRS, and the UTM zone wraps (`% 60 + 1`, longitude 180 is zone 1).
+- **`pip install aihydro-tools[all]` resolves from PyPI again.** `[all]` no longer includes `[modelling]`: `aihydro-modelling` is private and not
+  on PyPI, so `[all]` failed with `No matching distribution found for aihydro-modelling` (AGU audit C1b). `[modelling]` remains as a separate,
+  documented-private extra. The `MODELLING_NOT_INSTALLED` recovery text says the package is private and names the pinned `>= 0.6.2`.
+
+### Tests
+
+- Ported or retired the tests that patched functions removed in aihydro-watershed 0.4.0 (`merit_traverse_upstream_catchments`,
+  `merit_load_catchment_topology`, `_try_download`); their behaviour is covered by aihydro-watershed `tests/test_merit_hybrid_default.py`.
+  `ai_hydro.data.merit_download` stays a re-export shim: it emits a `DeprecationWarning` only when its functions are called (pinned in
+  `tests/test_merit_download_shim.py`). The install-alone `with-attributes` job is blocking (aihydro-lsh 0.4.0 is on PyPI).
+
 ## [2.8.8] - 2026-11-05 (subagent identity and floor, layer aliases, layer facts, model-facing path scrubbing)
 
 Extension 0.4.7 reads the trace facts and layer aliases this release adds; with older tools its trace card reads "not recorded".

@@ -639,8 +639,8 @@ def merit_ensure_basin(
     download: bool = True,
 ) -> dict:
     """
-    Ensure MERIT-Hydro vectors exist for the Pfaf basin at (lat, lon) WGS84.
-    Auto-downloads if AIHYDRO_MERIT_BASE_URL is set. Returns readiness flags.
+    Ensure verified MERIT-Basins vectors exist for the Pfaf basin at (lat, lon) WGS84.
+    With download=True, stages the SHA-256-pinned basins##.db and rivers##.db. Returns readiness flags.
     """
     try:
         from ai_hydro.data.merit_manager import MeritDataManager
@@ -660,8 +660,9 @@ def merit_ensure_basin(
             "message": status.message,
             "downloaded": status.downloaded,
             "_note": (
-                "Install MERIT vectors from https://www.reachhydro.org/home/params/merit-basins "
-                "or set AIHYDRO_MERIT_BASE_URL for automated downloads."
+                "delineator_ready is true only when the SHA-256-verified basins##.db and rivers##.db for the "
+                "region are staged under $AIHYDRO_HOME/merit; a file that fails its pin is never used. "
+                "Call with download=true to stage them (MERIT-Basins is non-commercial; cite Lin et al. 2019)."
             ),
         }
     except Exception as e:
@@ -916,13 +917,14 @@ def delineate_watershed_from_point(
     expected_area_km2: float | None = None,
     method: str = "auto",
     name: str | None = None,
+    allow_downstream_expansion: bool = False,
 ) -> dict:
     """
     Delineate a watershed from a pour point (lat/lon, EPSG:4326). Tiered:
     NLDI in CONUS, MERIT Hydro via GEE + pyflwdir globally, local MERIT
     rasters if requested, then raw DEM fallback / MERIT-Basins expert tiers.
 
-    method: auto | nldi | merit_gee | local_merit | merit_basins |
+    method: auto | nldi | merit_gee | local_merit | merit_basins (alias merit_hybrid) |
         dem_raw_fallback | small_catchment (alias 3dep)
     small_catchment: CONUS catchments under ~5 km2 such as road culverts.
         USGS 3DEP 10 m bare-earth DEM, a notch carved through the road
@@ -933,6 +935,12 @@ def delineate_watershed_from_point(
         value under 5 km2 makes auto use small_catchment first.
     session_id: optional — auto-generated from coordinates/name if not supplied.
     Returns area_km2, method_used, routing metadata, snap quality, and quality flags.
+    NLDI_OUTLET_AMBIGUOUS (quality flag): without expected_area_km2 the nearest NHDPlus
+        reach drains under 80 km2, so the point may sit on a tributary reach or on a larger
+        stem. The basin returned is the nearest reach's (the outlet is not moved downstream
+        without consent); outlet_ambiguity lists candidate COMIDs and areas. Pass
+        expected_area_km2 to choose among them, or allow_downstream_expansion=True to accept
+        the larger stem (default False).
     """
     try:
         slug = _watershed_slug(name, lat, lon)
@@ -946,6 +954,8 @@ def delineate_watershed_from_point(
             method_norm = "dem_raw_fallback"
         if method_norm == "3dep":
             method_norm = "small_catchment"
+        if method_norm == "merit_hybrid":
+            method_norm = "merit_basins"
         allowed_methods = (
             "auto",
             "nldi",
@@ -970,6 +980,8 @@ def delineate_watershed_from_point(
             method=method_norm,  # type: ignore[arg-type]
             verbose=False,
             name=name,
+            # Only the non-default is passed: the router's own default stays the single source of "off".
+            **({"allow_downstream_expansion": True} if allow_downstream_expansion else {}),
         )
         d = _result_to_dict(result)
         geojson = d["data"]["geometry_geojson"]
@@ -1032,6 +1044,14 @@ def delineate_watershed_from_point(
                 f"~{_stage_event.get('size_gb', '?')} GB. "
                 "Call merit_ensure_routing_region(pfaf_region='...', "
                 "acquisition_policy='download') to proceed, then re-delineate. "
+            )
+
+        _ambig = compact.get("outlet_ambiguity")
+        if _ambig:
+            _method_note += (
+                "NLDI_OUTLET_AMBIGUOUS: the point may sit on a tributary reach or a larger stem; the nearest "
+                "reach's basin was returned (outlet_ambiguity lists the candidates). Pass expected_area_km2 "
+                "to choose, or allow_downstream_expansion=true to accept the larger stem. "
             )
 
         resp: dict = {
@@ -1926,6 +1946,14 @@ def extract_geomorphic_parameters(
             dem_resolution=dem_resolution,
         )
         d = _result_to_dict(result)
+        # ``relief_flag`` is the one string-valued key in the parameter dict ("relief_unavailable:<reason>"):
+        # it is never coerced to a number, and it is surfaced as a quality flag so a consumer cannot read the
+        # absent relief metrics as "not computed" or as zero.
+        _rf = (d.get("data") or {}).get("relief_flag")
+        if isinstance(_rf, str) and _rf:
+            _qf = d["data"].setdefault("quality_flags", [])
+            if "RELIEF_UNAVAILABLE" not in _qf:
+                _qf.append("RELIEF_UNAVAILABLE")
         _feature_cache_store(session, "geomorphic", _feature_id, _key, d,
                              citations=["usgs_3dep", "copernicus_glo30"])
         d["feature_id"] = _feature_id
@@ -2131,6 +2159,10 @@ async def compute_twi(
                     d["_sync_required"] = reminder
                 return d
             except Exception as viz_err:
+                # No metric slope is not a visualisation problem: the stats-only path needs the same slope.
+                from ai_hydro.analysis._dem import SlopeUnavailableError
+                if isinstance(viz_err, SlopeUnavailableError):
+                    raise
                 log.warning(
                     "TWI full computation failed, falling back to stats only: %s", viz_err
                 )

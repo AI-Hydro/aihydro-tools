@@ -1057,13 +1057,29 @@ def _tool_error_to_dict(e: Exception) -> dict:
             "MODELLING_NOT_INSTALLED",
             "This tool needs the optional aihydro-modelling package, which is not installed.",
             recovery='Install the modelling extra: pip install "aihydro-tools[modelling]" '
-                     "(requires access to aihydro-modelling >= 0.6.1).",
+                     "(aihydro-modelling is private and not on PyPI: it needs access to that "
+                     "repository, version >= 0.6.2).",
+        ).to_dict())
+
+    # No metric slope (geographic CRS, no CRS, unusable pixel size): a clear, recoverable error, never a number.
+    try:
+        from ai_hydro.analysis._dem import SlopeUnavailableError
+    except ImportError:  # pragma: no cover - aihydro-watershed < 0.4
+        SlopeUnavailableError = ()  # type: ignore[assignment,misc]
+    if SlopeUnavailableError and isinstance(e, SlopeUnavailableError):
+        from aihydro_core.primitives.errors import ToolError
+
+        return sanitize_error(ToolError(
+            "SLOPE_UNAVAILABLE",
+            f"Slope cannot be computed from this DEM: {e}",
+            recovery="No slope-based result was produced. Check the DEM's CRS and pixel size (a metric, projected grid is "
+                     "needed); retrying with a different DEM resolution may help.",
         ).to_dict())
 
     import traceback as _tb
     log.error("unexpected tool error: %s\n%s", e, _tb.format_exc(limit=8))
 
-    return sanitize_error({
+    envelope = {
         "error":      True,
         "code":       "UNEXPECTED_ERROR",
         "message":    str(e) or repr(e),
@@ -1074,7 +1090,11 @@ def _tool_error_to_dict(e: Exception) -> dict:
         ),
         "next_tools": ["aihydro_describe_capability", "data_doctor"],
         "docs_anchor": "",
-    })
+    }
+    history = getattr(e, "fallback_history", None)       # the tiers tried before an unexpected failure
+    if isinstance(history, (list, tuple)) and history:
+        envelope["fallback_history"] = [dict(h) for h in history if isinstance(h, dict)]
+    return sanitize_error(envelope)
 
 
 def _cached_response(slot: str, session, *, extra: dict | None = None) -> dict:

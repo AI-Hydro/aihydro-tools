@@ -140,33 +140,48 @@ def test_map_cli_catchment_layers_stages_then_clips_view():
     assert out["staging"]["catchments_ready"] is True
 
 
-def test_merit_basins_region_uses_google_drive_catchment_fallback(tmp_path):
+def test_merit_basins_region_stages_verified_basins_db_with_injected_opener(tmp_path, monkeypatch):
+    """Staging fetches pinned ``basins##.db``/``rivers##.db`` through an injected opener (no network, no Google Drive)."""
+    import hashlib
+    import io
+
+    from aihydro_watershed.merit import verified_fetch as vf
+
     from ai_hydro.data.merit_manager import MeritDataManager
 
-    mgr = MeritDataManager(root=tmp_path)
-    river_dir = tmp_path / "shp" / "merit_rivers"
-    river_dir.mkdir(parents=True)
-    (river_dir / "riv_pfaf_46_MERIT_Hydro_v07_Basins_v01.shp").write_bytes(b"river")
+    payload = {
+        "megabasins.db": b"mega-bytes",
+        "basins46.db": b"basins-bytes",
+        "rivers46.db": b"rivers-bytes",
+    }
+    man = vf.load_manifest()
+    man = {**man, "files": dict(man["files"]), "level2_index": dict(man["level2_index"])}
+    blob = payload["megabasins.db"]
+    man["level2_index"].update(
+        size_bytes=len(blob),
+        sha256=None,
+        git_blob_sha1=hashlib.sha1(f"blob {len(blob)}\0".encode() + blob).hexdigest(),
+    )
+    for name in ("basins46.db", "rivers46.db"):
+        data = payload[name]
+        man["files"][name] = {"sha256": hashlib.sha256(data).hexdigest(), "size_bytes": len(data)}
+    monkeypatch.setattr(vf, "load_manifest", lambda: man)
+    by_url = {vf.asset_spec(n).url: n for n in payload}
+    fetched: list[str] = []
 
-    def fake_download(pfaf, dest_dir):
-        assert pfaf == "46"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        (dest_dir / "cat_pfaf_46_MERIT_Hydro_v07_Basins_v01.shp").write_bytes(b"catchment")
-        return True
+    def opener(url, headers=None):
+        fetched.append(url)
+        return io.BytesIO(payload[by_url[url]])
 
-    # MeritDataManager is re-exported through ai_hydro for compatibility, but its
-    # implementation imports the downloader from the watershed package. Patch the
-    # implementation namespace so this offline unit test can never touch the network.
-    with patch(
-        "aihydro_watershed.merit.merit_download.download_catchment_shapefile",
-        side_effect=fake_download,
-    ):
-        status = mgr.ensure_basins_region("46", acquisition_policy="download_if_missing")
+    mgr = MeritDataManager(root=tmp_path, opener=opener)
+    status = mgr.ensure_basins_region("46", acquisition_policy="download_if_missing")
 
     assert status.catchments_ready
     assert status.rivers_ready
-    assert status.downloaded == ["catchments_46"]
+    assert sorted(status.downloaded) == ["basins46.db", "megabasins.db", "rivers46.db"]
     assert status.metadata_path is not None
+    assert len(fetched) == 3
+    assert mgr.basins_db_path("46").read_bytes() == payload["basins46.db"]
 
 
 def test_map_delineate_auto_stages_nonconus_flowdir_and_uses_local_merit():
