@@ -6,6 +6,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Needs the matching aihydro-data change (single-place dict geometry, pinned-product honesty); the tests below fail against aihydro-data 0.2.7.
+
+### Fixed
+
+- **`data_fetch(geometry={"lat":..,"lon":..})` returned `GEOMETRY_UNSUPPORTED_TYPE` ("Unsupported geometry input: float").** Root cause was in aihydro-data's collection auto-dispatch, which read the documented point dict as a `{label: geometry}` mapping; fixed there. The same misreading made `data_fetch(variable="streamflow", gauge_id=...)` fail with `GAUGE_WITH_COLLECTION` in every session (the gauge is resolved to a `{"lat","lon"}` point): it now routes to the pinned USGS fetch as documented. `GAUGE_WITH_COLLECTION` now says how many entries the geometry was read as and names the single-place forms.
+- **`mode="manual"` + `product=` could serve a different product** (GridMET failed, CHIRPS_IRI answered). Over MCP a pin is now strict: the pinned product serves or the call returns its error (the attempt trail records the failure). New optional `fallback=[...]` opts in to named fallbacks; a substitute is flagged at the top level (`product_substituted: true`, `requested_product`, a `SUBSTITUTED PRODUCT` note). Auto mode is unchanged.
+
+### Tests
+
+- `tests/test_data_fetch_oddities.py`: point and bbox dicts, `gauge_id` alone and with a point, strict pin, opt-in fallback flagged, served pin unflagged; all through the in-process FastMCP client (schema, middleware, wrapper).
+
+
 ## [2.8.9] - 2026-11-06 (aihydro-watershed 0.4.0 / aihydro-lsh 0.4.0 train, attempt trail, install-alone)
 
 ### Added
