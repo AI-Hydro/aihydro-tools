@@ -6,6 +6,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Critical: library `print()` output no longer corrupts the MCP stdio stream.** The server now reserves the process's original stdout
+  for the protocol: at startup it saves fd 1 (`os.dup`), points fd 1 at stderr (`os.dup2(2, 1)`), rebinds `sys.stdout` to stderr, and
+  serves the stdio transport on the saved fd (`ai_hydro/mcp/stdio_guard.py`, used by `aihydro-mcp` and `mcp_server.py`). Python prints,
+  third-party prints, child processes inheriting stdout and C-level `write(1, ...)` all go to the log stream. Before, a tool that printed
+  more than about 8 KB (the geomorphic, TWI and forcing paths do) flushed a fragment glued onto the front of a JSON-RPC response; the
+  client dropped the unparseable line and waited out the call timeout, and smaller prints flipped the server to "disconnected" in the
+  extension. This needs a small replacement for FastMCP's `run_stdio_async` (it has no stdout parameter) that relies on two private
+  FastMCP names, so `mcp>=1.24,<2` is declared next to the existing `fastmcp>=2.14,<3` bound. Regression test:
+  `tests/test_stdio_protocol_guard.py` (real subprocess, raw pipes; Python print, `\r`/`end=""` progress, `os.write(1, ...)`, 800 KB burst,
+  child process; with and without `PYTHONUNBUFFERED`; plus an unguarded control that shows the corruption). Windows: dup/dup2 on pipes is
+  reasoned from the CRT contract, not tested (CI is Linux only).
+
 ## [2.8.9] - 2026-11-06 (aihydro-watershed 0.4.0 / aihydro-lsh 0.4.0 train, attempt trail, install-alone)
 
 ### Added

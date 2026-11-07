@@ -416,6 +416,12 @@ def main() -> None:
             _diagnose()
             return
 
+    # stdout belongs to the MCP protocol from here on: fd 1 -> stderr for every
+    # print / library / C-level write (see ai_hydro/mcp/stdio_guard.py).
+    from ai_hydro.mcp.stdio_guard import install_stdout_guard, run_stdio_guarded
+
+    install_stdout_guard()
+
     import logging
     import os
 
@@ -438,4 +444,4 @@ def main() -> None:
     except Exception as _e:
         log.debug("tools.md generation skipped: %s", _e)
 
-    mcp.run()
+    run_stdio_guarded(mcp)

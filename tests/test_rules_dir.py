@@ -63,7 +63,9 @@ def test_server_start_and_session_save_write_nothing_beside_the_checkout(scratch
     from ai_hydro.mcp.app import mcp as server
 
     before = _snapshot(CHECKOUT_PARENT)
-    monkeypatch.setattr(server, "run", lambda *a, **k: None)         # start up, do not serve
+    import ai_hydro.mcp.stdio_guard as guard
+    monkeypatch.setattr(guard, "install_stdout_guard", lambda: 1)    # never redirect the test runner's fd 1
+    monkeypatch.setattr(guard, "run_stdio_guarded", lambda *a, **k: None)  # start up, do not serve
     monkeypatch.setattr("sys.argv", ["aihydro-mcp"])
     mcp_pkg.main()
 

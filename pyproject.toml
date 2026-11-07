@@ -40,6 +40,9 @@ dependencies = [
     # The MCP adapters currently depend on v2 middleware/server internals;
     # FastMCP v3+ changed these interfaces. Keep the supported major explicit.
     "fastmcp>=2.14,<3",
+    # ai_hydro/mcp/stdio_guard.py calls mcp.server.stdio.stdio_server(stdout=...) directly
+    # (the same range fastmcp 2.14 itself requires; stated because we import it).
+    "mcp>=1.24,<2",
     # Wave 2.5: hard dependency on the variable-centric data layer.
     # Surfaces 9 `data_*` MCP tools via the `aihydro.tools` entry-point group;
     # also rewires analysis/signatures and analysis/curve_number internally.
