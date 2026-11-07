@@ -86,3 +86,8 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: |
           "$RUNNER_TEMP/alone/bin/python" -I "$GITHUB_WORKSPACE/scripts/coinstall_attributes_check.py"
+
+      - name: The no-Earth-Engine DEM tier is installable (stackstac comes with the extra)
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/alone/bin/python" -I -c "import stackstac, pystac_client; print('stackstac', stackstac.__version__)"
