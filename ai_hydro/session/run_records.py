@@ -38,6 +38,8 @@ Limits of the seal (read before relying on a record):
   the caller sent them.
 - ``output_digest`` covers what the caller received (``result["data"]``), not
   arrays a tool read from or wrote to disk.
+- ``extra.product_substituted`` / ``requested_product`` / ``served_product`` are present only when a pinned product failed and a
+  different one served (data_fetch with an opt-in ``fallback``).
 - ``extra.attempt_trail`` is the attempt trail: which sources a call tried (each with its outcome and
   reason), which one served it, and the limitations it reported (``quality_flags``), on success and on failure
   (see ``attempt_trail``). It lives in ``extra``, so the record seal covers it. Records written by earlier
@@ -1483,6 +1485,11 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
         extra.update(capture.notes)
         if trail is not None:
             extra["attempt_trail"] = trail
+        if isinstance(result, dict) and result.get("product_substituted") is True:
+            # A pinned product failed and another product served: sealed with the record, not only in the trail.
+            extra["product_substituted"] = True
+            extra["requested_product"] = result.get("requested_product", "")
+            extra["served_product"] = result.get("product", "")
         if reuse_ctx and created:
             extra.update(reused=True, derived_from=reuse_ctx["origin_id"],
                          computed_at=reuse_ctx["computed_at"], origin_match=reuse_ctx["how"])
