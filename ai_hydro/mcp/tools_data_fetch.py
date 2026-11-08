@@ -437,6 +437,7 @@ def data_fetch(
     outlet: tuple[float, float] | dict[str, float] | None = None,
     session_id: str | None = None,
     gauge_id: str | None = None,
+    fallback: list[str] | None = None,
 ) -> dict[str, Any]:
     """Fetch one hydrology variable for one geometry / time window.
 
@@ -444,21 +445,21 @@ def data_fetch(
         variable:    Canonical name ('precipitation', 'tmax'); see data_list_products().
         start:       ISO-8601 start date, e.g. '2015-01-01'.
         end:         ISO-8601 end date, inclusive.
-        geometry:    {"lat": 47.24, "lon": -68.58}, GeoJSON, [west, south, east, north] bbox or WKT. A bare
-                     [a, b] pair is REFUSED (GEOMETRY_AXIS_AMBIGUOUS). Optional with gauge_id.
-        outlet:      {"lat": .., "lon": ..}, within 5 km of geometry (GEOMETRY_OUTLET_MISMATCH); bare pair refused.
-        mode:        'auto' (router picks) or 'manual' (needs product=).
+        geometry:    {"lat": 47.24, "lon": -68.58}, GeoJSON, [west, south, east, north] or WKT; a bare [a, b]
+                     is REFUSED (GEOMETRY_AXIS_AMBIGUOUS). Optional with gauge_id.
+        outlet:      {"lat": .., "lon": ..}, within 5 km of geometry; bare pair refused.
+        mode:        'auto' or 'manual' (needs product=; strict: that product or its error).
         product:     Product ID, e.g. 'CHIRPS'. Required for mode='manual'.
+        fallback:    Manual only: opt-in IDs if the pin fails; a substitute sets product_substituted.
         aggregation: 'basin_mean' (default) or 'raw_raster'.
-        cache:       True (default) uses the disk cache and retains the series.
-        session_id:  Session to record in; auto-resolved when omitted.
+        cache:       True (default): disk cache; retains the series.
+        session_id:  Session to record in (auto-resolved).
         gauge_id:    streamflow only. USGS site number ('01013500'); outranks a BasinRef alias and an outlet; a
-                     geometry must be within 5 km (GAUGE_LOCATION_MISMATCH). No identity -> GAUGE_REQUIRED,
-                     ambiguous outlet -> GAUGE_AMBIGUOUS; refusals are final.
+                     geometry must be within 5 km (GAUGE_LOCATION_MISMATCH). GAUGE_REQUIRED / GAUGE_AMBIGUOUS are final.
 
     Returns:
-        Success: variable, product, source, resolved_place, data (head, `summary` stats), license, citation,
-        next_steps, `_run_id` (the `series` argument of summarize_series, compare_series, bootstrap_statistic). Failure: error envelope.
+        Success: variable, product, source, resolved_place, data (head, `summary`), license, citation,
+        next_steps, `_run_id` (the `series` of summarize_series, compare_series, bootstrap_statistic). Failure: error envelope.
 
     Queued (GloFAS/HPC): USE_ASYNC_TOOL (data_fetch_background).
     """
@@ -511,6 +512,7 @@ def data_fetch(
         result = _mark_terminal(_data_fetch(
             variable=variable, geometry=geometry, start=start, end=end, mode=mode,
             product=product, aggregation=aggregation, cache=cache, region=region, outlet=outlet,
+            fallback=fallback,
         ))
     if hint and isinstance(result, dict):
         result["basin_ref_hint"] = hint
@@ -567,6 +569,8 @@ def data_fetch(
         "variable": variable, "start": start, "end": end, "mode": mode, "product": product,
         "aggregation": aggregation, "cache": cache, "region": region,
     }
+    if fallback is not None:
+        inputs["fallback"] = list(fallback)
     inputs["resolved_place"] = place
     if outlet is not None:
         inputs["outlet"] = outlet            # it changes the modelled number (GEOGLOWS / Open-Meteo snap to it)
