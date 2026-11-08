@@ -55,14 +55,21 @@ _TOOLS = textwrap.dedent(
         @mcp.tool()
         def lib_print() -> str:
             import subprocess
-            # a child inheriting our stdout (third-party / native helpers). stdin is NOT
-            # inherited: on Windows a child that inherits the server's stdin pipe blocks in
-            # start-up while the transport has a synchronous read pending on it (found in CI).
-            subprocess.run(
-                [sys.executable, "-c", "print('child says hi')"],
-                check=True, stdin=subprocess.DEVNULL,
-            )
+            # a child inheriting our stdout AND stdin (third-party / native helpers). On
+            # Windows an inherited stdin pipe blocks the child in start-up (found in CI).
+            subprocess.run([sys.executable, "-c", "print('child says hi')"], check=True)
             return "done-lib"
+
+        @mcp.tool()
+        def bare_popen() -> str:
+            import subprocess
+            p = subprocess.Popen([sys.executable, "-c", "import sys; print('bare child'); sys.stdin.read()"])
+            try:
+                p.wait(timeout=30)   # the child reads stdin: it must see EOF from the null device
+            finally:
+                if p.poll() is None:
+                    p.kill()
+            return "done-bare"
     '''
 )
 
@@ -107,7 +114,7 @@ _REAL_MAIN_SERVER = textwrap.dedent(
     '''
 )
 
-_TOOL_NAMES = ["chatty", "progress_bar", "raw_fd", "big_burst", "lib_print"]
+_TOOL_NAMES = ["chatty", "progress_bar", "raw_fd", "big_burst", "lib_print", "bare_popen"]
 
 
 def _drive(tmp_path: Path, template: str, unbuffered: bool, tools: list[str], timeout: float = 60.0):
@@ -242,6 +249,7 @@ def test_stdout_carries_only_json_rpc(tmp_path, template, unbuffered):
     assert b"progress line 1999" in stderr
     assert b"raw c-level line" in stderr
     assert b"child says hi" in stderr
+    assert b"bare child" in stderr
     assert b"x" * 1000 in stderr and b"y" * 1000 in stderr
 
 

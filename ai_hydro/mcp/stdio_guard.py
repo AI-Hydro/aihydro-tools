@@ -27,13 +27,16 @@ two private FastMCP names (``_lifespan_manager``, ``_mcp_server``), which is why
 FastMCP renames them the server fails at start with an explicit message rather
 than silently losing the guard.
 
+Child processes: a subprocess that inherits the server's stdin pipe can block
+in start-up on Windows while the transport has a synchronous read pending on it
+(found in CI), and on any platform it could swallow protocol input. So the guard
+also moves the protocol's stdin to a private fd and points fd 0 at the null
+device; no per-call ``stdin=subprocess.DEVNULL`` is needed in tools.
+
 Windows: ``os.dup``/``os.dup2`` work on CRT file descriptors, pipes included.
 ``tests/test_stdio_protocol_guard.py`` runs on Windows and macOS in CI (the
-``stdio guard`` jobs), including a child process inheriting stdout and raw
-``os.write(1, ...)``. One Windows-specific hazard, independent of this guard: a
-child that inherits the server's *stdin* pipe blocks in start-up while the
-transport has a synchronous read pending on it, so tools that spawn
-subprocesses should pass ``stdin=subprocess.DEVNULL``.
+``stdio guard`` jobs), including a child process inheriting stdout, a bare
+``Popen`` with no stdin argument, and raw ``os.write(1, ...)``.
 
 Not covered: anything written to fd 1 before the guard is installed, i.e. at
 import time of ``ai_hydro.mcp`` (the guard is installed first thing in
@@ -49,16 +52,28 @@ from io import TextIOWrapper
 from typing import Any
 
 _protocol_fd: int | None = None
+_protocol_in_fd: int | None = None
 
 
 def install_stdout_guard() -> int:
-    """Reserve the original stdout for the protocol; return its saved fd.
+    """Reserve the original stdout and stdin for the protocol; return the saved stdout fd.
 
-    Idempotent: later calls return the same fd without redirecting again.
+    stdout: fd 1 is pointed at stderr. stdin: fd 0 is pointed at the null device,
+    so a subprocess spawned by a tool (``Popen`` with no ``stdin`` argument, a
+    ``ProcessPoolExecutor`` worker, ``pip``, ``gcloud``) cannot inherit the
+    protocol pipe. The saved fds are ``os.dup`` copies, which are
+    non-inheritable. Idempotent: later calls return the same fd.
     """
-    global _protocol_fd
+    global _protocol_fd, _protocol_in_fd
     if _protocol_fd is not None:
         return _protocol_fd
+
+    proto_in = os.dup(0)
+    null_fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null_fd, 0)
+    os.close(null_fd)
+    sys.stdin = open(os.devnull, "r", encoding="utf-8")
+    _protocol_in_fd = proto_in
 
     # Whatever is already buffered on the Python-level stdout was not protocol
     # output. Redirect first, then flush, so those bytes go to stderr.
@@ -88,6 +103,9 @@ def run_stdio_guarded(app: Any, show_banner: bool = True) -> None:
         )
 
     proto_fd = install_stdout_guard()
+    proto_in = anyio.wrap_file(
+        TextIOWrapper(os.fdopen(_protocol_in_fd, "rb", closefd=False), encoding="utf-8")
+    )
     proto_out = anyio.wrap_file(
         TextIOWrapper(os.fdopen(proto_fd, "wb", closefd=False), encoding="utf-8", newline="\n")
     )
@@ -98,7 +116,7 @@ def run_stdio_guarded(app: Any, show_banner: bool = True) -> None:
 
             log_server_banner(server=app)
         async with app._lifespan_manager():
-            async with stdio_server(stdout=proto_out) as (read_stream, write_stream):
+            async with stdio_server(stdin=proto_in, stdout=proto_out) as (read_stream, write_stream):
                 await app._mcp_server.run(
                     read_stream,
                     write_stream,

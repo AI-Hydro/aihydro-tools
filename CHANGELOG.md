@@ -38,8 +38,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   `tests/test_stdio_protocol_guard.py` (real subprocess, raw pipes; Python print, `\r`/`end=""` progress, `os.write(1, ...)`, 800 KB burst,
   child process; with and without `PYTHONUNBUFFERED`; plus an unguarded control that shows the corruption). Not covered: output written to
   fd 1 before `main()` runs (import time of `ai_hydro.mcp`) happens before the guard is installed. CI runs the guard test on Windows and
-  macOS as well as Linux (`stdio guard` jobs in `test.yml`); on Windows a child process must not inherit the server's stdin pipe (it blocks
-  in start-up while the transport has a synchronous read pending), which the test's child avoids with `stdin=DEVNULL`.
+  macOS as well as Linux (`stdio guard` jobs in `test.yml`). The guard also protects stdin: the protocol's stdin is moved to a private
+  non-inheritable fd (`os.dup(0)`) and fd 0 / `sys.stdin` point at the null device, so spawned children (a bare `Popen`, the core
+  background-job worker, `pip`, `gcloud`, a `ProcessPoolExecutor`) can neither swallow protocol input nor, on Windows, block in start-up
+  on the pipe the transport is reading (found in CI). Tools do not need to pass `stdin=DEVNULL`; the tests spawn a bare `Popen` and a
+  `subprocess.run` with no stdin argument.
 
 ### Tests
 
