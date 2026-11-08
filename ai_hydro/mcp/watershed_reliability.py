@@ -19,11 +19,12 @@ from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
-#: tools that read the session ``watershed`` slot; ``lsh_*`` entries only when the call names a ``session_id``.
+#: tools that read the session ``watershed`` slot.
+#: TODO: the released ``lsh_*`` tools take no ``session_id`` and read no session watershed, so none is listed.
+#: Add ``lsh_attributes`` once aihydro-lsh PR #6 (``session_id`` on ``lsh_attributes``) is released and verified.
 DOWNSTREAM_TOOLS = frozenset({
     "compute_twi", "extract_geomorphic_parameters", "extract_hydrological_signatures", "create_cn_grid",
     "fetch_forcing_data", "fetch_soil_attributes_ssurgo", "compute_soil_loss_rusle",
-    "lsh_attributes", "lsh_geomorphic_attributes", "lsh_dynamic_attributes", "lsh_forcing", "lsh_events",
 })
 
 _UNSET = (None, "", [])
@@ -123,12 +124,10 @@ def apply_to_tool_result(tool_result: Any, flag: dict) -> None:
 
 
 def session_for_call(tool: str, arguments: dict) -> Optional[str]:
-    """The session a downstream call reads: its ``session_id`` argument, else the chat's bound session (native tools only)."""
+    """The session a downstream call reads: its ``session_id`` argument, else the chat's bound session."""
     sid = arguments.get("session_id") if isinstance(arguments, dict) else None
     if isinstance(sid, str) and sid.strip():
         return sid.strip()
-    if tool.startswith("lsh_"):
-        return None
     try:
         from ai_hydro.mcp.helpers import _resolve_session
 

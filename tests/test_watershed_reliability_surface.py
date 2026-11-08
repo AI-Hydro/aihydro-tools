@@ -88,7 +88,7 @@ def server(tmp_path, monkeypatch):
     srv.add_middleware(app.RunRecordMiddleware())
     srv.add_middleware(app.WatershedReliabilityMiddleware())
 
-    for name in ("compute_twi", "fetch_forcing_data", "lsh_attributes", "compute_flow_duration_curve"):
+    for name in ("compute_twi", "fetch_forcing_data", "compute_flow_duration_curve"):
         def make(n):
             def tool(session_id: str) -> dict:
                 return {"data": {"tool": n, "value": 1.0}, "quality_flags": []}
@@ -121,7 +121,7 @@ def _call(srv, tool, sid):
 
 
 @needs_fastmcp2
-@pytest.mark.parametrize("tool", ["compute_twi", "fetch_forcing_data", "lsh_attributes"])
+@pytest.mark.parametrize("tool", ["compute_twi", "fetch_forcing_data"])
 def test_downstream_tools_warn_on_an_unreliable_watershed_and_still_run(server, tool):
     _session("wr-s1", **UNRELIABLE)
     r = _call(server, tool, "wr-s1")
@@ -167,3 +167,22 @@ def test_no_warning_for_other_tools_errors_or_a_session_without_a_watershed(serv
     HydroSession("wr-s5").save()
     assert "watershed_reliability_warning" not in _call(server, "compute_twi", "wr-s5")
 
+
+
+def test_every_listed_downstream_tool_is_real_and_takes_session_id():
+    """The middleware only fires for tools that name a session: check the real registered signatures."""
+    import asyncio
+
+    from ai_hydro.mcp import mcp as real
+    from ai_hydro.mcp.watershed_reliability import DOWNSTREAM_TOOLS
+
+    async def schemas():
+        tools = await real.get_tools() if hasattr(real, "get_tools") else {}
+        return tools
+
+    tools = asyncio.run(schemas())
+    assert not [t for t in DOWNSTREAM_TOOLS if t.startswith("lsh_")], "released lsh tools take no session_id"
+    missing = sorted(t for t in DOWNSTREAM_TOOLS if t not in tools)
+    assert not missing, missing
+    no_sid = sorted(t for t in DOWNSTREAM_TOOLS if "session_id" not in tools[t].parameters.get("properties", {}))
+    assert not no_sid, no_sid

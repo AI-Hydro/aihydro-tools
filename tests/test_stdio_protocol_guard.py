@@ -111,15 +111,21 @@ def _drive(tmp_path: Path, template: str, unbuffered: bool, tools: list[str], ti
     script.write_text(template.format(tools_dir=str(tmp_path)))
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    env = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": str(home),
-        "AIHYDRO_HOME": str(home / "aihydro"),
-        "PYTHONPATH": os.pathsep.join(
-            [str(REPO)] + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
-        ),
-        "TMPDIR": str(tmp_path),
-    }
+    # Inherit the environment: Windows needs SYSTEMROOT etc. just to start Python.
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    env.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "AIHYDRO_HOME": str(home / "aihydro"),
+            "PYTHONPATH": os.pathsep.join(
+                [str(REPO)] + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+            ),
+            "TMPDIR": str(tmp_path),
+            "TEMP": str(tmp_path),
+            "TMP": str(tmp_path),
+        }
+    )
     if unbuffered:
         env["PYTHONUNBUFFERED"] = "1"
     proc = subprocess.Popen(
@@ -141,8 +147,19 @@ def _drive(tmp_path: Path, template: str, unbuffered: bool, tools: list[str], ti
     threading.Thread(target=_pump, args=(proc.stderr, err_chunks.append), daemon=True).start()
 
     def send(msg):
-        proc.stdin.write((json.dumps(msg) + "\n").encode())
-        proc.stdin.flush()
+        try:
+            proc.stdin.write((json.dumps(msg) + "\n").encode())
+            proc.stdin.flush()
+        except OSError as exc:  # child is gone: say why instead of a bare Errno 22
+            try:
+                rc = proc.wait(5)
+            except subprocess.TimeoutExpired:
+                rc = None
+            time.sleep(0.5)
+            raise AssertionError(
+                f"server died ({exc!r}); exit code {rc}; stderr:\n"
+                + b"".join(err_chunks).decode("utf-8", "replace")[-4000:]
+            ) from exc
 
     all_lines: list[bytes] = []
 
