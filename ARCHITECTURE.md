@@ -135,6 +135,23 @@ FastMCP server ("aihydro-tools")
                lsh_batch, lsh_compare_to_ref, lsh_recipe_status
 ```
 
+### stdout is reserved for the protocol
+
+The server speaks newline-delimited JSON-RPC on stdout. At startup
+(`ai_hydro/mcp/stdio_guard.py`, called first thing in `main()` of both
+`ai_hydro.mcp` and `mcp_server.py`) the original fd 1 is saved with `os.dup(1)`,
+fd 1 is pointed at stderr with `os.dup2(2, 1)`, `sys.stdout` is rebound to
+`sys.stderr`, and the MCP stdio transport is served on the saved fd only. Every
+`print()`, third-party progress output and C-level `write(1, ...)` therefore
+lands in the stderr log stream, never in the protocol. New code must still log
+rather than print, but a stray print can no longer corrupt a response.
+
+FastMCP 2.14's `run_stdio_async` cannot be given a stdout stream, so
+`run_stdio_guarded` replaces its (short) body and uses two private names
+(`_lifespan_manager`, `_mcp_server`); `fastmcp>=2.14,<3` and `mcp>=1.24,<2` are
+pinned and `tests/test_stdio_protocol_guard.py` exercises it end to end. Other
+transports are not affected (the server only runs stdio).
+
 ---
 
 ## Shim pattern (A3 re-wiring)

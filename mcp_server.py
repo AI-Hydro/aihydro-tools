@@ -46,13 +46,17 @@ from ai_hydro.mcp.tools_docs import _write_tools_md  # noqa: E402
 
 def main():
     """Entry point for the ``aihydro-mcp`` console script (pyproject.toml)."""
+    # stdout is reserved for the MCP protocol (fd 1 -> stderr for everything else)
+    from ai_hydro.mcp.stdio_guard import install_stdout_guard, run_stdio_guarded
+
+    install_stdout_guard()
     log.info("Starting AI-Hydro MCP server...")
     # Auto-generate .clinerules/tools.md on every startup
     try:
         _write_tools_md()
     except Exception as _e:
         log.debug("tools.md generation skipped: %s", _e)
-    mcp.run()
+    run_stdio_guarded(mcp)
 
 
 if __name__ == "__main__":
