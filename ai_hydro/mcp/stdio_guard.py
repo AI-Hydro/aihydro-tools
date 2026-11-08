@@ -27,12 +27,18 @@ two private FastMCP names (``_lifespan_manager``, ``_mcp_server``), which is why
 FastMCP renames them the server fails at start with an explicit message rather
 than silently losing the guard.
 
-Windows: ``os.dup``/``os.dup2`` operate on CRT file descriptors and work on
-pipes there, and Python/CRT-level writes to fd 1 are redirected. The UCRT
-documents that ``_dup2`` on fds 0-2 also resets the matching Win32 std handle,
-which would extend this to code calling ``WriteFile`` on ``GetStdHandle``
-directly; that part is from the CRT documentation, not tested here. Our CI runs
-on Linux only (no Windows job), so none of the Windows behaviour is exercised.
+Windows: ``os.dup``/``os.dup2`` work on CRT file descriptors, pipes included.
+``tests/test_stdio_protocol_guard.py`` runs on Windows and macOS in CI (the
+``stdio guard`` jobs), including a child process inheriting stdout and raw
+``os.write(1, ...)``. One Windows-specific hazard, independent of this guard: a
+child that inherits the server's *stdin* pipe blocks in start-up while the
+transport has a synchronous read pending on it, so tools that spawn
+subprocesses should pass ``stdin=subprocess.DEVNULL``.
+
+Not covered: anything written to fd 1 before the guard is installed, i.e. at
+import time of ``ai_hydro.mcp`` (the guard is installed first thing in
+``main()``). Such output is buffered or written to the original stdout before
+the redirect.
 """
 
 from __future__ import annotations

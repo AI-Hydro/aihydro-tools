@@ -55,8 +55,13 @@ _TOOLS = textwrap.dedent(
         @mcp.tool()
         def lib_print() -> str:
             import subprocess
-            # a child inheriting our stdout (third-party / native helpers)
-            subprocess.run([sys.executable, "-c", "print('child says hi')"], check=True)
+            # a child inheriting our stdout (third-party / native helpers). stdin is NOT
+            # inherited: on Windows a child that inherits the server's stdin pipe blocks in
+            # start-up while the transport has a synchronous read pending on it (found in CI).
+            subprocess.run(
+                [sys.executable, "-c", "print('child says hi')"],
+                check=True, stdin=subprocess.DEVNULL,
+            )
             return "done-lib"
     '''
 )
@@ -102,10 +107,10 @@ _REAL_MAIN_SERVER = textwrap.dedent(
     '''
 )
 
-_TOOL_NAMES = os.environ.get("DBG_TOOLS", "chatty,progress_bar,raw_fd,big_burst,lib_print").split(",")  # DEBUG-TEMP
+_TOOL_NAMES = ["chatty", "progress_bar", "raw_fd", "big_burst", "lib_print"]
 
 
-def _drive(tmp_path: Path, template: str, unbuffered: bool, tools: list[str], timeout: float = 25.0):
+def _drive(tmp_path: Path, template: str, unbuffered: bool, tools: list[str], timeout: float = 60.0):
     (tmp_path / "stdio_tools.py").write_text(_TOOLS)
     script = tmp_path / "server.py"
     script.write_text(template.format(tools_dir=str(tmp_path)))

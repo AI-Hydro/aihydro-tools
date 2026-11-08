@@ -4,7 +4,7 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
-## [2.9.0] - 2026-11-07 (data_fetch oddities)
+## [2.9.0] - 2026-11-07 (data_fetch oddities, stdio protocol guard, delineation reliability surface, stac extras)
 
 **Requires aihydro-data 0.2.8** (`aihydro-data>=0.2.8,<0.3`): the tools layer passes `fallback=` to aihydro-data's MCP `_data_fetch`, which 0.2.7 does not accept, and the point-dict fix lives there.
 
@@ -18,14 +18,6 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 - **`data_fetch(geometry={"lat":..,"lon":..})` returned `GEOMETRY_UNSUPPORTED_TYPE` ("Unsupported geometry input: float").** Root cause was in aihydro-data's collection auto-dispatch, which read the documented point dict as a `{label: geometry}` mapping; fixed there. The same misreading made `data_fetch(variable="streamflow", gauge_id=...)` fail with `GAUGE_WITH_COLLECTION` in every session (the gauge is resolved to a `{"lat","lon"}` point): it now routes to the pinned USGS fetch as documented. `GAUGE_WITH_COLLECTION` now says how many entries the geometry was read as and names the single-place forms.
 - **`mode="manual"` + `product=` (and `data_fetch_background(product=)`) could serve a different product** (GridMET failed, CHIRPS_IRI answered). Over MCP a pin is now strict: the pinned product serves or the call returns its error (the attempt trail records the failure). New optional `fallback=[...]` opts in to named fallbacks; a substitute is flagged at the top level (`product_substituted: true`, `requested_product`, a `SUBSTITUTED PRODUCT` note). Auto mode is unchanged.
-
-### Tests
-
-- `tests/test_data_fetch_oddities.py` (11): background runner strict / opt-in / forwarded, sealed-record assertion; point and bbox dicts, `gauge_id` alone and with a point, strict pin, opt-in fallback flagged, served pin unflagged; all through the in-process FastMCP client (schema, middleware, wrapper).
-
-
-### Fixed
-
 - **The no-Earth-Engine DEM tiers are installable.** `aihydro-tools[attributes]`, `[delineation]` and `[analysis]` now include
   `aihydro-data[stac]>=0.2.6,<0.3`. `GLO30_STAC` / `GLO30_ELEMENT84`, the only DEM sources without Earth Engine credentials outside the
   US, need `stackstac`, which no tools extra installed, so topography, geomorphic relief, TWI and the delineation DEM tiers failed
@@ -44,8 +36,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   extension. This needs a small replacement for FastMCP's `run_stdio_async` (it has no stdout parameter) that relies on two private
   FastMCP names, so `mcp>=1.24,<2` is declared next to the existing `fastmcp>=2.14,<3` bound. Regression test:
   `tests/test_stdio_protocol_guard.py` (real subprocess, raw pipes; Python print, `\r`/`end=""` progress, `os.write(1, ...)`, 800 KB burst,
-  child process; with and without `PYTHONUNBUFFERED`; plus an unguarded control that shows the corruption). Windows: dup/dup2 on pipes is
-  reasoned from the CRT contract, not tested (CI is Linux only).
+  child process; with and without `PYTHONUNBUFFERED`; plus an unguarded control that shows the corruption). Not covered: output written to
+  fd 1 before `main()` runs (import time of `ai_hydro.mcp`) happens before the guard is installed. CI runs the guard test on Windows and
+  macOS as well as Linux (`stdio guard` jobs in `test.yml`); on Windows a child process must not inherit the server's stdin pipe (it blocks
+  in start-up while the transport has a synchronous read pending), which the test's child avoids with `stdin=DEVNULL`.
+
+### Tests
+
+- `tests/test_data_fetch_oddities.py` (11): background runner strict / opt-in / forwarded, sealed-record assertion; point and bbox dicts, `gauge_id` alone and with a point, strict pin, opt-in fallback flagged, served pin unflagged; all through the in-process FastMCP client (schema, middleware, wrapper).
 
 ## [2.8.9] - 2026-11-06 (aihydro-watershed 0.4.0 / aihydro-lsh 0.4.0 train, attempt trail, install-alone)
 
