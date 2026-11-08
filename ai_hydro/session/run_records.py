@@ -40,6 +40,8 @@ Limits of the seal (read before relying on a record):
   arrays a tool read from or wrote to disk.
 - ``extra.product_substituted`` / ``requested_product`` / ``served_product`` are present only when a pinned product failed and a
   different one served (data_fetch with an opt-in ``fallback``).
+- ``extra.watershed_reliability`` (``"unreliable"``) is present only when the call consumed a session watershed the delineation
+  marked unreliable (the result then carries ``watershed_reliability_warning``).
 - ``extra.attempt_trail`` is the attempt trail: which sources a call tried (each with its outcome and
   reason), which one served it, and the limitations it reported (``quality_flags``), on success and on failure
   (see ``attempt_trail``). It lives in ``extra``, so the record seal covers it. Records written by earlier
@@ -1490,6 +1492,8 @@ def _record_call(*, tool, arguments, result, failure, capture, chat_id, id_facto
             extra["product_substituted"] = True
             extra["requested_product"] = result.get("requested_product", "")
             extra["served_product"] = result.get("product", "")
+        if isinstance(result, dict) and result.get("watershed_reliability_warning"):
+            extra["watershed_reliability"] = "unreliable"      # computed on a watershed the delineation marked unreliable
         if reuse_ctx and created:
             extra.update(reused=True, derived_from=reuse_ctx["origin_id"],
                          computed_at=reuse_ctx["computed_at"], origin_match=reuse_ctx["how"])
