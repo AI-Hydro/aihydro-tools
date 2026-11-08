@@ -998,6 +998,7 @@ def delineate_watershed_from_point(
         _sess.save()
 
         layer_label = name or f"Watershed ({slug})"
+        from ai_hydro.mcp import watershed_reliability as _wr
         from ai_hydro.mcp.map_events import push_layer, push_gauge_point
 
         push_layer(
@@ -1015,6 +1016,7 @@ def delineate_watershed_from_point(
                 "pfaf_code": d["data"].get("pfaf_code") or "",
                 "routing_dataset": d["data"].get("routing_dataset") or "",
                 "quality_flags": ",".join(d["data"].get("quality_flags") or []),
+                **_wr.layer_metadata(d["data"]),
             },
         )
         push_gauge_point(
@@ -1053,6 +1055,8 @@ def delineate_watershed_from_point(
                 "reach's basin was returned (outlet_ambiguity lists the candidates). Pass expected_area_km2 "
                 "to choose, or allow_downstream_expansion=true to accept the larger stem. "
             )
+
+        _method_note += _wr.reliability_note(compact)
 
         resp: dict = {
             "data": compact,

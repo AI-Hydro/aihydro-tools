@@ -4,7 +4,25 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.9.0] - 2026-11-07 (data_fetch oddities)
+
+**Requires aihydro-data 0.2.8** (`aihydro-data>=0.2.8,<0.3`): the tools layer passes `fallback=` to aihydro-data's MCP `_data_fetch`, which 0.2.7 does not accept, and the point-dict fix lives there.
+
+**Migration (behaviour change).** `data_fetch(mode="manual", product=...)` and `data_fetch_background(product=...)` no longer fall back to another product when the pinned one fails: they return the pinned product's error (the attempt trail records it). Before, a failed pin could be answered by a different product (GRIDMET_PRECIP failed, CHIRPS_IRI served). To keep the old behaviour, pass `fallback=[<product ids>]` explicitly; the result then sets `product_substituted: true` and `requested_product`, and the sealed run record gets `extra.product_substituted`, `extra.requested_product`, `extra.served_product`. Auto mode is unchanged.
+
+### Added
+
+- **Delineation reliability is surfaced (needs an aihydro-watershed that returns `reliability`; older ones are a no-op).** `delineate_watershed_from_point`'s `_note` states `RELIABILITY UNRELIABLE|PROVISIONAL`, the reason and the remedy; the map layer metadata carries `reliability`, `reliability_reason` and `remedy`. A new `WatershedReliabilityMiddleware` (inside the run-record seal) adds a `watershed_reliability` quality flag (`warning`, severity high, with the remedy) and `watershed_reliability_warning` to the result of every tool that consumes the session watershed when it is `unreliable`: `compute_twi`, `extract_geomorphic_parameters`, `extract_hydrological_signatures`, `create_cn_grid`, `fetch_forcing_data`, `fetch_soil_attributes_ssurgo`, `compute_soil_loss_rusle`, and `lsh_attributes` / `lsh_geomorphic_attributes` / `lsh_dynamic_attributes` / `lsh_forcing` / `lsh_events` (the `lsh_*` ones only when the call names a `session_id`). It warns and never refuses; the sealed record gets `extra.watershed_reliability: "unreliable"`. `provisional` is stated in the note and layer only. Tests: `tests/test_watershed_reliability_surface.py` (13, stubbed watershed results).
+
+### Fixed
+
+- **`data_fetch(geometry={"lat":..,"lon":..})` returned `GEOMETRY_UNSUPPORTED_TYPE` ("Unsupported geometry input: float").** Root cause was in aihydro-data's collection auto-dispatch, which read the documented point dict as a `{label: geometry}` mapping; fixed there. The same misreading made `data_fetch(variable="streamflow", gauge_id=...)` fail with `GAUGE_WITH_COLLECTION` in every session (the gauge is resolved to a `{"lat","lon"}` point): it now routes to the pinned USGS fetch as documented. `GAUGE_WITH_COLLECTION` now says how many entries the geometry was read as and names the single-place forms.
+- **`mode="manual"` + `product=` (and `data_fetch_background(product=)`) could serve a different product** (GridMET failed, CHIRPS_IRI answered). Over MCP a pin is now strict: the pinned product serves or the call returns its error (the attempt trail records the failure). New optional `fallback=[...]` opts in to named fallbacks; a substitute is flagged at the top level (`product_substituted: true`, `requested_product`, a `SUBSTITUTED PRODUCT` note). Auto mode is unchanged.
+
+### Tests
+
+- `tests/test_data_fetch_oddities.py` (11): background runner strict / opt-in / forwarded, sealed-record assertion; point and bbox dicts, `gauge_id` alone and with a point, strict pin, opt-in fallback flagged, served pin unflagged; all through the in-process FastMCP client (schema, middleware, wrapper).
+
 
 ## [2.8.9] - 2026-11-06 (aihydro-watershed 0.4.0 / aihydro-lsh 0.4.0 train, attempt trail, install-alone)
 
