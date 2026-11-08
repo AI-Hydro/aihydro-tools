@@ -105,7 +105,7 @@ _REAL_MAIN_SERVER = textwrap.dedent(
 _TOOL_NAMES = ["chatty", "progress_bar", "raw_fd", "big_burst", "lib_print"]
 
 
-def _drive(tmp_path: Path, template: str, unbuffered: bool, tools: list[str], timeout: float = 60.0):
+def _drive(tmp_path: Path, template: str, unbuffered: bool, tools: list[str], timeout: float = 25.0):
     (tmp_path / "stdio_tools.py").write_text(_TOOLS)
     script = tmp_path / "server.py"
     script.write_text(template.format(tools_dir=str(tmp_path)))
@@ -229,7 +229,7 @@ def test_stdout_carries_only_json_rpc(tmp_path, template, unbuffered):
     assert _non_jsonrpc(lines) == [], "non-protocol bytes reached the server's stdout"
     for name in _TOOL_NAMES:
         resp = responses[name]
-        assert resp is not None, f"no response for {name}"
+        assert resp is not None, f"no response for {name}; stderr tail:\n" + stderr.decode("utf-8", "replace")[-3000:]
         assert "error" not in resp, resp
         assert "done-" in json.dumps(resp)
 
