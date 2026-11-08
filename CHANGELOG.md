@@ -4,7 +4,49 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.9.0] - 2026-11-07 (data_fetch oddities, stdio protocol guard, delineation reliability surface, stac extras)
+
+**Requires aihydro-data 0.2.8** (`aihydro-data>=0.2.8,<0.3`): the tools layer passes `fallback=` to aihydro-data's MCP `_data_fetch`, which 0.2.7 does not accept, and the point-dict fix lives there.
+
+**Migration (behaviour change).** `data_fetch(mode="manual", product=...)` and `data_fetch_background(product=...)` no longer fall back to another product when the pinned one fails: they return the pinned product's error (the attempt trail records it). Before, a failed pin could be answered by a different product (GRIDMET_PRECIP failed, CHIRPS_IRI served). To keep the old behaviour, pass `fallback=[<product ids>]` explicitly; the result then sets `product_substituted: true` and `requested_product`, and the sealed run record gets `extra.product_substituted`, `extra.requested_product`, `extra.served_product`. Auto mode is unchanged.
+
+### Added
+
+- **Delineation reliability is surfaced (needs an aihydro-watershed that returns `reliability`; older ones are a no-op).** `delineate_watershed_from_point`'s `_note` states `RELIABILITY UNRELIABLE|PROVISIONAL`, the reason and the remedy; the map layer metadata carries `reliability`, `reliability_reason` and `remedy`. A new `WatershedReliabilityMiddleware` (inside the run-record seal) adds a `watershed_reliability` quality flag (`warning`, severity high, with the remedy) and `watershed_reliability_warning` to the result of every tool that consumes the session watershed when it is `unreliable`: `compute_twi`, `extract_geomorphic_parameters`, `extract_hydrological_signatures`, `create_cn_grid`, `fetch_forcing_data`, `fetch_soil_attributes_ssurgo`, `compute_soil_loss_rusle`. The released `lsh_*` tools take no `session_id` and read no session watershed, so they are not covered (TODO in `watershed_reliability.py`: add `lsh_attributes` once aihydro-lsh PR #6 is released). It warns and never refuses; the sealed record gets `extra.watershed_reliability: "unreliable"`. `provisional` is stated in the note and layer only. Tests: `tests/test_watershed_reliability_surface.py` (14, stubbed watershed results; one test checks the listed tools exist with a real `session_id` parameter).
+
+### Fixed
+
+- **`data_fetch(geometry={"lat":..,"lon":..})` returned `GEOMETRY_UNSUPPORTED_TYPE` ("Unsupported geometry input: float").** Root cause was in aihydro-data's collection auto-dispatch, which read the documented point dict as a `{label: geometry}` mapping; fixed there. The same misreading made `data_fetch(variable="streamflow", gauge_id=...)` fail with `GAUGE_WITH_COLLECTION` in every session (the gauge is resolved to a `{"lat","lon"}` point): it now routes to the pinned USGS fetch as documented. `GAUGE_WITH_COLLECTION` now says how many entries the geometry was read as and names the single-place forms.
+- **`mode="manual"` + `product=` (and `data_fetch_background(product=)`) could serve a different product** (GridMET failed, CHIRPS_IRI answered). Over MCP a pin is now strict: the pinned product serves or the call returns its error (the attempt trail records the failure). New optional `fallback=[...]` opts in to named fallbacks; a substitute is flagged at the top level (`product_substituted: true`, `requested_product`, a `SUBSTITUTED PRODUCT` note). Auto mode is unchanged.
+- **The no-Earth-Engine DEM tiers are installable.** `aihydro-tools[attributes]`, `[delineation]` and `[analysis]` now include
+  `aihydro-data[stac]>=0.2.6,<0.3`. `GLO30_STAC` / `GLO30_ELEMENT84`, the only DEM sources without Earth Engine credentials outside the
+  US, need `stackstac`, which no tools extra installed, so topography, geomorphic relief, TWI and the delineation DEM tiers failed
+  off-EE (`aihydro-data[stac]` already carries it; `stackstac` was only reachable by installing that extra by hand). Resolver dry-runs in a
+  fresh venv (Python 3.13): `[delineation]` and `[all]` add `stackstac` alone (0.1 MB); `[analysis]` adds `stackstac`, `pystac-client`,
+  `planetary-computer`, `dask` and about 25 `pystac-ext-*` packages (about 2.7 MB of wheels); `[attributes]` adds the same plus `rasterio`,
+  `rioxarray`, `xarray` (about 28 MB of wheels, most of it `rasterio`). One side effect: `stackstac 0.5.1` requires `pandas<3`, so these
+  extras (and `[all]`) now resolve `pandas 2.3.3` instead of `3.1.1`; no conflict, and `aihydro-tools` itself only needs `pandas>=2.0`.
+  The `with-attributes` CI job also imports `stackstac` now.
+- **Critical: library `print()` output no longer corrupts the MCP stdio stream.** The server now reserves the process's original stdout
+  for the protocol: at startup it saves fd 1 (`os.dup`), points fd 1 at stderr (`os.dup2(2, 1)`), rebinds `sys.stdout` to stderr, and
+  serves the stdio transport on the saved fd (`ai_hydro/mcp/stdio_guard.py`, used by `aihydro-mcp` and `mcp_server.py`). Python prints,
+  third-party prints, child processes inheriting stdout and C-level `write(1, ...)` all go to the log stream. Before, a tool that printed
+  more than about 8 KB (the geomorphic, TWI and forcing paths do) flushed a fragment glued onto the front of a JSON-RPC response; the
+  client dropped the unparseable line and waited out the call timeout, and smaller prints flipped the server to "disconnected" in the
+  extension. This needs a small replacement for FastMCP's `run_stdio_async` (it has no stdout parameter) that relies on two private
+  FastMCP names, so `mcp>=1.24,<2` is declared next to the existing `fastmcp>=2.14,<3` bound. Regression test:
+  `tests/test_stdio_protocol_guard.py` (real subprocess, raw pipes; Python print, `\r`/`end=""` progress, `os.write(1, ...)`, 800 KB burst,
+  child process; with and without `PYTHONUNBUFFERED`; plus an unguarded control that shows the corruption). Not covered: output written to
+  fd 1 before `main()` runs (import time of `ai_hydro.mcp`) happens before the guard is installed. CI runs the guard test on Windows and
+  macOS as well as Linux (`stdio guard` jobs in `test.yml`). The guard also protects stdin: the protocol's stdin is moved to a private
+  non-inheritable fd (`os.dup(0)`) and fd 0 / `sys.stdin` point at the null device, so spawned children (a bare `Popen`, the core
+  background-job worker, `pip`, `gcloud`, a `ProcessPoolExecutor`) can neither swallow protocol input nor, on Windows, block in start-up
+  on the pipe the transport is reading (found in CI). Tools do not need to pass `stdin=DEVNULL`; the tests spawn a bare `Popen` and a
+  `subprocess.run` with no stdin argument.
+
+### Tests
+
+- `tests/test_data_fetch_oddities.py` (11): background runner strict / opt-in / forwarded, sealed-record assertion; point and bbox dicts, `gauge_id` alone and with a point, strict pin, opt-in fallback flagged, served pin unflagged; all through the in-process FastMCP client (schema, middleware, wrapper).
 
 ## [2.8.9] - 2026-11-06 (aihydro-watershed 0.4.0 / aihydro-lsh 0.4.0 train, attempt trail, install-alone)
 

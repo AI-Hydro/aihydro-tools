@@ -112,6 +112,9 @@ class DataFetchRunner(BaseJobRunner):
                 end=end,
                 mode=mode,
                 product=product,
+                # A pin is strict unless the caller listed fallbacks (same rule as data_fetch).
+                fallback=(list(cfg["fallback"]) if cfg.get("fallback") is not None
+                          else ([] if product else None)),
                 aggregation=aggregation,
             )
 
@@ -152,6 +155,8 @@ class DataFetchRunner(BaseJobRunner):
             "fallback_history": [dict(h) for h in (getattr(result, "fallback_history", None) or [])
                                  if isinstance(h, dict)],
             "cache_hit":      bool(getattr(result, "cache_hit", False)),
+            "requested_product":   getattr(result, "requested_product", ""),
+            "product_substituted": bool(getattr(result, "product_substituted", False)),
         }
 
 

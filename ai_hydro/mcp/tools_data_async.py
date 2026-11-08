@@ -101,14 +101,13 @@ def data_fetch_background(
     aggregation: str = "basin_mean",
     gauge_id: str | None = None,
     session_id: str | None = None,
+    fallback: list[str] | None = None,
 ) -> dict:
     """
     Kick off a data fetch as a background job and return a job_id immediately.
 
-    Use instead of data_fetch when the backend may queue requests (e.g.
-    GloFAS/EWDS for global streamflow) or the date range is large (multi-year
-    daily data). The job runs in a detached subprocess; poll its progress with
-    get_job_status(job_id) and retrieve the result with get_data_fetch_result(job_id).
+    Use instead of data_fetch for queued backends (e.g. GloFAS/EWDS) or large ranges. Runs in a
+    detached subprocess; poll get_job_status(job_id), retrieve with get_data_fetch_result(job_id).
 
     Parameters
     ----------
@@ -122,7 +121,9 @@ def data_fetch_background(
         {"lat": 47.24, "lon": -68.58}, GeoJSON, bbox or WKT. A bare [a, b] pair is
         REFUSED (GEOMETRY_AXIS_AMBIGUOUS). Optional for streamflow with gauge_id.
     product : str | None
-        Pin a specific product ID (e.g. 'GLOFAS_STREAMFLOW'). None = auto-route.
+        Pin a product ID (e.g. 'GLOFAS_STREAMFLOW'); strict. None = auto-route.
+    fallback : list[str] | None
+        With product: opt-in IDs if the pin fails; a substitute sets product_substituted.
     aggregation : str
         'basin_mean' (default) | 'basin_sum' | 'centroid' | 'raw_raster'.
     gauge_id : str | None
@@ -204,6 +205,7 @@ def data_fetch_background(
             "product":     product,
             "aggregation": aggregation,
             "gauge_id":    gauge_id,
+            "fallback":    fallback,
             "context":     context,
         }
 
@@ -315,6 +317,8 @@ def get_data_fetch_result(job_id: str) -> dict:
             "result_file":    status.get("result_file"),
             "fallback_history": status.get("fallback_history") or [],
             "cache_hit":      bool(status.get("cache_hit", False)),
+            "requested_product":   status.get("requested_product", ""),
+            "product_substituted": bool(status.get("product_substituted", False)),
             "_note": (
                 "Full result saved to result_file (parquet/netCDF). "
                 "Load with pd.read_parquet(result_file) or xr.open_dataset(result_file)."

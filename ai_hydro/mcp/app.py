@@ -1084,3 +1084,29 @@ class ErrorHygieneMiddleware(Middleware):
 
 
 mcp.add_middleware(ErrorHygieneMiddleware())
+
+
+class WatershedReliabilityMiddleware(Middleware):
+    """Warn (never refuse) when a tool consuming the session watershed runs on one the delineation marked ``unreliable``.
+
+    Registered AFTER RunRecordMiddleware, so it runs inside it: the warning is part of the result the record seals.
+    A watershed without the reliability keys (an older aihydro-watershed) is a no-op.
+    """
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):  # type: ignore[override]
+        tool_result = await call_next(context)
+        try:
+            from ai_hydro.mcp import watershed_reliability as wr
+
+            name = getattr(context.message, "name", "") or ""
+            if name in wr.DOWNSTREAM_TOOLS:
+                sid = wr.session_for_call(name, dict(getattr(context.message, "arguments", None) or {}))
+                flag = wr.downstream_warning(sid) if sid else None
+                if flag:
+                    wr.apply_to_tool_result(tool_result, flag)
+        except Exception as exc:
+            _record_log.debug("watershed reliability warning skipped: %s", exc)
+        return tool_result
+
+
+mcp.add_middleware(WatershedReliabilityMiddleware())
