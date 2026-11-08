@@ -6,6 +6,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The no-Earth-Engine DEM tiers are installable.** `aihydro-tools[attributes]`, `[delineation]` and `[analysis]` now include
+  `aihydro-data[stac]>=0.2.6,<0.3`. `GLO30_STAC` / `GLO30_ELEMENT84`, the only DEM sources without Earth Engine credentials outside the
+  US, need `stackstac`, which no tools extra installed, so topography, geomorphic relief, TWI and the delineation DEM tiers failed
+  off-EE (`aihydro-data[stac]` already carries it; `stackstac` was only reachable by installing that extra by hand). Resolver dry-runs in a
+  fresh venv (Python 3.13): `[delineation]` and `[all]` add `stackstac` alone (0.1 MB); `[analysis]` adds `stackstac`, `pystac-client`,
+  `planetary-computer`, `dask` and about 25 `pystac-ext-*` packages (about 2.7 MB of wheels); `[attributes]` adds the same plus `rasterio`,
+  `rioxarray`, `xarray` (about 28 MB of wheels, most of it `rasterio`). One side effect: `stackstac 0.5.1` requires `pandas<3`, so these
+  extras (and `[all]`) now resolve `pandas 2.3.3` instead of `3.1.1`; no conflict, and `aihydro-tools` itself only needs `pandas>=2.0`.
+  The `with-attributes` CI job also imports `stackstac` now.
+- **Critical: library `print()` output no longer corrupts the MCP stdio stream.** The server now reserves the process's original stdout
+  for the protocol: at startup it saves fd 1 (`os.dup`), points fd 1 at stderr (`os.dup2(2, 1)`), rebinds `sys.stdout` to stderr, and
+  serves the stdio transport on the saved fd (`ai_hydro/mcp/stdio_guard.py`, used by `aihydro-mcp` and `mcp_server.py`). Python prints,
+  third-party prints, child processes inheriting stdout and C-level `write(1, ...)` all go to the log stream. Before, a tool that printed
+  more than about 8 KB (the geomorphic, TWI and forcing paths do) flushed a fragment glued onto the front of a JSON-RPC response; the
+  client dropped the unparseable line and waited out the call timeout, and smaller prints flipped the server to "disconnected" in the
+  extension. This needs a small replacement for FastMCP's `run_stdio_async` (it has no stdout parameter) that relies on two private
+  FastMCP names, so `mcp>=1.24,<2` is declared next to the existing `fastmcp>=2.14,<3` bound. Regression test:
+  `tests/test_stdio_protocol_guard.py` (real subprocess, raw pipes; Python print, `\r`/`end=""` progress, `os.write(1, ...)`, 800 KB burst,
+  child process; with and without `PYTHONUNBUFFERED`; plus an unguarded control that shows the corruption). Windows: dup/dup2 on pipes is
+  reasoned from the CRT contract, not tested (CI is Linux only).
+
 ## [2.8.9] - 2026-11-06 (aihydro-watershed 0.4.0 / aihydro-lsh 0.4.0 train, attempt trail, install-alone)
 
 ### Added
