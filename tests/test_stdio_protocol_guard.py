@@ -102,7 +102,7 @@ _REAL_MAIN_SERVER = textwrap.dedent(
     '''
 )
 
-_TOOL_NAMES = ["chatty", "progress_bar", "raw_fd", "big_burst", "lib_print"]
+_TOOL_NAMES = os.environ.get("DBG_TOOLS", "chatty,progress_bar,raw_fd,big_burst,lib_print").split(",")  # DEBUG-TEMP
 
 
 def _drive(tmp_path: Path, template: str, unbuffered: bool, tools: list[str], timeout: float = 25.0):

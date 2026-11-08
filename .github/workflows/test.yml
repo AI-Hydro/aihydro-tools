@@ -69,8 +69,9 @@ jobs:
       - name: Install package with mcp + dev
         run: pip install -e ".[mcp,dev]"
       - name: stdio protocol guard
-        run: python -m pytest -q tests/test_stdio_protocol_guard.py -p no:cacheprovider -x -k 'run_stdio_guarded and default' # DEBUG-TEMP
-        continue-on-error: true
-      - name: DEBUG-TEMP windows child inheritance
         run: |
-          'x' | python scripts/_dbg_win.py
+          $env:DBG_TOOLS = "lib_print"; python -m pytest -q tests/test_stdio_protocol_guard.py -p no:cacheprovider -x -k 'run_stdio_guarded and default' 2>&1 | Select-Object -Last 15
+          $env:DBG_TOOLS = "big_burst,lib_print"; python -m pytest -q tests/test_stdio_protocol_guard.py -p no:cacheprovider -x -k 'run_stdio_guarded and default' 2>&1 | Select-Object -Last 15
+          $env:DBG_TOOLS = "raw_fd,lib_print"; python -m pytest -q tests/test_stdio_protocol_guard.py -p no:cacheprovider -x -k 'run_stdio_guarded and default' 2>&1 | Select-Object -Last 15
+          $env:DBG_TOOLS = "chatty,lib_print"; python -m pytest -q tests/test_stdio_protocol_guard.py -p no:cacheprovider -x -k 'run_stdio_guarded and default' 2>&1 | Select-Object -Last 15
+        continue-on-error: true
