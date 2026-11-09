@@ -6,6 +6,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bench task B-037 (`register_research_plan`) no longer fails with `STUDY_NOT_FOUND`.** Since 2.8.5 (R-01 / R-29, #24) `register_research_plan` refuses a study that does not exist, but B-037 was declared `call_style: mcp_tool`, which never creates the session, so the call hit a non-existent `bench-prereg-037`. The task is now `session_op` (the harness creates and saves the study first, as B-038 does). The oracle is unchanged: no `error`, and `prereg_id`, `content_hash`, `locked_at` present with `n_planned == 2`. Test-fixture change only; no product code touched. No other bench task registers on a missing study.
+
 ## [2.10.0] - 2026-11-10 (dependency floors: aihydro-lsh 0.4.1, aihydro-data 0.2.9; lsh_attributes sealed)
 
 ### Changed
