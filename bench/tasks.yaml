@@ -1173,11 +1173,14 @@ tasks:
     tier: 2
     mark: bench
     category: prereg
-    call_style: mcp_tool
+    call_style: session_op
     rationale: >
       register_research_plan must lock the hypothesis and planned analyses,
       return a prereg_id and content_hash, store the plan as immutable in the
-      session, and refuse a second call with a teaching error.
+      session, and refuse a second call with a teaching error. Since 2.8.5
+      (R-01/R-29) the tool refuses an unknown study with STUDY_NOT_FOUND, so the
+      task first creates the study (session_op builds and saves it) and then
+      registers the plan on it.
     setup:
       session_id: bench-prereg-037
     call:
