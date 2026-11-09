@@ -56,8 +56,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/alone/bin/python" -I "$GITHUB_WORKSPACE/scripts/install_alone_check.py"
 
-  # aihydro-tools[attributes] needs aihydro-lsh>=0.4 (the release carrying the watershed
-  # 0.3.x pin), which is not on PyPI yet, so this job cannot resolve and must not block merges.
+  # aihydro-tools[attributes] needs aihydro-lsh>=0.4.1 (on PyPI; carries the watershed 0.4 pin).
   with-attributes:
     name: tools[attributes] co-installs with lsh (Python 3.12)
     runs-on: ubuntu-latest

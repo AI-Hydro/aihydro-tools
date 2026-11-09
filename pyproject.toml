@@ -46,7 +46,7 @@ dependencies = [
     # Wave 2.5: hard dependency on the variable-centric data layer.
     # Surfaces 9 `data_*` MCP tools via the `aihydro.tools` entry-point group;
     # also rewires analysis/signatures and analysis/curve_number internally.
-    "aihydro-data>=0.2.8,<0.3",
+    "aihydro-data>=0.2.9,<0.3",
     # Wave A3: delineation + characterization carve-out (shims in analysis/ and data/).
     # Install locally with: pip install -e /path/to/aihydro-watershed
     "aihydro-watershed>=0.4.0,<0.5",
@@ -85,7 +85,7 @@ analysis = [
     "pysheds>=0.3.0",
     "scipy>=1.11.0",
     # No-Earth-Engine DEM tiers (GLO30_STAC / GLO30_ELEMENT84) need stackstac.
-    "aihydro-data[stac]>=0.2.6,<0.3",
+    "aihydro-data[stac]>=0.2.9,<0.3",
 ]
 
 analysis-legacy = [
@@ -107,7 +107,7 @@ delineation = [
     "odc-stac>=0.3.0",
     "earthengine-api>=0.1.390",
     # No-Earth-Engine DEM tiers (GLO30_STAC / GLO30_ELEMENT84) need stackstac.
-    "aihydro-data[stac]>=0.2.6,<0.3",
+    "aihydro-data[stac]>=0.2.9,<0.3",
 ]
 
 # Note: the MERIT-Basins accurate tier is served entirely by the local
@@ -122,12 +122,13 @@ delineation = [
 # between watershed and tools in the stack (core <- data <- watershed <- lsh <- tools),
 # so this extra points down, never up. >=0.4: lsh 0.3.0 requires aihydro-watershed<0.3
 # and cannot be installed beside this package (which needs watershed>=0.4.0,<0.5); lsh 0.4.0
-# carries the watershed 0.4 pin.
+# carries the watershed 0.4 pin. >=0.4.1: shorter lsh_attributes description (under the 1500 cap),
+# the session_id argument that lets the call be sealed, outlet-based modelled flow.
 # aihydro-data[stac]: topography/relief fetch a DEM; without Earth Engine credentials the only
 # DEM tiers are GLO30_STAC / GLO30_ELEMENT84, which need stackstac.
 attributes = [
-    "aihydro-lsh>=0.4,<0.5",
-    "aihydro-data[stac]>=0.2.6,<0.3",
+    "aihydro-lsh>=0.4.1,<0.5",
+    "aihydro-data[stac]>=0.2.9,<0.3",
 ]
 
 # Modelling: HBV-light (PyTorch), NeuralHydrology LSTM.
