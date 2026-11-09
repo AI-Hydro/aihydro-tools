@@ -20,8 +20,8 @@ from typing import Any, Optional
 log = logging.getLogger(__name__)
 
 #: tools that read the session ``watershed`` slot.
-#: TODO: the released ``lsh_*`` tools take no ``session_id`` and read no session watershed, so none is listed.
-#: Add ``lsh_attributes`` once aihydro-lsh PR #6 (``session_id`` on ``lsh_attributes``) is released and verified.
+#: ``lsh_attributes`` is deliberately not listed: since aihydro-lsh 0.4.1 it accepts ``session_id`` (so the run-record
+#: seal covers it) but lsh does not read the session watershed, so a watershed warning on its result would be wrong.
 DOWNSTREAM_TOOLS = frozenset({
     "compute_twi", "extract_geomorphic_parameters", "extract_hydrological_signatures", "create_cn_grid",
     "fetch_forcing_data", "fetch_soil_attributes_ssurgo", "compute_soil_loss_rusle",

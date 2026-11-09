@@ -155,8 +155,9 @@ def claim_touches_hydrology_signature_metric(claim_dict: dict, refs_by_id: dict 
     This is a name-based heuristic, not a true evidence-provenance lookup.
     aihydro-lsh's AttributeResult.provenance[family].is_observed and
     value_provenance already record the real answer per attribute value —
-    but the lsh_attributes MCP tool does not take a session_id or write to
-    the session run log, so a promoted claim's EvidenceSpan cannot currently
+    but the lsh_attributes MCP tool does not write its provenance to the
+    session (since aihydro-lsh 0.4.1 a call that passes session_id is sealed
+    into the run record, but the per-value provenance is not stored there), so a promoted claim's EvidenceSpan cannot currently
     be resolved back to that provenance. Wiring the lsh MCP tool surface into
     the session/run-log system so promotion can do a real lookup is a
     separate, larger architectural task (tracked in audits/STATUS.md as N-12).
