@@ -96,7 +96,7 @@ def test_package_data_ships_the_reference_directory():
 
 def test_sibling_pins_are_the_t1p_minimums():
     text = _pyproject_text()
-    for pin in ('"aihydro-core[contracts]>=0.2.11,<0.3"', '"aihydro-data>=0.2.8,<0.3"',
+    for pin in ('"aihydro-core[contracts]>=0.2.11,<0.3"', '"aihydro-data>=0.2.9,<0.3"',
                 '"aihydro-watershed>=0.4.0,<0.5"'):
         assert pin in text, pin
 
