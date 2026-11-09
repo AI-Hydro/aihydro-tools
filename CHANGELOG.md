@@ -4,6 +4,13 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`lsh_attributes` calls are sealed into the session run record when they pass `session_id`.** No new rule: `resolve_call_session_rule` already reads `arguments["session_id"]` for every tool, so the argument that aihydro-lsh 0.4.1 added (`lsh_attributes(..., session_id="")`, unused by lsh itself) is all the middleware needs. Without `session_id` and without a bound chat/study the call is not recorded, as before. **This needs aihydro-lsh >= 0.4.1**: lsh 0.4.0 does not declare the argument, so its schema does not offer it and the call stays unsealed. The `[attributes]` extra keeps `aihydro-lsh>=0.4,<0.5` in this change (0.4.1 is not on PyPI yet); raise it to `>=0.4.1,<0.5` once 0.4.1 is published. Tests: `tests/test_lsh_attributes_sealed.py` (stub with lsh's signature sealed and verified; unbound call counted as `no_session`; the installed plugin's `session_id` must be optional, skipped on lsh < 0.4.1).
+- `lsh_attributes` is not added to the watershed-reliability `DOWNSTREAM_TOOLS`: lsh does not read the session watershed, so a watershed warning on its result would be wrong. The stale TODO and the `promotion_policy` docstring now say so.
+
 ## [2.9.0] - 2026-11-07 (data_fetch oddities, stdio protocol guard, delineation reliability surface, stac extras)
 
 **Requires aihydro-data 0.2.8** (`aihydro-data>=0.2.8,<0.3`): the tools layer passes `fallback=` to aihydro-data's MCP `_data_fetch`, which 0.2.7 does not accept, and the point-dict fix lives there.
