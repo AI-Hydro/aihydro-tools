@@ -9,6 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **Bench task B-037 (`register_research_plan`) no longer fails with `STUDY_NOT_FOUND`.** Since 2.8.5 (R-01 / R-29, #24) `register_research_plan` refuses a study that does not exist, but B-037 was declared `call_style: mcp_tool`, which never creates the session, so the call hit a non-existent `bench-prereg-037`. The task is now `session_op` (the harness creates and saves the study first, as B-038 does). The oracle is unchanged: no `error`, and `prereg_id`, `content_hash`, `locked_at` present with `n_planned == 2`. Test-fixture change only; no product code touched. No other bench task registers on a missing study.
+- **The offline bench now runs on pull requests.** `.github/workflows/bench.yml` gains a `pull_request` trigger (the `bench-fixture` job: catalog schema test, `-m bench`, scorecard). It previously ran only on push to `main`, nightly and manual dispatch, while `test.yml` excludes `bench`, so a red bench task could not be seen until after merge. `bench-live` is unchanged (nightly / manual only; its `if:` excludes pull requests). All 78 offline bench tasks pass locally.
 
 ## [2.10.0] - 2026-11-10 (dependency floors: aihydro-lsh 0.4.1, aihydro-data 0.2.9; lsh_attributes sealed)
 

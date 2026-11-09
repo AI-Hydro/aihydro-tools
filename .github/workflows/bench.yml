@@ -3,6 +3,9 @@ name: aihydro-bench
 on:
   push:
     branches: [main]
+  # Offline fixture bench on PRs too (78 tasks, ~5 s of tests): B-037 sat red
+  # since 2.8.5 because this only ran after merge. bench-live stays nightly.
+  pull_request:
   schedule:
     # Nightly at 02:00 UTC — includes bench_live tasks
     - cron: "0 2 * * *"
