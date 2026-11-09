@@ -90,3 +90,11 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: |
           "$RUNNER_TEMP/alone/bin/python" -I -c "import stackstac, pystac_client; print('stackstac', stackstac.__version__)"
+
+      # Proves the 1500-char description cap and the session_id sealing hold with the real,
+      # PyPI-installed lsh descriptions. -rs lists skips: lsh 0.4.1 must not skip either module.
+      - name: Description cap and lsh_attributes sealing hold against the PyPI-installed lsh
+        run: |
+          "$RUNNER_TEMP/alone/bin/pip" show aihydro-lsh | grep -E "^(Name|Version)"
+          "$RUNNER_TEMP/alone/bin/pip" install pytest
+          "$RUNNER_TEMP/alone/bin/python" -m pytest tests/test_tool_description_cap.py tests/test_lsh_attributes_sealed.py -v -rs -p no:cacheprovider
