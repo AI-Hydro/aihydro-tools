@@ -107,3 +107,42 @@ def test_unknown_source_is_refused(slots, tmp_path):
     with pytest.raises(ToolError) as e:
         metrics.extract_basin_data(_session(), "01013500", tmp_path, streamflow_source="usgs-live")
     assert e.value.code == "INVALID_STREAMFLOW_SOURCE"
+
+
+def test_lineage_and_latitude_pass_only_when_training_data_declares_them(slots, monkeypatch, tmp_path):
+    """Works against a modelling release with and without the lineage fields (no dependence on either)."""
+    import dataclasses
+    from pathlib import Path
+    from typing import Any, Optional
+
+    import aihydro_modelling
+
+    @dataclasses.dataclass
+    class OldTD:
+        gauge_id: str
+        output_dir: Path
+        forcing: dict
+        q_by_date: dict
+        static_attrs: dict
+        data_source: str
+
+    @dataclasses.dataclass
+    class NewTD(OldTD):
+        streamflow_source: Optional[str] = None
+        streamflow_area_km2: Optional[float] = None
+        streamflow_unit_conversion: Optional[str] = None
+        streamflow_fallback_reason: Optional[str] = None
+        latitude: Optional[float] = None
+        latitude_deg: Optional[float] = None
+
+    monkeypatch.setattr(aihydro_modelling, "TrainingData", OldTD)
+    old, _ = metrics.extract_basin_data(_session(), "01013500", tmp_path)
+    assert not hasattr(old, "streamflow_source")
+
+    monkeypatch.setattr(aihydro_modelling, "TrainingData", NewTD)
+    new, _ = metrics.extract_basin_data(_session(), "01013500", tmp_path)
+    assert new.streamflow_source == "session"
+    assert new.streamflow_area_km2 == 100.0
+    assert new.streamflow_fallback_reason is None
+    assert new.latitude == new.latitude_deg == 39.2
+    assert "m3/s" in new.streamflow_unit_conversion

@@ -114,6 +114,14 @@ def _load_full_data(session: Any, slot: str, gauge_id: str) -> dict:
 # Session → TrainingData bridge (the lsh/session→modelling wiring)
 # ──────────────────────────────────────────────────────────────────────
 
+def _training_data_fields(cls: Any) -> set[str]:
+    """Field names ``cls`` declares (dataclass or annotated class); empty if unknowable."""
+    import dataclasses
+    if dataclasses.is_dataclass(cls):
+        return {f.name for f in dataclasses.fields(cls)}
+    return set(getattr(cls, "__annotations__", {}) or {})
+
+
 def extract_basin_data(
     session: Any, gauge_id: str, output_dir: "Path", streamflow_source: str = DEFAULT_STREAMFLOW_SOURCE,
 ) -> Any:
@@ -191,7 +199,7 @@ def extract_basin_data(
     forcing_product = str(forcing.get("product") or "").strip() or "unknown-forcing"
     data_source = f"{'CAMELS' if using_camels else 'USGS'}+{forcing_product}"
 
-    data = TrainingData(
+    kwargs: dict[str, Any] = dict(
         gauge_id=gauge_id,
         output_dir=Path(output_dir),
         forcing=forcing,
@@ -199,4 +207,19 @@ def extract_basin_data(
         static_attrs=static_attrs,
         data_source=data_source,
     )
+    # Lineage / latitude fields exist only in newer aihydro-modelling releases; pass each one
+    # only if the installed TrainingData declares it, so older releases keep working.
+    lat = ws_data.get("gauge_lat")
+    optional = {
+        "streamflow_source": source,
+        "streamflow_area_km2": area_km2,
+        "streamflow_unit_conversion": ("cfs -> mm/day via basin area" if using_camels
+                                       else "m3/s -> mm/day via basin area"),
+        "streamflow_fallback_reason": None,     # there is no fallback: the source is explicit
+        "latitude": lat,
+        "latitude_deg": lat,
+    }
+    declared = _training_data_fields(TrainingData)
+    kwargs.update({k: v for k, v in optional.items() if k in declared})
+    data = TrainingData(**kwargs)
     return data, data_source

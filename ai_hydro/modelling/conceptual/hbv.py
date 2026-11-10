@@ -56,7 +56,16 @@ def train_hbv_light(
         require_trainable(spec, data)
     dates, prcp, tmax, tmin, pet = data.forcing_arrays()
 
+    # Latitude / lineage reach train_hbv only if the installed release accepts them.
+    import inspect
+    accepted = inspect.signature(train_hbv).parameters
+    extra = {k: getattr(data, k) for k in
+             ("latitude", "latitude_deg", "streamflow_source", "streamflow_area_km2",
+              "streamflow_unit_conversion", "streamflow_fallback_reason")
+             if k in accepted and getattr(data, k, None) is not None}
+
     result = train_hbv(
+        **extra,
         dates=dates, prcp=prcp, tmax=tmax, tmin=tmin, pet=pet,
         q_by_date=data.q_by_date, output_dir=output_dir,
         gauge_id=gauge_id, data_source=data.data_source,
