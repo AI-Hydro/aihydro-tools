@@ -1,0 +1,139 @@
+"""The model step's observed-flow source is explicit and recorded (P5).
+
+`extract_basin_data` used to call ``pygeohydro.get_camels()`` before it looked at the study's
+own flow: a network host nobody listed, and a different observed series. The default is now the
+session flow with no CAMELS call; CAMELS is an explicit, recorded opt-in; missing flow is a
+structured error, never a silent fallback.
+"""
+from __future__ import annotations
+
+import sys
+import types
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+pytest.importorskip("aihydro_modelling")
+pytest.importorskip("aihydro_core")
+
+from aihydro_core.primitives.errors import ToolError
+
+from ai_hydro.modelling import metrics
+
+
+def _session(with_flow: bool = True):
+    return SimpleNamespace(
+        watershed={"data": {"area_km2": 100.0, "gauge_lat": 39.2, "gauge_lon": -77.4}},
+        camels=None,
+        _with_flow=with_flow,
+    )
+
+
+@pytest.fixture
+def slots(monkeypatch):
+    forcing = {"dates": ["2000-01-01"], "prcp_mm": [1.0], "product": "GRIDMET"}
+
+    def load(session, slot, gauge_id):
+        if slot == "streamflow":
+            if not session._with_flow:
+                raise ValueError(f"No streamflow cached for gauge {gauge_id}. Run fetch_streamflow_data first.")
+            return {"dates": ["2000-01-01"], "q_cms": [1.0]}
+        return forcing
+
+    monkeypatch.setattr(metrics, "_load_full_data", load)
+    return forcing
+
+
+@pytest.fixture
+def fake_pygeohydro(monkeypatch):
+    """A pygeohydro whose get_camels records any call (offline: never touches the network)."""
+    get_camels = MagicMock(name="get_camels", side_effect=AssertionError("network host reached"))
+    monkeypatch.setitem(sys.modules, "pygeohydro", types.SimpleNamespace(get_camels=get_camels))
+    return get_camels
+
+
+def test_default_uses_session_flow_and_never_calls_get_camels(slots, fake_pygeohydro, tmp_path):
+    data, label = metrics.extract_basin_data(_session(), "01013500", tmp_path)
+
+    fake_pygeohydro.assert_not_called()
+    assert label == "USGS+GRIDMET"
+    assert set(data.q_by_date) == {"2000-01-01"}
+
+
+def test_default_does_not_even_import_the_camels_path(slots, monkeypatch, tmp_path):
+    called = MagicMock()
+    monkeypatch.setattr(metrics, "fetch_camels_streamflow", called)
+    metrics.extract_basin_data(_session(), "01013500", tmp_path)
+    called.assert_not_called()
+
+
+def test_explicit_camels_is_used_and_labelled(slots, monkeypatch, tmp_path):
+    seen = MagicMock(return_value={"2000-01-01": 0.5})
+    monkeypatch.setattr(metrics, "fetch_camels_streamflow", seen)
+
+    data, label = metrics.extract_basin_data(_session(with_flow=False), "01013500", tmp_path,
+                                             streamflow_source="camels")
+
+    seen.assert_called_once()
+    assert label == "CAMELS+GRIDMET"
+    assert data.q_by_date == {"2000-01-01": 0.5}
+
+
+def test_record_states_source_and_nature():
+    sess = metrics.streamflow_record("session")
+    cam = metrics.streamflow_record("camels")
+    assert sess["streamflow_source"] == "session" and "camels" not in sess["streamflow_data_nature"].lower().split()[0]
+    assert cam["streamflow_source"] == "camels" and "CAMELS-US" in cam["streamflow_data_nature"]
+    assert metrics.streamflow_record(None)["streamflow_source"] == "session"
+
+
+def test_missing_session_flow_is_a_structured_error_not_a_camels_fallback(slots, fake_pygeohydro, tmp_path):
+    with pytest.raises(ToolError) as e:
+        metrics.extract_basin_data(_session(with_flow=False), "01013500", tmp_path)
+    assert e.value.code == "MISSING_STREAMFLOW"
+    assert "streamflow_source='camels'" in (e.value.recovery or "")
+    fake_pygeohydro.assert_not_called()
+
+
+def test_camels_requested_but_unavailable_does_not_fall_back_to_session(slots, monkeypatch, tmp_path):
+    monkeypatch.setattr(metrics, "fetch_camels_streamflow", lambda *a, **k: {})
+    with pytest.raises(ToolError) as e:
+        metrics.extract_basin_data(_session(), "01013500", tmp_path, streamflow_source="camels")
+    assert e.value.code == "CAMELS_STREAMFLOW_UNAVAILABLE"
+
+
+def test_unknown_source_is_refused(slots, tmp_path):
+    with pytest.raises(ToolError) as e:
+        metrics.extract_basin_data(_session(), "01013500", tmp_path, streamflow_source="usgs-live")
+    assert e.value.code == "INVALID_STREAMFLOW_SOURCE"
+
+
+def test_tools_refuse_unknown_source_and_missing_flow_before_spawning(monkeypatch, tmp_path):
+    from ai_hydro.mcp import tools_modelling as TM
+
+    started = MagicMock()
+    monkeypatch.setattr(TM.jobs, "start_job", started)
+
+    bad = TM.train_hydro_model(session_id="s", streamflow_source="nope")
+    assert bad["code"] == "INVALID_STREAMFLOW_SOURCE"
+
+    bad = TM.propose_and_train(spec_json="{}", session_id="s", streamflow_source="nope")
+    assert bad["code"] == "INVALID_STREAMFLOW_SOURCE"
+    started.assert_not_called()
+
+
+def test_hbv_without_session_flow_is_refused_as_missing_prerequisite(monkeypatch):
+    from ai_hydro.mcp import tools_modelling as TM
+
+    session = SimpleNamespace(watershed={"data": {}}, forcing={"data": {}}, streamflow=None,
+                              site_id="01013500", workspace_dir=None)
+    import ai_hydro.session as S
+    monkeypatch.setattr(S.HydroSession, "load", classmethod(lambda cls, sid: session))
+    started = MagicMock()
+    monkeypatch.setattr(TM.jobs, "start_job", started)
+
+    out = TM.train_hydro_model(session_id="s", framework="hbv")
+
+    assert out["code"] == "MISSING_PREREQUISITES" and "streamflow" in out["message"]
+    started.assert_not_called()

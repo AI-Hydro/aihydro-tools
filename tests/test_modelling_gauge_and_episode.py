@@ -68,7 +68,7 @@ def test_search_runner_resolves_site_id_not_the_session_id(home, tmp_path, monke
 
     seen = {}
 
-    def fake_extract(session, gauge, artifact_dir):
+    def fake_extract(session, gauge, artifact_dir, **_kw):
         seen["gauge"] = gauge
         raise Stop
 

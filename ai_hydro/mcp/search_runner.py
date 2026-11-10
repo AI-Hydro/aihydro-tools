@@ -87,6 +87,7 @@ def _run_inner(config: dict, artifact_dir: Path, job_id: str) -> None:
     prereg_id = config.get("prereg_id")
     comparison_metric = config.get("comparison_metric", "nse")
     full_retrain = bool(config.get("full_retrain", True))
+    streamflow_source = config.get("streamflow_source") or "session"
 
     # ── Load session ──────────────────────────────────────────────────────────
     from ai_hydro.session import HydroSession
@@ -97,9 +98,10 @@ def _run_inner(config: dict, artifact_dir: Path, job_id: str) -> None:
     workspace_dir = getattr(session, "workspace_dir", None) or str(artifact_dir.parent)
 
     # ── Fetch-once dataset ────────────────────────────────────────────────────
-    from ai_hydro.modelling.metrics import extract_basin_data
+    from ai_hydro.modelling.metrics import extract_basin_data, streamflow_record
     log.info("[search %s] extracting basin data for gauge %s", job_id, usgs_gauge_id)
-    training_data, _ = extract_basin_data(session, usgs_gauge_id, artifact_dir)
+    training_data, _ = extract_basin_data(
+        session, usgs_gauge_id, artifact_dir, streamflow_source=streamflow_source)
     log.info("[search %s] dataset ready", job_id)
 
     # ── Build base ModelSpec from session + config ────────────────────────────
@@ -206,6 +208,7 @@ def _run_inner(config: dict, artifact_dir: Path, job_id: str) -> None:
         "incumbent_spec": result["incumbent_spec"],
         "incumbent_metrics": result["incumbent_metrics"],
         "incumbent_ci": result["incumbent_ci"],
+        **streamflow_record(streamflow_source),
     }
     _write_status(artifact_dir, job_id, "complete", **final_status)
 

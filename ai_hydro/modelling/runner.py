@@ -117,6 +117,8 @@ def run(artifact_dir: Path) -> None:
     hidden_size: int = cfg.get("hidden_size", 64)
     model: str = cfg.get("model", "cudalstm")
     sessions_dir: str | None = cfg.get("sessions_dir")
+    # Explicit observed-flow source; a config without the key (older job) means "session".
+    streamflow_source: str = cfg.get("streamflow_source") or "session"
 
     log_path = artifact_dir / "train.log"
     logging.basicConfig(
@@ -153,7 +155,7 @@ def run(artifact_dir: Path) -> None:
         if spec_dict:
             from aihydro_modelling.spec import ModelSpec
             from aihydro_modelling.train import train as _mod_train
-            from ai_hydro.modelling.metrics import extract_basin_data
+            from ai_hydro.modelling.metrics import extract_basin_data, streamflow_record
 
             spec = ModelSpec.model_validate(spec_dict)
             n_restarts_total = spec.n_restarts if spec.backend == "hbv" else 1
@@ -164,18 +166,22 @@ def run(artifact_dir: Path) -> None:
                           "current_nse": None},
             )
 
-            training_data, _ = extract_basin_data(session, usgs_gauge_id, artifact_dir)
+            training_data, _ = extract_basin_data(
+                session, usgs_gauge_id, artifact_dir, streamflow_source=streamflow_source)
             from ai_hydro.modelling.spec_gate import require_trainable
             require_trainable(spec, training_data)
             hydro_result = _mod_train(spec, training_data)
             result: dict = dict(hydro_result.data)
             _require_scored(result)
             result["spec"] = spec.model_dump()
+            result.update(streamflow_record(streamflow_source))
 
             # Inject _run_id and write run-log entry via enforcement.post_run().
             try:
                 from ai_hydro.mcp.enforcement import post_run as _post_run
-                result = _post_run("propose_and_train", session_id, result)
+                result = _post_run(
+                    "propose_and_train", session_id, result,
+                    inputs={"streamflow_source": streamflow_source})
             except Exception as exc:
                 log.warning("post_run for propose_and_train failed: %s", exc)
                 if run_id_hint:
@@ -233,6 +239,7 @@ def run(artifact_dir: Path) -> None:
                     n_restarts=n_restarts,
                     learning_rate=learning_rate,
                     spec=legacy_spec,
+                    streamflow_source=streamflow_source,
                 )
             elif fw in ("neuralhydrology", "nh", "lstm"):
                 from ai_hydro.modelling.neural.lstm import train_neural_hydrology
@@ -251,10 +258,13 @@ def run(artifact_dir: Path) -> None:
                     hidden_size=hidden_size,
                     learning_rate=learning_rate,
                     spec=legacy_spec,
+                    streamflow_source=streamflow_source,
                 )
             else:
                 raise ValueError(f"Unknown framework: {framework!r}")
             _require_scored(result)
+            from ai_hydro.modelling.metrics import streamflow_record as _sf_record
+            result.update(_sf_record(streamflow_source))
 
             # Cache result in session
             session.model = result

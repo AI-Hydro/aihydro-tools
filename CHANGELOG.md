@@ -6,6 +6,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The model step's observed-flow source is explicit: `streamflow_source` (`"session"` default, `"camels"` opt-in) on `train_hydro_model`, `propose_and_train` and `run_autoresearch` (P5).** `extract_basin_data` used to call `pygeohydro.get_camels()` first and fall back to the study's flow only when the gauge was not in CAMELS or the download failed, so a model silently trained on the CAMELS-US series (1980-2014, a different observed record) after contacting a host the study never listed. Now:
+  - **Default `"session"`**: trains on the flow already fetched into the study; no `get_camels` call, no network. If the study has no flow, the tool refuses (`MISSING_PREREQUISITES` at kickoff, `MISSING_STREAMFLOW` from `extract_basin_data`) instead of reaching for CAMELS.
+  - **`"camels"`** is an explicit opt-in. A gauge outside CAMELS (or a failed download) raises `CAMELS_STREAMFLOW_UNAVAILABLE`; it never falls back to session flow. An unknown value is refused (`INVALID_STREAMFLOW_SOURCE`) before a job is spawned.
+  - The choice is recorded: the training result (`session.model`) and the run-log inputs carry `streamflow_source` and `streamflow_data_nature`; autoresearch writes both to its final job status. The `data_source` label (`USGS+<forcing>` / `CAMELS+<forcing>`) is unchanged.
+  - **Behaviour change**: HBV training now requires a fetched streamflow slot in the default mode (previously it needed only watershed + forcing and could silently use CAMELS). Run `fetch_streamflow_data`, or pass `streamflow_source="camels"` to keep the old CAMELS data deliberately. No `aihydro-modelling` change is needed (the option lives in the tools layer; `ModelSpec` is untouched). Tests: `tests/test_streamflow_source.py`; `test_camels_streamflow_keeps_camels_label` now passes the option explicitly.
+
 ### Fixed
 
 - **Bench task B-037 (`register_research_plan`) no longer fails with `STUDY_NOT_FOUND`.** Since 2.8.5 (R-01 / R-29, #24) `register_research_plan` refuses a study that does not exist, but B-037 was declared `call_style: mcp_tool`, which never creates the session, so the call hit a non-existent `bench-prereg-037`. The task is now `session_op` (the harness creates and saves the study first, as B-038 does). The oracle is unchanged: no `error`, and `prereg_id`, `content_hash`, `locked_at` present with `n_planned == 2`. Test-fixture change only; no product code touched. No other bench task registers on a missing study.

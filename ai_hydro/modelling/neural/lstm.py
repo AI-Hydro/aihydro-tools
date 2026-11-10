@@ -24,14 +24,15 @@ from ai_hydro.modelling.metrics import extract_basin_data
 log = logging.getLogger("ai_hydro.modelling")
 
 
-def prepare_nh_data(gauge_id: str, session: Any, data_dir: Path) -> dict:
+def prepare_nh_data(gauge_id: str, session: Any, data_dir: Path,
+                    streamflow_source: str = "session") -> dict:
     """
     Write NeuralHydrology 'generic' dataset files from the AI-Hydro session.
 
     Resolves the session data, then delegates to
     ``aihydro_modelling.backends.neuralhydrology.write_nh_dataset``.
     """
-    data, data_source = extract_basin_data(session, gauge_id, data_dir)
+    data, data_source = extract_basin_data(session, gauge_id, data_dir, streamflow_source=streamflow_source)
     return write_nh_dataset(
         gauge_id=gauge_id, forcing=data.forcing, q_by_date=data.q_by_date,
         static_attrs=data.static_attrs, data_dir=data_dir, data_source=data_source,
@@ -55,6 +56,7 @@ def train_neural_hydrology(
     batch_size:  int  = 256,
     learning_rate: float = 0.001,
     spec: Any = None,
+    streamflow_source: str = "session",
 ) -> dict:
     """
     Train a NeuralHydrology model for a session gauge.
@@ -63,7 +65,7 @@ def train_neural_hydrology(
     ``aihydro_modelling.backends.neuralhydrology.train_neural_hydrology``.
     Return schema is unchanged.
     """
-    data, data_source = extract_basin_data(session, gauge_id, output_dir)
+    data, data_source = extract_basin_data(session, gauge_id, output_dir, streamflow_source=streamflow_source)
     if spec is not None:
         from ai_hydro.modelling.spec_gate import require_trainable
         require_trainable(spec, data)

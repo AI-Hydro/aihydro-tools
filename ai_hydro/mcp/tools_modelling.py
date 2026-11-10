@@ -47,6 +47,15 @@ def _pending_status(job_id: str, artifact_dir: Path) -> dict:
     }
 
 
+def _streamflow_source_or_error(value) -> tuple[str | None, dict | None]:
+    """Canonical ``streamflow_source`` or a structured error dict."""
+    from ai_hydro.modelling.metrics import normalise_streamflow_source
+    try:
+        return normalise_streamflow_source(value), None
+    except Exception as exc:                       # ToolError -> structured dict
+        return None, _tool_error_to_dict(exc)
+
+
 @mcp.tool()
 def train_hydro_model(
     session_id: str | None = None,
@@ -63,6 +72,7 @@ def train_hydro_model(
     n_restarts: int | None = None,
     hidden_size: int | None = None,
     learning_rate: float | None = None,
+    streamflow_source: str = "session",
 ) -> dict:
     """
     Kick off a model training job (detached subprocess). Returns {job_id}
@@ -72,12 +82,20 @@ def train_hydro_model(
     install neuralhydrology). model (NH only): cudalstm | ealstm | transformer.
     epochs / learning_rate / n_restarts / hidden_size: leave unset for the backend's own
     defaults (HBV 500 epochs, lr 0.05; neural 30 epochs, lr 0.001).
+    streamflow_source: where the observed discharge comes from, recorded in the result.
+    "session" (default) = the flow already fetched into the study (fetch_streamflow_data);
+    no network call is made and missing flow is an error (MISSING_STREAMFLOW / MISSING_PREREQUISITES).
+    "camels" = explicit opt-in to the CAMELS-US benchmark record downloaded via pygeohydro
+    (a gauge outside CAMELS is an error, never a silent fallback to session flow).
     The request goes through the same gate as propose_and_train: periods must be disjoint
     (train < val < test), values in range, and the backend available.
     Typical runtime: 2-15 min (HBV), 15-60 min (LSTM).
     """
     try:
         session_id = _resolve_session(session_id, None)
+        streamflow_source, bad = _streamflow_source_or_error(streamflow_source)
+        if bad:
+            return bad
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
@@ -105,10 +123,9 @@ def train_hydro_model(
         except ModuleNotFoundError:
             spec = None
 
-        if raw["backend"] != "hbv":
-            required = ("watershed", "streamflow", "forcing")
-        else:
-            required = ("watershed", "forcing")
+        # Observed flow is needed from the session unless CAMELS was explicitly requested
+        # (HBV calibrates against it too: there is no silent CAMELS fallback any more).
+        required = ("watershed", "forcing") + (("streamflow",) if streamflow_source == "session" else ())
 
         missing = [s for s in required if getattr(session, s) is None]
         if missing:
@@ -163,6 +180,7 @@ def train_hydro_model(
             "n_restarts": spec.n_restarts,
             "hidden_size": spec.hidden_size,
             "learning_rate": spec.learning_rate,
+            "streamflow_source": streamflow_source,
         }
 
         # Spawn as a registered, cancellable job (PID persisted → cancel_job works).
@@ -347,6 +365,7 @@ def propose_and_train(
     spec_json: str,
     session_id: str | None = None,
     workspace_dir: str | None = None,
+    streamflow_source: str = "session",
 ) -> dict:
     """
     Validate a ModelSpec then kick off a training job if the spec is valid.
@@ -374,6 +393,8 @@ def propose_and_train(
     session_id : str | None
         Auto-resolved from chat context if omitted.
 
+    streamflow_source : "session" (default) | "camels" (explicit); recorded.
+
     Returns {job_id, status, run_id, validation_passed, ...} or
             {error: True, code: "VALIDATION_ERROR", errors: [...]} on failure.
     """
@@ -381,6 +402,9 @@ def propose_and_train(
 
     try:
         session_id = _resolve_session(session_id, None)
+        streamflow_source, bad = _streamflow_source_or_error(streamflow_source)
+        if bad:
+            return bad
 
         # ── Parse spec ────────────────────────────────────────────────────
         import aihydro_modelling as m
@@ -413,10 +437,7 @@ def propose_and_train(
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
-        if spec.is_neural:
-            required = ("watershed", "streamflow", "forcing")
-        else:
-            required = ("watershed", "forcing")
+        required = ("watershed", "forcing") + (("streamflow",) if streamflow_source == "session" else ())
 
         missing = [s for s in required if getattr(session, s) is None]
         if missing:
@@ -469,6 +490,7 @@ def propose_and_train(
             "test_end": spec.test_end,
             "hidden_size": spec.hidden_size,
             "model": spec.nh_model or "cudalstm",
+            "streamflow_source": streamflow_source,
         }
 
         job = jobs.start_job(
@@ -518,6 +540,7 @@ def run_autoresearch(
     prereg_id: str | None = None,
     comparison_metric: str = "nse",
     full_retrain: bool = True,
+    streamflow_source: str = "session",
 ) -> dict:
     """Launch a CI-aware autoresearch episode.
 
@@ -550,6 +573,7 @@ def run_autoresearch(
         "nse" (default) or "kge".
     full_retrain : bool
         Re-train the winner at base_spec.epochs after the search (default True).
+    streamflow_source : session (default) | camels
 
     Returns {job_id, status: "pending", ...}; wait with wait_for_job(job_id).
     """
@@ -557,6 +581,9 @@ def run_autoresearch(
 
     try:
         session_id = _resolve_session(session_id, None)
+        streamflow_source, bad = _streamflow_source_or_error(streamflow_source)
+        if bad:
+            return bad
 
         # ── Parse overrides ───────────────────────────────────────────────
         space_overrides: dict = {}
@@ -590,8 +617,7 @@ def run_autoresearch(
         from ai_hydro.session import HydroSession
         session = HydroSession.load(session_id)
 
-        is_neural = backend.startswith("nh_")
-        required = ("watershed", "streamflow", "forcing") if is_neural else ("watershed", "forcing")
+        required = ("watershed", "forcing") + (("streamflow",) if streamflow_source == "session" else ())
         missing = [s for s in required if getattr(session, s) is None]
         if missing:
             return {
@@ -638,6 +664,7 @@ def run_autoresearch(
             "prereg_id":       prereg_id,
             "comparison_metric": comparison_metric,
             "full_retrain":    full_retrain,
+            "streamflow_source": streamflow_source,
             # Base spec periods (runner fills sensible defaults if absent)
             "train_start":     forcing.get("train_start") or space_overrides.get("train_start"),
             "train_end":       forcing.get("train_end")   or space_overrides.get("train_end"),

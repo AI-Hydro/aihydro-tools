@@ -11,7 +11,7 @@ data-source agnostic and never reaches into a HydroSession or the network).
 Carve-out boundary:
   • Down in aihydro-modelling : the math + array parsing (re-exported below).
   • Up here (session/fetch)    : ``_load_full_data``, ``fetch_camels_streamflow``,
-                                 ``extract_basin_data``.
+                                 ``extract_basin_data`` (explicit ``streamflow_source``).
 """
 
 from __future__ import annotations
@@ -36,6 +36,38 @@ from aihydro_modelling.metrics import (  # noqa: F401
 )
 
 log = logging.getLogger("ai_hydro.modelling")
+
+#: Where the observed discharge a model trains on comes from. "session" (the default) is the
+#: series the study already fetched (``fetch_streamflow_data`` / ``data_fetch``); "camels" is
+#: an explicit opt-in that downloads the CAMELS-US benchmark record through pygeohydro (a
+#: network host the session never fetched from).
+STREAMFLOW_SOURCES = ("session", "camels")
+DEFAULT_STREAMFLOW_SOURCE = "session"
+
+_STREAMFLOW_NATURE = {
+    "session": "session-cached discharge fetched by the study (not re-downloaded for training)",
+    "camels": "CAMELS-US benchmark daily discharge (1980-2014, 671 CONUS gauges) "
+              "downloaded through pygeohydro",
+}
+
+
+def normalise_streamflow_source(value: Any) -> str:
+    """Return the canonical source name, or raise a structured ``INVALID_STREAMFLOW_SOURCE``."""
+    src = DEFAULT_STREAMFLOW_SOURCE if value is None else str(value).strip().lower()
+    if src not in STREAMFLOW_SOURCES:
+        from aihydro_core.primitives.errors import ToolError
+        raise ToolError(
+            code="INVALID_STREAMFLOW_SOURCE",
+            message=f"streamflow_source must be one of {list(STREAMFLOW_SOURCES)}, got {value!r}.",
+            recovery="Use 'session' (the study's own fetched flow) or 'camels' (explicit CAMELS-US download).",
+        )
+    return src
+
+
+def streamflow_record(source: Any) -> dict:
+    """The fields that state, in a result / sealed record, which flow series was trained on."""
+    src = normalise_streamflow_source(source)
+    return {"streamflow_source": src, "streamflow_data_nature": _STREAMFLOW_NATURE[src]}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -108,13 +140,21 @@ def _load_full_data(session: Any, slot: str, gauge_id: str) -> dict:
 # Session → TrainingData bridge (the lsh/session→modelling wiring)
 # ──────────────────────────────────────────────────────────────────────
 
-def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
+def extract_basin_data(
+    session: Any, gauge_id: str, output_dir: "Path", streamflow_source: str = DEFAULT_STREAMFLOW_SOURCE,
+) -> Any:
     """
     Resolve a HydroSession + gauge into an aihydro_modelling.TrainingData bundle.
 
-    This is the single place the data-source decisions live (CAMELS-vs-session,
+    This is the single place the data-source decisions live (observed-flow source,
     m³/s→mm/day conversion, static-attribute assembly).  The package downstream
     is data-agnostic and only sees the resolved plain arrays.
+
+    ``streamflow_source`` is explicit and never falls back silently:
+      * ``"session"`` (default) — the study's own fetched flow; no network call here.
+        Missing flow raises ``MISSING_STREAMFLOW``.
+      * ``"camels"`` — opt-in CAMELS-US download via pygeohydro.  A gauge that is not in
+        CAMELS (or a failed download) raises ``CAMELS_STREAMFLOW_UNAVAILABLE``.
 
     Returns
     -------
@@ -122,19 +162,39 @@ def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
     """
     from aihydro_modelling import TrainingData
 
+    from aihydro_core.primitives.errors import ToolError
+    source = normalise_streamflow_source(streamflow_source)
+
     from ai_hydro.modelling.gauge import basin_consistency_error
     _bad = basin_consistency_error(session, gauge_id)
     if _bad:
-        from aihydro_core.primitives.errors import ToolError
         raise ToolError(code=_bad["code"], message=_bad["message"], recovery=_bad["recovery"])
 
     area_km2 = session.watershed["data"]["area_km2"]
 
-    # Streamflow: CAMELS first, then session-cached USGS.
-    q_dict = fetch_camels_streamflow(gauge_id, area_km2)
-    using_camels = bool(q_dict)
-    if not using_camels:
-        sf_data = _load_full_data(session, "streamflow", gauge_id)
+    q_dict: dict[str, float] = {}
+    using_camels = source == "camels"
+    if using_camels:
+        q_dict = fetch_camels_streamflow(gauge_id, area_km2)
+        if not q_dict:
+            raise ToolError(
+                code="CAMELS_STREAMFLOW_UNAVAILABLE",
+                message=(f"streamflow_source='camels' was requested but no CAMELS-US record "
+                         f"could be loaded for gauge {gauge_id} (not one of the 671 CAMELS "
+                         "gauges, or the download failed)."),
+                recovery="Fetch the gauge flow into the study (fetch_streamflow_data) and use "
+                         "streamflow_source='session'.",
+            )
+    else:
+        try:
+            sf_data = _load_full_data(session, "streamflow", gauge_id)
+        except ValueError as exc:
+            raise ToolError(
+                code="MISSING_STREAMFLOW",
+                message=f"streamflow_source='session' but the study has no usable flow: {exc}",
+                recovery="Run fetch_streamflow_data for this gauge, or pass "
+                         "streamflow_source='camels' to opt in to the CAMELS-US record.",
+            ) from exc
         sf_idx = {d[:10]: i for i, d in enumerate(sf_data["dates"])}
         for d, i in sf_idx.items():
             q_mm = _q_cms_to_mm_day(sf_data["q_cms"][i], area_km2)
