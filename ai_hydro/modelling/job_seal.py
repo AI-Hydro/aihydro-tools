@@ -13,7 +13,13 @@ the job was launched as, the arguments are the job's own inputs (spec or flat pa
 source) and the result is the model result the job reports. Reads of the session's slots
 (watershed, streamflow, forcing, camels) become the record's parents automatically, as for any tool.
 
-Every step is best-effort: a recording failure is logged and never fails a finished model.
+Every step is best-effort: a recording failure is logged and never fails a finished model. The
+outcome is self-reported in ``JobSeal.status`` (``recorded``, ``no_session``, ``unavailable`` or
+``error: ...``), which the runner copies into the job's ``status.json`` as ``seal_status``.
+
+Limit: rows are sealed only when the job reaches a final result. A job that raises after
+``post_run`` has written its row leaves that row unsealed (a failed model has no result to digest);
+the failed status says so, and the lazy re-seal path cannot invent the missing output digest.
 """
 from __future__ import annotations
 
@@ -34,6 +40,7 @@ class JobSeal:
         self._started = time.monotonic()
         self._capture: Any = None
         self._token: Any = None
+        self.status = "unavailable"
         try:
             from ai_hydro.mcp.enforcement import _generate_unique_run_id
             from ai_hydro.session import run_records
@@ -44,6 +51,9 @@ class JobSeal:
                 study_id=session_id, id_factory=_generate_unique_run_id)
         except Exception as exc:
             log.warning("job sealing unavailable: %s", exc)
+            self.status = f"unavailable: {type(exc).__name__}: {exc}"[:200]
+        else:
+            self.status = "not_sealed_yet"
 
     @property
     def active(self) -> bool:
@@ -87,7 +97,10 @@ class JobSeal:
                 mcp_client="background_job", context={"study_id": self.session_id, "source": "job"})
             if outcome.record_error:
                 log.warning("job record: %s", outcome.record_error)
+            self.status = outcome.label + (f" (record_error: {outcome.record_error})"[:300]
+                                           if outcome.record_error else "")
             return outcome
         except Exception as exc:
             log.warning("job rows were not sealed: %s", exc)
+            self.status = f"error: {type(exc).__name__}: {exc}"[:300]
             return None

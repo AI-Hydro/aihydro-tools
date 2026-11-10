@@ -212,9 +212,10 @@ def slot_from_fetch_result(result: dict, fetched: Any, *, gauge_id: str, start: 
         "upstream": qmeta.get("upstream", {}),
         "_aihydro_data_product": result.get("product"),
         "_aihydro_data_source": result.get("source"),
-        # As recorded by aihydro-data (>= 0.2.10); "" = not recorded (earlier releases).
-        "data_nature": nature_of(result) or nature_of(fetched),
     }
+    # As recorded by aihydro-data (>= 0.2.10); absent on earlier releases (digests unchanged).
+    if nature_of(result) or nature_of(fetched):
+        data["data_nature"] = nature_of(result) or nature_of(fetched)
     loc = (sr.get("location") or {}) if isinstance(sr.get("location"), dict) else {}
     if loc:
         data["gauge_lat"], data["gauge_lon"] = loc.get("lat"), loc.get("lon")

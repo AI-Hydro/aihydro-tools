@@ -237,6 +237,7 @@ def run(artifact_dir: Path) -> None:
             session.save()
             _note_simulation(seal, result)
             seal.seal(result)
+            result["seal_status"] = seal.status      # self-reported; added after the digest was taken
 
             _write_status(
                 artifact_dir, job_id, "complete",
@@ -322,6 +323,7 @@ def run(artifact_dir: Path) -> None:
             )
             _note_simulation(seal, result)
             seal.seal(result)
+            result["seal_status"] = seal.status      # self-reported; added after the digest was taken
 
             _write_status(
                 artifact_dir, job_id, "complete",
@@ -332,8 +334,11 @@ def run(artifact_dir: Path) -> None:
             log.info("Training complete: NSE=%.4f", nse or 0)
 
     except Exception as exc:
+        seal_note = None
         try:
             seal.close()
+            seal_note = ("not sealed: the job failed before a final result; a post_run row written "
+                         "before the failure stays unsealed")
         except NameError:
             pass
         tb = traceback.format_exc()
@@ -346,6 +351,8 @@ def run(artifact_dir: Path) -> None:
             error = {"code": code, "message": str(exc)[:1500], "traceback": tb[-800:]}
         else:
             error = {"code": "TRAINING_ERROR", "message": tb[-500:]}
+        if seal_note:
+            error["seal_status"] = seal_note
         _write_status(artifact_dir, job_id, "failed", error=error)
         sys.exit(1)
 

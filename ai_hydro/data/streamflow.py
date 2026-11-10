@@ -271,8 +271,6 @@ def fetch_streamflow_data(
             "source_units": units_native,
             "_aihydro_data_product": "NWIS_STREAMFLOW",
             "_aihydro_data_source": "direct_api",
-            # The registry's declared label for the served product ("" on aihydro-data < 0.2.10).
-            "data_nature": product_nature("NWIS_STREAMFLOW"),
             "qualification_codes": qmeta["qualification_codes"],
             "null_dates": null_dates,
             "missing_dates": miss,
@@ -280,6 +278,11 @@ def fetch_streamflow_data(
             "site_resolution": site_resolution,
             "upstream": qmeta["upstream"],
         }
+        # The registry's declared label for the served product; absent (not "") on aihydro-data < 0.2.10,
+        # so the output digest is unchanged there.
+        nature = product_nature("NWIS_STREAMFLOW")
+        if nature:
+            data["data_nature"] = nature
         log.info("Retrieved %d streamflow points for %s", len(df), gauge_id)
         return HydroResult(
             data=data,

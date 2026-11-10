@@ -11,6 +11,9 @@ The slot is now authoritative. The job follows the slot's own pointer, re-digest
 refuses a mismatch with the digest the fetch recorded: it will not train on bytes the study did
 not fetch. The old fixed name is a last resort, used only when the slot names no file at all
 (forcing, and sessions written before the pointer existed); it carries no digest to check.
+A slot that names a file never falls back: a missing, unparseable or array-less file is a refusal.
+A file read with no recorded digest to check it against is flagged ``digest_unverified`` in the
+returned data and in the call's lineage.
 
 Free of any ``aihydro_modelling`` import so it runs in the public test suite.
 """
@@ -50,6 +53,17 @@ def _declare_input(session_id: Optional[str], path: Path, digest: str, workspace
         log.debug("input lineage not declared: %s", exc)
 
 
+def _note_unverified(slot: str, name: str, actual: str) -> None:
+    """Record in the call's lineage that ``slot`` was read without a digest to check it against."""
+    try:
+        from ai_hydro.session import run_records
+
+        run_records.declare_lineage(**{f"{slot}_digest_unverified": True,
+                                       f"{slot}_file_sha256_observed": actual, f"{slot}_file": name})
+    except Exception as exc:
+        log.debug("unverified-input note skipped: %s", exc)
+
+
 def load_slot_data(session: Any, slot: str, gauge_id: str) -> dict:
     """The slot's ``data`` dict with its daily arrays (``dates`` ...), loaded from the retained file.
 
@@ -73,37 +87,45 @@ def load_slot_data(session: Any, slot: str, gauge_id: str) -> dict:
     workspace_dir = getattr(session, "workspace_dir", None)
     session_id = getattr(session, "session_id", None)
     pointer, recorded = _slot_pointer(result)
-    problem: Optional[str] = None
 
     if pointer:
+        # The slot names its file: that file or a refusal. The legacy fixed name is never a way
+        # around a missing, unreadable or altered retained file.
         path = resolve_ref(pointer, session_id=session_id, workspace_dir=workspace_dir)
         if path is None or not path.is_file():
-            problem = f"the retained {slot} file {pointer!r} is not on disk"
+            raise ValueError(
+                f"the retained {slot} file {pointer!r} named by the study is not on disk for gauge "
+                f"{gauge_id}. Re-run the fetch tool for this gauge.")
+        raw = path.read_bytes()
+        actual = digest_bytes(raw)
+        if recorded and actual != recorded:
+            raise ValueError(
+                f"the retained {slot} file {path.name} has sha256 {actual}, but the fetch recorded "
+                f"{recorded}. The file changed after it was fetched; refusing to train on it.")
+        try:
+            loaded = json.loads(raw.decode("utf-8"))
+        except ValueError as exc:
+            raise ValueError(f"the retained {slot} file {path.name} is not valid JSON: {exc}") from exc
+        if not (isinstance(loaded, dict) and "dates" in loaded):
+            raise ValueError(f"the retained {slot} file {path.name} holds no daily arrays "
+                             f"(gauge {gauge_id}).")
+        if recorded:
+            _declare_input(session_id, path, actual, workspace_dir)
         else:
-            raw = path.read_bytes()
-            actual = digest_bytes(raw)
-            if recorded and actual != recorded:
-                raise ValueError(
-                    f"the retained {slot} file {path.name} has sha256 {actual}, but the fetch recorded "
-                    f"{recorded}. The file changed after it was fetched; refusing to train on it.")
-            try:
-                loaded = json.loads(raw.decode("utf-8"))
-            except ValueError as exc:
-                raise ValueError(f"the retained {slot} file {path.name} is not valid JSON: {exc}") from exc
-            if isinstance(loaded, dict) and "dates" in loaded:
-                if recorded:
-                    _declare_input(session_id, path, actual, workspace_dir)
-                return loaded
-            problem = f"the retained {slot} file {path.name} holds no daily arrays"
+            # Read, but nothing recorded at fetch time to check it against: say so in the result and
+            # in the call's lineage rather than reading silently.
+            loaded = {**loaded, "digest_unverified": True}
+            _declare_input(session_id, path, actual, workspace_dir)
+            _note_unverified(slot, path.name, actual)
+        return loaded
 
     if workspace_dir:
         legacy = Path(workspace_dir) / f"{slot}_{gauge_id}.json"
         if legacy.exists():
             loaded = json.loads(legacy.read_text())
             if isinstance(loaded, dict) and "dates" in loaded:
-                return loaded
+                return {**loaded, "digest_unverified": True}
 
-    detail = f" ({problem})" if problem else ""
     raise ValueError(
-        f"{slot} data is missing daily arrays for gauge {gauge_id}{detail}. "
+        f"{slot} data is missing daily arrays for gauge {gauge_id}. "
         f"Re-run the {'fetch_streamflow_data or data_fetch' if slot == 'streamflow' else 'fetch'} tool for this gauge.")

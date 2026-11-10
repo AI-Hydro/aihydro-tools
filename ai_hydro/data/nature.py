@@ -9,7 +9,10 @@ otherwise pass as a claim the data layer never made).
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Mapping
+
+log = logging.getLogger("ai_hydro.data.nature")
 
 #: The six classes (aihydro-data ``DataNature``; keep in step with that Literal).
 DATA_NATURE_CLASSES = (
@@ -44,5 +47,8 @@ def product_nature(product_id: str) -> str:
         from aihydro_data import get_product
 
         return clean_nature(getattr(get_product(product_id), "data_nature", None))
-    except Exception:
+    except (ImportError, LookupError):      # no aihydro-data, or an unknown product id (KeyError)
+        return NOT_RECORDED
+    except Exception as exc:                # unexpected: say so, still never raise into a fetch
+        log.warning("data_nature lookup for %s failed: %s: %s", product_id, type(exc).__name__, exc)
         return NOT_RECORDED

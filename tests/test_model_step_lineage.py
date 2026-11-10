@@ -336,9 +336,9 @@ def test_job_rows_are_sealed_and_tamper_evident(job_world, monkeypatch):
         assert rec["extra"]["simulation_sha256"] == sha
     assert rr.coverage_summary(log)["legacy_unrecorded"] == 0
 
-    # The output digest is over the result the job reports (without transport keys).
+    # The output digest is over the result the job reports (without transport keys; seal_status is added after sealing).
     from aihydro_core.records import digest
-    expected = digest(rr.output_payload(result))
+    expected = digest(rr.output_payload({k: v for k, v in result.items() if k != "seal_status"}))
     assert expected in {r["record"]["output_digest"] for r in rows.values()}
 
     # Flipping one stored field fails the seal.
@@ -406,7 +406,7 @@ def test_retained_series_payload_carries_nature_beside_spatial_support(nature, e
 
     payload = _series_payload(_fetched(nature), "streamflow")
     assert payload["spatial_support"] == "reach"
-    assert payload["data_nature"] == expected
+    assert payload.get("data_nature", "") == expected
 
 
 def test_run_series_meta_echoes_data_nature():
@@ -468,7 +468,7 @@ def test_streamflow_slot_from_a_data_fetch_result_carries_nature():
                                          gauge_id=GAUGE, start="2000-01-01", end="2000-01-03")
     without = slot_from_fetch_result(base, fetched, gauge_id=GAUGE, start="2000-01-01", end="2000-01-03")
     assert with_nature["data"]["data_nature"] == "gauge_observed"
-    assert without["data"]["data_nature"] == ""
+    assert "data_nature" not in without["data"]
 
 
 @needs_fastmcp2
@@ -476,7 +476,7 @@ def test_fetch_streamflow_data_output_carries_the_registry_label_or_empty(world)
     new_session, fetch = world
     new_session("study-a")
     body = fetch("study-a")
-    assert body["data"]["data_nature"] in ("", "gauge_observed")
+    assert body["data"].get("data_nature", "gauge_observed") == "gauge_observed"
 
 
 @needs_fastmcp2
@@ -520,3 +520,135 @@ def test_legacy_path_rows_are_sealed_under_the_tool_it_was_launched_as(job_world
     assert check["record_ok"] and check["entry_ok"] is True
     assert row["record"]["tool"] == "train_hydro_model"
     assert row["record"]["extra"]["simulation_sha256"] == sha
+
+
+# ── review fixes ─────────────────────────────────────────────────────────────────────────────────
+
+@needs_fastmcp2
+def test_a_deleted_retained_file_refuses_even_when_a_legacy_file_is_present(world, tmp_path):
+    new_session, fetch = world
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    new_session("study-b", ws)
+    fetch("study-b")
+    (retained,) = ws.glob(f"streamflow_{GAUGE}_*.json")
+    (ws / f"streamflow_{GAUGE}.json").write_bytes(retained.read_bytes())    # an unverifiable look-alike
+    retained.unlink()
+
+    with pytest.raises(ValueError, match="not on disk"):
+        load_slot_data(HydroSession.load("study-b"), "streamflow", GAUGE)
+
+
+@pytest.mark.parametrize("content,match", [("not json{", "not valid JSON"),
+                                           (json.dumps({"q_cms": [1.0]}), "no daily arrays")])
+def test_a_named_file_that_is_unreadable_or_has_no_arrays_refuses(tmp_path, content, match):
+    f = tmp_path / "s.json"
+    f.write_text(content)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / f"streamflow_{GAUGE}.json").write_text(json.dumps({"dates": ["2000-01-01"], "q_cms": [1.0]}))
+    sess = SimpleNamespace(streamflow=_slot(f), workspace_dir=str(ws), session_id="s")
+    with pytest.raises(ValueError, match=match):
+        load_slot_data(sess, "streamflow", GAUGE)
+
+
+def test_a_pointer_without_a_recorded_digest_is_flagged_not_silent(tmp_path):
+    f = tmp_path / "forcing.json"
+    f.write_text(json.dumps({"dates": ["2000-01-01"], "prcp_mm": [1.0]}))
+    sess = SimpleNamespace(forcing=_slot(f), workspace_dir=None, session_id="s")
+    capture, token = rr.begin_capture(tool="propose_and_train")
+    try:
+        data = load_slot_data(sess, "forcing", GAUGE)
+    finally:
+        rr.end_capture(token)
+    assert data["digest_unverified"] is True
+    assert capture.notes["forcing_digest_unverified"] is True
+    assert capture.notes["forcing_file_sha256_observed"].startswith("sha256:")
+
+
+def test_a_verified_read_is_not_flagged(tmp_path):
+    from aihydro_core.records import digest_bytes
+
+    f = tmp_path / "s.json"
+    f.write_text(json.dumps({"dates": ["2000-01-01"], "q_cms": [1.0]}))
+    sess = SimpleNamespace(streamflow=_slot(f, digest_bytes(f.read_bytes())), workspace_dir=None, session_id="s")
+    assert "digest_unverified" not in load_slot_data(sess, "streamflow", GAUGE)
+
+
+def test_a_data_0_2_9_fetch_has_a_byte_identical_output_digest_to_the_pre_pr_code():
+    """No data_nature key at all (not an empty one) when the data layer records none."""
+    from aihydro_core.records import digest
+    from ai_hydro.mcp.tools_data_fetch import _series_payload
+
+    pre_pr = {
+        "schema": "aihydro.series/1", "dates": ["2000-01-01", "2000-01-02", "2000-01-03"],
+        "values": [1.0, 2.0, 3.0], "value_column": "streamflow", "variable": "streamflow",
+        "product": "GEOGLOWS", "source": "s3", "units": "m3/s", "timestep": "daily",
+        "spatial_support": "reach", "aggregation_actual": None, "cache_key": "ck",
+        "information_class": "unclassified",
+    }
+    payload = _series_payload(_fetched(None), "streamflow")
+    assert payload == pre_pr and digest(payload) == digest(pre_pr)
+    assert digest(_series_payload(_fetched("modelled"), "streamflow")) != digest(pre_pr)
+
+
+def test_shim_output_has_no_data_nature_key_when_the_registry_records_none(world, monkeypatch):
+    import aihydro_data
+
+    new_session, fetch = world
+    monkeypatch.setattr(aihydro_data, "get_product", lambda pid: SimpleNamespace())     # 0.2.9-style spec
+    new_session("study-a")
+    assert "data_nature" not in fetch("study-a")["data"]
+
+
+def test_product_nature_logs_an_unexpected_failure_and_does_not_raise(monkeypatch, caplog):
+    import aihydro_data
+
+    def boom(pid):
+        raise RuntimeError("registry exploded")
+
+    monkeypatch.setattr(aihydro_data, "get_product", boom)
+    with caplog.at_level("WARNING", logger="ai_hydro.data.nature"):
+        assert product_nature("X") == ""
+    assert "registry exploded" in caplog.text
+
+
+def test_data_nature_classes_match_aihydro_datas_literal():
+    contracts = pytest.importorskip("aihydro_data.contracts")
+    if not hasattr(contracts, "DataNature"):
+        pytest.skip("aihydro-data < 0.2.10 has no DataNature")
+    import typing
+
+    assert tuple(typing.get_args(contracts.DataNature)) == DATA_NATURE_CLASSES
+
+
+def test_job_status_self_reports_the_seal(job_world, monkeypatch):
+    status = _spec_job(job_world, monkeypatch, {"nse": 0.7})
+    assert status["partial_results"]["seal_status"].startswith("recorded")
+
+
+def test_failed_job_says_its_post_run_row_stays_unsealed(job_world, monkeypatch):
+    import sys
+
+    pytest.importorskip("aihydro_modelling")
+    import aihydro_modelling.train  # noqa: F401
+    import ai_hydro.modelling.metrics as metrics_mod
+    import ai_hydro.modelling.spec_gate as gate
+    from aihydro_modelling.spec import ModelSpec
+    from ai_hydro.modelling import runner
+
+    monkeypatch.setattr(metrics_mod, "extract_basin_data", lambda *a, **k: (SimpleNamespace(), "X"))
+    monkeypatch.setattr(gate, "require_trainable", lambda *a, **k: None)
+
+    def boom(spec, data):
+        raise RuntimeError("diverged")
+
+    monkeypatch.setattr(sys.modules["aihydro_modelling.train"], "train", boom)
+    art = job_world / "jobf"
+    art.mkdir()
+    (art / "job_config.json").write_text(json.dumps(
+        {"job_id": "jf", "session_id": "job-sess", "spec": ModelSpec(backend="hbv").model_dump()}))
+    with pytest.raises(SystemExit):
+        runner.run(art)
+    st = json.loads((art / "status.json").read_text())
+    assert st["status"] == "failed" and "unsealed" in st["error"]["seal_status"]

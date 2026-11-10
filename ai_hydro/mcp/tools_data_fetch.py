@@ -42,10 +42,9 @@ import logging
 import re
 from typing import Any
 
-log = logging.getLogger("ai_hydro.mcp.data_fetch")
-
-
 from ai_hydro.data.nature import nature_of
+
+log = logging.getLogger("ai_hydro.mcp.data_fetch")
 
 
 def _series_payload(fetched: Any, variable: str) -> dict | None:
@@ -87,11 +86,13 @@ def _series_payload(fetched: Any, variable: str) -> dict | None:
         "units": getattr(fetched, "units", "") or None,
         "timestep": getattr(fetched, "timestep", "") or None,
         "spatial_support": getattr(fetched, "spatial_support", None),
-        # Carried as recorded by aihydro-data (>= 0.2.10); "" on a release without the field.
-        "data_nature": nature_of(fetched),
         "aggregation_actual": getattr(fetched, "aggregation_actual", None) or None,
         "cache_key": getattr(fetched, "cache_key", None),
     }
+    # Carried as recorded by aihydro-data (>= 0.2.10). Present only when non-empty, so the payload
+    # (and every digest over it) is unchanged on a release without the field.
+    if nature_of(fetched):
+        payload["data_nature"] = nature_of(fetched)
     others = [c for c in numeric if c not in (primary,)]
     if others:
         payload["other_columns"] = {c: col(c) for c in others}
@@ -286,7 +287,7 @@ def _retain(session_id: str, result: dict, variable: str, files_out: list | None
             "file_digest": file_digest,
             "format": payload["schema"],
             "information_class": payload["information_class"],
-            "data_nature": payload.get("data_nature") or "",
+            **({"data_nature": payload["data_nature"]} if payload.get("data_nature") else {}),
             "has_approval_codes": "approval_codes" in payload,
             "has_qualifier_codes": "qualifier_codes" in payload,
         }
