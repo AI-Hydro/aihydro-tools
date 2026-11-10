@@ -34,6 +34,7 @@ import warnings
 import pandas as pd
 
 from ai_hydro.core import DataSource, HydroMeta, HydroResult, ToolError
+from ai_hydro.data.nature import product_nature
 
 _SOURCES_NWIS = [
     DataSource(
@@ -270,6 +271,8 @@ def fetch_streamflow_data(
             "source_units": units_native,
             "_aihydro_data_product": "NWIS_STREAMFLOW",
             "_aihydro_data_source": "direct_api",
+            # The registry's declared label for the served product ("" on aihydro-data < 0.2.10).
+            "data_nature": product_nature("NWIS_STREAMFLOW"),
             "qualification_codes": qmeta["qualification_codes"],
             "null_dates": null_dates,
             "missing_dates": miss,

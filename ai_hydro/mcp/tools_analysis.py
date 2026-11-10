@@ -1118,7 +1118,8 @@ def fetch_streamflow_data(
         'daily' (default) | 'hourly'.
 
     Returns q_cms array + summary stats; full daily series saved to disk
-    and referenced via the `_data_file` pointer in the response.
+    and referenced via the `_data_file` pointer in the response. data_nature is the data
+    layer's label for the product ('' when the installed aihydro-data does not record one).
     """
     try:
         session_id = _resolve_session(session_id, None)

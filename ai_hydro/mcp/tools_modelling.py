@@ -391,6 +391,8 @@ def propose_and_train(
 
     streamflow_source : "session" (default) | "camels" (explicit); recorded.
 
+    Result: simulation_series {path, sha256}.
+
     Returns {job_id, status, run_id, validation_passed, ...} or
             {error: True, code: "VALIDATION_ERROR", errors: [...]} on failure.
     """
@@ -971,6 +973,7 @@ def get_model_results(session_id: str | None = None, job_id: str | None = None) 
     Return training results: NSE, KGE, RMSE, model_dir. With job_id, returns THAT job's result
     only (JOB_NOT_FOUND / JOB_FAILED / JOB_CANCELLED / NOT_A_TRAINING_JOB / JOB_SESSION_MISMATCH
     otherwise; it never falls back to another model). Without job_id, the session's latest model.
+    simulation_series gives the simulated series' path and sha256, or why none was stored.
     session_id : str | None — auto-resolved from chat context; a job names its own session.
     """
     try:

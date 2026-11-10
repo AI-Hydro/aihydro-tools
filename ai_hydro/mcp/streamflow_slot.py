@@ -28,6 +28,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from ai_hydro.data.nature import nature_of
 from ai_hydro.data.streamflow import missing_dates  # noqa: E402  (one definition for both writers)
 
 log = logging.getLogger("ai_hydro.mcp.streamflow_slot")
@@ -211,6 +212,8 @@ def slot_from_fetch_result(result: dict, fetched: Any, *, gauge_id: str, start: 
         "upstream": qmeta.get("upstream", {}),
         "_aihydro_data_product": result.get("product"),
         "_aihydro_data_source": result.get("source"),
+        # As recorded by aihydro-data (>= 0.2.10); "" = not recorded (earlier releases).
+        "data_nature": nature_of(result) or nature_of(fetched),
     }
     loc = (sr.get("location") or {}) if isinstance(sr.get("location"), dict) else {}
     if loc:

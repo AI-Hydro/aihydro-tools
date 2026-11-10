@@ -43,6 +43,7 @@ _META_KEYS = {
     "variable": ("variable",),
     "timestep": ("timestep", "interval"),
     "spatial_support": ("spatial_support",),
+    "data_nature": ("data_nature",),
     "aggregation_actual": ("aggregation_actual",),
     "value_column": ("value_column",),
     "information_class": ("information_class",),
