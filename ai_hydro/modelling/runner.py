@@ -19,6 +19,10 @@ Status JSON schema
   "log_path": str,
   "updated_at": "<iso8601>"
 }
+
+A finished model's ``partial_results`` carry ``simulation_series`` (path + sha256 of the simulated
+series, or why none was stored), and the run-log rows the job wrote are sealed with the same
+``run_records.record_call`` the MCP middleware uses (``ai_hydro.modelling.job_seal``).
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 log = logging.getLogger("ai_hydro.modelling.runner")
@@ -82,6 +87,13 @@ def _refusal_code(exc: BaseException) -> str | None:
     if any(c.__name__ in _MODELLING_REFUSALS for c in type(exc).__mro__):
         return str(code)
     return None
+
+
+def _note_simulation(seal: Any, result: dict) -> None:
+    """Put the simulated series' digest in the record's ``extra`` (the capture must still be open)."""
+    ref = result.get("simulation_series")
+    if isinstance(ref, dict) and ref.get("status") == "stored":
+        seal.note(simulation_sha256=ref.get("sha256"), simulation_scope=ref.get("scope"))
 
 
 def _require_scored(result: dict) -> None:
@@ -158,6 +170,22 @@ def run(artifact_dir: Path) -> None:
         spec_dict = cfg.get("spec")
         run_id_hint: str | None = cfg.get("run_id")
 
+        # The rows this job writes (post_run's and the model slot's) are sealed like any tool call's
+        # when the result is final: same capture, same record_call, the job's own inputs and result.
+        from ai_hydro.modelling.job_seal import JobSeal
+        if spec_dict:
+            seal = JobSeal("propose_and_train", session_id,
+                           {"session_id": session_id, "spec": spec_dict,
+                            "streamflow_source": streamflow_source})
+        else:
+            seal = JobSeal("train_hydro_model", session_id, {
+                "session_id": session_id, "framework": framework, "model": model, "epochs": epochs,
+                "n_restarts": n_restarts, "learning_rate": learning_rate, "hidden_size": hidden_size,
+                "train_start": train_start, "train_end": train_end, "val_start": val_start,
+                "val_end": val_end, "test_start": test_start, "test_end": test_end,
+                "streamflow_source": streamflow_source})
+        seal.note(job_id=job_id, executed_by="background_job")
+
         if spec_dict:
             from aihydro_modelling.spec import ModelSpec
             from aihydro_modelling.train import train as _mod_train
@@ -181,6 +209,9 @@ def run(artifact_dir: Path) -> None:
             _require_scored(result)
             result["spec"] = spec.model_dump()
             result.update(streamflow_record(streamflow_source))
+            # The simulated series, by path and sha256 (aihydro-modelling >= 0.7.0 writes the file).
+            from ai_hydro.modelling.simulation_artifact import RESULT_KEY, simulation_record
+            result[RESULT_KEY] = simulation_record(result, artifact_dir)
 
             # Inject _run_id and write run-log entry via enforcement.post_run().
             try:
@@ -204,6 +235,9 @@ def run(artifact_dir: Path) -> None:
             from ai_hydro.citations import citation_keys_for_tool
             session.add_citations(citation_keys_for_tool("train_hydro_model"))
             session.save()
+            _note_simulation(seal, result)
+            seal.seal(result)
+            result["seal_status"] = seal.status      # self-reported; added after the digest was taken
 
             _write_status(
                 artifact_dir, job_id, "complete",
@@ -271,6 +305,9 @@ def run(artifact_dir: Path) -> None:
             _require_scored(result)
             from ai_hydro.modelling.metrics import streamflow_record as _sf_record
             result.update(_sf_record(streamflow_source))
+            from ai_hydro.modelling.simulation_artifact import RESULT_KEY, simulation_record
+            if RESULT_KEY not in result:       # the HBV path sets it; the neural path has no series to reference
+                result[RESULT_KEY] = simulation_record(result, artifact_dir)
 
             # Cache result in session
             session.model = result
@@ -284,6 +321,9 @@ def run(artifact_dir: Path) -> None:
                 "satisfactory" if nse is not None and nse >= 0.50 else
                 "poor" if nse is not None else "unknown"
             )
+            _note_simulation(seal, result)
+            seal.seal(result)
+            result["seal_status"] = seal.status      # self-reported; added after the digest was taken
 
             _write_status(
                 artifact_dir, job_id, "complete",
@@ -294,6 +334,13 @@ def run(artifact_dir: Path) -> None:
             log.info("Training complete: NSE=%.4f", nse or 0)
 
     except Exception as exc:
+        seal_note = None
+        try:
+            seal.close()
+            seal_note = ("not sealed: the job failed before a final result; a post_run row written "
+                         "before the failure stays unsealed")
+        except NameError:
+            pass
         tb = traceback.format_exc()
         log.error("Training failed:\n%s", tb)
         # A deliberate refusal (ToolError, InsufficientDataError) keeps its own code and full
@@ -304,6 +351,8 @@ def run(artifact_dir: Path) -> None:
             error = {"code": code, "message": str(exc)[:1500], "traceback": tb[-800:]}
         else:
             error = {"code": "TRAINING_ERROR", "message": tb[-500:]}
+        if seal_note:
+            error["seal_status"] = seal_note
         _write_status(artifact_dir, job_id, "failed", error=error)
         sys.exit(1)
 

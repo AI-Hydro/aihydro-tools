@@ -16,7 +16,6 @@ Carve-out boundary:
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -91,27 +90,14 @@ def _load_full_data(session: Any, slot: str, gauge_id: str) -> dict:
     Return the full data dict for a session slot, including daily arrays.
 
     The MCP server strips large arrays from responses to save context, but the
-    session JSON on disk always retains them.  Falls back to the workspace JSON
-    file if arrays are missing from the in-memory session.
+    study retains them in a content-addressed file the slot points at
+    (``_data_file`` / ``meta.retained_series``). That file is followed and its
+    sha256 checked against the one recorded at fetch time; see
+    ``ai_hydro.modelling.retained_series``.
     """
-    result = getattr(session, slot, None)
-    if result is None:
-        tool = {"streamflow": "fetch_streamflow_data",
-                "forcing": "fetch_forcing_data"}.get(slot, slot)
-        raise ValueError(f"No {slot} cached for gauge {gauge_id}. Run {tool} first.")
+    from ai_hydro.modelling.retained_series import load_slot_data
 
-    data = result.get("data", {})
-    if "dates" not in data and session.workspace_dir:
-        fname = f"{slot}_{gauge_id}.json"
-        ws_path = Path(session.workspace_dir) / fname
-        if ws_path.exists():
-            data = json.loads(ws_path.read_text())
-    if "dates" not in data:
-        raise ValueError(
-            f"{slot} data is missing daily arrays for gauge {gauge_id}. "
-            "Re-run the fetch tool with an explicit workspace_dir."
-        )
-    return data
+    return load_slot_data(session, slot, gauge_id)
 
 
 # ──────────────────────────────────────────────────────────────────────

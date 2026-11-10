@@ -42,6 +42,8 @@ import logging
 import re
 from typing import Any
 
+from ai_hydro.data.nature import nature_of
+
 log = logging.getLogger("ai_hydro.mcp.data_fetch")
 
 
@@ -87,6 +89,10 @@ def _series_payload(fetched: Any, variable: str) -> dict | None:
         "aggregation_actual": getattr(fetched, "aggregation_actual", None) or None,
         "cache_key": getattr(fetched, "cache_key", None),
     }
+    # Carried as recorded by aihydro-data (>= 0.2.10). Present only when non-empty, so the payload
+    # (and every digest over it) is unchanged on a release without the field.
+    if nature_of(fetched):
+        payload["data_nature"] = nature_of(fetched)
     others = [c for c in numeric if c not in (primary,)]
     if others:
         payload["other_columns"] = {c: col(c) for c in others}
@@ -246,6 +252,8 @@ def _retain(session_id: str, result: dict, variable: str, files_out: list | None
                   "spatial_support", "aggregation_actual"):
             if result.get(k) not in (None, ""):
                 payload[k] = result[k]
+        if nature_of(result):
+            payload["data_nature"] = nature_of(result)
         payload["information_class"] = information_class(
             payload.get("product"), payload.get("source"), result.get("site_resolution"))
         from aihydro_core.records import digest as _digest
@@ -279,6 +287,7 @@ def _retain(session_id: str, result: dict, variable: str, files_out: list | None
             "file_digest": file_digest,
             "format": payload["schema"],
             "information_class": payload["information_class"],
+            **({"data_nature": payload["data_nature"]} if payload.get("data_nature") else {}),
             "has_approval_codes": "approval_codes" in payload,
             "has_qualifier_codes": "qualifier_codes" in payload,
         }
@@ -443,7 +452,7 @@ def data_fetch(
 
     Args:
         variable:    Canonical name ('precipitation', 'tmax'); see data_list_products().
-        start:       ISO-8601 start date, e.g. '2015-01-01'.
+        start:       ISO-8601 start date.
         end:         ISO-8601 end date, inclusive.
         geometry:    {"lat": 47.24, "lon": -68.58}, GeoJSON, [west, south, east, north] or WKT; a bare [a, b]
                      is REFUSED (GEOMETRY_AXIS_AMBIGUOUS). Optional with gauge_id.
@@ -452,13 +461,13 @@ def data_fetch(
         product:     Product ID, e.g. 'CHIRPS'. Required for mode='manual'.
         fallback:    Manual only: opt-in IDs if the pin fails; a substitute sets product_substituted.
         aggregation: 'basin_mean' (default) or 'raw_raster'.
-        cache:       True (default): disk cache; retains the series.
-        session_id:  Session to record in (auto-resolved).
+        cache:       True (default): disk cache, retains the series.
+        session_id:  Session to record in.
         gauge_id:    streamflow only. USGS site number ('01013500'); outranks a BasinRef alias and an outlet; a
                      geometry must be within 5 km (GAUGE_LOCATION_MISMATCH). GAUGE_REQUIRED / GAUGE_AMBIGUOUS are final.
 
     Returns:
-        Success: variable, product, source, resolved_place, data (head, `summary`), license, citation,
+        Success: variable, product, source, data_nature, resolved_place, data (head, `summary`), license, citation,
         next_steps, `_run_id` (the `series` of summarize_series, compare_series, bootstrap_statistic). Failure: error envelope.
 
     Queued (GloFAS/HPC): USE_ASYNC_TOOL (data_fetch_background).

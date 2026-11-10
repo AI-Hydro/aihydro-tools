@@ -45,3 +45,14 @@ def test_real_modelling_quarantine_classes_map(cls_name):
     except TypeError:
         pytest.skip(f"{cls_name} needs constructor arguments this test cannot guess")
     assert _refusal_code(exc) == getattr(exc, "code")
+
+
+@pytest.mark.parametrize("cls_name", ["LatitudeRequiredError", "WaterBalanceError", "InsufficientDataError"])
+def test_real_hbv_refusal_classes_map_to_their_own_code(cls_name):
+    """The classes the HBV backend actually raises (not duck-typed stubs) keep their code."""
+    hbv = pytest.importorskip("aihydro_modelling.backends.hbv")
+    cls = getattr(hbv, cls_name, None)
+    if cls is None:
+        pytest.skip(f"{cls_name} not defined in this modelling release")
+    assert getattr(cls, "code", None), f"{cls_name} declares no code"
+    assert _refusal_code(cls("x")) == cls.code

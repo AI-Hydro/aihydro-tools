@@ -75,6 +75,12 @@ def train_hbv_light(
         learning_rate=learning_rate, warm_up=warm_up,
     )
 
+    # Reference the simulated series (0.7.0: the package's simulation.csv; 0.6.x: the scored
+    # test pairs, written here) by path and sha256 before the arrays are dropped.
+    from ai_hydro.modelling.simulation_artifact import RESULT_KEY, simulation_record
+    result[RESULT_KEY] = simulation_record(
+        result, output_dir, eval_obs=result.get("_eval_obs"), eval_pred=result.get("_eval_pred"))
+
     # Drop the private eval arrays the package exposes for CI — the legacy
     # result schema (and the session cache) must not carry full test-set arrays.
     result.pop("_eval_obs", None)

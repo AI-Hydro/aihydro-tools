@@ -935,6 +935,27 @@ def _declared_sources(result: Any) -> List[Dict[str, str]]:
     return []
 
 
+def _stamp_data_nature(attempts: List[Dict[str, str]], result: Any) -> None:
+    """Add ``data_nature`` to the served attempt(s) of a result that records one (in place).
+
+    aihydro-data >= 0.2.10 puts ``data_nature`` (one of six classes) on the ``data_fetch`` result,
+    beside ``spatial_support``; it describes the product that served. It is copied as recorded onto
+    the served attempt whose product is the result's ``product`` (the only served attempt, when
+    there is just one). A result without the field (earlier aihydro-data) leaves the trail, and so
+    the record digest, exactly as before; nothing is inferred from a product name.
+    """
+    from ai_hydro.data.nature import nature_of
+
+    nature = nature_of(result)
+    if not nature or not isinstance(result, dict):
+        return
+    served = [a for a in attempts if a.get("outcome") == "served" or str(a.get("outcome", "")).startswith("succeeded")]
+    product = _real_name(result.get("product"))
+    match = [a for a in served if product and a.get("source") == product] or (served if len(served) == 1 else [])
+    for a in match:
+        a["data_nature"] = nature
+
+
 def _acquires(tool: Optional[str]) -> bool:
     """True for a tool annotated ``acquires = true`` (it fetches external data), from the annotation table."""
     if not tool:
@@ -984,6 +1005,8 @@ def attempt_trail(result: Any, failure: Optional[BaseException] = None, workspac
     - ``basis: "declared_source"``: a successful call of a tool annotated ``acquires = true`` whose result declares
       its source (``product``/``source``, ``data.source``, ``meta.sources``, ``meta.upstream.backend``) and no
       history: one served attempt. That is the declared source, not a recorded chain of attempts.
+    - ``data_nature``: on the served attempt, when the result records one (aihydro-data >= 0.2.10; one of six
+      classes, copied as recorded, never inferred). Absent for a result without the field.
     - A batch fetch (``results``/``errors`` keyed by label) gets one trail per label under ``labels``.
     - ``source_used``: the one source that served, else ``None``; when more than one served, ``sources_used`` lists them
       in order and ``source_used`` is ``None``. ``limitations``: the string ``quality_flags``.
@@ -1024,6 +1047,7 @@ def attempt_trail(result: Any, failure: Optional[BaseException] = None, workspac
     attempts, served, omitted = _normalize(history, ws)
     if not attempts:
         return None
+    _stamp_data_nature(attempts, result)
     # One source served: ``source_used``. Several served (a call that used more than one source, such as land cover
     # plus soil, or one product per variable): ``sources_used`` in order and ``source_used`` null, never "the last".
     used = served[0] if len(served) == 1 else None
