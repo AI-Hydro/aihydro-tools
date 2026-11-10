@@ -372,8 +372,7 @@ def propose_and_train(
     Takes the full typed spec (train_hydro_model is the flat-parameter form of the same gate):
       1. Parses spec_json → ModelSpec (typed, with per-backend conditionals).
       2. Runs static pre-flight validation BEFORE touching the GPU or disk.
-         Invalid science (train/test overlap, seq_length > record, etc.) fails
-         fast with a teaching error explaining WHY and HOW to fix it.
+         Invalid science (period overlap, etc.) fails fast with a teaching error.
       3. Checks that the requested backend can run on this host.
       4. If valid: starts the training job and returns {job_id} immediately.
          Poll with wait_for_job(job_id); retrieve results with get_model_results.
@@ -384,10 +383,8 @@ def propose_and_train(
            "train_start": "2000-10-01", "train_end": "2005-09-30",
            "val_start": "2005-10-01",   "val_end": "2007-09-30",
            "test_start": "2007-10-01", "test_end": "2010-09-30"}
-        Fit (train), select (val) and report (test) periods must be disjoint
-        (endpoints inclusive); validation rejects overlaps.
-
-        Call describe_model_space() first to see all valid fields and ranges.
+        Train, val and test periods must be disjoint (endpoints inclusive).
+        Call describe_model_space() first for valid fields and ranges.
 
     session_id : str | None
         Auto-resolved from chat context if omitted.
@@ -545,15 +542,13 @@ def run_autoresearch(
 
     Proposes -> trains (fast proxy) -> CI-aware keep/discard, repeating until the budget is
     exhausted; the champion is re-trained at full epochs if full_retrain=True. Every run goes to
-    leaderboard.json in the job artifact dir (get_leaderboard(job_id)). A challenger replaces
-    the incumbent only if the paired-difference bootstrap CI on skill(challenger) -
-    skill(incumbent) has ci_lower > 0, not on a higher point estimate.
+    leaderboard.json (get_leaderboard(job_id)). A challenger replaces the incumbent only if the
+    paired-difference bootstrap CI on skill(challenger) - skill(incumbent) has ci_lower > 0.
 
     Parameters
     ----------
     hypothesis : str
-        One sentence: what you expect to improve and why. Recorded in the job and passed to
-        register_research_plan if prereg_id is supplied.
+        One sentence: what you expect to improve and why (recorded in the job).
     backend : str
         "hbv" (default); neural backends are unavailable pending verification.
     strategy : str

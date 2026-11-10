@@ -131,8 +131,8 @@ attributes = [
     "aihydro-data[stac]>=0.2.9,<0.3",
 ]
 
-# Modelling: HBV-light (PyTorch). 0.7.0 removes NeuralHydrology (breaking), so the range spans
-# 0.6.x and 0.7.x; the `nh` extra is no longer requested here.
+# Modelling: HBV-light (PyTorch). NeuralHydrology backends are quarantined in modelling 0.7.0
+# (breaking), so the range spans 0.6.x and 0.7.x; the `nh` extra is no longer requested here.
 # PRIVATE: aihydro-modelling is NOT on PyPI, so this extra cannot be resolved from a
 # public index; it needs access to the private repository. Deliberately excluded from
 # `all` below so `pip install aihydro-tools[all]` resolves for everyone.

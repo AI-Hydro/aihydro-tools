@@ -80,12 +80,28 @@ def test_explicit_camels_is_used_and_labelled(slots, monkeypatch, tmp_path):
     assert data.q_by_date == {"2000-01-01": 0.5}
 
 
-def test_record_states_source_and_nature():
-    sess = metrics.streamflow_record("session")
-    cam = metrics.streamflow_record("camels")
-    assert sess["streamflow_source"] == "session" and "camels" not in sess["streamflow_data_nature"].lower().split()[0]
-    assert cam["streamflow_source"] == "camels" and "CAMELS-US" in cam["streamflow_data_nature"]
-    assert metrics.streamflow_record(None)["streamflow_source"] == "session"
+def test_record_is_exactly_the_closed_source_enum():
+    assert metrics.streamflow_record("session") == {"streamflow_source": "session"}
+    assert metrics.streamflow_record("camels") == {"streamflow_source": "camels"}
+    assert metrics.streamflow_record(None) == {"streamflow_source": "session"}
+
+
+def test_camels_unavailable_carries_the_reason(slots, monkeypatch, tmp_path):
+    """'not in CAMELS' and 'download failed' are told apart (details + message)."""
+    import types
+    ds = types.SimpleNamespace(coords={"station_id": types.SimpleNamespace(
+        values=types.SimpleNamespace(astype=lambda t: ["99999999"]))})
+    monkeypatch.setitem(sys.modules, "pygeohydro", types.SimpleNamespace(get_camels=lambda: (None, ds)))
+    with pytest.raises(ToolError) as e:
+        metrics.extract_basin_data(_session(), "01013500", tmp_path, streamflow_source="camels")
+    assert e.value.details["reason"] == "not_in_camels" and "not_in_camels" in str(e.value.message)
+
+    def boom():
+        raise OSError("dns failure")
+    monkeypatch.setitem(sys.modules, "pygeohydro", types.SimpleNamespace(get_camels=boom))
+    with pytest.raises(ToolError) as e:
+        metrics.extract_basin_data(_session(), "01013500", tmp_path, streamflow_source="camels")
+    assert e.value.details["reason"].startswith("download_failed") and "dns failure" in e.value.details["reason"]
 
 
 def test_missing_session_flow_is_a_structured_error_not_a_camels_fallback(slots, fake_pygeohydro, tmp_path):

@@ -14,13 +14,6 @@ from typing import Any
 STREAMFLOW_SOURCES = ("session", "camels")
 DEFAULT_STREAMFLOW_SOURCE = "session"
 
-_STREAMFLOW_NATURE = {
-    "session": "session-cached discharge fetched by the study (not re-downloaded for training)",
-    "camels": "CAMELS-US benchmark daily discharge (1980-2014, 671 CONUS gauges) "
-              "downloaded through pygeohydro",
-}
-
-
 def normalise_streamflow_source(value: Any) -> str:
     """Return the canonical source name, or raise a structured ``INVALID_STREAMFLOW_SOURCE``."""
     src = DEFAULT_STREAMFLOW_SOURCE if value is None else str(value).strip().lower()
@@ -35,6 +28,7 @@ def normalise_streamflow_source(value: Any) -> str:
 
 
 def streamflow_record(source: Any) -> dict:
-    """The fields that state, in a result / sealed record, which flow series was trained on."""
+    """The field that states, in a result / sealed record, which flow series was trained on
+    (a closed enum; richer data-nature labels come from the data layer, not from here)."""
     src = normalise_streamflow_source(source)
-    return {"streamflow_source": src, "streamflow_data_nature": _STREAMFLOW_NATURE[src]}
+    return {"streamflow_source": src}

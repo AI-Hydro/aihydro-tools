@@ -54,15 +54,18 @@ def fetch_camels_streamflow(gauge_id: str, area_km2: float) -> dict[str, float]:
 
     Uses pygeohydro.get_camels() which returns a 35-year (1980-2014)
     continuous record for 671 CONUS stations.  Discharge is in cfs;
-    converted to mm/day.  Returns empty dict if gauge_id is not in CAMELS.
+    converted to mm/day.  Returns empty dict if gauge_id is not in CAMELS or the download fails; the reason is left on
+    ``fetch_camels_streamflow.last_failure`` (``not_in_camels`` / ``download_failed: ...``).
     """
+    fetch_camels_streamflow.last_failure = None
     try:
         import pygeohydro as gh
         import numpy as np
         _, flow_ds = gh.get_camels()
         station_ids = list(flow_ds.coords["station_id"].values.astype(str))
         if gauge_id not in station_ids:
-            log.info("Gauge %s not in CAMELS (671 stations); using session streamflow.", gauge_id)
+            fetch_camels_streamflow.last_failure = "not_in_camels"
+            log.info("Gauge %s is not in CAMELS (671 stations).", gauge_id)
             return {}
         g = flow_ds.sel(station_id=gauge_id)
         cfs_vals = g["discharge"].values.astype(float)
@@ -74,7 +77,8 @@ def fetch_camels_streamflow(gauge_id: str, area_km2: float) -> dict[str, float]:
         log.info("CAMELS streamflow: %d valid days for gauge %s", len(q_dict), gauge_id)
         return q_dict
     except Exception as exc:
-        log.warning("CAMELS fetch failed (%s); will use session streamflow.", exc)
+        fetch_camels_streamflow.last_failure = f"download_failed: {type(exc).__name__}: {exc}"[:300]
+        log.warning("CAMELS fetch failed (%s).", exc)
         return {}
 
 
@@ -159,11 +163,12 @@ def extract_basin_data(
     if using_camels:
         q_dict = fetch_camels_streamflow(gauge_id, area_km2)
         if not q_dict:
+            reason = getattr(fetch_camels_streamflow, "last_failure", None) or "empty_record"
             raise ToolError(
                 code="CAMELS_STREAMFLOW_UNAVAILABLE",
                 message=(f"streamflow_source='camels' was requested but no CAMELS-US record "
-                         f"could be loaded for gauge {gauge_id} (not one of the 671 CAMELS "
-                         "gauges, or the download failed)."),
+                         f"could be loaded for gauge {gauge_id} (reason: {reason})."),
+                details={"reason": reason},
                 recovery="Fetch the gauge flow into the study (fetch_streamflow_data) and use "
                          "streamflow_source='session'.",
             )

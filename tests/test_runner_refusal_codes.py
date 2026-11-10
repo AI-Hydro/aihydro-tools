@@ -30,3 +30,18 @@ def test_unrelated_exception_with_a_code_is_not_a_refusal():
 
 def test_refusal_without_a_code_is_not_mapped():
     assert _refusal_code(type("LatitudeRequiredError", (Exception,), {})("x")) is None
+
+
+@pytest.mark.parametrize("cls_name", [
+    "BackendQuarantinedError", "UncertaintyHeadQuarantinedError", "QuarantinedError",
+])
+def test_real_modelling_quarantine_classes_map(cls_name):
+    q = pytest.importorskip("aihydro_modelling.quarantine")
+    cls = getattr(q, cls_name, None)
+    if cls is None:
+        pytest.skip(f"{cls_name} not defined in this modelling release")
+    try:
+        exc = cls("x")
+    except TypeError:
+        pytest.skip(f"{cls_name} needs constructor arguments this test cannot guess")
+    assert _refusal_code(exc) == getattr(exc, "code")
