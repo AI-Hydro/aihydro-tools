@@ -49,7 +49,7 @@ def _pending_status(job_id: str, artifact_dir: Path) -> dict:
 
 def _streamflow_source_or_error(value) -> tuple[str | None, dict | None]:
     """Canonical ``streamflow_source`` or a structured error dict."""
-    from ai_hydro.modelling.metrics import normalise_streamflow_source
+    from ai_hydro.modelling.streamflow_source import normalise_streamflow_source
     try:
         return normalise_streamflow_source(value), None
     except Exception as exc:                       # ToolError -> structured dict
