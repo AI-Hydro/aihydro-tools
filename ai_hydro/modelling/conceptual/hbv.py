@@ -42,6 +42,7 @@ def train_hbv_light(
     learning_rate: float = 0.05,
     warm_up:     int = 365,
     spec: Any = None,
+    streamflow_source: str = "session",
 ) -> dict:
     """
     Calibrate a differentiable HBV-light model for a session gauge.
@@ -49,13 +50,22 @@ def train_hbv_light(
     Resolves forcing + observed runoff from the session, then delegates to
     ``aihydro_modelling.backends.hbv.train_hbv``.  Return schema is unchanged.
     """
-    data, _ = extract_basin_data(session, gauge_id, output_dir)
+    data, _ = extract_basin_data(session, gauge_id, output_dir, streamflow_source=streamflow_source)
     if spec is not None:
         from ai_hydro.modelling.spec_gate import require_trainable
         require_trainable(spec, data)
     dates, prcp, tmax, tmin, pet = data.forcing_arrays()
 
+    # Latitude / lineage reach train_hbv only if the installed release accepts them.
+    import inspect
+    accepted = inspect.signature(train_hbv).parameters
+    extra = {k: getattr(data, k) for k in
+             ("latitude", "latitude_deg", "streamflow_source", "streamflow_area_km2",
+              "streamflow_unit_conversion", "streamflow_fallback_reason")
+             if k in accepted and getattr(data, k, None) is not None}
+
     result = train_hbv(
+        **extra,
         dates=dates, prcp=prcp, tmax=tmax, tmin=tmin, pet=pet,
         q_by_date=data.q_by_date, output_dir=output_dir,
         gauge_id=gauge_id, data_source=data.data_source,

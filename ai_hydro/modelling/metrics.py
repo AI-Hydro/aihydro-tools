@@ -11,7 +11,7 @@ data-source agnostic and never reaches into a HydroSession or the network).
 Carve-out boundary:
   • Down in aihydro-modelling : the math + array parsing (re-exported below).
   • Up here (session/fetch)    : ``_load_full_data``, ``fetch_camels_streamflow``,
-                                 ``extract_basin_data``.
+                                 ``extract_basin_data`` (explicit ``streamflow_source``).
 """
 
 from __future__ import annotations
@@ -37,6 +37,12 @@ from aihydro_modelling.metrics import (  # noqa: F401
 
 log = logging.getLogger("ai_hydro.modelling")
 
+from ai_hydro.modelling.streamflow_source import (  # noqa: F401
+    DEFAULT_STREAMFLOW_SOURCE,
+    STREAMFLOW_SOURCES,
+    normalise_streamflow_source,
+    streamflow_record,
+)
 
 # ──────────────────────────────────────────────────────────────────────
 # CAMELS streamflow loader (data fetch — stays up)
@@ -48,15 +54,18 @@ def fetch_camels_streamflow(gauge_id: str, area_km2: float) -> dict[str, float]:
 
     Uses pygeohydro.get_camels() which returns a 35-year (1980-2014)
     continuous record for 671 CONUS stations.  Discharge is in cfs;
-    converted to mm/day.  Returns empty dict if gauge_id is not in CAMELS.
+    converted to mm/day.  Returns empty dict if gauge_id is not in CAMELS or the download fails; the reason is left on
+    ``fetch_camels_streamflow.last_failure`` (``not_in_camels`` / ``download_failed: ...``).
     """
+    fetch_camels_streamflow.last_failure = None
     try:
         import pygeohydro as gh
         import numpy as np
         _, flow_ds = gh.get_camels()
         station_ids = list(flow_ds.coords["station_id"].values.astype(str))
         if gauge_id not in station_ids:
-            log.info("Gauge %s not in CAMELS (671 stations); using session streamflow.", gauge_id)
+            fetch_camels_streamflow.last_failure = "not_in_camels"
+            log.info("Gauge %s is not in CAMELS (671 stations).", gauge_id)
             return {}
         g = flow_ds.sel(station_id=gauge_id)
         cfs_vals = g["discharge"].values.astype(float)
@@ -68,7 +77,8 @@ def fetch_camels_streamflow(gauge_id: str, area_km2: float) -> dict[str, float]:
         log.info("CAMELS streamflow: %d valid days for gauge %s", len(q_dict), gauge_id)
         return q_dict
     except Exception as exc:
-        log.warning("CAMELS fetch failed (%s); will use session streamflow.", exc)
+        fetch_camels_streamflow.last_failure = f"download_failed: {type(exc).__name__}: {exc}"[:300]
+        log.warning("CAMELS fetch failed (%s).", exc)
         return {}
 
 
@@ -108,13 +118,29 @@ def _load_full_data(session: Any, slot: str, gauge_id: str) -> dict:
 # Session → TrainingData bridge (the lsh/session→modelling wiring)
 # ──────────────────────────────────────────────────────────────────────
 
-def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
+def _training_data_fields(cls: Any) -> set[str]:
+    """Field names ``cls`` declares (dataclass or annotated class); empty if unknowable."""
+    import dataclasses
+    if dataclasses.is_dataclass(cls):
+        return {f.name for f in dataclasses.fields(cls)}
+    return set(getattr(cls, "__annotations__", {}) or {})
+
+
+def extract_basin_data(
+    session: Any, gauge_id: str, output_dir: "Path", streamflow_source: str = DEFAULT_STREAMFLOW_SOURCE,
+) -> Any:
     """
     Resolve a HydroSession + gauge into an aihydro_modelling.TrainingData bundle.
 
-    This is the single place the data-source decisions live (CAMELS-vs-session,
+    This is the single place the data-source decisions live (observed-flow source,
     m³/s→mm/day conversion, static-attribute assembly).  The package downstream
     is data-agnostic and only sees the resolved plain arrays.
+
+    ``streamflow_source`` is explicit and never falls back silently:
+      * ``"session"`` (default) — the study's own fetched flow; no network call here.
+        Missing flow raises ``MISSING_STREAMFLOW``.
+      * ``"camels"`` — opt-in CAMELS-US download via pygeohydro.  A gauge that is not in
+        CAMELS (or a failed download) raises ``CAMELS_STREAMFLOW_UNAVAILABLE``.
 
     Returns
     -------
@@ -122,19 +148,40 @@ def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
     """
     from aihydro_modelling import TrainingData
 
+    from aihydro_core.primitives.errors import ToolError
+    source = normalise_streamflow_source(streamflow_source)
+
     from ai_hydro.modelling.gauge import basin_consistency_error
     _bad = basin_consistency_error(session, gauge_id)
     if _bad:
-        from aihydro_core.primitives.errors import ToolError
         raise ToolError(code=_bad["code"], message=_bad["message"], recovery=_bad["recovery"])
 
     area_km2 = session.watershed["data"]["area_km2"]
 
-    # Streamflow: CAMELS first, then session-cached USGS.
-    q_dict = fetch_camels_streamflow(gauge_id, area_km2)
-    using_camels = bool(q_dict)
-    if not using_camels:
-        sf_data = _load_full_data(session, "streamflow", gauge_id)
+    q_dict: dict[str, float] = {}
+    using_camels = source == "camels"
+    if using_camels:
+        q_dict = fetch_camels_streamflow(gauge_id, area_km2)
+        if not q_dict:
+            reason = getattr(fetch_camels_streamflow, "last_failure", None) or "empty_record"
+            raise ToolError(
+                code="CAMELS_STREAMFLOW_UNAVAILABLE",
+                message=(f"streamflow_source='camels' was requested but no CAMELS-US record "
+                         f"could be loaded for gauge {gauge_id} (reason: {reason})."),
+                details={"reason": reason},
+                recovery="Fetch the gauge flow into the study (fetch_streamflow_data) and use "
+                         "streamflow_source='session'.",
+            )
+    else:
+        try:
+            sf_data = _load_full_data(session, "streamflow", gauge_id)
+        except ValueError as exc:
+            raise ToolError(
+                code="MISSING_STREAMFLOW",
+                message=f"streamflow_source='session' but the study has no usable flow: {exc}",
+                recovery="Run fetch_streamflow_data for this gauge, or pass "
+                         "streamflow_source='camels' to opt in to the CAMELS-US record.",
+            ) from exc
         sf_idx = {d[:10]: i for i, d in enumerate(sf_data["dates"])}
         for d, i in sf_idx.items():
             q_mm = _q_cms_to_mm_day(sf_data["q_cms"][i], area_km2)
@@ -147,9 +194,11 @@ def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
     camels_data: dict = (session.camels or {}).get("data", {}) if session.camels else {}
     ws_data: dict = session.watershed["data"]
     static_attrs = dict(camels_data)
-    static_attrs.setdefault("area_gages2", ws_data.get("area_km2"))
-    static_attrs.setdefault("gauge_lat", ws_data.get("gauge_lat"))
-    static_attrs.setdefault("gauge_lon", ws_data.get("gauge_lon"))
+    # An existing None must not shadow the watershed value (setdefault keeps it).
+    for _k in ("area_gages2", "gauge_lat", "gauge_lon"):
+        _v = ws_data.get("area_km2" if _k == "area_gages2" else _k)
+        if static_attrs.get(_k) is None and _v is not None:
+            static_attrs[_k] = _v
 
     # Label the forcing with the product(s) the forcing tool actually served
     # (its "product" field joins each variable's served product), not an
@@ -157,7 +206,7 @@ def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
     forcing_product = str(forcing.get("product") or "").strip() or "unknown-forcing"
     data_source = f"{'CAMELS' if using_camels else 'USGS'}+{forcing_product}"
 
-    data = TrainingData(
+    kwargs: dict[str, Any] = dict(
         gauge_id=gauge_id,
         output_dir=Path(output_dir),
         forcing=forcing,
@@ -165,4 +214,19 @@ def extract_basin_data(session: Any, gauge_id: str, output_dir: "Path") -> Any:
         static_attrs=static_attrs,
         data_source=data_source,
     )
+    # Lineage / latitude fields exist only in newer aihydro-modelling releases; pass each one
+    # only if the installed TrainingData declares it, so older releases keep working.
+    lat = static_attrs.get("gauge_lat")
+    optional = {
+        "streamflow_source": source,
+        "streamflow_area_km2": area_km2,
+        "streamflow_unit_conversion": ("cfs -> mm/day via basin area" if using_camels
+                                       else "m3/s -> mm/day via basin area"),
+        "streamflow_fallback_reason": None,     # there is no fallback: the source is explicit
+        "latitude": lat,
+        "latitude_deg": lat,
+    }
+    declared = _training_data_fields(TrainingData)
+    kwargs.update({k: v for k, v in optional.items() if k in declared})
+    data = TrainingData(**kwargs)
     return data, data_source

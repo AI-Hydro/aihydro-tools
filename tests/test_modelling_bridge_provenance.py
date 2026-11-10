@@ -54,6 +54,7 @@ def test_camels_streamflow_keeps_camels_label(slots, monkeypatch, tmp_path):
     slots["product"] = "GRIDMET_PRECIP"
     monkeypatch.setattr(metrics, "fetch_camels_streamflow", lambda *a, **k: {"2000-01-01": 0.5})
 
-    _, label = metrics.extract_basin_data(_session(), "01013500", tmp_path)
+    # CAMELS is explicit now: the default never reaches fetch_camels_streamflow.
+    _, label = metrics.extract_basin_data(_session(), "01013500", tmp_path, streamflow_source="camels")
 
     assert label == "CAMELS+GRIDMET_PRECIP"
