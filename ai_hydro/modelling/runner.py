@@ -59,22 +59,28 @@ def _write_status(
     status_path.write_text(json.dumps(payload, indent=2))
 
 
+#: Modelling refusals recognised by exception class name (duck-typed on ``.code`` so this holds
+#: whether or not the class exists in the installed aihydro-modelling release).
+_MODELLING_REFUSALS = frozenset({
+    "QuarantinedError", "BackendQuarantinedError", "UncertaintyHeadQuarantinedError",
+    "LatitudeRequiredError", "WaterBalanceError", "InsufficientDataError",
+})
+
+
 def _refusal_code(exc: BaseException) -> str | None:
     """The code of an exception that is a deliberate refusal, else None (not any ``.code``)."""
-    types: list[type] = []
+    code = getattr(exc, "code", None)
+    if not code:
+        return None
     try:
         from aihydro_core.primitives.errors import ToolError
-        types.append(ToolError)
+        if isinstance(exc, ToolError):
+            return str(code)
     except ImportError:
         pass
-    try:
-        from aihydro_modelling.backends.hbv import InsufficientDataError
-        types.append(InsufficientDataError)
-    except ImportError:
-        pass
-    if types and isinstance(exc, tuple(types)):
-        code = getattr(exc, "code", None)
-        return str(code) if code else None
+    # Any class in the MRO named as a modelling refusal (covers subclasses too).
+    if any(c.__name__ in _MODELLING_REFUSALS for c in type(exc).__mro__):
+        return str(code)
     return None
 
 

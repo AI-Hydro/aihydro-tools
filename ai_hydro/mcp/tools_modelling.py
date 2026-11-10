@@ -77,9 +77,8 @@ def train_hydro_model(
     """
     Kick off a model training job (detached subprocess). Returns {job_id}
     immediately — poll with get_training_status (≤1× per minute).
-    Requires watershed+forcing (HBV) or watershed+streamflow+forcing (LSTM).
-    framework: hbv (HBV-light, default) | neuralhydrology (LSTM, needs pip
-    install neuralhydrology). model (NH only): cudalstm | ealstm | transformer.
+    Requires watershed+forcing+streamflow (unless streamflow_source='camels').
+    framework: hbv (HBV-light, default). Neural backends are unavailable pending verification.
     epochs / learning_rate / n_restarts / hidden_size: leave unset for the backend's own
     defaults (HBV 500 epochs, lr 0.05; neural 30 epochs, lr 0.001).
     streamflow_source: where the observed discharge comes from, recorded in the result.
@@ -89,7 +88,7 @@ def train_hydro_model(
     (a gauge outside CAMELS is an error, never a silent fallback to session flow).
     The request goes through the same gate as propose_and_train: periods must be disjoint
     (train < val < test), values in range, and the backend available.
-    Typical runtime: 2-15 min (HBV), 15-60 min (LSTM).
+    Typical runtime: 2-15 min (HBV).
     """
     try:
         session_id = _resolve_session(session_id, None)
@@ -204,7 +203,7 @@ def train_hydro_model(
                 "a single call blocks server-side at zero token cost until the job "
                 "finishes; do NOT poll get_training_status in a loop. "
                 f"Cancel with cancel_job('{job['job_id']}'). "
-                "Typical runtime: 2-15 min (HBV), 15-60 min (LSTM)."
+                "Typical runtime: 2-15 min (HBV)."
             ),
             "wait_with": f"wait_for_job('{job['job_id']}')",
         }
@@ -516,7 +515,7 @@ def propose_and_train(
                 f"Wait with wait_for_job('{job['job_id']}') — "
                 "a single call blocks server-side at zero token cost until done. "
                 f"Cancel with cancel_job('{job['job_id']}'). "
-                "Typical runtime: 2–15 min (HBV), 15–60 min (neural)."
+                "Typical runtime: 2–15 min (HBV)."
             ),
             "wait_with": f"wait_for_job('{job['job_id']}')",
         }
@@ -556,7 +555,7 @@ def run_autoresearch(
         One sentence: what you expect to improve and why. Recorded in the job and passed to
         register_research_plan if prereg_id is supplied.
     backend : str
-        "hbv" (default), "nh_lstm", "nh_ealstm", ...; describe_model_space() lists what is available.
+        "hbv" (default); neural backends are unavailable pending verification.
     strategy : str
         "random" (default) or "grid".
     budget_hours : float | None

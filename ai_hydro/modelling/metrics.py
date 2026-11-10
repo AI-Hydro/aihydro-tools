@@ -189,9 +189,11 @@ def extract_basin_data(
     camels_data: dict = (session.camels or {}).get("data", {}) if session.camels else {}
     ws_data: dict = session.watershed["data"]
     static_attrs = dict(camels_data)
-    static_attrs.setdefault("area_gages2", ws_data.get("area_km2"))
-    static_attrs.setdefault("gauge_lat", ws_data.get("gauge_lat"))
-    static_attrs.setdefault("gauge_lon", ws_data.get("gauge_lon"))
+    # An existing None must not shadow the watershed value (setdefault keeps it).
+    for _k in ("area_gages2", "gauge_lat", "gauge_lon"):
+        _v = ws_data.get("area_km2" if _k == "area_gages2" else _k)
+        if static_attrs.get(_k) is None and _v is not None:
+            static_attrs[_k] = _v
 
     # Label the forcing with the product(s) the forcing tool actually served
     # (its "product" field joins each variable's served product), not an
@@ -209,7 +211,7 @@ def extract_basin_data(
     )
     # Lineage / latitude fields exist only in newer aihydro-modelling releases; pass each one
     # only if the installed TrainingData declares it, so older releases keep working.
-    lat = ws_data.get("gauge_lat")
+    lat = static_attrs.get("gauge_lat")
     optional = {
         "streamflow_source": source,
         "streamflow_area_km2": area_km2,

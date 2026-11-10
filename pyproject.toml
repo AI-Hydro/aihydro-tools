@@ -131,14 +131,15 @@ attributes = [
     "aihydro-data[stac]>=0.2.9,<0.3",
 ]
 
-# Modelling: HBV-light (PyTorch), NeuralHydrology LSTM.
+# Modelling: HBV-light (PyTorch). 0.7.0 removes NeuralHydrology (breaking), so the range spans
+# 0.6.x and 0.7.x; the `nh` extra is no longer requested here.
 # PRIVATE: aihydro-modelling is NOT on PyPI, so this extra cannot be resolved from a
 # public index; it needs access to the private repository. Deliberately excluded from
 # `all` below so `pip install aihydro-tools[all]` resolves for everyone.
 # Heavy ML stacks live behind the aihydro-modelling extras (the package the
 # tools-side modelling/ adapters delegate to).
 modelling = [
-    "aihydro-modelling[torch,nh]>=0.6.2,<0.7",
+    "aihydro-modelling[torch]>=0.6.2,<0.8",
 ]
 
 # MCP server extras (fastmcp is already a core dep; this group is a no-op placeholder)

@@ -146,3 +146,11 @@ def test_lineage_and_latitude_pass_only_when_training_data_declares_them(slots, 
     assert new.streamflow_fallback_reason is None
     assert new.latitude == new.latitude_deg == 39.2
     assert "m3/s" in new.streamflow_unit_conversion
+
+
+def test_none_gauge_lat_in_static_attrs_is_replaced_by_the_watershed_value(slots, tmp_path):
+    sess = _session()
+    sess.camels = {"data": {"gauge_lat": None, "area_gages2": None}}
+    data, _ = metrics.extract_basin_data(sess, "01013500", tmp_path)
+    assert data.static_attrs["gauge_lat"] == 39.2
+    assert data.static_attrs["area_gages2"] == 100.0
