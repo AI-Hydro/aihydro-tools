@@ -50,12 +50,18 @@ MAX_CONSECUTIVE_PERIOD_FAILURES = 3
 _SIZE_ERROR_RE = re.compile(r"request size|must be less than or equal to \d+|payload size|too large", re.I)
 
 
-def _request_key(request: dict) -> str:
-    """Short stable key of a spectral-index request (sensor, window, frequency, masking, resolution mode)."""
+def _norm_sensor(sensor: str) -> str:
+    """``Landsat-8`` / ``landsat_8`` / ``LANDSAT8`` -> ``landsat8`` (one cache key per sensor)."""
+    return re.sub(r"[^a-z0-9]", "", str(sensor).lower())
+
+
+def _request_key(request: dict, basin_digest: "str | None" = None) -> str:
+    """Short stable key of a spectral-index request (sensor, window, frequency, masking, resolution mode, basin)."""
     from aihydro_core.primitives.hashing import param_hash
 
-    return str(param_hash({k: (v.lower() if isinstance(v, str) and k == "sensor" else v)
-                           for k, v in request.items()}))[:12]
+    key = {k: (_norm_sensor(v) if k == "sensor" else v) for k, v in request.items()}
+    key["basin"] = basin_digest
+    return str(param_hash(key))[:12]
 
 
 def _is_size_error(exc: BaseException) -> bool:
@@ -97,9 +103,11 @@ def _fetch_period(aihydro_data, *, pinned_product, idx_key, geometry_arg, p_star
     if pinned_product:
         pin = dict(mode="manual", product=pinned_product)
         r, exc = _try("pinned_strict", **pin, fallback=[], native_resolution=native_resolution)
-        if r is None and not native_resolution and _is_size_error(exc):
+        size_hit = r is None and _is_size_error(exc)
+        if size_hit and not native_resolution:
             r, exc = _try("pinned_strict_tiled_native", **pin, fallback=[], native_resolution=True)
-        if r is None and not _is_size_error(exc):
+            size_hit = True        # a size error was seen: no other host is asked, whatever the retry returned
+        if r is None and not size_hit:
             r, exc = _try("policy_chain", **pin, native_resolution=native_resolution)
     else:
         r, exc = _try("policy_chain", native_resolution=native_resolution)
@@ -198,6 +206,12 @@ async def compute_spectral_index(
         if start is None:
             start = (today.replace(year=today.year - 1)).isoformat()
 
+        # ── Resolve geometry ─────────────────────────────────────────────
+        from ai_hydro.mcp.tools_analysis import _resolve_session_geometry
+        from shapely.geometry import shape as _shape
+        watershed_geojson = _resolve_session_geometry(session_id, None)
+        watershed_shapely = _shape(watershed_geojson)
+
         # ── Check session cache (keyed by the request's parameters) ──────
         # One slot per distinct request, so a second call with a different window, sensor or frequency computes
         # its own result instead of colliding with (or being refused because of) the first. ``index_<name>`` still
@@ -205,19 +219,16 @@ async def compute_spectral_index(
         request = {"sensor": sensor, "start": start, "end": end, "frequency": frequency,
                    "mask_clouds": bool(mask_clouds), "native_resolution": bool(native_resolution)}
         slot_name = f"index_{idx_key.lower()}"
-        keyed_slot = f"{slot_name}__{_request_key(request)}"
+        # The basin is part of the key (and the slots are basin-gated in the session, see basin_identity), so a
+        # re-delineated or different basin never reads another basin's index.
+        from ai_hydro.session.basin_identity import geometry_digest
+        keyed_slot = f"{slot_name}__{_request_key(request, geometry_digest(watershed_geojson))}"
         cached = session.get(keyed_slot)
         if cached is not None:
             log.debug("compute_spectral_index: returning cached %s (%s) for session %s",
                       idx_key, keyed_slot, session_id)
             cached["_cached"] = True
             return cached
-
-        # ── Resolve geometry ─────────────────────────────────────────────
-        from ai_hydro.mcp.tools_analysis import _resolve_session_geometry
-        from shapely.geometry import shape as _shape
-        watershed_geojson = _resolve_session_geometry(session_id, None)
-        watershed_shapely = _shape(watershed_geojson)
 
         # ── Fetch data ───────────────────────────────────────────────────
         # Strategy: try fetching the index directly as a variable

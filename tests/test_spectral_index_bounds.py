@@ -163,3 +163,56 @@ def test_partial_stack_is_flagged_and_not_cached(tool_env):
     assert a["partial"] is True and a["stopped_early"]["limit"] == 3
     assert a["periods_not_attempted"][0]["period"] == "2022-01-01" and a["resolution_m"] == 33.0
     assert m.call_count == 2                                            # the gap is retried, not replayed
+
+
+# ---- review fixes -----------------------------------------------------------------------------------------------------
+def test_size_error_then_503_on_the_tiled_retry_asks_no_other_host():
+    calls = []
+
+    def fetch(**kw):
+        calls.append(kw)
+        raise RuntimeError(EE_SIZE if not kw.get("native_resolution") else "503 Service Unavailable")
+
+    with _install(fetch):
+        out = _run(None, "2021-01-01", "2021-12-31")
+    assert out["code"] == "FETCH_ERROR" and len(calls) == 2              # no third call (policy chain)
+    assert all(c.get("fallback") == [] for c in calls)
+
+
+def test_sensor_aliases_share_one_cache_key():
+    r = {"sensor": "landsat8", "start": "a", "end": "b"}
+    assert ti._request_key(r, "d") == ti._request_key({**r, "sensor": "Landsat-8"}, "d")
+    assert ti._request_key(r, "d") != ti._request_key(r, "other")
+
+
+def test_redelineated_basin_does_not_get_the_previous_basin_index(tool_env):
+    polys = {"A": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+             "B": {"type": "Polygon", "coordinates": [[[5, 5], [6, 5], [6, 6], [5, 6], [5, 5]]]}}
+    cur = {"b": "A"}
+    vals = {"A": 0.2, "B": 0.9}
+
+    def fake(**kw):
+        v = vals[cur["b"]]
+        return {"index_da": xr.DataArray(np.full((3, 3), v, dtype="float32"), dims=("y", "x")),
+                "time_axis": None, "period_stats": [], "period_failures": [], "fetch_records": []}
+
+    with patch("ai_hydro.mcp.tools_analysis._resolve_session_geometry", side_effect=lambda *a, **k: polys[cur["b"]]), \
+         patch("ai_hydro.mcp.tools_indices._fetch_and_compute_index", side_effect=fake) as m:
+        a = _call(start="2020-01-01", end="2020-12-31")
+        cur["b"] = "B"
+        b = _call(start="2020-01-01", end="2020-12-31")
+    assert a["data"]["mean"] == pytest.approx(0.2)
+    assert b["data"]["mean"] == pytest.approx(0.9) and not b.get("_cached") and m.call_count == 2
+
+
+def test_redelineation_drops_index_slots_including_the_alias(tmp_path):
+    from unittest.mock import patch as _p
+    with _p("ai_hydro.session.store._SESSIONS_DIR", tmp_path), _p("ai_hydro.session.store._REPO_ROOT", tmp_path):
+        s = HydroSession("rd")
+        gj = lambda x: {"data": {"geometry": {"type": "Polygon", "coordinates": [[[x, x], [x + 1, x], [x + 1, x + 1], [x, x + 1], [x, x]]]}, "area_km2": 1.0}, "meta": {}}
+        s.set("watershed", gj(0))
+        s.set("index_ndvi", {"data": {"mean": 0.2}})
+        s.set("index_ndvi__abc", {"data": {"mean": 0.2}})
+        assert s.get("index_ndvi") is not None and s.get("index_ndvi__abc") is not None
+        s.set("watershed", gj(5))
+        assert s.get("index_ndvi") is None and s.get("index_ndvi__abc") is None
