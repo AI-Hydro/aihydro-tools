@@ -506,3 +506,37 @@ def test_wet_day_frequency_is_on_the_monthly_basis(monkeypatch):
     assert r["wet_day_frequency"] is None and "wet_day_reason" in r
     # the pre-fix ratio over the days that had a value would have read 0.97, not 0.5
     assert float((gap["prcp_mm"] > 1.0).sum() / gap["prcp_mm"].notna().sum()) > 0.8
+
+
+def test_source_calendar_is_derived_from_the_dates_not_only_the_product_name():
+    """DEMO-1 F13: a GridMET-named forcing that holds every leap 31 Dec has the standard calendar."""
+    from ai_hydro.mcp.tools_analysis import _source_calendar
+
+    full = pd.date_range("2000-10-01", "2004-09-30", freq="D")                       # span holds one leap 31 Dec (2000)
+    skipped = full[~((full.month == 12) & (full.day == 31) & full.is_leap_year)]
+    base = {"product": "GRIDMET_PRECIP", "variable_provenance": {"prcp_mm": {"product": "GRIDMET_PRECIP"}}}
+    assert _source_calendar({**base, "dates": _iso(skipped)}) == "no_leap_dec31"
+    assert _source_calendar({**base, "dates": _iso(full)}) is None                    # day present: standard calendar
+    part = full[~((full.year == 2000) & (full.month == 12) & (full.day == 31))]       # only one of one missing -> absent
+    assert _source_calendar({**base, "dates": _iso(part)}) == "no_leap_dec31"
+    two = pd.date_range("2000-10-01", "2008-09-30", freq="D")
+    mixed = two[~((two.year == 2000) & (two.month == 12) & (two.day == 31))]          # 2000 missing, 2004 present
+    assert _source_calendar({**base, "dates": _iso(mixed)}) is None
+    nolap = pd.date_range("2001-01-01", "2002-12-31", freq="D")                       # no leap 31 Dec in span
+    assert _source_calendar({**base, "dates": _iso(nolap)}) is None
+
+
+def test_drought_tool_reports_standard_calendar_when_leap_dec31_is_present():
+    from ai_hydro.mcp.tools_analysis import compute_drought_index
+
+    d = pd.date_range("1989-10-01", "2019-09-30", freq="D")                          # every day, leap 31 Dec included
+    p = np.random.default_rng(1).gamma(0.5, 6, d.size)
+    s = HydroSession(SID)
+    path = store.write_session_data_file(SID, "forcing_gm_full.json", {
+        "dates": _iso(d), "prcp_mm": p.tolist(), "n_days": len(d), "product": "GRIDMET_PRECIP",
+        "variable_provenance": {"prcp_mm": {"product": "GRIDMET_PRECIP"}}})
+    s.set("forcing", {"data": {"n_days": len(d), "_data_file": path}, "meta": {}})
+    s.save()
+    r = compute_drought_index(SID, index="spi", scale_months=12)
+    assert not r.get("error"), r
+    assert r["source_calendar"] is None

@@ -4045,7 +4045,35 @@ def _source_calendar(data, columns=("prcp_mm",)) -> str | None:
         if not name:
             return None
         names.append(str(name))
-    return "no_leap_dec31" if names and all(_product_skips_leap_dec31(n) for n in names) else None
+    if not (names and all(_product_skips_leap_dec31(n) for n in names)):
+        return None
+    # The product name only says the calendar COULD lack 31 Dec of a leap year. The dates decide: the label is
+    # given only when the record's span contains a leap-year 31 Dec and none of them is present. A forcing that
+    # does hold the day (another source, or injected values) has the standard calendar, and a missing value on
+    # such a day is a real gap that must stay one. A forcing that carries no dates cannot be checked here
+    # (the kernel is given the dates separately), so the product's calendar stands.
+    dates = data.get("dates")
+    if dates is None or not hasattr(dates, "__len__") or len(dates) == 0:
+        return "no_leap_dec31"
+    return "no_leap_dec31" if _leap_dec31_presence(dates) == "all_absent" else None
+
+
+def _leap_dec31_presence(dates) -> str:
+    """How the record holds 31 Dec of leap years inside its own span: ``"all_absent"`` | ``"all_present"`` |
+    ``"mixed"`` | ``"none_in_span"``. Read from the dates themselves."""
+    import pandas as pd
+
+    idx = pd.DatetimeIndex(pd.to_datetime(list(dates), errors="coerce").dropna())
+    if idx.size == 0:
+        return "none_in_span"
+    have = set(idx.normalize())
+    expected = [pd.Timestamp(year=y, month=12, day=31) for y in range(idx.min().year, idx.max().year + 1)
+                if pd.Timestamp(year=y, month=1, day=1).is_leap_year]
+    expected = [t for t in expected if idx.min() <= t <= idx.max()]
+    if not expected:
+        return "none_in_span"
+    n_present = sum(t in have for t in expected)
+    return "all_absent" if n_present == 0 else ("all_present" if n_present == len(expected) else "mixed")
 
 
 @mcp.tool()

@@ -4,6 +4,12 @@ All notable changes to the `aihydro-tools` Python package are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`compute_drought_index` derives `source_calendar` from the forcing's dates (DEMO-1 rehearsal F13).** The label `no_leap_dec31` was given whenever the forcing product was GridMET/Daymet by name, even when the forcing held 31 December of every leap year in its span (rehearsal: a forcing with the day present was reported as missing it, so the kernel would have forgiven a real gap on that day). Now the product check is only a precondition: the label is given only if the record's span contains at least one leap-year 31 Dec and none is present. All present, a mix, or none in the span gives `source_calendar: null`. A forcing without a `dates` array keeps the product-based answer (it cannot be checked). Tests: `tests/test_period_integrity.py` (2 new; both fail on the previous code).
+
 ## [2.11.0] - 2026-11-10
 
 ### Changed
