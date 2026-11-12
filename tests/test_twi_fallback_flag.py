@@ -29,12 +29,12 @@ def _hydro_result(dem_product: str):
     return HydroResult(data=_stats(dem_product), meta=HydroMeta(tool="stub", version="0", gauge_id=None, sources=[], params={}))
 
 
-async def _run(tmp_path, *, full_raises: bool, dem_product: str, create_map: bool = True):
+async def _run(tmp_path, *, full_raises: bool, dem_product: str, create_map: bool = True, exc=None):
     from ai_hydro.session import HydroSession
 
     def _full(*a, **k):
         if full_raises:
-            raise RuntimeError("DEM tile read failed")
+            raise (exc if exc is not None else RuntimeError("DEM tile read failed"))
         return {**_stats(dem_product), "files_saved": []}
 
     with patch("ai_hydro.session.store._SESSIONS_DIR", tmp_path), \
@@ -89,3 +89,11 @@ def test_map_source_caption_derives_from_dem_product():
     assert "GLO30" in _dem_map_source("GLO30")
     assert "py3dep" not in _dem_map_source("GLO30")
     assert "not reported" in _dem_map_source(None)
+
+
+@pytest.mark.asyncio
+async def test_exception_with_empty_message_is_still_flagged(tmp_path):
+    out, _ = await _run(tmp_path, full_raises=True, dem_product="GLO30", exc=AssertionError())
+    d = out["data"]
+    assert d["twi_method"] == "fallback" and "AssertionError" in d["twi_method_reason"]
+    assert "_visualization_warning" in out

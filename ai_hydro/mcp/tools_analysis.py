@@ -2193,7 +2193,7 @@ async def compute_twi(
                 log.warning(
                     "TWI full computation failed, falling back to stats only: %s", viz_err
                 )
-                viz_failed = str(viz_err)
+                viz_failed = f"{type(viz_err).__name__}: {viz_err}"
 
         # Fallback: statistics only (workspace missing, create_map=False,
         # or full computation raised a fatal error)
@@ -2209,9 +2209,10 @@ async def compute_twi(
         if isinstance(_data, dict):
             d["meta"]["dem_product"] = _data.get("dem_product")
             d["meta"]["dem_source"] = _data.get("dem_source")
-            if viz_failed:
+            if viz_failed is not None:
                 # The full path (rasters + map) failed and this is the statistics-only path: say so in the data
-                # itself, where a consumer reads ``twi_method``. aihydro-watershed's own value (it reports "full"
+                # itself, where a consumer reads ``twi_method``. "fallback" here means "no rasters or map"; it is
+                # not a different numeric method. aihydro-watershed's own value (it reports "full"
                 # for its stats computation) is kept as ``package_twi_method``; the package's reason, mask basis
                 # and valid-cell count pass through unchanged.
                 _data["package_twi_method"] = _data.get("twi_method")
@@ -2230,7 +2231,7 @@ async def compute_twi(
                 "No workspace directory set — statistics only, no map files saved. "
                 "Call delineate_watershed(session_id, workspace_dir=<path>) to enable file output."
             )
-        elif viz_failed:
+        elif viz_failed is not None:
             d["_visualization_warning"] = (
                 f"Full TWI computation failed ({viz_failed[:200]}); "
                 "statistics computed via fallback. No map files generated."
