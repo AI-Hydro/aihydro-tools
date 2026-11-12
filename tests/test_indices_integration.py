@@ -281,7 +281,9 @@ class TestComputeSpectralIndexMocked:
 
         with patch("ai_hydro.mcp.helpers._resolve_session", return_value="test01"), \
              patch("ai_hydro.mcp.helpers._maybe_set_workspace"), \
-             patch("ai_hydro.session.HydroSession.load", return_value=fake_session):
+             patch("ai_hydro.session.HydroSession.load", return_value=fake_session), \
+             patch("ai_hydro.mcp.tools_analysis._resolve_session_geometry",   # resolved before the cache lookup
+                   return_value={"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}):
             result = self._run(index_name="NDWI", session_id="test01",
                                start="2024-01-01", end="2024-06-30")
 
