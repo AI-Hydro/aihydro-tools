@@ -512,7 +512,7 @@ def test_source_calendar_is_derived_from_the_dates_not_only_the_product_name():
     """DEMO-1 F13: a GridMET-named forcing that holds every leap 31 Dec has the standard calendar."""
     from ai_hydro.mcp.tools_analysis import _source_calendar
 
-    full = pd.date_range("2000-10-01", "2004-09-30", freq="D")                       # holds 31 Dec 2000 and 2003? (2000 is leap)
+    full = pd.date_range("2000-10-01", "2004-09-30", freq="D")                       # span holds one leap 31 Dec (2000)
     skipped = full[~((full.month == 12) & (full.day == 31) & full.is_leap_year)]
     base = {"product": "GRIDMET_PRECIP", "variable_provenance": {"prcp_mm": {"product": "GRIDMET_PRECIP"}}}
     assert _source_calendar({**base, "dates": _iso(skipped)}) == "no_leap_dec31"
