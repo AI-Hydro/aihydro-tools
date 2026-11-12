@@ -4090,7 +4090,10 @@ def _source_calendar(data, columns=("prcp_mm",)) -> str | None:
     dates = data.get("dates")
     if dates is None or not hasattr(dates, "__len__") or len(dates) == 0:
         return "no_leap_dec31"
-    return "no_leap_dec31" if _leap_dec31_presence(dates) == "all_absent" else None
+    try:
+        return "no_leap_dec31" if _leap_dec31_presence(dates) == "all_absent" else None
+    except Exception:  # malformed dates: the calendar cannot be established, so none is claimed
+        return None
 
 
 def _leap_dec31_presence(dates) -> str:
@@ -4099,6 +4102,8 @@ def _leap_dec31_presence(dates) -> str:
     import pandas as pd
 
     idx = pd.DatetimeIndex(pd.to_datetime(list(dates), errors="coerce").dropna())
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)          # a tz-aware record compares by calendar date, like a naive one
     if idx.size == 0:
         return "none_in_span"
     have = set(idx.normalize())

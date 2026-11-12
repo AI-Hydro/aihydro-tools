@@ -19,7 +19,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Documentation
 
-- **Which USDA Soil Data Access host is tried (DEMO-1 rehearsal F12).** New `docs/network-hosts.md`: the soil-table step contacts `sdmdataaccess.nrcs.usda.gov` first and only (`SDA_URL` in aihydro-watershed), not the older `sdmdataaccess.sc.egov.usda.gov`; it retries 4 times and then calls `curl` to the same URL, so an allow-list run must route `curl` through its proxy as well. No code changed: the constant lives in aihydro-watershed, and no alternative canonical host was verified.
+- **Which USDA Soil Data Access host is tried, per aihydro-watershed version (DEMO-1 rehearsal F12).** New `docs/network-hosts.md`: every version read contacts `sdmdataaccess.nrcs.usda.gov` first and only (`SDA_URL` in aihydro-watershed), not the older `sdmdataaccess.sc.egov.usda.gov`. Transport differs: 0.4.0-0.4.4 retry with `requests` and then call a `curl` subprocess to the same URL (it bypasses proxies; read in 0.4.4, observed in 0.4.3, 0.4.0-0.4.2 not read); 0.4.5 and later use `requests` only (4 attempts, sleeps 2, 4, 6 s between attempts), raise on failure, and `fetch_soil_data` falls back to POLARIS. `soils.blob.core.windows.net` is marked unverified (it comes from STAC asset hrefs). No alternative canonical host was verified; the constant lives in aihydro-watershed. Also: `_leap_dec31_presence` (from #65) strips time zones before comparing dates, and malformed dates give `source_calendar: null`; test in `tests/test_period_integrity.py`.
 
 ## [2.11.0] - 2026-11-10
 

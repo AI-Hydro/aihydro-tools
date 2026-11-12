@@ -540,3 +540,14 @@ def test_drought_tool_reports_standard_calendar_when_leap_dec31_is_present():
     r = compute_drought_index(SID, index="spi", scale_months=12)
     assert not r.get("error"), r
     assert r["source_calendar"] is None
+
+
+def test_source_calendar_handles_tz_aware_and_malformed_dates():
+    from ai_hydro.mcp.tools_analysis import _source_calendar
+
+    base = {"product": "GRIDMET_PRECIP", "variable_provenance": {"prcp_mm": {"product": "GRIDMET_PRECIP"}}}
+    d = pd.date_range("2000-10-01", "2001-09-30", freq="D", tz="UTC")
+    skipped = d[~((d.month == 12) & (d.day == 31))]
+    assert _source_calendar({**base, "dates": [t.isoformat() for t in skipped]}) == "no_leap_dec31"
+    assert _source_calendar({**base, "dates": [t.isoformat() for t in d]}) is None
+    assert _source_calendar({**base, "dates": [object(), {"a": 1}]}) is None
