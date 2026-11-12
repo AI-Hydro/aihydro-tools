@@ -1990,6 +1990,26 @@ def extract_geomorphic_parameters(
 # Tool: Topographic Wetness Index
 # ============================================================================
 
+def _dem_citation_keys(dem_product: "str | None") -> list[str]:
+    """Citation keys for the DEM product that actually served a TWI run.
+
+    Derived from ``dem_product`` (what aihydro-watershed reports it fetched), never assumed: 3DEP products cite
+    ``usgs_3dep``, Copernicus GLO-30 products ``copernicus_glo30``. An unknown or unreported product adds no
+    DEM citation rather than naming a source that may not have been used.
+    """
+    p = str(dem_product or "").upper()
+    if p.startswith(("DEM3DEP", "3DEP")):
+        return ["usgs_3dep"]
+    if p.startswith("GLO30"):
+        return ["copernicus_glo30"]
+    return []
+
+
+def _dem_map_source(dem_product: "str | None") -> str:
+    """Map-layer ``source`` caption derived from ``dem_product`` (not a fixed 'py3dep')."""
+    return f"pysheds + {dem_product}" if dem_product else "pysheds (DEM product not reported)"
+
+
 @mcp.tool()
 async def compute_twi(
     session_id: str | None = None,
@@ -2109,8 +2129,10 @@ async def compute_twi(
                     },
                 }
                 # C2: store under feature-keyed three-level slot
+                d["meta"]["dem_product"] = stats.get("dem_product")
+                d["meta"]["dem_source"] = stats.get("dem_source")
                 session.put_result("twi", _feature_id, _params_key, d)
-                session.add_citations(["usgs_3dep", "copernicus_glo30"])
+                session.add_citations(_dem_citation_keys(stats.get("dem_product")))
                 await run_off_loop(session.commit)
                 d["_files_saved"] = files
                 d["feature_id"] = _feature_id
@@ -2145,7 +2167,7 @@ async def compute_twi(
                                 auto_zoom=False,
                                 metadata={
                                     "session_id": session_id,
-                                    "source": "pysheds + py3dep",
+                                    "source": _dem_map_source(result.get("dem_product")),
                                     **({"raster_source_path": str(twi_raster_path), "twi_raster_path": str(twi_raster_path)}
                                        if twi_raster_path else {}),
                                 },
@@ -2183,9 +2205,21 @@ async def compute_twi(
         # Inject computed_at + feature_id into meta
         d.setdefault("meta", {})["feature_id"] = _feature_id
         d.setdefault("meta", {})["computed_at"] = _now_iso()
+        _data = d.get("data")
+        if isinstance(_data, dict):
+            d["meta"]["dem_product"] = _data.get("dem_product")
+            d["meta"]["dem_source"] = _data.get("dem_source")
+            if viz_failed:
+                # The full path (rasters + map) failed and this is the statistics-only path: say so in the data
+                # itself, where a consumer reads ``twi_method``. aihydro-watershed's own value (it reports "full"
+                # for its stats computation) is kept as ``package_twi_method``; the package's reason, mask basis
+                # and valid-cell count pass through unchanged.
+                _data["package_twi_method"] = _data.get("twi_method")
+                _data["twi_method"] = "fallback"
+                _data["twi_method_reason"] = f"full TWI computation failed: {viz_failed[:300]}"
         # C2: store under feature-keyed three-level slot
         session.put_result("twi", _feature_id, _params_key, d)
-        session.add_citations(["usgs_3dep", "copernicus_glo30"])
+        session.add_citations(_dem_citation_keys((_data or {}).get("dem_product") if isinstance(_data, dict) else None))
         await run_off_loop(session.commit)
         d["feature_id"] = _feature_id
         saved = _workspace_write(session_id, _canonical_fname(session_id, "twi", "json"), d["data"])
