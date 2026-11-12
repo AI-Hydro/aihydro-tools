@@ -1444,8 +1444,16 @@ class HydroSession:
         return exp
 
     def drop_slot(self, slot: str) -> bool:
-        """Remove a whole product slot (every feature); True if it held anything."""
-        return bool(self._slots.pop(slot, None))
+        """Remove a whole product slot (every feature); True if it held anything.
+
+        Parameter-keyed variants of a spectral-index slot (``index_<name>__<key>``) go with it, so clearing
+        ``index_ndvi`` clears every cached NDVI request.
+        """
+        dropped = bool(self._slots.pop(slot, None))
+        if slot.startswith("index_") and "__" not in slot:
+            for k in [k for k in self._slots if k.startswith(slot + "__")]:
+                dropped = bool(self._slots.pop(k, None)) or dropped
+        return dropped
 
     def identity_note(self) -> dict:
         """``{"basin_identity": {...}}`` when this call read a basin-dependent slot that carries

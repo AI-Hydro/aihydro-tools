@@ -22,12 +22,14 @@ Time-series mode (``frequency="monthly"`` or ``"yearly"``)
   Kendall trend slope and p-value for change detection.
 
 Both modes register the result in the session under the ``"index_<NAME>"``
-slot so subsequent tools can access it without re-fetching.
+slot (latest result) and under ``"index_<NAME>__<request key>"`` (the cache: one entry per distinct sensor /
+window / frequency / masking request), so subsequent tools can access it without re-fetching.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +40,73 @@ from ai_hydro.mcp.app import mcp, Context
 from ai_hydro.mcp.offload import run_off_loop
 
 log = logging.getLogger(__name__)
+
+# A time series stops fetching after this many CONSECUTIVE failed periods and returns what it has, flagged
+# partial. Each failed period can cost several upstream requests (the fallback chain walks to other products),
+# so an unreachable backend must not be asked for every remaining month.
+MAX_CONSECUTIVE_PERIOD_FAILURES = 3
+
+# Earth Engine's "Total request size (N Bytes) must be less than or equal to M bytes" and close variants.
+_SIZE_ERROR_RE = re.compile(r"request size|must be less than or equal to \d+|payload size|too large", re.I)
+
+
+def _request_key(request: dict) -> str:
+    """Short stable key of a spectral-index request (sensor, window, frequency, masking, resolution mode)."""
+    from aihydro_core.primitives.hashing import param_hash
+
+    return str(param_hash({k: (v.lower() if isinstance(v, str) and k == "sensor" else v)
+                           for k, v in request.items()}))[:12]
+
+
+def _is_size_error(exc: BaseException) -> bool:
+    """True when a fetch failed because the export exceeded the backend's request-size limit."""
+    return bool(_SIZE_ERROR_RE.search(str(exc)))
+
+
+class _PeriodFetchError(RuntimeError):
+    """Every attempt for one period failed; ``attempts`` lists them in order."""
+
+    def __init__(self, cause: BaseException, attempts: list[dict]):
+        super().__init__(str(cause))
+        self.cause = cause
+        self.attempts = attempts
+
+
+def _fetch_period(aihydro_data, *, pinned_product, idx_key, geometry_arg, p_start, p_end, native_resolution):
+    """Fetch one period; returns ``(fetch_result, attempts)`` or raises :class:`_PeriodFetchError`.
+
+    With a pinned sensor the first attempt is STRICT (``fallback=[]``), so a backend error is seen here instead
+    of being swallowed by the fallback chain. A request-size failure (the export grid exceeds Earth Engine's
+    limit) is retried once with tiled native-resolution export, which is not bound by that limit. Only a
+    non-size failure falls through to the policy chain (other sensors / the STAC backend), so a size error never
+    walks on to unrelated hosts. Every attempt is returned for the record.
+    """
+    base = dict(variable="optical", geometry=geometry_arg, start=p_start, end=p_end,
+                index=idx_key, cache=False)   # xr objects are not disk-cache friendly; the session caches
+    attempts: list[dict] = []
+
+    def _try(label, **extra):
+        try:
+            r = aihydro_data.fetch(**base, **extra)
+        except Exception as exc:  # noqa: BLE001 - recorded, then the next attempt decides
+            attempts.append({"attempt": label, "outcome": "failed", "error": f"{type(exc).__name__}: {exc}"[:300]})
+            return None, exc
+        attempts.append({"attempt": label, "outcome": "served"})
+        return r, None
+
+    if pinned_product:
+        pin = dict(mode="manual", product=pinned_product)
+        r, exc = _try("pinned_strict", **pin, fallback=[], native_resolution=native_resolution)
+        if r is None and not native_resolution and _is_size_error(exc):
+            r, exc = _try("pinned_strict_tiled_native", **pin, fallback=[], native_resolution=True)
+        if r is None and not _is_size_error(exc):
+            r, exc = _try("policy_chain", **pin, native_resolution=native_resolution)
+    else:
+        r, exc = _try("policy_chain", native_resolution=native_resolution)
+    if r is None:
+        raise _PeriodFetchError(exc, attempts)
+    return r, attempts
+
 
 
 @mcp.tool()
@@ -121,31 +190,6 @@ async def compute_spectral_index(
         threshold_hint = reg_entry.get("threshold_hint", None)
         required_bands = reg_entry.get("bands", [])  # e.g. ["green", "nir"]
 
-        # ── Check session cache ──────────────────────────────────────────
-        slot_name = f"index_{idx_key.lower()}"
-        cached = session.get(slot_name)
-        if cached is not None and frequency is None:
-            log.debug("compute_spectral_index: returning cached %s for session %s",
-                      idx_key, session_id)
-            _req = cached.get("requested")
-            _now = {"sensor": sensor, "start": start, "end": end}
-            _diff = {k: {"cached": _req.get(k), "requested": v} for k, v in _now.items()
-                     if isinstance(_req, dict) and v is not None and _req.get(k) is not None and _req.get(k) != v}
-            if _diff:
-                # Never return the stale index as the answer to a different request.
-                return {
-                    "error": True,
-                    "code": "CACHED_INDEX_PARAMS_MISMATCH",
-                    "message": f"The session's cached {idx_key} was computed with different parameters: {_diff}. "
-                               "It was not returned.",
-                    "recovery": f"Call clear_session('{session_id}', ['index_{idx_key.lower()}']) and call "
-                                "compute_spectral_index again.",
-                    "next_tools": ["clear_session", "compute_spectral_index"],
-                    "cache_mismatch": _diff,
-                }
-            cached["_cached"] = True
-            return cached
-
         # ── Date range ───────────────────────────────────────────────────
         from datetime import date, timedelta
         today = date.today()
@@ -154,8 +198,20 @@ async def compute_spectral_index(
         if start is None:
             start = (today.replace(year=today.year - 1)).isoformat()
 
-        if ctx:
-            await ctx.report_progress(progress=2, total=10)
+        # ── Check session cache (keyed by the request's parameters) ──────
+        # One slot per distinct request, so a second call with a different window, sensor or frequency computes
+        # its own result instead of colliding with (or being refused because of) the first. ``index_<name>`` still
+        # holds the LATEST result for readers of the plain slot; only the keyed slot is ever served as a cache hit.
+        request = {"sensor": sensor, "start": start, "end": end, "frequency": frequency,
+                   "mask_clouds": bool(mask_clouds), "native_resolution": bool(native_resolution)}
+        slot_name = f"index_{idx_key.lower()}"
+        keyed_slot = f"{slot_name}__{_request_key(request)}"
+        cached = session.get(keyed_slot)
+        if cached is not None:
+            log.debug("compute_spectral_index: returning cached %s (%s) for session %s",
+                      idx_key, keyed_slot, session_id)
+            cached["_cached"] = True
+            return cached
 
         # ── Resolve geometry ─────────────────────────────────────────────
         from ai_hydro.mcp.tools_analysis import _resolve_session_geometry
@@ -310,7 +366,15 @@ async def compute_spectral_index(
                 "Use export_session to save results.",
             ],
         }
-        d["requested"] = {"sensor": sensor, "start": start, "end": end, "frequency": frequency}
+        d["requested"] = request
+        d["fetch_records"] = result.get("fetch_records", [])
+        _res = sorted({r["resolution_m"] for r in d["fetch_records"] if r.get("resolution_m") is not None})
+        d["resolution_m"] = _res[0] if len(_res) == 1 else (_res or None)
+        _not_attempted = result.get("periods_not_attempted", [])
+        d["partial"] = bool(period_failures or _not_attempted)
+        if _not_attempted:
+            d["periods_not_attempted"] = _not_attempted
+            d["stopped_early"] = result.get("stopped_early")
         if time_axis:
             d["time_axis"] = time_axis
             d["period_means"] = [s.get("mean") for s in period_stats]
@@ -326,6 +390,10 @@ async def compute_spectral_index(
         try:
             from ai_hydro.mcp.helpers import _session_store
             _session_store(session_id, slot_name, d, tool_name="compute_spectral_index")
+            if not d["partial"]:
+                # A partial stack (failed or never-attempted periods) is not cached by its request: asking
+                # again must retry, not replay the gap.
+                _session_store(session_id, keyed_slot, d, tool_name="compute_spectral_index")
         except Exception as _se:
             log.debug("session store failed (non-fatal): %s", _se)
 
@@ -465,7 +533,23 @@ def _fetch_and_compute_index(
     period_failures: list[dict] = []
     time_axis = [] if frequency else None
 
-    for p_start, p_end in periods:
+    fetch_records: list[dict] = []
+    periods_not_attempted: list[dict] = []
+    stopped_early = None
+    consecutive_failures = 0
+
+    for i, (p_start, p_end) in enumerate(periods):
+        if (time_axis is not None and consecutive_failures >= MAX_CONSECUTIVE_PERIOD_FAILURES):
+            periods_not_attempted = [{"period": a, "period_end": b} for a, b in periods[i:]]
+            stopped_early = {
+                "after_consecutive_failures": consecutive_failures,
+                "limit": MAX_CONSECUTIVE_PERIOD_FAILURES,
+                "n_not_attempted": len(periods_not_attempted),
+                "reason": "consecutive fetch failures; the remaining periods were not requested",
+            }
+            log.warning("Spectral-index stack stopped after %d consecutive failed periods; %d not attempted.",
+                        consecutive_failures, len(periods_not_attempted))
+            break
         try:
             import aihydro_data
             # Fetch the raw multi-band reflectance composite. The composite is
@@ -476,28 +560,10 @@ def _fetch_and_compute_index(
             # headroom). On the STAC fallback (no server-side compute) the
             # pipeline returns the raw multi-band Dataset and we compute the
             # index locally below — both paths handled by the type switch.
-            if pinned_product:
-                fetch_result = aihydro_data.fetch(
-                    variable="optical",
-                    geometry=geometry_arg,
-                    start=p_start,
-                    end=p_end,
-                    mode="manual",
-                    product=pinned_product,
-                    index=idx_key,
-                    native_resolution=native_resolution,
-                    cache=False,   # xr.Dataset isn't disk-cache friendly; session caches the result
-                )
-            else:
-                fetch_result = aihydro_data.fetch(
-                    variable="optical",
-                    geometry=geometry_arg,
-                    start=p_start,
-                    end=p_end,
-                    index=idx_key,
-                    native_resolution=native_resolution,
-                    cache=False,
-                )
+            fetch_result, attempts = _fetch_period(
+                aihydro_data, pinned_product=pinned_product, idx_key=idx_key, geometry_arg=geometry_arg,
+                p_start=p_start, p_end=p_end, native_resolution=native_resolution,
+            )
             ds_or_da = getattr(fetch_result, "data", fetch_result)
             # The actual sensor that served the data (may differ from the
             # requested one if the fallback chain kicked in).
@@ -525,6 +591,17 @@ def _fetch_and_compute_index(
                 idx_da = idx_da.median(dim="time")
 
             period_das.append(idx_da)
+            consecutive_failures = 0
+            _attrs = getattr(ds_or_da, "attrs", None) or {}
+            fetch_records.append({
+                "period": p_start,
+                "served_product": getattr(fetch_result, "product", None),
+                "product_substituted": bool(getattr(fetch_result, "product_substituted", False)),
+                "resolution_m": _attrs.get("resolution_m"),
+                "tiled_native_retry": any(a["attempt"] == "pinned_strict_tiled_native" and a["outcome"] == "served"
+                                          for a in attempts),
+                "attempts": attempts,
+            })
             if time_axis is not None:
                 time_axis.append(p_start)
                 valid = idx_da.values[np.isfinite(idx_da.values)]
@@ -537,6 +614,8 @@ def _fetch_and_compute_index(
 
         except Exception as exc:
             log.warning("Fetch failed for period %s–%s: %s", p_start, p_end, exc)
+            consecutive_failures += 1
+            _attempts = getattr(exc, "attempts", [])
             if frequency is None:
                 # Single-period mode — propagate the error
                 return {
@@ -551,11 +630,12 @@ def _fetch_and_compute_index(
                         "configured (pip install aihydro-data[gee])."
                     ),
                     "next_tools": ["list_spectral_indices", "data_list_products"],
+                    "attempts": _attempts,
                 }
             # Time-series mode: a failed period is a GAP. It is recorded (never
             # silently dropped) and the trend is fitted on the real time axis.
             period_failures.append({"period": p_start, "period_end": p_end,
-                                    "reason": str(exc)[:200]})
+                                    "reason": str(exc)[:200], "attempts": _attempts})
 
     if not period_das:
         return {
@@ -563,6 +643,9 @@ def _fetch_and_compute_index(
             "code": "NO_DATA",
             "recovery": "Widen the date range or try a different sensor.",
             "next_tools": ["list_spectral_indices"],
+            "periods_failed": period_failures,
+            "periods_not_attempted": periods_not_attempted,
+            "stopped_early": stopped_early,
         }
 
     if len(period_das) == 1:
@@ -582,6 +665,9 @@ def _fetch_and_compute_index(
         "period_failures": period_failures,
         "n_periods_requested": n_requested,
         "periods_dropped": periods_dropped,
+        "fetch_records": fetch_records,
+        "periods_not_attempted": periods_not_attempted,
+        "stopped_early": stopped_early,
     }
 
 
