@@ -3082,15 +3082,10 @@ async def create_cn_grid(
         basin_stats = result.get("basin_statistics") or {}
 
         # The canonical basis of the headline statistics (aihydro-watershed >= 0.4.5):
-        # statistics.stats_basis, with the basin_statistics alias and the provenance
-        # copy as fallbacks. Never invented: "unknown" when the package states none
-        # (an older aihydro-watershed), so a reader does not assume the polygon.
-        stats_basis = (
-            stats.get("stats_basis")
-            or basin_stats.get("stats_basis")
-            or prov.get("cn_stats_basis")
-            or "unknown"
-        )
+        # statistics.stats_basis only. basin_statistics.stats_basis and
+        # data_provenance.cn_stats_basis describe the basin block and can differ (0.4.5
+        # reports raster_extent here and basin_polygon there). "unknown" when absent.
+        stats_basis = stats.get("stats_basis") or "unknown"
         # Basis of every other area-based field. Land-cover class codes and the soil
         # group shares / coverage / erodibility are taken over the raster, which covers
         # the basin's bounding box, so they include cells outside the polygon
@@ -3098,7 +3093,7 @@ async def create_cn_grid(
         # polygon when the package says so. Dual-group CN means carry their own basis.
         field_bases = {
             "cn_mean / cn_median / cn_min / cn_max / cn_std / cn_p10..cn_p90 / percent_*_cn": stats_basis,
-            "basin_statistics": basin_stats.get("stats_basis") or stats_basis,
+            "basin_statistics": basin_stats.get("stats_basis") or "unknown",
             "lulc_classes": "raster_extent",
             "lulc_class_fractions / open_water_fraction": lulc.get("fraction_basis")
             or prov.get("lulc_fraction_basis") or "unknown",

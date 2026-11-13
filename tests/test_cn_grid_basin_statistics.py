@@ -100,3 +100,26 @@ async def test_older_package_without_a_basis_is_not_labelled_polygon(tmp_path):
     assert d["basin_statistics"] == {}
     assert d["field_bases"]["lulc_class_fractions / open_water_fraction"] == "unknown"
     assert d["field_bases"]["cn_mean_drained / cn_mean_undrained"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_released_0_4_5_shape_headline_basis_is_not_taken_from_the_basin_block(tmp_path):
+    """0.4.5: statistics.stats_basis = raster_extent while the basin block and provenance say basin_polygon."""
+    r = _pkg_result(basis="basin_polygon")
+    r["statistics"]["stats_basis"] = "raster_extent"
+    r["basin_statistics"]["stats_basis"] = "basin_polygon"
+    r["data_provenance"]["cn_stats_basis"] = "basin_polygon"
+    r["soil_stats"].pop("cn_mean_basis")
+    d = (await _run(tmp_path, r))["data"]
+    assert d["stats_basis"] == "raster_extent"
+    assert d["basin_statistics"]["stats_basis"] == "basin_polygon"
+    assert d["field_bases"]["lulc_class_fractions / open_water_fraction"] == "basin_polygon"
+    assert d["field_bases"]["cn_mean_drained / cn_mean_undrained"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_headline_basis_is_unknown_when_only_the_basin_block_states_one(tmp_path):
+    r = _pkg_result()
+    r["statistics"].pop("stats_basis")
+    d = (await _run(tmp_path, r))["data"]
+    assert d["stats_basis"] == "unknown"
