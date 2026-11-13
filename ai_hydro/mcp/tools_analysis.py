@@ -3079,10 +3079,42 @@ async def create_cn_grid(
         file_paths = result.get("file_paths", {})
         ws_info = result.get("watershed_info", {})
         prov = result.get("data_provenance", {})
+        basin_stats = result.get("basin_statistics") or {}
+
+        # The canonical basis of the headline statistics (aihydro-watershed >= 0.4.5):
+        # statistics.stats_basis only. basin_statistics.stats_basis and
+        # data_provenance.cn_stats_basis describe the basin block and can differ (0.4.5
+        # reports raster_extent here and basin_polygon there). "unknown" when absent.
+        stats_basis = stats.get("stats_basis") or "unknown"
+        # Basis of every other area-based field. Land-cover class codes and the soil
+        # group shares / coverage / erodibility are taken over the raster, which covers
+        # the basin's bounding box, so they include cells outside the polygon
+        # ("raster_extent"). The class fractions and the CN zone shares are over the
+        # polygon when the package says so. Dual-group CN means carry their own basis.
+        field_bases = {
+            "cn_mean / cn_median / cn_min / cn_max / cn_std / cn_p10..cn_p90 / percent_*_cn": stats_basis,
+            "basin_statistics": basin_stats.get("stats_basis") or "unknown",
+            "lulc_classes": "raster_extent",
+            "lulc_class_fractions / open_water_fraction": lulc.get("fraction_basis")
+            or prov.get("lulc_fraction_basis") or "unknown",
+            "soil_group_percentages / hsg_coverage / kw_mean / pct_dual_hsg": "raster_extent",
+            "cn_mean_drained / cn_mean_undrained": soil.get("cn_mean_basis") or "unknown",
+        }
 
         data = {
             **stats,
             **zones,
+            # Sealed alongside the headline fields: the polygon-masked CN statistics
+            # (cn_mean_basin, cn_median_basin, cn_min_basin, cn_max_basin,
+            # cn_cells_basin) and the one canonical statement of the basis.
+            "basin_statistics": basin_stats,
+            "stats_basis": stats_basis,
+            "field_bases": field_bases,
+            "quality_flags": list(result.get("quality_flags") or []),
+            "quality_warnings": list(result.get("warnings") or []),
+            "lulc_class_fractions": lulc.get("class_fractions"),
+            "lulc_fraction_basis": lulc.get("fraction_basis"),
+            "open_water_fraction": lulc.get("open_water_fraction"),
             "lulc_classes": lulc.get("classes", []),
             "soil_group_percentages": soil.get("soil_group_percentages", {}),
             # How the hydrologic group was obtained: "ssurgo_recorded" or
