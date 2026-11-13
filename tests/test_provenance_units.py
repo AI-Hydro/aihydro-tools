@@ -612,16 +612,28 @@ def test_padded_and_unpadded_gauge_ids_are_not_a_mismatch(env, cached):
     assert out.get("_cached") is True and not out.get("error")
 
 
-def test_cached_index_with_other_parameters_is_refused(env):
+def test_cached_index_with_other_parameters_is_not_served_and_not_refused(env):
+    """A cached index for other parameters is never served as the answer; the new request is computed (keyed cache)."""
+    from unittest.mock import patch
+
+    import numpy as np
+    import xarray as xr
     from ai_hydro.mcp.tools_indices import compute_spectral_index
 
     s = HydroSession.load(SID)
     s.set("index_ndvi", {"data": {"mean": 0.6}, "requested": {"sensor": "sentinel2", "start": "2025-01-01", "end": "2025-12-31"}})
     s.save()
-    out = asyncio.run(compute_spectral_index(index_name="ndvi", session_id=SID, sensor="landsat8"))
-    assert out["error"] is True and out["code"] == "CACHED_INDEX_PARAMS_MISMATCH" and "data" not in out
-    assert "index_ndvi" in out["recovery"]
+    fake = {"index_da": xr.DataArray(np.full((3, 3), 0.25, dtype="float32"), dims=("y", "x")),
+            "time_axis": None, "period_stats": [], "period_failures": []}
+    poly = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
+    with patch("ai_hydro.mcp.tools_analysis._resolve_session_geometry", return_value=poly), \
+         patch("ai_hydro.mcp.tools_indices._fetch_and_compute_index", return_value=fake):
+        out = asyncio.run(compute_spectral_index(index_name="ndvi", session_id=SID, sensor="landsat8",
+                                                 start="2024-01-01", end="2024-12-31", create_map=False))
+    assert not out.get("error"), out
+    assert out["data"]["mean"] == pytest.approx(0.25) and not out.get("_cached")
     from ai_hydro.mcp.tools_session import clear_session
     cleared = clear_session(session_id=SID, slots=["index_ndvi"])
     assert not cleared.get("error")
     assert HydroSession.load(SID).get("index_ndvi") is None
+    assert not [k for k in HydroSession.load(SID)._slots if k.startswith("index_ndvi")]

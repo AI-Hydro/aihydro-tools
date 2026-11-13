@@ -1121,7 +1121,7 @@ def _apply_basin_change(base: dict, merged: dict) -> None:
         return
     expected = _bi.make_identity(new, None)
     dropped: list[str] = []
-    for slot in _bi.BASIN_DEPENDENT_SLOTS:
+    for slot in sorted(_bi.dependent_slots(merged)):
         by_feature = merged.get(slot)
         if not isinstance(by_feature, dict):
             continue
@@ -1395,7 +1395,7 @@ class HydroSession:
         ``ai_hydro.session.basin_identity``); an unstamped one is served and reported by
         ``unverified_slots``.
         """
-        gated = slot in _bi.BASIN_DEPENDENT_SLOTS
+        gated = _bi.is_basin_dependent(slot)
         candidates = []
         if self.active_feature_id and self.active_feature_id != _LEGACY_FEATURE_ID:
             candidates.append(self.active_feature_id)
@@ -1444,8 +1444,16 @@ class HydroSession:
         return exp
 
     def drop_slot(self, slot: str) -> bool:
-        """Remove a whole product slot (every feature); True if it held anything."""
-        return bool(self._slots.pop(slot, None))
+        """Remove a whole product slot (every feature); True if it held anything.
+
+        Parameter-keyed variants of a spectral-index slot (``index_<name>__<key>``) go with it, so clearing
+        ``index_ndvi`` clears every cached NDVI request.
+        """
+        dropped = bool(self._slots.pop(slot, None))
+        if slot.startswith("index_") and "__" not in slot:
+            for k in [k for k in self._slots if k.startswith(slot + "__")]:
+                dropped = bool(self._slots.pop(k, None)) or dropped
+        return dropped
 
     def identity_note(self) -> dict:
         """``{"basin_identity": {...}}`` when this call read a basin-dependent slot that carries
@@ -1460,7 +1468,7 @@ class HydroSession:
         before basin identity was recorded). They keep loading; they are flagged, never trusted
         silently."""
         out = []
-        for slot in sorted(_bi.BASIN_DEPENDENT_SLOTS & set(self._slots)):
+        for slot in sorted(_bi.dependent_slots(self._slots)):
             fid, res = self._resolve_slot(slot, self._slots[slot], track=False)
             if res is not None and _bi.judge(res, self._expected_for(slot, fid, res)) == _bi.UNVERIFIED:
                 out.append(slot)
@@ -1485,7 +1493,7 @@ class HydroSession:
         same_gauge = bool(_bi.norm_gauge(self.site_id)
                           and _bi.norm_gauge(self.site_id) == _bi.norm_gauge(data.get("gauge_id")))
         dropped: list[str] = []
-        for slot in _bi.BASIN_DEPENDENT_SLOTS & set(self._slots):
+        for slot in _bi.dependent_slots(self._slots):
             if slot == "streamflow" and same_gauge:
                 continue
             by_key = self._slots[slot].get(_LEGACY_FEATURE_ID)
@@ -1695,7 +1703,7 @@ class HydroSession:
         """
         if product == "watershed" and feature_id == _LEGACY_FEATURE_ID:
             self._watershed_replaced(value)
-        elif product in _bi.BASIN_DEPENDENT_SLOTS and isinstance(value, dict):
+        elif _bi.is_basin_dependent(product) and isinstance(value, dict):
             inherited = sorted(self._unverified_reads - {product})
             if inherited:
                 # Computed from a slot that cannot be tied to a basin: this result cannot be
@@ -1704,7 +1712,7 @@ class HydroSession:
             else:
                 _bi.stamp(value, self._expected_identity(feature_id))
         self._slots.setdefault(product, {}).setdefault(feature_id, {})[params_key] = value
-        if product in _bi.BASIN_DEPENDENT_SLOTS:
+        if _bi.is_basin_dependent(product):
             self._recomputed_this_call.add(product)     # note only; inheritance still uses _unverified_reads
         self._record_put_result_run(product, value)
 
@@ -1721,7 +1729,7 @@ class HydroSession:
         identity existed) are a miss, so the caller recomputes and stamps.
         """
         res = self._slots.get(product, {}).get(feature_id, {}).get(params_key)
-        if res is not None and product in _bi.BASIN_DEPENDENT_SLOTS \
+        if res is not None and _bi.is_basin_dependent(product) \
                 and _bi.judge(res, self._expected_for(product, feature_id, res)) != _bi.VERIFIED:
             return None
         _note_slot_read(res)

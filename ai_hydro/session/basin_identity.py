@@ -56,6 +56,21 @@ BASIN_DEPENDENT_SLOTS = frozenset({
     "inundation", "inundation_hydrograph", "inundation_physics", "inundation_surrogate",
 })
 
+#: Slot-name prefixes that are basin-dependent too: spectral-index results are cached as ``index_<name>`` (latest)
+#: and ``index_<name>__<request key>`` (the cache), one per index, so they cannot be listed by name.
+BASIN_DEPENDENT_PREFIXES = ("index_",)
+
+
+def is_basin_dependent(slot: str) -> bool:
+    """True for a named basin-dependent slot or one under a basin-dependent prefix."""
+    return slot in BASIN_DEPENDENT_SLOTS or str(slot).startswith(BASIN_DEPENDENT_PREFIXES)
+
+
+def dependent_slots(slots: Iterable[str]) -> set[str]:
+    """The basin-dependent ones among ``slots``."""
+    return {s for s in slots if is_basin_dependent(s)}
+
+
 #: The sentinel feature id used for the session's own basin (mirrors ``store._LEGACY_FEATURE_ID``).
 LEGACY_FEATURE_ID = "__legacy__"
 
