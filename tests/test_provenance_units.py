@@ -466,7 +466,8 @@ def test_fetch_camels_us_returns_each_value_once_and_a_group_index(env):
     assert data["attributes"]["q_mean"] == 2.03
     assert "attribute_groups" not in data
     assert data["attribute_group_index"]["hydrology"] == ["q_mean", "runoff_ratio"]
-    assert json.dumps(out).count("2.03") == 1
+    # Match the JSON numeric value (": 2.03"), not substrings of timestamps such as "08:21:32.03".
+    assert json.dumps(out).count(": 2.03") == 1
 
 
 def test_fetch_camels_us_cache_hit_does_not_load_the_dataset(env):
