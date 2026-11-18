@@ -918,29 +918,27 @@ def delineate_watershed_from_point(
     method: str = "auto",
     name: str | None = None,
     allow_downstream_expansion: bool = False,
+    gauge_id: str | None = None,
+    verify_area: bool = True,
 ) -> dict:
     """
-    Delineate a watershed from a pour point (lat/lon, EPSG:4326). Tiered:
-    NLDI in CONUS, MERIT Hydro via GEE + pyflwdir globally, local MERIT
-    rasters if requested, then raw DEM fallback / MERIT-Basins expert tiers.
+    Delineate a watershed from a pour point (lat/lon, EPSG:4326): NLDI in CONUS, MERIT Hydro globally.
 
     method: auto | nldi | merit_gee | local_merit | merit_basins (alias merit_hybrid) |
         dem_raw_fallback | small_catchment (alias 3dep)
-    small_catchment: CONUS catchments under ~5 km2 such as road culverts.
-        USGS 3DEP 10 m bare-earth DEM, a notch carved through the road
-        embankment at the pour point, snap to the largest drainage within
-        40 m. Flags LIKELY_DITCH_SNAP under 0.05 km2. NLDI and MERIT cannot
-        resolve these: they return whole NHDPlus catchments or 90 m cells.
-    expected_area_km2: enables validation + adaptive snapping. In CONUS a
-        value under 5 km2 makes auto use small_catchment first.
-    session_id: optional — auto-generated from coordinates/name if not supplied.
-    Returns area_km2, method_used, routing metadata, snap quality, and quality flags.
-    NLDI_OUTLET_AMBIGUOUS (quality flag): without expected_area_km2 the nearest NHDPlus
-        reach drains under 80 km2, so the point may sit on a tributary reach or on a larger
-        stem. The basin returned is the nearest reach's (the outlet is not moved downstream
-        without consent); outlet_ambiguity lists candidate COMIDs and areas. Pass
-        expected_area_km2 to choose among them, or allow_downstream_expansion=True to accept
-        the larger stem (default False).
+    small_catchment: CONUS catchments under ~5 km2 (culverts): 3DEP 10 m DEM, embankment notch, snap
+        within 40 m; flags LIKELY_DITCH_SNAP under 0.05 km2.
+    expected_area_km2: enables validation + adaptive snapping; under 5 km2 in CONUS auto uses small_catchment.
+    gauge_id: USGS station number; pass it when the point is a USGS gauge. The polygon area is checked
+        against the gauge's reported area (one request to api.waterdata.usgs.gov); expected_area_km2 wins.
+        A failed lookup gives area_unverified, never an error. verify_area=False skips it.
+    session_id: optional, auto-generated from coordinates/name if not supplied.
+    Returns area_km2, method_used, quality_flags, area_check (status verified_by_area | area_mismatch |
+        area_unverified), reliability_state (verified = area-consistent, not proof | ambiguous |
+        unverified), ambiguous_outlet. area_mismatch warns: the basin is NOT verified.
+    NLDI_OUTLET_AMBIGUOUS: with no expected_area_km2 the point may sit on a tributary reach (<80 km2)
+        or a larger stem; the nearest reach's basin is returned, outlet_ambiguity lists candidates. Pass
+        expected_area_km2 to choose, or allow_downstream_expansion=True for the larger stem.
     """
     try:
         slug = _watershed_slug(name, lat, lon)
@@ -971,6 +969,11 @@ def delineate_watershed_from_point(
                 "dem_raw_fallback, or small_catchment"
             )
 
+        gid = _validate_usgs_gauge_id(gauge_id) if gauge_id is not None and str(gauge_id).strip() else None
+        # An explicit expected_area_km2 takes precedence inside the watershed package (no request is made then).
+        area_kwargs: dict = {"gauge_id": gid, "lookup_reported_area": bool(verify_area)} if gid else {}
+        lookup_requested = bool(gid and verify_area)
+
         from ai_hydro.analysis.delineation import delineate_from_point
 
         result = delineate_from_point(
@@ -982,6 +985,7 @@ def delineate_watershed_from_point(
             name=name,
             # Only the non-default is passed: the router's own default stays the single source of "off".
             **({"allow_downstream_expansion": True} if allow_downstream_expansion else {}),
+            **area_kwargs,
         )
         d = _result_to_dict(result)
         geojson = d["data"]["geometry_geojson"]
@@ -1057,6 +1061,7 @@ def delineate_watershed_from_point(
             )
 
         _method_note += _wr.reliability_note(compact)
+        _method_note += _wr.area_check_note(compact)
 
         resp: dict = {
             "data": compact,
@@ -1076,6 +1081,14 @@ def delineate_watershed_from_point(
                 "Map layer pushed."
             ),
         }
+        _flag = _wr.area_mismatch_flag(compact)
+        if _flag:
+            _wr.attach_warning(resp, _flag)
+        _lookup = _wr.area_lookup_provenance(compact, gauge_id=gid, requested=lookup_requested)
+        if _lookup:
+            if not isinstance(resp.get("meta"), dict):
+                resp["meta"] = {}
+            resp["meta"]["area_lookup"] = _lookup
         reminder = _sync_reminder(session_id)
         if reminder:
             resp["_sync_required"] = reminder

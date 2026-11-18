@@ -9,6 +9,10 @@ flow-direction cell, not necessarily the river's. Three places carry the verdict
   (a quality flag plus ``watershed_reliability_warning``). It warns and records (the middleware runs inside the run-record
   seal); it never refuses.
 
+The same module carries the area check (aihydro-watershed >= 0.4.6: ``area_check``, ``reliability_state``,
+``ambiguous_outlet``): ``area_check_note`` (the ``_note`` sentence), ``area_mismatch_flag`` (a warning in the same
+shape the downstream middleware uses) and ``area_lookup_provenance`` (what the optional reported-area lookup did).
+
 Every function is a no-op for a watershed result that lacks the keys (an older aihydro-watershed).
 """
 from __future__ import annotations
@@ -56,14 +60,115 @@ def reliability_note(data: Any) -> str:
 
 def layer_metadata(data: Any) -> dict:
     """Extra map-layer metadata (strings, like the rest of it); empty when the watershed carries no reliability."""
+    out: dict = {}
     level = reliability_of(data)
-    if level is None:
-        return {}
-    out = {"reliability": level, "reliability_reason": str(data.get("reliability_reason") or "")}
+    if level is not None:
+        out = {"reliability": level, "reliability_reason": str(data.get("reliability_reason") or "")}
+        remedy = _remedy_text(data.get("remedy"))
+        if remedy:
+            out["remedy"] = remedy
+    if isinstance(data, dict):
+        if data.get("reliability_state"):
+            out["reliability_state"] = str(data["reliability_state"])
+        status = (data.get("area_check") or {}).get("status") if isinstance(data.get("area_check"), dict) else None
+        if status:
+            out["area_check_status"] = str(status)
+    return out
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Area check (aihydro-watershed >= 0.4.6)
+# ---------------------------------------------------------------------------------------------------------------
+
+#: host of the optional reported-area lookup (``USGS_MONITORING_LOCATIONS_URL`` in aihydro-watershed's
+#: ``delineation/area_verification.py``); recorded in provenance, never contacted from this module.
+AREA_LOOKUP_HOST = "api.waterdata.usgs.gov"
+AREA_LOOKUP_SOURCE = "usgs_waterdata_monitoring_locations"
+STATUS_MISMATCH = "area_mismatch"
+STATUS_VERIFIED = "verified_by_area"
+
+
+def _area_check(data: Any) -> Optional[dict]:
+    check = data.get("area_check") if isinstance(data, dict) else None
+    return check if isinstance(check, dict) else None
+
+
+def area_mismatch_flag(data: Any) -> Optional[dict]:
+    """A warning (same shape as ``downstream_warning``) when the polygon area contradicts the reported area, else ``None``."""
+    check = _area_check(data)
+    if not check or check.get("status") != STATUS_MISMATCH:
+        return None
+    flag = {
+        "validator": "watershed_reliability", "status": "warning", "severity": "high",
+        "message": (
+            "AREA MISMATCH: the delineated polygon is NOT verified as the intended basin. "
+            f"{check.get('reason') or 'its area differs from the reported drainage area'} "
+            f"(reported {check.get('reported_area_km2')} km2 from {check.get('source')}). "
+            "Treat the basin, and every result computed from it, as suspect until the outlet is checked."
+        ),
+        "affected_slots": ["watershed"],
+        "metadata": {"quality_flag": "area_mismatch", "reliability_state": data.get("reliability_state"),
+                     "rel_err": check.get("rel_err")},
+    }
     remedy = _remedy_text(data.get("remedy"))
     if remedy:
-        out["remedy"] = remedy
+        flag["recommendation"] = remedy
+    return flag
+
+
+def attach_warning(body: dict, flag: dict) -> None:
+    """Add ``flag`` to a result dict (``quality_flags`` + ``watershed_reliability_warning``), once."""
+    _add_warning(body, flag)
+
+
+def area_check_note(data: Any) -> str:
+    """Sentences for the human ``_note``: the area check, the reliability state and a non-binding outlet ambiguity."""
+    if not isinstance(data, dict):
+        return ""
+    out = ""
+    check = _area_check(data)
+    if check:
+        status = check.get("status")
+        if status == STATUS_VERIFIED:
+            out += (f"AREA CHECK: polygon area is within tolerance of the reported {check.get('reported_area_km2')} km2 "
+                    f"({check.get('source')}, rel_err {check.get('rel_err'):+.1%}); this is area-consistency, not proof "
+                    "of the outlet. ")
+        elif status == STATUS_MISMATCH:
+            out += (f"AREA CHECK MISMATCH: {check.get('reason')}. The basin is NOT verified (reliability_state="
+                    f"{data.get('reliability_state')}). ")
+        elif check.get("reported_area_km2") is None:
+            if check.get("source") in (None, "none") and "lookup_reported_area is off" in str(check.get("reason")):
+                pass  # the caller did not ask for a check; nothing to report
+            else:
+                out += f"AREA CHECK NOT PERFORMED ({check.get('reason')}); the basin is unverified. "
+        else:
+            out += f"AREA CHECK INCONCLUSIVE: {check.get('reason')}; the basin is unverified. "
+    amb = data.get("ambiguous_outlet")
+    if isinstance(amb, dict):
+        if amb.get("affects_reliability") is False:
+            out += (f"AMBIGUOUS_OUTLET (informational inside the conterminous US, location_class="
+                    f"{amb.get('location_class')}): an alternative main-stem outlet exists; see ambiguous_outlet. ")
+        else:
+            out += (f"AMBIGUOUS_OUTLET (affects reliability, location_class={amb.get('location_class')}): "
+                    "the point may sit off the main stem; see ambiguous_outlet for both candidates. ")
     return out
+
+
+def area_lookup_provenance(data: Any, *, gauge_id: Optional[str], requested: bool) -> Optional[dict]:
+    """Provenance of the reported-area lookup, or ``None`` when none was requested.
+
+    ``attempted`` is true only when the check's source is the lookup (a caller-supplied area wins and no request is made;
+    a failed or refused lookup is still an attempt, its reason is in ``reason``).
+    """
+    if not requested:
+        return None
+    check = _area_check(data) or {}
+    attempted = check.get("source") == AREA_LOOKUP_SOURCE
+    return {
+        "host": AREA_LOOKUP_HOST, "gauge_id": gauge_id, "requested": True, "attempted": attempted,
+        "source": check.get("source"), "status": check.get("status"),
+        "reported_area_km2": check.get("reported_area_km2"), "reason": check.get("reason"),
+    }
 
 
 def downstream_warning(session_id: str) -> Optional[dict]:
