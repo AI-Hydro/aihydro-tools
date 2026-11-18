@@ -929,16 +929,16 @@ def delineate_watershed_from_point(
     small_catchment: CONUS catchments under ~5 km2 (culverts): 3DEP 10 m DEM, embankment notch, snap
         within 40 m; flags LIKELY_DITCH_SNAP under 0.05 km2.
     expected_area_km2: enables validation + adaptive snapping; under 5 km2 in CONUS auto uses small_catchment.
-    gauge_id: USGS station number; pass it when the point is a USGS gauge. The polygon area is checked
-        against the gauge's reported area (one request to api.waterdata.usgs.gov); expected_area_km2 wins.
-        A failed lookup gives area_unverified, never an error. verify_area=False skips it.
+    gauge_id: USGS station number of the point. Its area is checked against the polygon (one request to
+        api.waterdata.usgs.gov); expected_area_km2 wins. A failed lookup is area_unverified, not an error.
+        verify_area=False skips it. Watershed 0.4.6 checks every tier except NLDI; the _note says
+        AREA CHECK NOT PERFORMED when the tier returned no area_check.
     session_id: optional, auto-generated from coordinates/name if not supplied.
-    Returns area_km2, method_used, quality_flags, area_check (status verified_by_area | area_mismatch |
-        area_unverified), reliability_state (verified = area-consistent, not proof | ambiguous |
-        unverified), ambiguous_outlet. area_mismatch warns: the basin is NOT verified.
-    NLDI_OUTLET_AMBIGUOUS: with no expected_area_km2 the point may sit on a tributary reach (<80 km2)
-        or a larger stem; the nearest reach's basin is returned, outlet_ambiguity lists candidates. Pass
-        expected_area_km2 to choose, or allow_downstream_expansion=True for the larger stem.
+    Returns area_km2, method_used, quality_flags, area_check (verified_by_area | area_mismatch |
+        area_unverified), reliability_state (verified = area-consistent | ambiguous | unverified),
+        ambiguous_outlet. area_mismatch warns: the basin is NOT verified.
+    NLDI_OUTLET_AMBIGUOUS: without expected_area_km2 the point may sit on a tributary (<80 km2) or a
+        larger stem; outlet_ambiguity lists candidates. Pass expected_area_km2 or allow_downstream_expansion.
     """
     try:
         slug = _watershed_slug(name, lat, lon)
@@ -1061,7 +1061,7 @@ def delineate_watershed_from_point(
             )
 
         _method_note += _wr.reliability_note(compact)
-        _method_note += _wr.area_check_note(compact)
+        _method_note += _wr.area_check_note(compact, lookup_requested=lookup_requested)
 
         resp: dict = {
             "data": compact,

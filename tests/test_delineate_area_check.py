@@ -190,3 +190,36 @@ def test_older_watershed_result_without_the_keys_is_unchanged(router, monkeypatc
     out = _tool(session_id="ac-nokeys")
     assert "AREA CHECK" not in out["_note"] and "AMBIGUOUS" not in out["_note"]
     assert wr.area_check_note({}) == "" and wr.area_mismatch_flag({}) is None
+
+
+def test_requested_lookup_but_router_returned_no_area_check_is_stated(router, monkeypatch):
+    """Mirrors the 0.4.6 NLDI early return: polygon served, area_check / reliability_state absent."""
+    import ai_hydro.analysis.delineation as dl
+    from ai_hydro.core import HydroMeta, HydroResult
+
+    seen = []
+
+    def nldi_like(lat, lon, **kw):
+        seen.append(kw)
+        return HydroResult(
+            data={"geometry_geojson": PB, "area_km2": 2258.5, "method_used": "nldi_comid", "quality_flags": [],
+                  "area_check": None, "reliability_state": None, "reliability": None},
+            meta=HydroMeta(tool="x", version="0"))
+
+    monkeypatch.setattr(dl, "delineate_from_point", nldi_like)
+    out = _tool(session_id="ac-noncheck", gauge_id="01013500", method="nldi")
+    assert seen[0]["lookup_reported_area"] is True
+    assert "AREA CHECK NOT PERFORMED: tier nldi_comid returned no area_check" in out["_note"]
+    lk = out["meta"]["area_lookup"]
+    assert lk["requested"] is True and lk["attempted"] is False and lk["status"] is None
+    assert lk["reason"] == "AREA CHECK NOT PERFORMED: tier nldi_comid returned no area_check"
+    assert lk["gauge_id"] == "01013500"
+    assert not out.get("watershed_reliability_warning")          # not a mismatch: no flag invented
+    # a call that did not request the check stays silent
+    quiet = _tool(session_id="ac-noncheck2", verify_area=False, gauge_id="01013500")
+    assert "AREA CHECK" not in quiet["_note"] and "area_lookup" not in quiet["meta"]
+
+
+def test_non_finite_rel_err_does_not_break_the_note():
+    chk = {"status": "verified_by_area", "reported_area_km2": 10.0, "source": "s", "rel_err": None}
+    assert "rel_err n/a" in wr.area_check_note({"area_check": chk})

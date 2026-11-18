@@ -121,17 +121,38 @@ def attach_warning(body: dict, flag: dict) -> None:
     _add_warning(body, flag)
 
 
-def area_check_note(data: Any) -> str:
-    """Sentences for the human ``_note``: the area check, the reliability state and a non-binding outlet ambiguity."""
+def _not_performed(data: Any) -> str:
+    """The guard sentence for a requested lookup whose result has no ``area_check`` (the router skipped it)."""
+    tier = data.get("method_used") if isinstance(data, dict) else None
+    return f"AREA CHECK NOT PERFORMED: tier {tier or 'unknown'} returned no area_check"
+
+
+def _fmt_rel_err(value: Any) -> str:
+    """``+0.3%`` style, or ``n/a`` when the router gave no finite number."""
+    try:
+        return f"{float(value):+.1%}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def area_check_note(data: Any, *, lookup_requested: bool = False) -> str:
+    """Sentences for the human ``_note``: the area check, the reliability state and a non-binding outlet ambiguity.
+
+    ``lookup_requested``: the caller asked for the check (a ``gauge_id`` with ``verify_area``). If the router result has
+    no ``area_check`` the note says so explicitly instead of staying silent (the tool does not run the check itself).
+    """
     if not isinstance(data, dict):
         return ""
     out = ""
     check = _area_check(data)
+    if check is None and lookup_requested:
+        out += (f"{_not_performed(data)}; the basin is unverified (the installed aihydro-watershed did not apply the "
+                "area check on this tier; a newer aihydro-watershed is needed). ")
     if check:
         status = check.get("status")
         if status == STATUS_VERIFIED:
             out += (f"AREA CHECK: polygon area is within tolerance of the reported {check.get('reported_area_km2')} km2 "
-                    f"({check.get('source')}, rel_err {check.get('rel_err'):+.1%}); this is area-consistency, not proof "
+                    f"({check.get('source')}, rel_err {_fmt_rel_err(check.get('rel_err'))}); this is area-consistency, not proof "
                     "of the outlet. ")
         elif status == STATUS_MISMATCH:
             out += (f"AREA CHECK MISMATCH: {check.get('reason')}. The basin is NOT verified (reliability_state="
@@ -158,11 +179,21 @@ def area_lookup_provenance(data: Any, *, gauge_id: Optional[str], requested: boo
     """Provenance of the reported-area lookup, or ``None`` when none was requested.
 
     ``attempted`` is true only when the check's source is the lookup (a caller-supplied area wins and no request is made;
-    a failed or refused lookup is still an attempt, its reason is in ``reason``).
+    a failed or refused lookup is still an attempt, its reason is in ``reason``). If the router returned no
+    ``area_check`` at all, ``reason`` says ``AREA CHECK NOT PERFORMED`` and ``attempted`` is false.
+
+    ``gauge_id`` is recorded here, not in the result's top-level ``meta.gauge_id``: that field is the result's own
+    gauge identity (null for a pour-point delineation); here the id is only the key of the reported-area lookup, so
+    copying it up would assert an identity the delineation did not establish.
     """
     if not requested:
         return None
-    check = _area_check(data) or {}
+    check = _area_check(data)
+    if check is None:
+        return {
+            "host": AREA_LOOKUP_HOST, "gauge_id": gauge_id, "requested": True, "attempted": False,
+            "source": None, "status": None, "reported_area_km2": None, "reason": _not_performed(data),
+        }
     attempted = check.get("source") == AREA_LOOKUP_SOURCE
     return {
         "host": AREA_LOOKUP_HOST, "gauge_id": gauge_id, "requested": True, "attempted": attempted,
