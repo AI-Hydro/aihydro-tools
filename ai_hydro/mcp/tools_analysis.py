@@ -931,8 +931,8 @@ def delineate_watershed_from_point(
     expected_area_km2: enables validation + adaptive snapping; under 5 km2 in CONUS auto uses small_catchment.
     gauge_id: USGS station number of the point. Its area is checked against the polygon (one request to
         api.waterdata.usgs.gov); expected_area_km2 wins. A failed lookup is area_unverified, not an error.
-        verify_area=False skips it. Watershed 0.4.6 checks every tier except NLDI; the _note says
-        AREA CHECK NOT PERFORMED when the tier returned no area_check.
+        verify_area=False skips it. Every tier is checked (watershed >= 0.4.7); the _note says
+        AREA CHECK NOT PERFORMED if a tier returned no area_check.
     session_id: optional, auto-generated from coordinates/name if not supplied.
     Returns area_km2, method_used, quality_flags, area_check (verified_by_area | area_mismatch |
         area_unverified), reliability_state (verified = area-consistent | ambiguous | unverified),

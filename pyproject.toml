@@ -49,8 +49,9 @@ dependencies = [
     "aihydro-data>=0.2.9,<0.3",
     # Wave A3: delineation + characterization carve-out (shims in analysis/ and data/).
     # Install locally with: pip install -e /path/to/aihydro-watershed
-    # >=0.4.6: delineate_from_point(gauge_id=, lookup_reported_area=) and the area_check / reliability_state result keys.
-    "aihydro-watershed>=0.4.6,<0.5",
+    # >=0.4.7: delineate_from_point(gauge_id=, lookup_reported_area=), area_check / reliability_state keys (0.4.6),
+    # and the area check on NLDI-served results (0.4.7).
+    "aihydro-watershed>=0.4.7,<0.5",
     # Wave M0 modelling carve-out is optional until aihydro-modelling is published
     # on PyPI. The tools-side modelling modules are thin adapters and should keep
     # base `pip install aihydro-tools` resolvable without unpublished packages.
@@ -122,7 +123,7 @@ delineation = [
 # Registers its lsh_* tools through the `aihydro.tools` entry point. aihydro-lsh sits
 # between watershed and tools in the stack (core <- data <- watershed <- lsh <- tools),
 # so this extra points down, never up. >=0.4: lsh 0.3.0 requires aihydro-watershed<0.3
-# and cannot be installed beside this package (which needs watershed>=0.4.6,<0.5); lsh 0.4.0
+# and cannot be installed beside this package (which needs watershed>=0.4.7,<0.5); lsh 0.4.0
 # carries the watershed 0.4 pin. >=0.4.1: shorter lsh_attributes description (under the 1500 cap),
 # the session_id argument that lets the call be sealed, outlet-based modelled flow.
 # aihydro-data[stac]: topography/relief fetch a DEM; without Earth Engine credentials the only
