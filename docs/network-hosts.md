@@ -1,6 +1,6 @@
 # Hosts the tools reach for soil tables (USDA Soil Data Access)
 
-For operators running with a network allow-list (a proxy or an egress firewall). Each statement names its source and the aihydro-watershed version it was read in. `aihydro-tools` accepts `aihydro-watershed>=0.4.0,<0.5`, so both behaviours below can occur.
+For operators running with a network allow-list (a proxy or an egress firewall). Each statement names its source and the aihydro-watershed version it was read in. `aihydro-tools` accepts `aihydro-watershed>=0.4.7,<0.5`, so only the 0.4.5-and-later SDA behaviour below can occur on a fresh install; the 0.4.0 to 0.4.4 bullet is kept for environments that predate the floor.
 
 ## USDA Soil Data Access (SDA)
 
@@ -12,3 +12,10 @@ For operators running with a network allow-list (a proxy or an egress firewall).
 - **Other hosts in the same step (not SDA).** The gNATSGO raster is searched through the Planetary Computer STAC API (`planetarycomputer.microsoft.com`). The raster's storage host is taken from the STAC asset hrefs; `soils.blob.core.windows.net` was seen in the DEMO-1 rehearsal's blocked-request log and is **unverified** as a fixed host (it was not read from code).
 
 Not verified here: whether NRCS documents `sdmdataaccess.sc.egov.usda.gov` and `sdmdataaccess.nrcs.usda.gov` as aliases. If the host in `SDA_URL` should change, that is an `aihydro-watershed` change, not a tools one.
+
+## USGS Water Data API (optional reported-area lookup)
+
+- **Host: `api.waterdata.usgs.gov`**, URL `https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/items` (`USGS_MONITORING_LOCATIONS_URL` in `aihydro_watershed/delineation/area_verification.py`, read in 0.4.6). One GET per call, 10 s timeout, `requests`, no retries, no `curl`. The host is already used for streamflow by `fetch_streamflow_data` (`ai_hydro/data/streamflow.py`, `ai_hydro/data/gauge_network.py`), so an allow-list that serves those needs no new entry.
+- **Coverage.** From aihydro-watershed 0.4.7 the lookup and check run on every tier, NLDI-served results included. In 0.4.6 they did not run on NLDI-served results (the CONUS default); if a result ever lacks `area_check`, the `_note` and `meta.area_lookup.reason` say `AREA CHECK NOT PERFORMED`.
+- **When it is called.** Only by `delineate_watershed_from_point` when `gauge_id` is given, `verify_area` is true (the default) and no `expected_area_km2` is given. Without `gauge_id` nothing is requested. An allow-list that blocks the host makes the check `area_unverified` with the reason in `area_check.reason`; the delineation still succeeds. The call is recorded in the result's `meta.area_lookup`.
+- aihydro-tools has no code-level host allow-list or network-policy layer; `security_policy.yaml` classifies tools, not hosts. Nothing was added to any policy file.
